@@ -5,3 +5,4 @@ compiled/
 .pytest_cache/
 *.pyc
 .venv/
+.claude/

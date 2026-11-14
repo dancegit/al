@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .errors import LayerError
+
+IR_FILE = "agentic-layer.json"
+
+_LIST_FAMILIES = {
+    "agent": "agents", "agents": "agents",
+    "environment": "environments", "environments": "environments",
+    "artefact": "artefacts", "artefacts": "artefacts",
+    "review": "reviews", "reviews": "reviews",
+    "trigger": "triggers", "triggers": "triggers",
+    "promptInput": "promptInputs", "promptInputs": "promptInputs", "prompt-input": "promptInputs",
+}
+_SINGLETON_FAMILIES = ("forge", "storage", "layer", "voice")
+
+
+def _refuse_planned(family: str, entry: dict[str, Any]) -> None:
+    if entry.get("status") == "planned":
+        raise LayerError(
+            f"{family} option {entry.get('id')!r} (kind {entry.get('kind')!r}) has status 'planned' "
+            "and is not implemented by this runtime"
+        )
+
+
+@dataclass(frozen=True)
+class Layer:
+    ir: dict[str, Any]
+    layer_dir: Path
+    app_root: Path
+
+    @property
+    def name(self) -> str:
+        return str(self.ir.get("name") or self.layer_dir.name)
+
+    @property
+    def default_branch(self) -> str:
+        return str(self.ir["codebase"].get("defaultBranch") or "main")
+
+    def option(self, family_key: str, option_id: str) -> dict[str, Any]:
+        """Return the option `option_id` of a family; singletons ignore option_id when it is empty."""
+        if family_key in _SINGLETON_FAMILIES:
+            return self.singleton(family_key, option_id)
+        key = _LIST_FAMILIES.get(family_key)
+        if key is None:
+            raise LayerError(f"Unknown option family: {family_key}")
+        entries = self.ir.get(key, [])
+        if not isinstance(entries, list):
+            raise LayerError(f"IR family {key!r} must be a list")
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("id") == option_id:
+                _refuse_planned(key, entry)
+                if not isinstance(entry.get("kind"), str):
+                    raise LayerError(f"Option {key}:{option_id} has no kind")
+                return entry
+        raise LayerError(f"Unknown {key} option: {option_id}")
+
+    def singleton(self, family: str, option_id: str = "") -> dict[str, Any]:
+        entry = self.ir.get(family)
+        if not isinstance(entry, dict):
+            raise LayerError(f"IR has no {family} option")
+        if option_id and entry.get("id") != option_id:
+            raise LayerError(f"Unknown {family} option: {option_id}")
+        _refuse_planned(family, entry)
+        return entry
+
+    def command(self, name: str) -> dict[str, Any]:
+        for key, is_hop in (("commands", False), ("hops", True)):
+            for entry in self.ir.get(key, []):
+                if isinstance(entry, dict) and entry.get("name") == name:
+                    return {**entry, "isHop": is_hop}
+        raise LayerError(f"Unknown command or hop: {name}")
+
+    def cmd(self, name: str) -> dict[str, Any]:
+        for entry in self.ir["codebase"].get("commands", []):
+            if isinstance(entry, dict) and entry.get("name") == name:
+                return entry
+        raise LayerError(f"Unknown codebase command: {name}")
+
+    def adw(self, name: str) -> dict[str, Any]:
+        for entry in self.ir.get("adws", []):
+            if isinstance(entry, dict) and entry.get("name") == name:
+                return entry
+        raise LayerError(f"Unknown ADW: {name}")
+
+    def validate_adw(self, name: str) -> dict[str, Any]:
+        """Resolve every option an ADW references so planned or missing options fail before any work."""
+        adw = self.adw(name)
+        self.option("agents", adw["agent"])
+        self.option("reviews", adw["review"])
+        for env_id in adw.get("environment", []):
+            self.option("environments", env_id)
+        for input_id in adw.get("input", []):
+            self.option("promptInputs", input_id)
+        for step in adw.get("steps", []):
+            if step.get("kind") == "run":
+                self.command(step["command"])
+            elif step.get("kind") == "check":
+                self.cmd(step["cmd"])
+        return adw
+
+
+def load(layer_dir: Path) -> Layer:
+    """Load `<layer_dir>/agentic-layer.json` (or an IR file path) and refuse planned singletons."""
+    given = Path(layer_dir).resolve()
+    root = given.parent if given.is_file() else given
+    path = given if given.is_file() else root / IR_FILE
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LayerError(f"Cannot load {path}: {exc}") from exc
+    if not isinstance(raw, dict) or not isinstance(raw.get("codebase"), dict):
+        raise LayerError(f"{path}: IR must be an object with a codebase object")
+    codebase_root = raw["codebase"].get("root")
+    if not isinstance(codebase_root, str) or not codebase_root:
+        raise LayerError(f"{path}: codebase.root must be a non-empty path")
+    for family in _SINGLETON_FAMILIES:
+        entry = raw.get(family)
+        if isinstance(entry, dict):
+            _refuse_planned(family, entry)
+    return Layer(raw, root, (root / codebase_root).resolve())

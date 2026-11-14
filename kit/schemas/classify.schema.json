@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "classify.schema.json",
+  "title": "Classify output",
+  "description": "Result of the classify command: maps a prompt or issue to a work class, an optional explicitly requested ADW, a model set and a slug.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["class", "adw", "model_set", "slug"],
+  "properties": {
+    "class": {
+      "description": "Work class.",
+      "type": "string",
+      "enum": ["chore", "bug", "feature", "patch"]
+    },
+    "adw": {
+      "description": "Name of the ADW the prompt explicitly asked for; empty string when none was named.",
+      "type": "string",
+      "pattern": "^([a-z0-9][a-z0-9_-]*)?$"
+    },
+    "model_set": {
+      "description": "Model set the run should use.",
+      "type": "string",
+      "enum": ["base", "heavy"]
+    },
+    "slug": {
+      "description": "3 to 6 lowercase words joined by hyphens.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+){2,5}$",
+      "maxLength": 80
+    }
+  }
+}

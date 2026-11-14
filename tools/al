@@ -1,0 +1,818 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["jsonschema>=4.20", "pyyaml>=6"]
+# ///
+"""al — generate an agentic layer for any codebase.
+
+  al init    APP [--layer DIR]     create the layer directory beside the app and scout a draft LLM.txt
+  al scout   APP [-o LLM.txt]      deterministic LLM.txt draft (an LLM completes it: meta/commands/scout-codebase.md)
+  al compile LAYER                 agentic.rkt -> agentic-layer.json (validated against the schema)
+  al gen     LAYER                 compile + generate commands, HOPs, ADWs, env, triggers, forge files
+  al check   LAYER                 verify a generated layer and that the application tree is untouched
+
+LAYER is the directory holding agentic.rkt. Nothing is ever written into APP.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+from collections import Counter
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+KIT = ROOT / "kit"
+SCHEMA = ROOT / "schemas" / "agentic-layer-v1.schema.json"
+REFERENCE = ROOT / "docs" / "AL-DSL.llms.txt"
+FABRIC_DIRS = [Path(p) for p in os.environ.get("AL_FABRIC_DIR", "").split(":") if p] + [
+    Path.home() / ".claude/skills/Fabric/Patterns",
+    Path.home() / ".config/fabric/patterns",
+]
+
+
+class AlError(Exception):
+    pass
+
+
+def run(cmd: list[str], cwd: Path | None = None, check: bool = True, env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True, env=env)
+
+
+def git(app: Path, *args: str) -> str:
+    cp = run(["git", "-C", str(app), *args], check=False)
+    return cp.stdout.strip() if cp.returncode == 0 else ""
+
+
+# ------------------------------------------------------------------------------------------
+# scout: deterministic facts about a codebase -> LLM.txt draft
+# ------------------------------------------------------------------------------------------
+
+LANG_BY_EXT = {
+    ".py": "python", ".rs": "rust", ".go": "go", ".ts": "typescript", ".tsx": "typescript",
+    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".c": "c", ".h": "c",
+    ".cc": "cpp", ".cpp": "cpp", ".hpp": "cpp", ".java": "java", ".kt": "kotlin", ".rb": "ruby",
+    ".php": "php", ".cs": "csharp", ".swift": "swift", ".ex": "elixir", ".exs": "elixir",
+    ".hs": "haskell", ".rkt": "racket", ".zig": "zig", ".scala": "scala", ".lua": "lua",
+    ".sh": "shell", ".nix": "nix", ".vue": "vue", ".svelte": "svelte", ".dart": "dart",
+    ".ml": "ocaml", ".clj": "clojure", ".erl": "erlang", ".jl": "julia", ".r": "r", ".tcl": "tcl",
+}
+NIX_BY_LANG = {
+    "python": ["python312", "uv"], "rust": ["cargo", "rustc", "clippy", "rustfmt", "gcc"],
+    "go": ["go"], "typescript": ["nodejs_22"], "javascript": ["nodejs_22"],
+    "c": ["gcc", "gnumake", "pkg-config"], "cpp": ["gcc", "gnumake", "cmake", "pkg-config"],
+    "java": ["jdk21", "maven"], "kotlin": ["jdk21", "gradle"], "ruby": ["ruby"], "php": ["php"],
+    "csharp": ["dotnet-sdk"], "elixir": ["elixir"], "haskell": ["ghc", "cabal-install"],
+    "racket": ["racket"], "zig": ["zig"], "tcl": ["tcl"],
+}
+PROTECTED_CANDIDATES = [
+    ".github", ".forgejo", ".gitea", ".gitlab-ci.yml", ".circleci", "LICENSE", "LICENSE.txt",
+    "LICENSE.md", "COPYING", "SECURITY.md", "CODEOWNERS", "migrations", "release", "releases",
+    ".goreleaser.yml", ".goreleaser.yaml", "Cargo.lock", "uv.lock", "package-lock.json",
+    "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "go.sum", "flake.lock",
+]
+
+
+def scout(app: Path) -> dict:
+    app = app.resolve()
+    if not (app / ".git").exists():
+        raise AlError(f"{app} is not a git checkout")
+    files = [f for f in git(app, "ls-files").splitlines() if f]
+    exts = Counter(LANG_BY_EXT[Path(f).suffix.lower()] for f in files if Path(f).suffix.lower() in LANG_BY_EXT)
+    langs = [l for l, _ in exts.most_common() if l not in ("shell", "nix")][:4] or [l for l, _ in exts.most_common()][:1]
+    top = Counter(f.split("/")[0] for f in files if "/" in f)
+    has = lambda p: (app / p).exists()  # noqa: E731
+    cmds: list[dict] = []
+    evidence: list[str] = []
+    notes: list[str] = []
+
+    def add(name: str, shell: str, proves: str, ev: str, network: str = "no") -> None:
+        if not any(c["name"] == name for c in cmds):
+            cmds.append({"name": name, "shell": shell, "proves": proves, "network": network})
+            evidence.append(f"{name}: {ev}")
+
+    pm = ""
+    if has("Cargo.toml"):
+        pm = "cargo add"
+        add("build", "cargo build --all-targets", "the workspace compiles", "Cargo.toml")
+        add("test", "cargo test", "unit and integration tests pass", "Cargo.toml")
+        add("lint", "cargo clippy --all-targets -- -D warnings", "no clippy warnings", "Cargo.toml")
+        add("format", "cargo fmt --all -- --check", "formatting is canonical", "Cargo.toml")
+    if has("go.mod"):
+        pm = pm or "go get"
+        add("build", "go build ./...", "all packages compile", "go.mod")
+        add("test", "go test ./...", "all package tests pass", "go.mod")
+        add("lint", "go vet ./...", "no vet findings", "go.mod")
+    if has("package.json"):
+        try:
+            pkg = json.loads((app / "package.json").read_text())
+        except json.JSONDecodeError:
+            pkg = {}
+        runner = ("bun" if has("bun.lock") or has("bun.lockb") else "pnpm" if has("pnpm-lock.yaml")
+                  else "yarn" if has("yarn.lock") else "npm")
+        pm = pm or {"bun": "bun add", "pnpm": "pnpm add", "yarn": "yarn add", "npm": "npm install"}[runner]
+        add("install", f"{runner} install", "dependencies resolve", "package.json", "yes")
+        for script in ("lint", "typecheck", "test", "build", "e2e", "start", "docs"):
+            if script in (pkg.get("scripts") or {}):
+                add(script, f"{runner} run {script}", f"package.json script `{script}`: {pkg['scripts'][script][:80]}",
+                    f"package.json scripts.{script}")
+    if has("pyproject.toml") or has("setup.py") or has("setup.cfg") or has("requirements.txt"):
+        py = {}
+        if has("pyproject.toml"):
+            try:
+                py = tomllib.loads((app / "pyproject.toml").read_text())
+            except tomllib.TOMLDecodeError:
+                notes.append("pyproject.toml did not parse")
+        tool = py.get("tool", {})
+        uv = has("uv.lock") or "uv" in tool
+        pre = "uv run " if uv else ""
+        pm = pm or ("uv add" if uv else "pip install")
+        if uv:
+            add("install", "uv sync", "the locked environment resolves", "uv.lock / [tool.uv]", "yes")
+        elif has("pyproject.toml") or has("setup.py"):
+            add("install", "python -m pip install -e .", "the package installs", "pyproject.toml / setup.py", "yes")
+        if "pytest" in tool or has("pytest.ini") or has("tox.ini") or has("conftest.py") or has("tests"):
+            add("test", f"{pre}pytest -q", "the test suite passes", "pytest config / tests dir")
+        if "ruff" in tool or has("ruff.toml") or has(".ruff.toml"):
+            add("lint", f"{pre}ruff check", "no lint findings", "[tool.ruff]")
+        if "mypy" in tool or has("mypy.ini"):
+            add("typecheck", f"{pre}mypy", "types check", "[tool.mypy]")
+    if has("pom.xml"):
+        add("build", "mvn -q -DskipTests package", "the project builds", "pom.xml", "yes")
+        add("test", "mvn -q test", "tests pass", "pom.xml", "yes")
+    if has("build.gradle") or has("build.gradle.kts"):
+        add("build", "./gradlew assemble", "the project builds", "build.gradle", "yes")
+        add("test", "./gradlew test", "tests pass", "build.gradle", "yes")
+    if has("Gemfile"):
+        add("install", "bundle install", "gems resolve", "Gemfile", "yes")
+        add("test", "bundle exec rake test", "tests pass", "Gemfile (verify the rake task)")
+    if has("mix.exs"):
+        add("test", "mix test", "tests pass", "mix.exs")
+    if has("CMakeLists.txt"):
+        add("build", "cmake -S . -B build && cmake --build build -j", "the project builds", "CMakeLists.txt")
+        add("test", "ctest --test-dir build --output-on-failure", "ctest passes", "CMakeLists.txt")
+    if has("Makefile") or has("makefile") or has("GNUmakefile"):
+        mk = next(p for p in ("Makefile", "makefile", "GNUmakefile") if has(p))
+        targets = set(re.findall(r"^([A-Za-z0-9_.-]+)\s*:(?!=)", (app / mk).read_text(errors="replace"), re.M))
+        add("build", "make -j", "the default target builds", mk)
+        for t, name in (("test", "test"), ("check", "test"), ("lint", "lint"), ("fmt", "format"), ("docs", "docs")):
+            if t in targets:
+                add(name, f"make {t}", f"make target `{t}`", f"{mk} target {t}")
+    if has("configure") or has("configure.ac") or has("autogen.sh"):
+        notes.append("autotools project: build probably needs `autoreconf -i && ./configure` before make — verify")
+    if has("tox.ini"):
+        notes.append("tox.ini present: CI may run the suite through tox")
+    if has("noxfile.py"):
+        notes.append("noxfile.py present: CI may run the suite through nox")
+    if has("justfile") or has("Justfile"):
+        notes.append("justfile present: prefer its recipes where they exist")
+
+    test_dirs = sorted({d for d in top if re.fullmatch(r"(tests?|spec|specs|__tests__|testing|e2e)", d)})
+    doc_dirs = sorted({d for d in top if re.fullmatch(r"(docs?|documentation|website)", d)})
+    skip = set(test_dirs) | set(doc_dirs) | {".github", ".forgejo", "examples", "benches", "scripts", "ci"}
+    src_dirs = [d for d, _ in top.most_common(8) if d not in skip and not d.startswith(".")][:5]
+    protected = [p for p in PROTECTED_CANDIDATES if has(p)]
+    remote = git(app, "remote", "get-url", "origin")
+    forge, repo = "none", ""
+    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$", remote)
+    if m:
+        repo = m.group(1)
+        forge = "github" if "github.com" in remote else "forgejo" if re.search(r"forgejo|gitea|codeberg", remote) else "unknown"
+    ci = [p for p in (".github/workflows", ".forgejo/workflows", ".gitea/workflows", ".gitlab-ci.yml", ".circleci") if has(p)]
+    head = git(app, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/") or git(app, "branch", "--show-current") or "main"
+    readme = next((p for p in ("README.md", "README.rst", "README.txt", "README") if has(p)), "")
+    summary = ""
+    if readme:
+        for para in re.split(r"\n\s*\n", (app / readme).read_text(errors="replace")):
+            text = " ".join(l.strip() for l in para.splitlines())
+            if len(text) > 60 and not re.match(r"^(#|=|\.\.|\[!\[|<|!\[|-{3,}|\|)", text.strip()):
+                summary = re.sub(r"\s+", " ", text)[:400]
+                break
+    license_file = next((p for p in ("LICENSE", "LICENSE.txt", "LICENSE.md", "COPYING", "LICENSE-MIT") if has(p)), "")
+    nix = list(dict.fromkeys(pkg for l in langs for pkg in NIX_BY_LANG.get(l, [])))
+    if has("bun.lock") or has("bun.lockb"):
+        nix.append("bun")
+    return {
+        "name": re.sub(r"[^a-z0-9._-]", "-", app.name.lower()), "app": str(app), "summary": summary,
+        "remote": remote, "repo": repo, "forge": forge, "ci": ci, "default_branch": head,
+        "license": license_file, "languages": langs, "lang_counts": dict(exts.most_common(6)),
+        "files": len(files), "top": top.most_common(14), "src": src_dirs, "tests": test_dirs,
+        "docs": doc_dirs, "readme": readme, "commands": cmds, "evidence": evidence, "notes": notes,
+        "protected": protected, "nix": nix + ["git"], "package_manager": pm,
+        "contributing": next((p for p in ("CONTRIBUTING.md", "CONTRIBUTING.rst", "docs/contributing.rst", "HACKING.md") if has(p)), ""),
+    }
+
+
+def render_llm_txt(s: dict) -> str:
+    def bullets(items, empty="- (none found)"):
+        return "\n".join(f"- {i}" for i in items) or empty
+    rows = "\n".join(f"| {c['name']} | `{c['shell']}` | {c['proves']} | UNVERIFIED | {c['network']} |" for c in s["commands"])
+    layout = "\n".join(
+        f"- `{d}/` — {n} files" + (" (tests)" if d in s["tests"] else " (docs)" if d in s["docs"] else "")
+        for d, n in s["top"])
+    return f"""# {s['name']}
+
+> {s['summary'] or 'UNVERIFIED: no summary paragraph found in the README.'}
+
+<!-- Draft produced by `al scout` from repository facts only. Every line marked UNVERIFIED
+     must be confirmed or corrected by the scout-codebase meta command before authoring the layer. -->
+
+## Identity
+
+- Repository: {s['remote'] or 'UNVERIFIED (no origin remote)'}
+- Default branch: {s['default_branch']}
+- License: {s['license'] or 'UNVERIFIED'}
+- Primary languages: {', '.join(s['languages'])} (tracked files by language: {s['lang_counts']})
+- Kind: UNVERIFIED (library | cli | service | web-app | mobile | monorepo | data/ml | infra)
+- Tracked files: {s['files']}
+
+## Layout
+
+{layout or '- (flat repository)'}
+- Entry document: `{s['readme'] or 'UNVERIFIED'}`
+- Source paths (guess): {', '.join(f'`{d}`' for d in s['src']) or 'UNVERIFIED'}
+- Test paths: {', '.join(f'`{d}`' for d in s['tests']) or 'UNVERIFIED'}
+- Doc paths: {', '.join(f'`{d}`' for d in s['docs']) or '(none)'}
+
+## Commands
+
+| name | shell command from repo root | proves what | typical duration | needs network? |
+|---|---|---|---|---|
+{rows or '| UNVERIFIED | | | | |'}
+
+## Toolchain
+
+- nixpkgs attributes (guess from languages): {' '.join(s['nix'])}
+- Package manager: {s['package_manager'] or 'UNVERIFIED'}
+- Services needed: UNVERIFIED
+
+## Artefacts
+
+- log — always (captured command output)
+- junit / coverage / images / video / traces: UNVERIFIED — state the flag that emits each and the glob where it lands
+
+## Conventions
+
+- UNVERIFIED — extract from `{s['contributing'] or 'CONTRIBUTING / README'}`
+
+## Protected paths
+
+{bullets(f'`{p}`' for p in s['protected'])}
+
+## Work classes
+
+- chore / bug / feature: UNVERIFIED — describe a typical one here and which are safe for zero-touch
+
+## Forge
+
+- Forge: {s['forge']}{f" ({s['repo']})" if s['repo'] else ''}
+- CI: {', '.join(f'`{c}`' for c in s['ci']) or '(none found)'}
+
+## Conditional docs
+
+- UNVERIFIED
+
+## Evidence
+
+{bullets(s['evidence'])}
+
+## Unknowns
+
+{bullets(s['notes'] + ['command durations', 'which commands need network', 'artefact globs'])}
+"""
+
+
+# ------------------------------------------------------------------------------------------
+# compile
+# ------------------------------------------------------------------------------------------
+
+def compile_layer(layer: Path) -> dict:
+    src = layer if layer.suffix == ".rkt" else layer / "agentic.rkt"
+    if not src.exists():
+        raise AlError(f"{src} not found")
+    env = dict(os.environ, PLTCOLLECTS=f"{ROOT / 'racket'}:{os.environ.get('PLTCOLLECTS', '')}")
+    cp = run(["racket", str(src)], check=False, env=env)
+    if cp.returncode != 0:
+        raise AlError("agentic.rkt does not compile:\n" + cp.stderr.strip())
+    ir = json.loads(cp.stdout)
+    import jsonschema
+    errors = sorted(jsonschema.Draft202012Validator(json.loads(SCHEMA.read_text())).iter_errors(ir), key=lambda e: list(e.path))
+    if errors:
+        raise AlError("IR does not match the schema (compiler/schema drift):\n" + "\n".join(
+            f"  {'/'.join(map(str, e.path))}: {e.message}" for e in errors[:10]))
+    return ir
+
+
+# ------------------------------------------------------------------------------------------
+# gen
+# ------------------------------------------------------------------------------------------
+
+OUTPUT_CONTRACT = {
+    "text": "Finish with a concise report in plain markdown. No preamble.",
+    "path": "Your final message must be ONLY the path of the file you created, on a single line, with no other text.",
+    "json": "Your final message must be ONLY one JSON document in a ```json fenced block, with no other text.",
+}
+
+
+def bullets(items: list[str], empty: str = "- (none)") -> str:
+    return "\n".join(f"- {i}" for i in items) or empty
+
+
+def yaml_safe(text: str) -> str:
+    """One-line text that is safe as an unquoted YAML scalar in template front matter."""
+    text = re.sub(r"\s+", " ", text).replace(": ", " - ").replace(" #", " ").strip()
+    return re.sub(r"^[^A-Za-z0-9]+", "", text) or "command"
+
+
+def fill(text: str, values: dict[str, str]) -> str:
+    def sub(m: re.Match) -> str:
+        key = m.group(1)
+        if key not in values:
+            raise AlError(f"template uses unknown placeholder {{{{{key}}}}}")
+        return values[key]
+    return re.sub(r"\{\{([a-z_]+)\}\}", sub, text)
+
+
+def fabric_pattern(name: str) -> Path:
+    for d in FABRIC_DIRS:
+        p = d / name / "system.md"
+        if p.exists():
+            return p
+    raise AlError(f"fabric pattern `{name}` not found in {', '.join(map(str, FABRIC_DIRS))} (set AL_FABRIC_DIR)")
+
+
+class Generator:
+    def __init__(self, layer: Path, ir: dict):
+        self.layer, self.ir, self.written = layer, ir, []
+        self.cb = ir["codebase"]
+        self.cmds = {c["name"]: c for c in self.cb["commands"]}
+
+    def write(self, rel: str, content: str, mode: int = 0o644, keep_existing: bool = False) -> None:
+        path = self.layer / rel
+        if keep_existing and path.exists():
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        path.chmod(mode)
+        if not keep_existing:
+            self.written.append(rel)
+
+    def copy_tree(self, src: Path, rel: str) -> None:
+        for f in sorted(src.rglob("*")):
+            if f.is_file() and "__pycache__" not in f.parts and f.suffix != ".pyc":
+                target = f"{rel}/{f.relative_to(src)}"
+                self.write(target, f.read_text(), 0o755 if os.access(f, os.X_OK) else 0o644)
+
+    def cmd_line(self, name: str) -> str:
+        c = self.cmds[name]
+        return f"`{c['run']}`" + (f" — {c['description']}" if c["description"] else f" — codebase cmd `{name}`")
+
+    def base_values(self) -> dict[str, str]:
+        cb, p = self.cb, self.cb["paths"]
+        return {
+            "name": self.ir["name"],
+            "codebase_description": cb["description"] or self.ir["description"] or self.ir["name"],
+            "languages": ", ".join(cb["languages"]),
+            "readme": cb["readme"],
+            "package_manager": cb["packageManager"] or "(not specified — do not add dependencies without flagging it)",
+            "default_branch": cb["defaultBranch"],
+            "protected_paths": bullets([f"`{x}`" for x in p["protected"]]),
+            "all_commands": bullets([f"**{n}**: {self.cmd_line(n)}" for n in self.cmds]),
+            "conditional_docs": bullets([f"`{d['path']}` — {d['when']}" for d in cb["conditionalDocs"]]),
+            "relevant_files": bullets([f"`{x}`" for x in [cb["readme"], *p["source"], *p["tests"]] if x]),
+            "validation_commands": bullets([self.cmd_line(n) for n in self.cmds if n in ("lint", "typecheck", "test", "build")]),
+            "focus": "", "fabric": "", "output_contract": OUTPUT_CONTRACT["text"],
+            "command_name": "", "description": "",
+            "expert_name": "", "expert_domain": "", "expert_paths": "", "expert_max_lines": "", "expertise_path": "",
+        }
+
+    def fabric_section(self, patterns: list[str]) -> str:
+        if not patterns:
+            return ""
+        for pat in patterns:
+            self.write(f"fabric/{pat}/system.md", fabric_pattern(pat).read_text())
+        return ("## Method (Fabric patterns)\n\nBefore producing your output, read and apply the method in each of these "
+                "pattern files. Where a pattern's output format differs from the Report section below, the Report section wins.\n\n"
+                + bullets([f"`${{layer_dir}}/fabric/{pat}/system.md`" for pat in patterns]))
+
+    def commands(self) -> None:
+        base = self.base_values()
+        for kind, items, src_dir in (("commands", self.ir["commands"], KIT / "templates/commands"),
+                                     ("hops", self.ir["hops"], KIT / "templates/hops")):
+            for c in items:
+                v = dict(base, command_name=c["name"], description=yaml_safe(c["description"] or f"{c['template']} for {self.ir['name']}"))
+                if kind == "commands":
+                    src = self.layer / c["file"] if c["template"] == "custom" else src_dir / f"{c['template']}.md"
+                    if c["relevant"]:
+                        v["relevant_files"] = bullets([f"`{x}`" for x in c["relevant"]])
+                    if c["validation"]:
+                        v["validation_commands"] = bullets([self.cmd_line(n) for n in c["validation"]])
+                    v["focus"] = bullets(c["focus"], "")
+                    v["fabric"] = self.fabric_section(c["fabric"])
+                    contract = OUTPUT_CONTRACT[c["output"]]
+                    schema = KIT / "schemas" / f"{c['template']}.schema.json"
+                    if c["output"] == "json" and schema.exists():
+                        contract += f"\n\nIt must validate against this JSON Schema:\n\n```json\n{schema.read_text().strip()}\n```"
+                    v["output_contract"] = contract
+                else:
+                    src = src_dir / f"{c['template']}.md"
+                if not src.exists():
+                    raise AlError(f"{kind[:-1]} `{c['name']}`: template file {src} is missing")
+                self.write(f"{kind}/{c['name']}.md", fill(src.read_text(), v))
+
+    def experts(self) -> None:
+        base = self.base_values()
+        for e in self.ir["experts"]:
+            rel = f"experts/{e['name']}"
+            v = dict(base, expert_name=e["name"], expert_domain=e["domain"],
+                     expert_paths=bullets(e["paths"]), expert_max_lines=str(e["maxLines"]),
+                     expertise_path=f"${{layer_dir}}/{rel}/expertise.yaml", command_name=e["name"], description=yaml_safe(e["domain"]))
+            src = KIT / "templates/experts"
+            self.write(f"{rel}/expertise.yaml", fill((src / "expertise.yaml").read_text(), v), keep_existing=True)
+            for f in ("question.md", "self-improve.md"):
+                self.write(f"{rel}/{f}", fill((src / f).read_text(), v))
+
+    def adws(self) -> None:
+        self.copy_tree(KIT / "runtime/adw_modules", "adws/adw_modules")
+        deps = '["boto3>=1.34"]' if self.ir["storage"]["kind"] == "s3" else "[]"
+        header = f"#!/usr/bin/env -S uv run --quiet --script\n# /// script\n# requires-python = \">=3.11\"\n# dependencies = {deps}\n# ///\n"
+        for a in self.ir["adws"]:
+            steps = " → ".join(s["name"] for s in a["steps"])
+            self.write(f"adws/adw_{a['name']}.py", header + f'''"""ADW `{a['name']}` — {a['description'] or 'generated by al'}
+
+Steps: {steps}
+PITER: input={a['input']} trigger={a['trigger']} environment={a['environment']} review={a['review']}
+Generated from agentic.rkt — edit that file and run `al gen`, not this one.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from adw_modules.runner import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main(adw="{a['name']}", layer_dir=Path(__file__).resolve().parent.parent))
+''', 0o755)
+        self.write("adws/dispatch.py", header + (KIT / "runtime/dispatch.py").read_text(), 0o755)
+        used = {t["kind"] for t in self.ir["triggers"]}
+        for kind, script in (("cron", "trigger_cron.py"), ("webhook", "trigger_webhook.py"),
+                             ("file-watch", "trigger_watch.py"), ("voice", "trigger_voice.py")):
+            if kind in used and (KIT / "runtime/triggers" / script).exists():
+                self.write(f"adws/triggers/{script}", (KIT / "runtime/triggers" / script).read_text(), 0o755)
+        if self.ir["voice"]:
+            self.copy_tree(KIT / "runtime/voice", "adws/voice")
+
+    def environments(self) -> None:
+        name = self.ir["name"]
+        envs = {e["kind"]: e for e in reversed(self.ir["environments"])}  # first declared of each kind wins
+        if "nix-devshell" in envs:
+            e = envs["nix-devshell"]
+            hook = e["shellHook"].replace("''", "'''")
+            self.write("env/flake.nix", f'''# Generated by al from agentic.rkt — do not edit.
+{{
+  description = "Agentic layer toolchain for {name}";
+
+  inputs.nixpkgs.url = "{e['nixpkgs']}";
+
+  outputs = {{ self, nixpkgs }}:
+    let
+      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      forAllSystems = nixpkgs.lib.genAttrs systems;
+    in {{
+      devShells = forAllSystems (system:
+        let pkgs = import nixpkgs {{ inherit system; }};
+        in {{
+          default = pkgs.mkShell {{
+            packages = with pkgs; [ {' '.join(e['packages'])} ];
+            shellHook = \'\'
+              export AL_LAYER="{name}"
+              {hook}
+            \'\';
+          }};
+        }});
+    }};
+}}
+''')
+        if "home-manager" in envs:
+            e = envs["home-manager"]
+            mod = e["moduleName"]
+            cron = next((t for t in self.ir["triggers"] if t["kind"] == "cron"), None)
+            service = f'''
+    systemd.user.services."al-{name}-cron" = {{
+      Unit.Description = "Agentic layer cron trigger for {name}";
+      Service.ExecStart = "${{pkgs.uv}}/bin/uv run ${{cfg.layerDir}}/adws/triggers/trigger_cron.py";
+      Service.Restart = "on-failure";
+      Install.WantedBy = [ "default.target" ];
+    }};''' if cron else ""
+            self.write("env/home-manager.nix", f'''# Generated by al from agentic.rkt — do not edit.
+# Import from your Home Manager configuration:
+#   imports = [ {self.layer}/env/home-manager.nix ];
+#   programs.{mod}.enable = true;
+{{ config, lib, pkgs, ... }}:
+let
+  cfg = config.programs."{mod}";
+  adw = pkgs.writeShellScriptBin "al-{name}" \'\'
+    # al-{name} <adw> [args…]   run an ADW of the {name} agentic layer
+    if [ $# -lt 1 ]; then ls "${{cfg.layerDir}}/adws" | sed -n 's/^adw_\\(.*\\)\\.py$/\\1/p'; exit 0; fi
+    exec ${{pkgs.uv}}/bin/uv run "${{cfg.layerDir}}/adws/adw_$1.py" "''${{@:2}}"
+  \'\';
+in {{
+  options.programs."{mod}" = {{
+    enable = lib.mkEnableOption "the agentic layer for {name}";
+    layerDir = lib.mkOption {{
+      type = lib.types.str;
+      default = "{self.layer}";
+      description = "Directory of the generated agentic layer.";
+    }};
+  }};
+
+  config = lib.mkIf cfg.enable {{
+    home.packages = (with pkgs; [ {' '.join(e['packages'])} uv git ]) ++ [ adw ];
+    home.sessionVariables.AL_{re.sub(r'[^A-Z0-9]', '_', name.upper())}_LAYER = cfg.layerDir;{service}
+  }};
+}}
+''')
+            self.write("env/home.example.nix", f'''# Standalone Home Manager example using the generated module.
+{{ pkgs, ... }}: {{
+  imports = [ ./home-manager.nix ];
+  home.stateVersion = "{e['stateVersion']}";
+  programs."{mod}".enable = true;
+}}
+''')
+        if "podman" in envs:
+            e = envs["podman"]
+            lines = [f"# Generated by al from agentic.rkt — do not edit.\nFROM {e['baseImage']}"]
+            if e["packages"]:
+                lines.append("RUN apt-get update && apt-get install -y --no-install-recommends "
+                             + " ".join(e["packages"]) + " && rm -rf /var/lib/apt/lists/*")
+            lines += [f"RUN {s}" for s in e["setup"]]
+            lines += ["ENV HOME=/tmp/home", "RUN mkdir -p /tmp/home && chmod 1777 /tmp/home", "WORKDIR /work", ""]
+            self.write("env/Containerfile", "\n".join(lines))
+
+    def triggers_and_forge(self) -> None:
+        name, forge = self.ir["name"], self.ir["forge"]
+        for t in self.ir["triggers"]:
+            if t["kind"] == "cron" and t["systemd"]:
+                self.write(f"systemd/al-{name}-cron.service", f"""# Generated by al. Install: cp to ~/.config/systemd/user/ && systemctl --user enable --now al-{name}-cron
+[Unit]
+Description=Agentic layer cron trigger for {name}
+
+[Service]
+ExecStart=/usr/bin/env uv run {self.layer}/adws/triggers/trigger_cron.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+""")
+            if t["kind"] == "webhook":
+                self.write(f"systemd/al-{name}-webhook.service", f"""# Generated by al. Install: cp to ~/.config/systemd/user/ && systemctl --user enable --now al-{name}-webhook
+[Unit]
+Description=Agentic layer webhook trigger for {name} ({t['bind']}:{t['port']}{t['path']})
+
+[Service]
+ExecStart=/usr/bin/env uv run {self.layer}/adws/triggers/trigger_webhook.py
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+""")
+            if t["kind"] == "forge-actions" and forge["kind"] in ("github", "forgejo"):
+                ctx = "github"  # Forgejo Actions keeps the `github` context for compatibility
+                on: list[str] = []
+                ev = t["events"]
+                if "issue-opened" in ev or "issue-labeled" in ev:
+                    types = [x for x, k in (("opened", "issue-opened"), ("labeled", "issue-labeled")) if k in ev]
+                    on.append(f"  issues:\n    types: [{', '.join(types)}]")
+                if "issue-comment" in ev:
+                    on.append("  issue_comment:\n    types: [created]")
+                if "schedule" in ev and t["schedule"]:
+                    on.append(f"  schedule:\n    - cron: \"{t['schedule']}\"")
+                if "workflow-dispatch" in ev:
+                    on.append("  workflow_dispatch:\n    inputs:\n      prompt:\n        description: High-level prompt\n        required: true\n"
+                              "      adw:\n        description: ADW name (empty = pick automatically)\n        required: false")
+                marker = forge["botMarker"]
+                label_cond = (f"contains({ctx}.event.issue.labels.*.name, '{t['label']}')" if t["label"] else "true")
+                wf = f"""# Generated by al for the {name} agentic layer.
+# This is the ONLY file that belongs in the application repository, and only if you want the
+# forge's CI to be the trigger. It contains no logic: it calls into the layer, which lives on
+# the runner at $AL_LAYER_DIR (default {self.layer}).
+name: adw
+on:
+{chr(10).join(on)}
+
+concurrency:
+  group: adw-${{{{ {ctx}.event.issue.number || {ctx}.run_id }}}}
+  cancel-in-progress: false
+
+jobs:
+  adw:
+    runs-on: {t['runner']}
+    if: >-
+      {ctx}.event_name == 'workflow_dispatch' || {ctx}.event_name == 'schedule' ||
+      (({label_cond}) && !startsWith({ctx}.event.comment.body || '', '{marker}'))
+    env:
+      AL_LAYER_DIR: ${{{{ vars.AL_LAYER_DIR || '{self.layer}' }}}}
+      {forge['tokenEnv']}: ${{{{ secrets.{forge['tokenEnv']} }}}}
+    steps:
+      - name: Run the agentic layer
+        env:
+          ADW_PROMPT: ${{{{ inputs.prompt }}}}
+          ADW_NAME: ${{{{ inputs.adw }}}}
+          ADW_ISSUE: ${{{{ {ctx}.event.issue.number }}}}
+        run: |
+          if [ -n "$ADW_ISSUE" ]; then
+            uv run "$AL_LAYER_DIR/adws/dispatch.py" --source "issue:$ADW_ISSUE"
+          elif [ -n "$ADW_PROMPT" ]; then
+            uv run "$AL_LAYER_DIR/adws/dispatch.py" ${{ADW_NAME:+--adw "$ADW_NAME"}} "$ADW_PROMPT"
+          else
+            uv run "$AL_LAYER_DIR/adws/triggers/trigger_cron.py" --once
+          fi
+"""
+                d = ".github" if forge["kind"] == "github" else ".forgejo"
+                self.write(f"forge/{d}/workflows/adw.yml", wf)
+
+    def scaffolding(self) -> None:
+        ir = self.ir
+        for pi in ir["promptInputs"]:
+            if pi["kind"] == "tasklist":
+                first = ir["adws"][0]["name"]
+                self.write(pi["path"], f"""# Tasks — {ir['name']}
+
+<!-- One `## section` per unit of work (it names the worktree/branch). One line per task.
+     {pi['openMarker']} open · {pi['runningMarker']} running · {pi['doneMarker']} done · {pi['failedMarker']} failed · {pi['blockedMarker']} waits for the tasks above it
+     Tags at the end of a line pick the workflow, model set and class, e.g. {{{first}, heavy, class: bug}} -->
+""", keep_existing=True)
+            if pi["kind"] == "spec-file":
+                self.write(f"{pi['dir']}/.gitkeep", "")
+        for rel in ("specs/.gitkeep", "mock/.gitkeep", "docs/.gitkeep"):
+            self.write(rel, "", keep_existing=True)
+        self.write("conditional_docs.md", "# Conditional documentation\n\nRead a document below before working when its condition holds.\n\n"
+                   + bullets([f"`{d['path']}` — {d['when']}" for d in self.cb["conditionalDocs"]]) + "\n", keep_existing=True)
+        self.write("bin/al", f"#!/bin/sh\n# Generated by al: the layer's handle on the generator and compiler.\nexec {ROOT / 'tools' / 'al'} \"$@\"\n", 0o755)
+        self.write(".gitignore", "trees/\nagents/\nartefacts/\n__pycache__/\nenv/flake.lock\n")
+        self.write("AL-DSL.llms.txt", REFERENCE.read_text())
+        by_id = lambda key: {o["id"]: o for o in ir[key]}  # noqa: E731
+        pi, tr, en, rv = by_id("promptInputs"), by_id("triggers"), by_id("environments"), by_id("reviews")
+        rows = "\n".join(
+            f"| `{a['name']}` | {', '.join(pi[i]['kind'] for i in a['input'])} | {', '.join(tr[i]['kind'] for i in a['trigger'])} | "
+            f"{' → '.join(en[i]['kind'] for i in a['environment'])} | {rv[a['review']]['kind']}"
+            f"{' → ' + rv[a['review']]['ship'] if rv[a['review']]['kind'] == 'auto' else ''} | {' → '.join(s['name'] for s in a['steps'])} |"
+            for a in ir["adws"])
+        self.write("README.md", f"""# Agentic layer — {ir['name']}
+
+{ir['description']}
+
+Generated by `al gen` from `agentic.rkt` (derived from `{ir['llmTxt']}`). This directory wraps the
+application at `{self.cb['root']}`; it is not part of it. Agents work in git worktrees under `trees/`,
+plans land in `specs/`, run state and logs in `agents/<adw-id>/`, proof in `artefacts/<adw-id>/`.
+
+## Workflows
+
+| ADW | Prompt input | Trigger | Environment | Review | Steps |
+|---|---|---|---|---|---|
+{rows}
+
+## Run
+
+```bash
+uv run adws/adw_{ir['adws'][0]['name']}.py "your high-level prompt"          # manual trigger
+uv run adws/adw_{ir['adws'][0]['name']}.py "…" --dry-run                     # mock agent, no LLM
+uv run adws/dispatch.py --source tasklist:<line>                             # from a prompt input
+```
+
+## Change the layer
+
+Edit `agentic.rkt` (language reference: `AL-DSL.llms.txt`), then `al gen {self.layer}`. The compiler
+rejects incoherent layers; generated files are overwritten, your `tasks.md`, `specs/`, `mock/` and
+expert `expertise.yaml` files are kept.
+""")
+
+    def generate(self) -> list[str]:
+        planned = [f"{k}:{o['id']}" for k in ("promptInputs", "triggers", "environments", "reviews", "agents", "artefacts")
+                   for o in self.ir[k] if o["status"] == "planned"]
+        planned += [f"{k}:{self.ir[k]['kind']}" for k in ("forge", "storage", "layer") if self.ir[k]["status"] == "planned"]
+        if planned:
+            raise AlError("these options are declared `planned` in the vocabulary and have no runtime yet: " + ", ".join(planned))
+        app = (self.layer / self.cb["root"]).resolve()
+        if self.layer.resolve() == app or app in self.layer.resolve().parents:
+            raise AlError(f"the layer ({self.layer}) must not live inside the application tree ({app})")
+        self.write("agentic-layer.json", json.dumps(self.ir, indent=2, sort_keys=True) + "\n")
+        self.commands()
+        self.experts()
+        self.adws()
+        self.environments()
+        self.triggers_and_forge()
+        self.scaffolding()
+        manifest = self.layer / ".al-manifest.json"
+        old = json.loads(manifest.read_text())["files"] if manifest.exists() else []
+        for stale in sorted(set(old) - set(self.written)):
+            (self.layer / stale).unlink(missing_ok=True)
+        manifest.write_text(json.dumps({"generator": "al 0.1", "files": sorted(self.written)}, indent=1) + "\n")
+        if self.ir["layer"].get("git") and not (self.layer / ".git").exists():
+            run(["git", "init", "-q", "-b", "main", str(self.layer)], check=False)
+        return self.written
+
+
+# ------------------------------------------------------------------------------------------
+# check
+# ------------------------------------------------------------------------------------------
+
+def check_layer(layer: Path) -> list[str]:
+    import yaml
+    problems: list[str] = []
+    ir = json.loads((layer / "agentic-layer.json").read_text())
+    if ir != compile_layer(layer):
+        problems.append("agentic-layer.json is stale: run `al gen`")
+    need = [f"commands/{c['name']}.md" for c in ir["commands"]] + [f"hops/{h['name']}.md" for h in ir["hops"]]
+    need += [f"adws/adw_{a['name']}.py" for a in ir["adws"]] + ["adws/adw_modules/runner.py", "adws/dispatch.py", "AL-DSL.llms.txt"]
+    kinds = {e["kind"] for e in ir["environments"]}
+    need += [f for k, f in (("nix-devshell", "env/flake.nix"), ("home-manager", "env/home-manager.nix"), ("podman", "env/Containerfile")) if k in kinds]
+    for c in ir["commands"]:
+        need += [f"fabric/{p}/system.md" for p in c["fabric"]]
+    for rel in need:
+        if not (layer / rel).is_file():
+            problems.append(f"missing {rel}")
+    for f in list((layer / "commands").glob("*.md")) + list((layer / "hops").glob("*.md")):
+        left = re.findall(r"\{\{[a-z_]+\}\}", f.read_text())
+        if left:
+            problems.append(f"{f.relative_to(layer)}: unfilled placeholders {sorted(set(left))}")
+    for f in layer.glob("forge/**/*.yml"):
+        try:
+            doc = yaml.safe_load(f.read_text())
+            if "jobs" not in doc or not (doc.get("on") or doc.get(True)):
+                problems.append(f"{f.relative_to(layer)}: not a workflow (no on/jobs)")
+        except yaml.YAMLError as e:
+            problems.append(f"{f.relative_to(layer)}: invalid YAML: {e}")
+    for f in layer.glob("adws/**/*.py"):
+        cp = run([sys.executable, "-m", "py_compile", str(f)], check=False)
+        if cp.returncode != 0:
+            problems.append(f"{f.relative_to(layer)}: does not compile: {cp.stderr.strip().splitlines()[-1]}")
+    app = (layer / ir["codebase"]["root"]).resolve()
+    if not app.exists():
+        problems.append(f"application checkout {app} not found")
+    else:
+        dirty = git(app, "status", "--porcelain")
+        if dirty:
+            problems.append(f"application working tree is not clean:\n{dirty}")
+        if layer.resolve() == app or app in layer.resolve().parents:
+            problems.append("layer lives inside the application tree")
+    return problems
+
+
+# ------------------------------------------------------------------------------------------
+# cli
+# ------------------------------------------------------------------------------------------
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="al", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("init"); p.add_argument("app", type=Path); p.add_argument("--layer", type=Path)
+    p = sub.add_parser("scout"); p.add_argument("app", type=Path); p.add_argument("-o", "--out", type=Path); p.add_argument("--json", action="store_true")
+    for name in ("compile", "gen", "check"):
+        p = sub.add_parser(name); p.add_argument("layer", type=Path)
+    a = ap.parse_args(argv)
+    try:
+        if a.cmd == "scout":
+            facts = scout(a.app)
+            text = json.dumps(facts, indent=2) if a.json else render_llm_txt(facts)
+            a.out.write_text(text) if a.out else print(text)
+        elif a.cmd == "init":
+            app = a.app.resolve()
+            layer = (a.layer or app.with_name(app.name + ".al")).resolve()
+            if layer == app or app in layer.parents:
+                raise AlError("the layer must not live inside the application tree")
+            layer.mkdir(parents=True, exist_ok=True)
+            if not (layer / "LLM.txt").exists():
+                (layer / "LLM.txt").write_text(render_llm_txt(scout(app)))
+            shutil.copy(REFERENCE, layer / "AL-DSL.llms.txt")
+            print(f"layer: {layer}\n  LLM.txt          draft — complete it with meta/commands/scout-codebase.md\n"
+                  f"  AL-DSL.llms.txt  language reference\nnext: author {layer}/agentic.rkt (meta/commands/author-layer.md), then `al gen {layer}`\n"
+                  f"codebase root to use in agentic.rkt: {os.path.relpath(app, layer)}")
+        elif a.cmd == "compile":
+            ir = compile_layer(a.layer.resolve())
+            print(json.dumps(ir, indent=2, sort_keys=True))
+        elif a.cmd == "gen":
+            layer = a.layer.resolve()
+            written = Generator(layer, compile_layer(layer)).generate()
+            print(f"generated {len(written)} files in {layer}")
+        elif a.cmd == "check":
+            problems = check_layer(a.layer.resolve())
+            for pr in problems:
+                print(f"PROBLEM: {pr}")
+            print("check: " + ("FAILED" if problems else "ok"))
+            return 1 if problems else 0
+    except AlError as e:
+        print(f"al: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

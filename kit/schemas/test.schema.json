@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "test.schema.json",
+  "title": "Test results",
+  "description": "Result of the test command: one object per validation command that was run, in run order. The run stops at the first failure, so at most the last element has passed = false.",
+  "type": "array",
+  "items": { "$ref": "#/$defs/result" },
+  "$defs": {
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "passed", "command", "error"],
+      "properties": {
+        "name": {
+          "description": "Name of the codebase command.",
+          "type": "string",
+          "minLength": 1
+        },
+        "passed": {
+          "description": "True when the command exited 0.",
+          "type": "boolean"
+        },
+        "command": {
+          "description": "The exact shell command that was run.",
+          "type": "string",
+          "minLength": 1
+        },
+        "error": {
+          "description": "Empty string on a pass; the relevant failure output otherwise.",
+          "type": "string"
+        }
+      },
+      "if": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
+      "then": { "properties": { "error": { "const": "" } } }
+    }
+  }
+}

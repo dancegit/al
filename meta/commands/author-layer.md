@@ -1,0 +1,63 @@
+---
+description: Author a compiling agentic.rkt for a codebase from its LLM.txt
+argument-hint: [llm-txt-path] [output-agentic-rkt-path] [piter-preferences]
+---
+
+# Author Layer
+
+Write one `#lang al` file that declares the agentic layer for the codebase described by an `LLM.txt`, then compile it and repair it until the compiler accepts it. The compiler is the feedback loop.
+
+## Variables
+
+LLM_TXT: $1
+OUTPUT: $2
+PREFERENCES: $3 (optional: PITER choices in plain language; empty means the defaults)
+DSL_REFERENCE: docs/AL-DSL.llms.txt
+COMPILE: tools/al compile $2 >/dev/null
+
+## Instructions
+
+- Read DSL_REFERENCE in full before writing. It is the whole language: any form, kind, field or value not in it does not exist. Its `full.rkt` example is the model for shape and ordering.
+- Read LLM_TXT in full. It is the only source of facts about the codebase. Do not read the application repository, and do not add a fact that LLM_TXT does not state.
+- The only file you write is OUTPUT: `#lang al`, then exactly one `(agentic-layer …)` form with `#:name`, `#:description` and `#:llm-txt`.
+- `(codebase …)` comes strictly from LLM_TXT: languages, default branch, description, package manager, readme; one `(cmd NAME "shell")` per row of its Commands table, with the table's name and the exact shell string, `#:description` from "proves what", and `#:timeout` of about three times the typical duration when that exceeds the default. `(paths …)` from Layout and Protected paths; one `(conditional-doc …)` per Conditional docs line.
+- Never declare a cmd, path or artefact glob marked `UNVERIFIED`; list it in your report instead.
+- `#:root` is the application checkout relative to OUTPUT's directory. Take it from PREFERENCES; if it is not given, use `../<name>` and say so in the report.
+- Options follow PREFERENCES where it speaks and the decision table where it does not. Omit a family entirely when its default is what you want.
+- Commands: `prime`, `classify` (json output), one planning command per class (`plan-chore`, `plan-bug`, `plan-feature`, plus `plan-patch`), `resolve-test`, `review` (json output), `document`, `commit`, `pull-request`; `e2e-test` when an e2e cmd exists. Hops: `run-plan` taking a plan, and `meta-command` and `meta-adw`.
+- Every planning command is `#:model-set heavy`, `#:output path`, and has `#:validation` listing the declared cmds that prove that class of work (lint, typecheck, test; e2e for bug and feature when it exists).
+- `#:focus` lines come from LLM_TXT Conventions and Work classes, placed on the command they govern (test placement on the planners, commit format on `commit`, proof requirements on `review`). Each is specific and checkable. Never write a generic line such as "follow best practices"; no focus line is better than a generic one.
+- Declare one `(expert …)` per subsystem that LLM_TXT's Layout shows as a distinct, recurring area; none for a small codebase.
+- ADWs: `plan-build` (classify, plan by class with `#:when`, build with the plan) and `sdlc` (compose `plan-build`, one check per validation cmd with `resolve-test` and collected artefacts, document, commit, review, ship). Add `zte` only when LLM_TXT's Work classes names classes safe for zero-touch, says the checks are fast and deterministic, and Artefacts is not `none`; restrict it to those classes.
+- Run COMPILE. On an error, fix exactly the clause it names, choosing from the alternatives it lists; never delete a clause to silence it. Repeat until it exits 0.
+
+## Decision Table
+
+| LLM.txt fact | DSL choice |
+| --- | --- |
+| Kind web-app or mobile; Artefacts lists images or video | `(artefact image …)` and `(artefact video …)` with those globs; an `e2e` cmd; an `e2e-test` command; `(check e2e … #:collect (…))`; review `#:artefacts` includes them |
+| Kind library or cli; Artefacts lists junit or coverage | `(artefact junit …)`, `(artefact coverage …)` with those globs; the test cmd carries the report flag; `(check test … #:collect (junit))` |
+| Any kind | `(artefact log)`, attached to every agent or auto review |
+| Forge none, or no forge information | `(forge none)`; `(prompt-input tasklist)`; `(trigger cron)` and `(trigger manual)`; `(review human)` writes its result to the layer |
+| Forge github or forgejo with a repo | that `(forge …)` with `#:repo` (and `#:host`); `(prompt-input issue)`; `(trigger webhook)`; keep `(trigger manual)` |
+| Toolchain lists nixpkgs attributes | `(environment worktree)` plus `(environment nix-devshell #:packages (…))` with exactly those attributes |
+| Toolchain lists system packages or services, or zero-touch is enabled | add `(environment podman …)`; `#:network none` when no check needs the network |
+| A command row says "needs network: yes" | never `#:network none` in an environment that runs it |
+| Protected paths present | `(paths #:protected (…))` with every one; auto review keeps `#:block-protected-paths #t` |
+| Zero-touch classes named, checks fast and deterministic, artefacts exist | `(review auto #:require-checks (…) #:allowed-classes (…) #:artefacts (…))`, `#:ship pr` unless PREFERENCES asks for merge or deploy; the `zte` adw |
+| Zero-touch `none`, or checks slow or flaky, or no artefacts | no auto review and no `zte`; `(review agent …)` at most |
+| A deploy cmd exists | declare the cmd; use `#:ship deploy` only when PREFERENCES asks for it |
+| Kind monorepo | cmds compose the per-package commands exactly as LLM_TXT gives them; one expert per package that has its own Layout entry |
+| Conditional docs present | one `(conditional-doc "path" "when …")` each |
+
+## Validation
+
+- `tools/al compile $2 >/dev/null` exits 0.
+- Every cmd name and shell string in OUTPUT appears in LLM_TXT's Commands table; every protected path of LLM_TXT appears in `#:protected`.
+- No auto review exists without `#:require-checks` and a `(check …)` before `(review)` in its adw.
+
+## Report
+
+- The path of OUTPUT and the final compile result, with the number of repair rounds.
+- The decisions taken, as "fact, then choice" bullets, including every default you relied on (`#:root` above all).
+- What was left out and why: `UNVERIFIED` items, preferences the language cannot express.
