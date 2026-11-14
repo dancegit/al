@@ -69,6 +69,7 @@ Declare any number. Default when omitted: `(agent claude-code)`.
   - `#:model-heavy` (string; default "claude-opus-5-5") — Model for the `heavy` model set (plan, implement, review).
   - `#:permission-mode` (acceptEdits | bypassPermissions | plan | default; default acceptEdits) — Headless permission mode. bypassPermissions only inside a podman environment.
   - `#:safe-mode` (boolean; default #t) — Run with --safe-mode so user CLAUDE.md, hooks, plugins and skills are not loaded.
+  - `#:allowed-tools` (list of string; default ("Read" "Glob" "Grep" "Edit" "Write" "Bash")) — Tools the headless agent may use without asking (passed as --allowedTools). Narrow it for read-only workflows.
   - `#:max-turns` (integer; default 60) — Turn cap per step.
   - `#:timeout` (integer; default 1800) — Wall-clock seconds per step.
 

@@ -235,6 +235,13 @@
             "additionalProperties": false,
             "description": "Claude Code in programmable mode (`claude -p`), stream-json output.",
             "properties": {
+              "allowedTools": {
+                "description": "Tools the headless agent may use without asking (passed as --allowedTools). Narrow it for read-only workflows.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "id": {
                 "type": "string"
               },
@@ -276,6 +283,7 @@
               }
             },
             "required": [
+              "allowedTools",
               "id",
               "kind",
               "maxTurns",

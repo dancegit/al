@@ -121,6 +121,8 @@ def _run_claude(layer: Any, agent: dict[str, Any], prompt: str, model_set: str, 
     argv = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose",
             "--model", _model(agent, model_set), "--permission-mode", str(agent["permissionMode"]),
             "--max-turns", str(agent["maxTurns"]), "--add-dir", str(layer.layer_dir)]
+    if agent.get("allowedTools"):
+        argv += ["--allowedTools", ",".join(agent["allowedTools"])]
     if agent.get("safeMode"):
         argv.append("--safe-mode")
     stdout = _run_process(env_stack.wrap_agent(argv), cwd=cwd, env=_claude_env(env_stack), stdin_text="",

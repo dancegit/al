@@ -35,6 +35,8 @@
   [permission-mode (enum acceptEdits bypassPermissions plan default) acceptEdits
    "Headless permission mode. bypassPermissions only inside a podman environment."]
   [safe-mode boolean #t "Run with --safe-mode so user CLAUDE.md, hooks, plugins and skills are not loaded."]
+  [allowed-tools (list-of string) ("Read" "Glob" "Grep" "Edit" "Write" "Bash")
+   "Tools the headless agent may use without asking (passed as --allowedTools). Narrow it for read-only workflows."]
   [max-turns integer 60 "Turn cap per step."]
   [timeout integer 1800 "Wall-clock seconds per step."])
 (define-kind agent codex
