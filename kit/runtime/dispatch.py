@@ -1,6 +1,6 @@
 """Pick the ADW for a prompt input and run it.
 
-  dispatch.py [PROMPT] [--source KIND:REF] [--adw NAME] [--dry-run]
+  dispatch.py [PROMPT] [--source KIND:REF] [--adw NAME] [--class C] [--dry-run]
 
 Used by CI workflows and triggers that do not know which ADW applies. The (PEP 723) script
 header is prepended by `al gen`.
@@ -19,6 +19,7 @@ def main() -> int:
     ap.add_argument("prompt", nargs="?")
     ap.add_argument("--source")
     ap.add_argument("--adw")
+    ap.add_argument("--class", dest="klass")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
@@ -29,7 +30,7 @@ def main() -> int:
     if not name:
         if a.source:
             request = inputs.resolve(layer, a.source, a.prompt)
-            name = inputs.pick_adw(layer, request, a.source)
+            name = inputs.pick_adw(layer, request)
         else:
             name = layer.ir["adws"][0]["name"]
     script = LAYER / "adws" / f"adw_{name}.py"
@@ -41,6 +42,8 @@ def main() -> int:
         cmd.append(a.prompt)
     if a.source:
         cmd += ["--source", a.source]
+    if a.klass:
+        cmd += ["--class", a.klass]
     if a.dry_run:
         cmd.append("--dry-run")
     print(f"dispatch: {name} <- {a.source or 'cli'}", flush=True)

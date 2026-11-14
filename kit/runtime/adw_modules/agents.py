@@ -118,14 +118,16 @@ def _model(agent: dict[str, Any], model_set: str) -> str:
 
 def _run_claude(layer: Any, agent: dict[str, Any], prompt: str, model_set: str, cwd: Path,
                 env_stack: Any, step: str, raw_path: Path) -> str:
-    argv = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose",
+    # The prompt goes in on stdin: templates start with `---` front matter, which the CLI would
+    # parse as an option, and long prompts would hit the argv size limit.
+    argv = ["claude", "-p", "--output-format", "stream-json", "--verbose",
             "--model", _model(agent, model_set), "--permission-mode", str(agent["permissionMode"]),
             "--max-turns", str(agent["maxTurns"]), "--add-dir", str(layer.layer_dir)]
     if agent.get("allowedTools"):
         argv += ["--allowedTools", ",".join(agent["allowedTools"])]
     if agent.get("safeMode"):
         argv.append("--safe-mode")
-    stdout = _run_process(env_stack.wrap_agent(argv), cwd=cwd, env=_claude_env(env_stack), stdin_text="",
+    stdout = _run_process(env_stack.wrap_agent(argv), cwd=cwd, env=_claude_env(env_stack), stdin_text=prompt,
                           timeout=int(agent["timeout"]), step=step, raw_path=raw_path)
     return parse_stream_json_result(stdout, step)
 

@@ -92,6 +92,7 @@ def test_claude_stream_json_and_error(make_layer, monkeypatch, tmp_path):
     executable.write_text(
         "#!/bin/sh\n"
         f"printf '%s\\n' \"$@\" > {record}\n"
+        f"cat > {record}.stdin\n"
         f"echo \"CLAUDECODE=${{CLAUDECODE:-unset}} PORT=${{ADW_PORT_0:-unset}}\" >> {record}\n"
         "echo 'not json diagnostics'\n"
         "printf '%s\\n' '{\"type\":\"assistant\",\"message\":{}}'\n"
@@ -106,7 +107,10 @@ def test_claude_stream_json_and_error(make_layer, monkeypatch, tmp_path):
     env.env["ADW_PORT_0"] = "9100"
     assert run_agent(layer, run_state, "text", "text", ["x"], "heavy", env) == "done"
     argv = record.read_text().splitlines()
-    assert argv[0] == "-p" and argv[1] == "# text"
+    # the prompt travels on stdin (templates start with `---`, which the CLI would read as an option)
+    assert argv[0] == "-p" and argv[1] == "--output-format"
+    assert not any(arg.startswith("---") or arg.startswith("# ") for arg in argv)
+    assert Path(f"{record}.stdin").read_text().startswith("# text")
     for flag, value in (("--output-format", "stream-json"), ("--model", "m-heavy"),
                         ("--permission-mode", "acceptEdits"), ("--max-turns", "7"), ("--add-dir", str(layer.layer_dir))):
         assert argv[argv.index(flag) + 1] == value

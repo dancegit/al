@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Live forge integration test against a throwaway local Forgejo (podman). No LLM: mock agent.
+#   SETUP    start Forgejo, create user + token + repo, push a tiny app, generate a layer
+#   TESTS    issue -> ADW -> PR (human review) · issue -> zero-touch -> PR merged via API
+#            · signed webhook delivery from Forgejo -> ADW
+#   TEARDOWN container, webhook server and temp dir removed (always)
+# Needs: podman, uv, racket, curl, jq, and the image codeberg.org/forgejo/forgejo:11 (pulled if missing).
+set -uo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PORT="${AL_FORGEJO_PORT:-3900}"; HOOK_PORT="${AL_HOOK_PORT:-8701}"
+NAME="al-forgejo-test"; IMAGE="codeberg.org/forgejo/forgejo:11"
+BOX_IMAGE="${AL_BOX_IMAGE:-docker.io/library/python:3.12-slim}"
+TMP="$(mktemp -d /tmp/al-forgejo.XXXXXX)"; BASE="http://127.0.0.1:$PORT"
+pass=0; fail=0; HOOK_PID=""
+ok()  { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
+bad() { fail=$((fail+1)); printf '  FAIL  %s\n' "$1"; [ -n "${2:-}" ] && printf '        %s\n' "$2"; }
+teardown() {
+  [ -n "$HOOK_PID" ] && kill "$HOOK_PID" 2>/dev/null
+  podman rm -f "$NAME" >/dev/null 2>&1
+  podman ps -a --format '{{.Names}}' | grep '^al-forge-demo-' | xargs -r podman rm -f >/dev/null 2>&1
+  [ "${AL_KEEP:-0}" = 1 ] && echo "kept: $TMP" || rm -rf "$TMP"
+}
+trap teardown EXIT
+api() { local method="$1" path="$2"; shift 2; curl -sS -X "$method" -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' "$BASE/api/v1$path" "$@"; }
+
+echo "SETUP"
+podman rm -f "$NAME" >/dev/null 2>&1
+podman image exists "$IMAGE" || podman pull -q "$IMAGE" >/dev/null || { echo "cannot obtain $IMAGE"; exit 2; }
+podman image exists "$BOX_IMAGE" || { echo "sandbox image $BOX_IMAGE not present locally (podman pull it once)"; exit 2; }
+podman run -d --name "$NAME" -p "127.0.0.1:$PORT:3000" \
+  -e FORGEJO__security__INSTALL_LOCK=true -e FORGEJO__database__DB_TYPE=sqlite3 \
+  -e FORGEJO__server__ROOT_URL="$BASE/" -e FORGEJO__webhook__ALLOWED_HOST_LIST='*' \
+  -e FORGEJO__log__LEVEL=Warn "$IMAGE" >/dev/null || { echo "forgejo did not start"; exit 2; }
+for _ in $(seq 1 60); do curl -fsS "$BASE/api/v1/version" >/dev/null 2>&1 && break; sleep 1; done
+curl -fsS "$BASE/api/v1/version" >/dev/null || { echo "forgejo not reachable"; exit 2; }
+podman exec -u git "$NAME" forgejo admin user create --username adw --password 'adw-Passw0rd!' --email adw@example.org --admin --must-change-password=false >/dev/null
+TOKEN="$(podman exec -u git "$NAME" forgejo admin user generate-access-token --username adw --token-name al --scopes all --raw | tail -1)"
+[ -n "$TOKEN" ] || { echo "no token"; exit 2; }
+api POST /user/repos -d '{"name":"demo","default_branch":"main"}' >/dev/null
+mkdir -p "$TMP/demo" && cd "$TMP/demo" && git init -q -b main
+printf 'def greet(name: str) -> str:\n    return f"hello {name}"\n' > app.py
+printf 'from app import greet\n\n\ndef test_greet() -> None:\n    assert greet("al") == "hello al"\n' > test_app.py
+printf '# demo\n\nTiny app used by the al forge test.\n' > README.md
+git add -A && git -c user.name=adw -c user.email=adw@example.org commit -qm "initial" \
+  && git remote add origin "http://adw:$TOKEN@127.0.0.1:$PORT/adw/demo.git" && git push -q origin main
+cd "$ROOT"
+LAYER="$TMP/demo.al"; mkdir -p "$LAYER/mock"
+cat > "$LAYER/agentic.rkt" <<EOF
+#lang al
+(agentic-layer #:name "forge-demo" #:description "Live Forgejo test layer"
+  (codebase #:root "../demo" #:languages (python)
+    (cmd test "python3 -c \"import app, test_app; test_app.test_greet(); print('tests ok')\""))
+  (forge forgejo #:host "$BASE" #:repo "adw/demo" #:token-env "AL_TEST_FORGEJO_TOKEN")
+  (agent mock)
+  (prompt-input issue #:labels () #:classify #f)
+  (trigger webhook #:port $HOOK_PORT #:bind "0.0.0.0" #:secret-env "AL_TEST_HOOK_SECRET" #:events (issue-opened issue-comment))
+  (trigger manual)
+  (environment worktree)
+  (environment podman #:base-image "$BOX_IMAGE" #:network none)
+  (review human)
+  (review auto #:id zero-touch #:ship merge #:require-checks (test) #:allowed-classes (chore bug))
+  (command plan #:template plan-chore #:output path #:validation (test))
+  (command review #:template review #:output json)
+  (hop implement #:template run-plan #:takes plan)
+  (adw sdlc #:description "Human-reviewed" #:trigger (webhook manual) #:environment (worktree podman) #:review human
+    (steps (run plan #:command plan #:args ("\$prompt")) (run build #:command implement #:args ("\$plan"))
+           (check test #:cmd test) (review) (ship)))
+  (adw zte #:description "Zero-touch" #:trigger (manual) #:environment (worktree podman) #:review zero-touch
+    (steps (run plan #:command plan #:args ("\$prompt")) (run build #:command implement #:args ("\$plan"))
+           (check test #:cmd test) (review) (ship))))
+EOF
+for adw in sdlc zte; do mkdir -p "$LAYER/mock/$adw"
+  printf '{"output": "added notes", "files": {"NOTES-${adw_id}.md": "notes for run ${adw_id}\\n"}}\n' > "$LAYER/mock/$adw/build.json"; done
+"$ROOT/tools/al" gen "$LAYER" >/dev/null && ok "layer generated for forgejo forge" || { bad "layer generation"; exit 1; }
+export AL_TEST_FORGEJO_TOKEN="$TOKEN" AL_TEST_HOOK_SECRET="s3cret-$RANDOM"
+fingerprint() { git -C "$TMP/demo" rev-parse HEAD; git -C "$TMP/demo" branch --show-current; git -C "$TMP/demo" status --porcelain; }
+before="$(fingerprint)"
+
+echo "TEST 1  issue -> ADW -> pull request (human review)"
+api POST /repos/adw/demo/issues -d '{"title":"Add release notes file","body":"adw: sdlc\n\nPlease add a notes file."}' >/dev/null
+(cd "$LAYER" && uv run -q adws/dispatch.py --source issue:1 > "$TMP/run1.log" 2>&1) && ok "ADW run for issue #1 passed" || bad "ADW run for issue #1" "$(tail -5 "$TMP/run1.log")"
+prs="$(api GET '/repos/adw/demo/pulls?state=open')"
+[ "$(echo "$prs" | jq 'length')" = 1 ] && ok "one open pull request on the forge: $(echo "$prs" | jq -r '.[0].title')" || bad "open PR count" "$prs"
+echo "$prs" | jq -e '.[0].base.ref == "main" and (.[0].body | length > 20)' >/dev/null && ok "PR targets main and carries a body (plan, checks, verdict)" || bad "PR base/body"
+api GET /repos/adw/demo/issues/1/comments | jq -e 'length >= 2 and all(.[]; .body | startswith("[ADW-BOT]"))' >/dev/null \
+  && ok "issue #1 has start + finish comments carrying the bot marker" || bad "issue comments" "$(api GET /repos/adw/demo/issues/1/comments | jq -c '[.[].body[0:60]]')"
+
+echo "TEST 2  issue -> zero-touch -> merged through the forge API"
+api POST /repos/adw/demo/issues -d '{"title":"Add second notes file","body":"adw: zte\n\nchore: add another notes file.","labels":[]}' >/dev/null
+(cd "$LAYER" && uv run -q adws/dispatch.py --adw zte --source issue:2 --class chore > "$TMP/run2.log" 2>&1) || true
+grep -q 'gate: action merge' "$TMP/run2.log" && ok "gate decided merge (checks ran in the container)" || bad "gate decision" "$(grep -E 'gate|failed' "$TMP/run2.log" | tail -4)"
+merged="$(api GET '/repos/adw/demo/pulls?state=closed' | jq '[.[] | select(.merged)] | length')"
+[ "$merged" = 1 ] && ok "pull request merged on the forge without a human" || bad "merged PR count = $merged" "$(tail -6 "$TMP/run2.log")"
+api GET '/repos/adw/demo/contents?ref=main' | jq -e '[.[].name] | any(startswith("NOTES-"))' >/dev/null && ok "main on the forge contains the shipped file" || bad "shipped file on main"
+
+echo "TEST 3  Forgejo delivers a signed webhook -> ADW starts"
+(cd "$LAYER" && exec uv run -q adws/triggers/trigger_webhook.py > "$TMP/hook.log" 2>&1) & HOOK_PID=$!
+for _ in $(seq 1 40); do curl -fsS "http://127.0.0.1:$HOOK_PORT/health" >/dev/null 2>&1 && break; sleep 0.5; done
+curl -fsS "http://127.0.0.1:$HOOK_PORT/health" >/dev/null && ok "webhook trigger is up" || bad "webhook trigger did not start" "$(tail -3 "$TMP/hook.log")"
+code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'X-Forgejo-Event: issues' -H 'X-Forgejo-Signature: 00' -d '{"action":"opened"}' "http://127.0.0.1:$HOOK_PORT/webhook")"
+[ "$code" = 401 ] && ok "forged signature rejected (401)" || bad "bad signature returned $code"
+api POST /repos/adw/demo/hooks -d "{\"type\":\"forgejo\",\"active\":true,\"events\":[\"issues\",\"issue_comment\"],\"config\":{\"url\":\"http://host.containers.internal:$HOOK_PORT/webhook\",\"content_type\":\"json\",\"secret\":\"$AL_TEST_HOOK_SECRET\"}}" >/dev/null
+N3="$(api POST /repos/adw/demo/issues -d '{"title":"Add third notes file","body":"adw: sdlc\n\nvia webhook"}' | jq -r .number)"
+seen=0; for _ in $(seq 1 90); do
+  n="$(api GET "/repos/adw/demo/issues/$N3/comments" | jq '[.[] | select(.body | startswith("[ADW-BOT]"))] | length' 2>/dev/null)"
+  [ "${n:-0}" -ge 2 ] && { seen=1; break; }; sleep 1; done
+[ "$seen" = 1 ] && ok "webhook-started ADW commented on issue #$N3 (start + finish)" || bad "no ADW comments on issue #$N3" "$(tail -5 "$TMP/hook.log")"
+[ "$(api GET '/repos/adw/demo/pulls?state=open' | jq 'length')" = 2 ] && ok "second open PR created by the webhook-started run" || bad "open PR count after webhook"
+
+echo "INVARIANT"
+[ "$before" = "$(fingerprint)" ] && ok "application checkout untouched (HEAD, branch, status)" || bad "application checkout changed"
+echo; echo "forgejo live: $pass passed, $fail failed"; [ "$fail" -eq 0 ]
