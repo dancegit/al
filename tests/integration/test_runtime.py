@@ -145,9 +145,6 @@ def test_killed_run_leaks_nothing_permanent(layer):
     # the fixture teardown removes that worktree, its branch and the orphaned `sleep`, then checks the testbed
 
 
-@pytest.mark.xfail(strict=True, reason="kit/runtime envs.lease_ports: a SIGKILLed run's port block stays in "
-                   "agents/.ports.json for as long as its agents/<id>/state.json exists (i.e. forever: the state "
-                   "also stays `running`); leases are not tied to a live process the way slots are")
 def test_killed_run_port_lease_is_reclaimed(layer):
     lay, dead = _kill_mid_check(layer)
     assert dead["ports"], "the nap run leased a port block"

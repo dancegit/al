@@ -51,11 +51,11 @@ steps = [
 [[scene]]
 id = "05-zero-touch-opus"
 title = "Zero-touch on flask with Claude Opus 5.5"
-subtitle = "Replay of real run 11bf99ac: 3 min 04 s, $0.68, one attempt — plan, build, real checks, review, gate, ship"
+subtitle = "Replay of real run 1bf4bd76: 3 min 17 s, $0.71, one attempt — plan, build, real checks, review, gate, ship"
 gap = 0.5
 hold = 2.5
 steps = [
-  { run = "while IFS= read -r l; do printf '%s\\n' \"$l\" | cut -c1-108; sleep 0.3; done < docs/demo/logs/flask-zte-opus-11bf99ac.log", show = "uv run flask.al/adws/adw_zte.py \"Add a test asserting that a new Flask app registers the default static route\" --class chore", note = "REPLAY of the saved log of a real run (docs/demo/logs/flask-zte-opus-11bf99ac.log)" },
+  { run = "while IFS= read -r l; do printf '%s\\n' \"$l\" | cut -c1-108; sleep 0.3; done < docs/demo/logs/flask-zte-opus-1bf4bd76.log", show = "uv run flask.al/adws/adw_zte.py \"Add a test asserting that Flask.debug is False on a newly created app\" --class chore", note = "REPLAY of the saved log of a real run (docs/demo/logs/flask-zte-opus-1bf4bd76.log)" },
 ]
 
 [[scene]]
@@ -95,7 +95,7 @@ subtitle = "Compiler rules, runtime, and setup/teardown integration tests on the
 gap = 0.3
 steps = [
   { run = "raco test racket/al/tests/compiler-test.rkt 2>&1 | tail -1", show = "raco test racket/al/tests" },
-  { run = "cd kit/runtime && uv run -q --with pytest pytest -q -p no:cacheprovider 2>&1 | tail -2", show = "cd kit/runtime && pytest -q" },
-  { run = "uv run -q --with pytest --with pyyaml --with jsonschema pytest tests/integration -q -p no:cacheprovider 2>&1 | tail -6 | cut -c1-108", show = "pytest tests/integration -q   # testbeds pinned; every test restores them" },
+  { run = "cd kit/runtime && uv run -q --with pytest pytest -q -p no:cacheprovider 2>&1 | tail -1", show = "cd kit/runtime && pytest -q" },
+  { run = "uv run -q --with pytest --with pyyaml --with jsonschema pytest tests/integration -q -p no:cacheprovider 2>&1 | tail -1 | cut -c1-108", show = "pytest tests/integration -q   # testbeds pinned; every test restores them" },
   { run = "tools/demo/prep.sh clean; for b in flask ripgrep gin express jq; do printf '%s:%s ' $b $(git -C testbeds/$b status --short | wc -l); done; echo", show = "for b in flask ripgrep gin express jq; do git -C testbeds/$b status --short | wc -l; done", note = "after everything: all five application checkouts are clean" },
 ]

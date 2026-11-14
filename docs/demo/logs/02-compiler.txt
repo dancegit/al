@@ -1,0 +1,15 @@
+$ racket dangling-ref.rkt
+  (command plan #:template plan-chore)
+  (adw broken
+    (steps
+      (run plan #:command plan)
+      (check unit #:cmd tests))))
+racket/al/tests/fixtures/dangling-ref.rkt:6:2: al: (adw broken) step (check unit) #:cmd: `tests` is not a decl
+ared codebase cmd; declared: test
+  in: (adw broken (steps (run plan #:command plan) (check unit #:cmd tests)))
+$ al compile unsafe.rkt   # zero-touch workflow with the container removed
+al: agentic.rkt does not compile:
+/tmp/al-demo/unsafe.rkt:111:2: al: (adw zte): review `zero-touch` ships without a human, so the ADW's #:enviro
+nment must include a podman option (declare (environment podman …) and list its id)
+$ raco test racket/al/tests
+11 tests passed

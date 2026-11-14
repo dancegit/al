@@ -1,0 +1,22 @@
+$ grep -E 'concurrency|podman|agent' scale.al/agentic.rkt
+  (concurrency slots #:max-runs 2)
+  (agent custom #:command "cat >/dev/null; test -f /run/.containerenv && echo agent-inside-container || echo
+  (environment podman #:base-image "docker.io/library/python:3.12-slim" #:network none #:agent-inside #t)
+  (adw sandboxed #:environment (worktree podman)
+$ for i in 1 2 3; do uv run scale.al/adws/adw_sandboxed.py "run $i" & done; wait
+run 3 | [adw 48e48e1e] container started: al-scale-demo-48e48e1e
+run 3 | [adw 48e48e1e] step agent (run) passed: agent-inside-container
+run 3 | [adw 48e48e1e] step proof (check) passed: exit 0, log agents/48e48e1e/checks/proof.1.log
+run 3 | status:    passed
+run 2 | [adw 7ee2d75e] container started: al-scale-demo-7ee2d75e
+run 2 | [adw 7ee2d75e] step agent (run) passed: agent-inside-container
+run 2 | [adw 7ee2d75e] step proof (check) passed: exit 0, log agents/7ee2d75e/checks/proof.1.log
+run 2 | status:    passed
+run 1 | [slots] adw af051b57: waiting for a free runs slot (2 in use)
+run 1 | [adw af051b57] container started: al-scale-demo-af051b57
+run 1 | [adw af051b57] step agent (run) passed: agent-inside-container
+run 1 | [adw af051b57] step proof (check) passed: exit 0, log agents/af051b57/checks/proof.1.log
+run 1 | status:    passed
+$ podman ps -a | grep -c al-scale-demo; git -C testbeds/flask status --short | wc -l
+0
+0

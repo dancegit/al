@@ -1,0 +1,77 @@
+$ al scout testbeds/gin        # deterministic draft of LLM.txt
+## Commands
+
+| name | shell command from repo root | proves what | typical duration | needs network? |
+|---|---|---|---|---|
+| build | `go build ./...` | all packages compile | UNVERIFIED | no |
+| test | `go test ./...` | all package tests pass | UNVERIFIED | no |
+| lint | `go vet ./...` | no vet findings | UNVERIFIED | no |
+| format | `make fmt` | make target `fmt` | UNVERIFIED | no |
+
+$ head -22 gin.al/agentic.rkt   # written by an LLM from LLM.txt + the DSL reference
+#lang al
+;; Agentic layer for gin-gonic/gin, authored from LLM.txt.
+;; PITER: GitHub issues -> forge CI workflow or manual -> git worktree -> human pull request. Agent: Codex.
+(agentic-layer #:name "gin" #:description "Agentic layer for the Gin HTTP web framework (Go library)"
+               #:llm-txt "LLM.txt"
+  (codebase #:root "../../testbeds/gin" #:languages (go) #:default-branch "master"
+            #:description "Gin is an HTTP web framework written in Go, imported by other Go programs as the mo
+dule github.com/gin-gonic/gin. Root package gin (router, context, middleware) plus sub-packages binding, rende
+r, codec/json, ginS and internal. Shipped by pushing a git tag, which runs GoReleaser in GitHub Actions."
+            #:readme "README.md"
+    (cmd lint "make vet"
+         #:description "go vet reports nothing for all packages except /examples/")
+    (cmd format "make fmt"
+         #:description "rewrites every *.go file with gofmt -s -w; proves nothing, it changes files")
+    (cmd test "make test"
+         #:description "tests of packages gin, ginS, binding, render pass with go test -v -covermode=count; wr
+ites coverage.out")
+    (paths #:source ("." "binding" "render" "codec/json" "internal/bytesconv" "internal/fs" "ginS")
+           #:tests ("." "binding" "render" "internal/bytesconv" "internal/fs" "ginS" "testdata")
+           #:docs ("docs")
+           #:protected (".github" ".goreleaser.yaml" ".golangci.yml" "codecov.yml" "LICENSE" "auth.go"
+                        "testdata/certificate" "testdata/protoexample/test.pb.go"))
+    (conditional-doc "docs/doc.md" "When adding or changing a feature (it must be documented there), or when w
+orking with the build tags jsoniter, go_json, sonic, nomsgpack")
+    (conditional-doc "CONTRIBUTING.md" "When preparing a pull request")
+    (conditional-doc ".github/PULL_REQUEST_TEMPLATE.md" "When writing a pull request description")
+$ al gen gin.al && ls gin.al gin.al/commands gin.al/adws
+generated 45 files in /tmp/al-demo/gin.al
+/tmp/al-demo/gin.al:
+adws
+agentic-layer.json
+agentic.rkt
+AL-DSL.llms.txt
+bin
+commands
+conditional_docs.md
+docs
+experts
+forge
+hops
+LLM.txt
+mock
+README.md
+specs
+
+/tmp/al-demo/gin.al/adws:
+adw_modules
+adw_plan-build.py
+adw_sdlc.py
+dispatch.py
+
+/tmp/al-demo/gin.al/commands:
+classify.md
+commit.md
+document.md
+plan-bug.md
+plan-chore.md
+plan-feature.md
+plan-patch.md
+prime.md
+pull-request.md
+resolve-test.md
+review.md
+$ al check gin.al && git -C testbeds/gin status --short | wc -l
+check: ok
+0

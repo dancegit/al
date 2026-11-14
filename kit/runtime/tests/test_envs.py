@@ -68,7 +68,10 @@ def test_nix_and_podman_argv_shapes(make_layer: object, monkeypatch: object) -> 
         {"id": "box", "kind": "podman", "agentInside": False, "baseImage": "debian", "cpus": "2", "id": "box", "memory": "4g", "network": "slirp", "packages": [], "setup": [], "status": "stable"},
     ]}))
     calls = []
+    real_run = envs.subprocess.run
     def fake_run(argv, **kwargs):
+        if argv[0] != "podman":  # a sandboxed worktree is real git state (its .git file is verified)
+            return real_run(argv, **kwargs)
         calls.append((argv, kwargs))
         return SimpleNamespace(returncode=1 if argv[1:3] == ["image", "exists"] else 0, stderr="", stdout="")
     monkeypatch.setattr(envs.subprocess, "run", fake_run)
@@ -88,7 +91,7 @@ def test_nix_and_podman_argv_shapes(make_layer: object, monkeypatch: object) -> 
     start = starts[0]
     assert "--userns=keep-id" in start and "--network" not in start and "--memory" in start and "--cpus" in start
     assert f"{state.worktree}:{state.worktree}" in start                    # worktree at its host path
-    assert f"{layer.app_root / '.git'}:{layer.app_root / '.git'}" in start  # git metadata, not the app tree
+    assert f"{layer.app_root / '.git'}:{layer.app_root / '.git'}:ro" in start  # git metadata, read-only, not the app tree
     assert not any(arg.startswith(f"{layer.app_root}:") for arg in start)   # the app working tree is never mounted
     assert start[-3:] == ["al-test-layer:latest", "sleep", "infinity"]
     assert argv[:2] == ["podman", "exec"] and f"ADW_PORT_0={state.ports[0]}" in argv
@@ -96,7 +99,7 @@ def test_nix_and_podman_argv_shapes(make_layer: object, monkeypatch: object) -> 
     assert stack.wrap_agent(["agent", "--version"])[0:3] == ["nix", "develop", f"path:{layer.layer_dir / 'env'}"]
     assert envs.EnvStack(layer, state, [layer.option("environments", "nix")]).wrap("true")[:3] == ["nix", "develop", f"path:{layer.layer_dir / 'env'}"]
     stack.teardown(success=True)
-    assert ["podman", "rm", "-f", "al-test-layer-1234abcd"] in [call[0] for call in calls]
+    assert ["podman", "rm", "-f", "-t", "0", "al-test-layer-1234abcd"] in [call[0] for call in calls]
 
 
 def _podman_layer(make_layer, **podman):

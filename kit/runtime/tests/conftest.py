@@ -63,3 +63,7 @@ def make_layer(tmp_path: Path, app_repo: Path):
         return layer
     return factory
 
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "podman: needs a working rootless podman and a local base image")

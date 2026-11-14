@@ -1,0 +1,36 @@
+$ for b in flask ripgrep gin express jq; do al gen $b.al; al check $b.al; done
+flask    generated 46 files in flask.al
+check: ok
+ripgrep  generated 46 files in ripgrep.al
+check: ok
+gin      generated 45 files in gin.al
+check: ok
+express  generated 48 files in express.al
+check: ok
+jq       generated 42 files in jq.al
+check: ok
+$ grep workflows ripgrep.al/README.md   # PITER choices per workflow
+| `plan-build` | issue | webhook, manual | worktree → podman | agent | classify → plan-chore → plan-bug → pl
+| `sdlc` | issue | webhook, manual | worktree → podman | agent | classify → plan-chore → plan-bug → plan-fea
+$ uv run ripgrep.al/adws/adw_plan-build.py 'Document the --hidden flag in the FAQ'
+[adw e6b9db68] plan-build start: class=chore dry_run=False
+[adw e6b9db68] step classify (run) start
+[adw e6b9db68] step classify (run) passed: {"class":"chore","adw":"","model_set":"base","slug":"mock-task"}
+[adw e6b9db68] step plan-chore (run) start
+[adw e6b9db68] step plan-chore (run) passed: ripgrep.al/specs/plan-e6b9db68-plan-chore.md
+[adw e6b9db68] step plan-bug (run) skipped: when=class-bug, class=chore
+[adw e6b9db68] step plan-feature (run) skipped: when=class-feature, class=chore
+[adw e6b9db68] step build (run) start
+[adw e6b9db68] step build (run) passed: mock: build ok
+[adw e6b9db68] worktree removed: ripgrep.al/trees/e6b9db68
+[adw e6b9db68] branch deleted (nothing unshipped on it): chore/e6b9db68-document-the-hidden-flag-in-the
+=== ADW summary ===
+adw:       plan-build e6b9db68
+status:    passed
+branch:    chore/e6b9db68-document-the-hidden-flag-in-the
+plan:      ripgrep.al/specs/plan-e6b9db68-plan-chore.md
+checks:    none
+review:    none
+ship:      none
+artefacts: 0
+state:     ripgrep.al/agents/e6b9db68/state.json

@@ -172,3 +172,21 @@ default environment and what makes N agents on one repository safe. On top of th
   branches that hold nothing unshipped are deleted with their worktree.
 
 Not built yet: `(parallel …)` steps that fan one task out to several agents in sibling worktrees.
+
+## What the sandbox guarantees
+
+A run with a podman option is a *sandboxed run*. The container sees the worktree, the app's `.git`
+**read-only**, its own worktree admin directory and a per-run object quarantine — nothing else of
+the host. Consequences, each covered by a test against real podman:
+
+- Code in the container cannot write the app's hooks or config, move its branches, or add objects
+  to its object store. The worktree is detached; only the host creates the run's branch.
+- Every git command the host runs against that worktree first freezes the container and verifies
+  the git metadata the container could have rewritten, then runs with pinned paths and hooks off.
+  An agent that runs on the host is wrapped in the same guard for the length of its step.
+- Shipping fixes one commit, imports exactly its objects through `git index-pack --strict`, gates
+  on that commit and ships that commit. Local ref updates are fast-forward-only with an old-value check.
+
+`al verify` is the counterpart for truth: the compiler proves the layer is coherent, `verify` runs
+every declared codebase command in its declared environment on a clean worktree and proves the
+descriptor is true.

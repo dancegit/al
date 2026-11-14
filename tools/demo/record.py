@@ -181,8 +181,10 @@ def render(scene: dict, recorded: list[dict], frames_dir: Path) -> int:
                 burst = 0
             lines.append(line)
             burst += 1
-            if burst % 2 == 0:                     # at most 2 new lines per frame
+            if len(events) > 45:                   # long output: one line per frame
                 emit(1)
+            else:                                  # short output arriving in a burst: readable pace
+                emit(2)
         emit(int(FPS * float(scene.get("hold", 1.6))))
         lines.append("")
     emit(int(FPS * 1.2))

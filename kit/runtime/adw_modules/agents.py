@@ -6,11 +6,11 @@ import re
 import shutil
 import signal
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
-from . import storage
-from . import slots
+from . import gitsafe, slots, storage
 from .errors import LayerError, StepFailed
 from .templates import render
 
@@ -216,7 +216,26 @@ def _git(worktree: Path, args: list[str], step: str) -> None:
         raise StepFailed(step, f"git {' '.join(args)} failed: {(result.stderr or result.stdout).strip()}")
 
 
-def _commit_all(worktree: Path, step: str) -> None:
+@contextmanager
+def _host_agent_guard(env_stack: Any) -> Iterator[None]:
+    """An agent that runs on the HOST in a sandboxed run's worktree runs its own git there and
+    trusts the worktree's `.git` file, which code in the container can rewrite. So before the
+    agent starts, the git metadata is verified, and the container stays frozen until it is done."""
+    sandbox = getattr(env_stack, "sandbox", None)
+    if sandbox is None or getattr(env_stack, "agent_inside", False):
+        yield
+        return
+    with gitsafe.session(sandbox):
+        yield
+
+
+def _commit_all(worktree: Path, step: str, env_stack: Any = None) -> None:
+    sandbox = getattr(env_stack, "sandbox", None)
+    if sandbox is not None:                      # sandboxed run: never trust the worktree's .git file
+        gitsafe.run(sandbox, ["add", "-A"], step)
+        if gitsafe.run(sandbox, ["status", "--porcelain"], step).stdout.strip():
+            gitsafe.run(sandbox, ["-c", "user.name=adw", "-c", "user.email=adw@localhost", "commit", "-m", f"adw: {step}"], step)
+        return
     _git(worktree, ["add", "-A"], step)
     status = subprocess.run(["git", "-C", str(worktree), "status", "--porcelain"], capture_output=True,
                             text=True, timeout=GIT_TIMEOUT, check=True)
@@ -241,7 +260,7 @@ def _synthesise(layer: Any, state: Any, step: str, command: dict[str, Any]) -> s
 
 
 def _run_mock(layer: Any, state: Any, agent: dict[str, Any], step: str, command: dict[str, Any],
-              args: list[str], raw_path: Path) -> str:
+              args: list[str], raw_path: Path, env_stack: Any = None) -> str:
     script = find_mock_script(layer, state, agent, step)
     if script is None:
         output = _synthesise(layer, state, step, command)
@@ -255,7 +274,7 @@ def _run_mock(layer: Any, state: Any, agent: dict[str, Any], step: str, command:
     _write_files(Path(layer.layer_dir), data.get("layer_files", {}), variables, args, step)
     _delete_paths(worktree, data.get("delete", []), step)
     if data.get("commit"):
-        _commit_all(worktree, step)
+        _commit_all(worktree, step, env_stack)
     return render(data.get("output", f"mock: {step} ok"), variables, args)
 
 
@@ -346,15 +365,15 @@ def run_agent(layer: Any, state: Any, step_name: str, command_name: str, args: l
     kind = "mock" if state.dry_run else agent["kind"]
     cwd = work_dir(layer, state)
     if kind == "mock":
-        output = _run_mock(layer, state, agent, step_name, command, args, raw_path)
+        output = _run_mock(layer, state, agent, step_name, command, args, raw_path, env_stack)
     elif kind == "claude-code":
-        with slots.slot(layer, "agents", f"adw {state.adw_id} step {step_name}"):
+        with slots.slot(layer, "agents", f"adw {state.adw_id} step {step_name}"), _host_agent_guard(env_stack):
             output = _run_claude(layer, agent, prompt, model_set, cwd, env_stack, step_name, raw_path)
     elif kind == "codex":
-        with slots.slot(layer, "agents", f"adw {state.adw_id} step {step_name}"):
+        with slots.slot(layer, "agents", f"adw {state.adw_id} step {step_name}"), _host_agent_guard(env_stack):
             output = _run_codex(agent, prompt, model_set, cwd, env_stack, step_name, raw_path)
     elif kind == "custom":
-        with slots.slot(layer, "agents", f"adw {state.adw_id} step {step_name}"):
+        with slots.slot(layer, "agents", f"adw {state.adw_id} step {step_name}"), _host_agent_guard(env_stack):
             output = _run_custom(agent, prompt, model_set, cwd, env_stack, step_name, raw_path)
     else:
         raise LayerError(f"Unknown agent kind: {kind!r}")

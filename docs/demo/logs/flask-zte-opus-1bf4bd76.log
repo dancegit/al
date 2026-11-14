@@ -1,0 +1,42 @@
+[adw 1bf4bd76] zte start: class=chore dry_run=False
+[adw 1bf4bd76] step classify (run) start
+[adw 1bf4bd76] step classify (run) passed: {"class":"chore","adw":"","model_set":"base","slug":"test-debug-false-default-app"}
+[adw 1bf4bd76] step plan-chore (run) start
+[adw 1bf4bd76] step plan-chore (run) passed: layers/flask/specs/chore-1bf4bd76-test-default-debug-false.md
+[adw 1bf4bd76] step plan-bug (run) skipped: when=class-bug, class=chore
+[adw 1bf4bd76] step plan-feature (run) skipped: when=class-feature, class=chore
+[adw 1bf4bd76] step build (run) start
+[adw 1bf4bd76] step build (run) passed: I added a test that checks `Flask.debug` is `False` by default, and all validation commands pass. No deviations, nothing marked `REQUIRES HUMAN`, and nothing co
+[adw 1bf4bd76] step lint (check) start
+[adw 1bf4bd76] container started: al-flask-1bf4bd76
+[adw 1bf4bd76] step lint (check) passed: exit 0, log agents/1bf4bd76/checks/lint.1.log
+[adw 1bf4bd76] step typecheck (check) start
+[adw 1bf4bd76] step typecheck (check) passed: exit 0, log agents/1bf4bd76/checks/typecheck.1.log
+[adw 1bf4bd76] step test (check) start
+[adw 1bf4bd76] step test (check) passed: exit 0, log agents/1bf4bd76/checks/test.1.log
+[adw 1bf4bd76] step commit (run) start
+[adw 1bf4bd76] step commit (run) passed: Committed `29858e80db0b3483344a6107926f1bbc57bdec67` with subject `chore: add test that Flask.debug defaults to false`.
+[adw 1bf4bd76] step review (review) start
+[adw 1bf4bd76] review verdict: pass after 1 round(s): The diff adds one test, `test_debug_default_false`, at tests/test_config.py:217-220. It sits between `test_session_lifetime` and `test_get_namespace` and asserts that `app.debug is False` and `app.con
+[adw 1bf4bd76] step review (review) passed: ok
+[adw 1bf4bd76] step ship (ship) start
+[adw 1bf4bd76] gate: lint exit 0
+[adw 1bf4bd76] gate: typecheck exit 0
+[adw 1bf4bd76] gate: test exit 0
+[adw 1bf4bd76] gate: action merge
+[adw 1bf4bd76] ship: main is checked out in a working tree, so the result is on al/ship/main; run `git merge --ff-only al/ship/main` in the app to take it
+[adw 1bf4bd76] step ship (ship) passed: ok
+[adw 1bf4bd76] container removed: al-flask-1bf4bd76
+[adw 1bf4bd76] worktree removed: layers/flask/trees/1bf4bd76
+[adw 1bf4bd76] branch deleted (nothing unshipped on it): chore/1bf4bd76-add-a-test-asserting-that-flaskdebug
+=== ADW summary ===
+adw:       zte 1bf4bd76
+status:    passed
+branch:    chore/1bf4bd76-add-a-test-asserting-that-flaskdebug
+plan:      layers/flask/specs/chore-1bf4bd76-test-default-debug-false.md
+checks:    lint=0, typecheck=0, test=0
+review:    pass (auto)
+ship:      merge -> al/ship/main (shipped=False)
+artefacts: 4
+state:     layers/flask/agents/1bf4bd76/state.json
+exit=0

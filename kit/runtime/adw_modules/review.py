@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import posixpath
 import subprocess
 from pathlib import Path
 from typing import Any
 
-from . import agents, artefacts, steps
+from . import agents, artefacts, gitsafe, steps
 from .errors import LayerError, StepFailed
 
 GIT_TIMEOUT = 120
@@ -100,7 +101,7 @@ def run_review(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> 
         rounds.append({"round": round_number, "reviewers": verdicts, "verdict": verdict})
         state.review = {"verdict": verdict, "rounds": rounds, "mode": kind}
         if state.worktree:
-            state.review["tree"] = tree_fingerprint(state.worktree)
+            state.review["tree"] = tree_fingerprint(state.worktree, getattr(env_stack, "sandbox", None))
         state.save(layer.layer_dir)
         blockers = [issue for issue in verdict["issues"] if issue["severity"] == "blocker"]
         if verdict["success"] or not blockers or not can_patch or round_number > max_retries:
@@ -191,7 +192,9 @@ def parse_numstat(text: str) -> tuple[int, list[str]]:
     return total, files
 
 
-def _git_stdout(worktree: str, args: list[str]) -> str:
+def _git_stdout(worktree: str, args: list[str], sandbox: gitsafe.Sandbox | None = None) -> str:
+    if sandbox is not None:
+        return gitsafe.run(sandbox, args, "gate", timeout=GIT_TIMEOUT).stdout
     try:
         result = subprocess.run(["git", "-C", worktree, *args], capture_output=True, text=True,
                                 timeout=GIT_TIMEOUT, check=False)
@@ -216,21 +219,34 @@ def _rerun_required(layer: Any, state: Any, option: dict[str, Any], env_stack: A
     return exits
 
 
-def tree_fingerprint(worktree: str) -> str:
+def tree_fingerprint(worktree: str, sandbox: gitsafe.Sandbox | None = None) -> str:
     """Tree hash of everything currently in the worktree (staged via `add -A`, nothing committed)."""
-    _git_stdout(worktree, ["add", "-A"])
-    return _git_stdout(worktree, ["write-tree"]).strip()
+    with gitsafe.session(sandbox) if sandbox is not None else contextlib.nullcontext():
+        _git_stdout(worktree, ["add", "-A"], sandbox)
+        return _git_stdout(worktree, ["write-tree"], sandbox).strip()
 
 
-def gather_facts(layer: Any, state: Any, option: dict[str, Any], env_stack: Any, base: str | None = None) -> dict[str, Any]:
+def gather_facts(layer: Any, state: Any, option: dict[str, Any], env_stack: Any, base: str | None = None,
+                 head: str | None = None) -> dict[str, Any]:
     """Facts for `decide`, taken from the tree that will actually ship: `base` is the ref the
-    result lands on (already merged into HEAD by ship), so the diff is exactly what shipping adds."""
+    result lands on (already merged into HEAD by ship), so the diff is exactly what shipping adds.
+
+    `head` (sandboxed runs) is the exact commit ship will publish, already imported into the
+    app's object store: the diff is then computed in the app repository, from objects the
+    container cannot alter, and nothing uncommitted can ship so there is no pending diff."""
     if not state.worktree:
         raise StepFailed("gate", "the gate needs a worktree")
-    committed_lines, committed = parse_numstat(
-        _git_stdout(state.worktree, ["diff", "--numstat", "-z", "--no-renames", f"{base or layer.default_branch}...HEAD"]))
-    pending_lines, pending = parse_numstat(
-        _git_stdout(state.worktree, ["diff", "--numstat", "-z", "--no-renames", "HEAD"]))
+    sandbox = getattr(env_stack, "sandbox", None)
+    if head is not None and sandbox is not None:
+        target = base or f"refs/heads/{layer.default_branch}"
+        committed_lines, committed = parse_numstat(gitsafe.run_app(
+            sandbox, ["diff", "--numstat", "-z", "--no-renames", f"{target}...{head}"], "gate").stdout)
+        pending_lines, pending = 0, []
+    else:
+        committed_lines, committed = parse_numstat(
+            _git_stdout(state.worktree, ["diff", "--numstat", "-z", "--no-renames", f"{base or layer.default_branch}...HEAD"]))
+        pending_lines, pending = parse_numstat(
+            _git_stdout(state.worktree, ["diff", "--numstat", "-z", "--no-renames", "HEAD"]))
     check_exits = {name: int(record["exit"]) for name, record in state.checks.items()}
     for step in layer.adw(state.adw)["steps"]:
         # a declared check with no recorded result never ran: that is not a pass
@@ -248,9 +264,9 @@ def gather_facts(layer: Any, state: Any, option: dict[str, Any], env_stack: Any,
 
 
 def gate(layer: Any, state: Any, env_stack: Any, base: str | None = None,
-         extra_reasons: list[str] | None = None) -> dict[str, Any]:
+         extra_reasons: list[str] | None = None, head: str | None = None) -> dict[str, Any]:
     option = layer.option("reviews", layer.adw(state.adw)["review"])
-    facts = gather_facts(layer, state, option, env_stack, base)
+    facts = gather_facts(layer, state, option, env_stack, base, head)
     decision = decide(option, facts)
     if extra_reasons and option["kind"] == "auto":
         decision = {"action": "pr", "ship": False, "reasons": [*decision["reasons"], *extra_reasons]}

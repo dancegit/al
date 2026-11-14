@@ -1,0 +1,4 @@
+$ say.py 'Add a note to the read me about running the tests.' --out task.wav
+2.496000 seconds of speech
+$ listen.py --file task.wav      # → the prompt for trigger_voice / the tasklist
+Add a note to the readme about running the tests.
