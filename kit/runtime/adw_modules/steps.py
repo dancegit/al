@@ -35,7 +35,8 @@ def _log_number(check_dir: Path, name: str) -> int:
     return max(numbers, default=0) + 1
 
 
-def _run_command(argv: list[str], cwd: Path, env: dict[str, str], timeout: int) -> tuple[int, str]:
+def run_command(argv: list[str], cwd: Path, env: dict[str, str], timeout: int) -> tuple[int, str]:
+    """Run argv in its own process group; returns (exit, combined output). Timeout kills the group, exit 124."""
     try:
         process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, start_new_session=True)
@@ -64,7 +65,7 @@ def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
     check_dir.mkdir(parents=True, exist_ok=True)
     attempt = max(_log_number(check_dir, name), attempt_offset + 1)
     log_path = check_dir / f"{name}.{attempt}.log"
-    exit_code, output = _run_command(env_stack.wrap(cmd), env_stack.cwd, env_stack.process_env(),
+    exit_code, output = run_command(env_stack.wrap(cmd), env_stack.cwd, env_stack.process_env(),
                                      int(command.get("timeout", 900)))
     log_path.write_text(output, encoding="utf-8")
     relative_log = log_path.relative_to(layer.layer_dir).as_posix()
@@ -79,7 +80,8 @@ def run_run(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> Non
     command = layer.command(command_name)
     model_set = str(step.get("modelSet", "inherit"))
     if model_set == "inherit":
-        model_set = str(command.get("modelSet", "base"))
+        # A request-level model set (e.g. a tasklist `{heavy}` tag) beats the command's default.
+        model_set = state.model_set or str(command.get("modelSet", "base"))
     if model_set not in {"base", "heavy"}:
         raise LayerError(f"Unknown model set {model_set!r} for step {name}")
     args = [render_step_arg(str(value), step_variables(state), state.outputs) for value in step.get("args", [])]

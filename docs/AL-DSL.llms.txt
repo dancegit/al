@@ -20,7 +20,8 @@
 Syntax notes: strings use double quotes; names are bare symbols; lists are parenthesised without
 quotes or commas, e.g. `(python rust)` or `("src" "tests")`; booleans are `#t` / `#f`; exactly one
 `(agentic-layer …)` form per file. Every field is `#:keyword value`. Omitted fields take the default.
-Families with a default kind may be omitted entirely.
+Families with a default kind may be omitted entirely. `(cmd NAME "shell" …)` and
+`(conditional-doc "path" "when")` take their first values positionally, exactly as shown.
 
 ## Rules the compiler enforces
 
@@ -380,11 +381,11 @@ Where things are: (paths #:source (…) #:tests (…) …).
 
 (adw NAME … (steps STEP …)): an AI Developer Workflow. The four PITER choices default to the first declared option of each family.
   - `#:description` (string; default "") — One-line purpose.
-  - `#:input` (list of name of a declared prompt-input; default REQUIRED) — Prompt inputs this ADW accepts.
-  - `#:trigger` (list of name of a declared trigger; default REQUIRED) — Triggers that may start it.
-  - `#:environment` (list of name of a declared environment; default REQUIRED) — Environment stack, outermost first.
-  - `#:review` (name of a declared review; default REQUIRED) — Review option.
-  - `#:agent` (name of a declared agent; default REQUIRED) — Agent the steps run on.
+  - `#:input` (list of name of a declared prompt-input; default the first declared option of that family) — Prompt inputs this ADW accepts.
+  - `#:trigger` (list of name of a declared trigger; default the first declared option of that family) — Triggers that may start it.
+  - `#:environment` (list of name of a declared environment; default the first declared option of that family) — Environment stack, outermost first.
+  - `#:review` (name of a declared review; default the first declared option of that family) — Review option.
+  - `#:agent` (name of a declared agent; default the first declared option of that family) — Agent the steps run on.
   - `#:classes` (list of chore | bug | feature | patch; default ()) — Work classes routed to this ADW by classification; empty = any.
 
 ### `step-run`

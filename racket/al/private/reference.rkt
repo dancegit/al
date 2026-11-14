@@ -16,7 +16,9 @@
         [(eq? (car t) 'optional-ref) (format "name of a declared ~a, or \"\"" (cadr t))]))
 
 (define (show-default f)
-  (if (field-required? f) "REQUIRED" (format "~s" (field-default f))))
+  (cond [(field-required? f) "REQUIRED"]
+        [(eq? (field-default f) '#:first) "the first declared option of that family"]
+        [else (format "~s" (field-default f))]))
 
 (define (field-lines fields)
   (for/list ([f (in-list fields)])
@@ -48,7 +50,8 @@
   (p "Syntax notes: strings use double quotes; names are bare symbols; lists are parenthesised without")
   (p "quotes or commas, e.g. `(python rust)` or `(\"src\" \"tests\")`; booleans are `#t` / `#f`; exactly one")
   (p "`(agentic-layer …)` form per file. Every field is `#:keyword value`. Omitted fields take the default.")
-  (p "Families with a default kind may be omitted entirely.")
+  (p "Families with a default kind may be omitted entirely. `(cmd NAME \"shell\" …)` and")
+  (p "`(conditional-doc \"path\" \"when\")` take their first values positionally, exactly as shown.")
   (p)
   (p "## Rules the compiler enforces")
   (p)

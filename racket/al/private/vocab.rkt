@@ -353,11 +353,11 @@
 (define-record adw
   "(adw NAME … (steps STEP …)): an AI Developer Workflow. The four PITER choices default to the first declared option of each family."
   [description string "" "One-line purpose."]
-  [input (list-of (ref prompt-input)) #:required "Prompt inputs this ADW accepts."]
-  [trigger (list-of (ref trigger)) #:required "Triggers that may start it."]
-  [environment (list-of (ref environment)) #:required "Environment stack, outermost first."]
-  [review (ref review) #:required "Review option."]
-  [agent (ref agent) #:required "Agent the steps run on."]
+  [input (list-of (ref prompt-input)) #:first "Prompt inputs this ADW accepts."]
+  [trigger (list-of (ref trigger)) #:first "Triggers that may start it."]
+  [environment (list-of (ref environment)) #:first "Environment stack, outermost first."]
+  [review (ref review) #:first "Review option."]
+  [agent (ref agent) #:first "Agent the steps run on."]
   [classes (list-of (enum chore bug feature patch)) () "Work classes routed to this ADW by classification; empty = any."])
 
 (define-record step-run

@@ -25,6 +25,7 @@ class ADWState:
     klass: str = "chore"
     class_fixed: bool = False
     dry_run: bool = False
+    model_set: str = ""
     branch: str = ""
     worktree: str = ""
     ports: list[int] = field(default_factory=list)

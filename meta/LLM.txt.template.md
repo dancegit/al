@@ -40,6 +40,7 @@ install, lint, format, typecheck, test, test-fast, e2e, build, start, docs, depl
 ## Toolchain
 
 - nixpkgs: <attribute names with versions, e.g. `python312` (3.12), `uv` (0.5)>
+- Package manager: <how a dependency is added, e.g. `uv add`, `cargo add`; goes into `#:package-manager`>
 - System packages: <libraries and tools not covered above; `none`>
 - Services: <databases, queues, browsers, emulators a command needs, and which command; `none`>
 

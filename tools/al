@@ -225,7 +225,7 @@ def render_llm_txt(s: dict) -> str:
 
 ## Identity
 
-- Repository: {s['remote'] or 'UNVERIFIED (no origin remote)'}
+- Repo URL: {s['remote'] or 'UNVERIFIED (no origin remote)'}
 - Default branch: {s['default_branch']}
 - License: {s['license'] or 'UNVERIFIED'}
 - Primary languages: {', '.join(s['languages'])} (tracked files by language: {s['lang_counts']})
@@ -250,7 +250,8 @@ def render_llm_txt(s: dict) -> str:
 
 - nixpkgs attributes (guess from languages): {' '.join(s['nix'])}
 - Package manager: {s['package_manager'] or 'UNVERIFIED'}
-- Services needed: UNVERIFIED
+- System packages: UNVERIFIED
+- Services: UNVERIFIED
 
 ## Artefacts
 
