@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import fnmatch
+import posixpath
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -97,6 +99,8 @@ def run_review(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> 
         verdict = combine_verdicts(verdicts, kind)
         rounds.append({"round": round_number, "reviewers": verdicts, "verdict": verdict})
         state.review = {"verdict": verdict, "rounds": rounds, "mode": kind}
+        if state.worktree:
+            state.review["tree"] = tree_fingerprint(state.worktree)
         state.save(layer.layer_dir)
         blockers = [issue for issue in verdict["issues"] if issue["severity"] == "blocker"]
         if verdict["success"] or not blockers or not can_patch or round_number > max_retries:
@@ -140,18 +144,43 @@ def decide(option: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
     return {"action": str(option.get("ship") or "pr"), "ship": True, "reasons": []}
 
 
+def _normalise_protected(entry: str) -> str:
+    """Repo-relative form of a protected entry; "" means the whole repository."""
+    text = entry.strip()
+    if text in {"", ".", "/", "./"}:
+        return ""
+    text = posixpath.normpath(text).lstrip("/")
+    return "" if text == "." else text
+
+
 def is_protected(path: str, protected: list[str]) -> bool:
+    """True when `path` equals or lies under a protected entry. Entries may be written as
+    `dir`, `dir/`, `./dir`, `/dir` or as a glob (`*.lock`, `ci/**`); matching is case-insensitive
+    so `.GitHub/` cannot dodge `.github`."""
+    target = posixpath.normpath(path).lower()
+    parts = target.split("/")
+    prefixes = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
     for entry in protected:
-        root = entry.strip().rstrip("/")
-        if root and (path == root or path.startswith(root + "/")):
+        root = _normalise_protected(entry).lower()
+        if root == "":
+            return True
+        if any(ch in root for ch in "*?["):
+            pattern = root[:-3] if root.endswith("/**") else root
+            if any(fnmatch.fnmatchcase(prefix, pattern) for prefix in prefixes) or fnmatch.fnmatchcase(parts[-1], pattern):
+                return True
+        elif root in prefixes:
             return True
     return False
 
 
 def parse_numstat(text: str) -> tuple[int, list[str]]:
-    """(added+deleted lines, files) from `git diff --numstat --no-renames`; binary '-' counts 0."""
+    """(added+deleted lines, files) from `git diff --numstat -z --no-renames`; binary '-' counts 0.
+
+    NUL-separated records carry raw paths: without -z git quotes and escapes any path with
+    non-ASCII or special characters, which would hide it from protected-path matching."""
     total, files = 0, []
-    for row in text.splitlines():
+    rows = text.split("\0") if "\0" in text else text.splitlines()
+    for row in rows:
         if not row.strip():
             continue
         fields = row.split("\t", 2)
@@ -187,16 +216,28 @@ def _rerun_required(layer: Any, state: Any, option: dict[str, Any], env_stack: A
     return exits
 
 
-def gather_facts(layer: Any, state: Any, option: dict[str, Any], env_stack: Any) -> dict[str, Any]:
-    """Facts for `decide`. Counts committed (<default>...HEAD) plus uncommitted tracked changes."""
+def tree_fingerprint(worktree: str) -> str:
+    """Tree hash of everything currently in the worktree (staged via `add -A`, nothing committed)."""
+    _git_stdout(worktree, ["add", "-A"])
+    return _git_stdout(worktree, ["write-tree"]).strip()
+
+
+def gather_facts(layer: Any, state: Any, option: dict[str, Any], env_stack: Any, base: str | None = None) -> dict[str, Any]:
+    """Facts for `decide`, taken from the tree that will actually ship: `base` is the ref the
+    result lands on (already merged into HEAD by ship), so the diff is exactly what shipping adds."""
     if not state.worktree:
         raise StepFailed("gate", "the gate needs a worktree")
     committed_lines, committed = parse_numstat(
-        _git_stdout(state.worktree, ["diff", "--numstat", "--no-renames", f"{layer.default_branch}...HEAD"]))
+        _git_stdout(state.worktree, ["diff", "--numstat", "-z", "--no-renames", f"{base or layer.default_branch}...HEAD"]))
     pending_lines, pending = parse_numstat(
-        _git_stdout(state.worktree, ["diff", "--numstat", "--no-renames", "HEAD"]))
+        _git_stdout(state.worktree, ["diff", "--numstat", "-z", "--no-renames", "HEAD"]))
+    check_exits = {name: int(record["exit"]) for name, record in state.checks.items()}
+    for step in layer.adw(state.adw)["steps"]:
+        # a declared check with no recorded result never ran: that is not a pass
+        if step["kind"] == "check" and step["name"] not in check_exits:
+            check_exits[step["name"]] = -1
     return {
-        "check_exits": {name: int(record["exit"]) for name, record in state.checks.items()},
+        "check_exits": check_exits,
         "require_exits": _rerun_required(layer, state, option, env_stack) if option["kind"] == "auto" else {},
         "verdict": state.review.get("verdict", {}),
         "klass": state.klass,
@@ -206,10 +247,13 @@ def gather_facts(layer: Any, state: Any, option: dict[str, Any], env_stack: Any)
     }
 
 
-def gate(layer: Any, state: Any, env_stack: Any) -> dict[str, Any]:
+def gate(layer: Any, state: Any, env_stack: Any, base: str | None = None,
+         extra_reasons: list[str] | None = None) -> dict[str, Any]:
     option = layer.option("reviews", layer.adw(state.adw)["review"])
-    facts = gather_facts(layer, state, option, env_stack)
+    facts = gather_facts(layer, state, option, env_stack, base)
     decision = decide(option, facts)
+    if extra_reasons and option["kind"] == "auto":
+        decision = {"action": "pr", "ship": False, "reasons": [*decision["reasons"], *extra_reasons]}
     state.ship["gate"] = {**decision, "diff_lines": facts["diff_lines"], "changed_files": facts["changed_files"]}
     print(f"[adw {state.adw_id}] gate: action {decision['action']}"
           + (f" (fallback: {', '.join(decision['reasons'])})" if decision["reasons"] and option["kind"] == "auto" else ""))

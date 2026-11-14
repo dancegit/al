@@ -34,10 +34,14 @@ def _title(state: Any) -> str:
     return f"{state.klass}: {first}"
 
 
-def commit_pending(worktree: Path, state: Any) -> str:
-    """Commit anything uncommitted in the worktree; returns HEAD."""
+def commit_pending(worktree: Path, state: Any, never_commit: list[str] | None = None) -> str:
+    """Commit anything uncommitted in the worktree; returns HEAD. `never_commit` lists files
+    copied in from the app (copyFiles, e.g. .env): they are unstaged again so they cannot ship."""
     _git(worktree, ["add", "-A"])
-    if _git(worktree, ["status", "--porcelain"]).strip():
+    for relative in never_commit or []:
+        subprocess.run(["git", "-C", str(worktree), "reset", "-q", "--", relative], capture_output=True,
+                       text=True, timeout=GIT_TIMEOUT, check=False)
+    if _git(worktree, ["diff", "--cached", "--name-only"]).strip():
         _git(worktree, [*IDENTITY, "commit", "-m", f"{_title(state)} [adw {state.adw_id}]"])
     return _git(worktree, ["rev-parse", "HEAD"]).strip()
 
@@ -101,27 +105,50 @@ def _default_checked_out(app: Path, default: str) -> bool:
 
 
 def _merge_via_remote(worktree: Path, remote: str, default: str) -> str:
-    _git(worktree, ["fetch", remote, default])
-    _merge(worktree, "FETCH_HEAD")
+    # the remote's default branch was already merged in by _integrate before the gate
     _git(worktree, ["push", remote, f"HEAD:refs/heads/{default}"])
     return f"{remote}/{default}"
 
 
 def _merge_locally(layer: Any, state: Any, worktree: Path) -> tuple[bool, str]:
     """Pure-local merge. Never checks anything out in the app's main working tree."""
-    default = layer.default_branch
-    _merge(worktree, default)
+    default = layer.default_branch  # already merged in by _integrate before the gate
     if not _default_checked_out(Path(layer.app_root), default):
         _git(worktree, ["push", ".", f"HEAD:refs/heads/{default}"])  # fast-forward only; git refuses otherwise
         return True, default
     staging = f"refs/heads/al/ship/{default}"
-    if _ref_exists(worktree, staging):
-        _merge(worktree, staging)  # stack on earlier unmerged shipments instead of clobbering them
     _git(worktree, ["push", ".", f"HEAD:{staging}"])
     state.ship["note"] = (f"{default} is checked out in a working tree, so the result is on al/ship/{default}; "
                           f"run `git merge --ff-only al/ship/{default}` in the app to take it")
     print(f"[adw {state.adw_id}] ship: {state.ship['note']}")
     return False, f"al/ship/{default}"
+
+
+def _integrate(layer: Any, worktree: Path, client: Any) -> str:
+    """Merge the branch the result will land on into HEAD and return that ref, so the gate
+    judges the tree that actually ships (not the pre-merge tree). Raises StepFailed on conflict."""
+    default = layer.default_branch
+    remote = "origin" if client is not None else str(layer.singleton("forge").get("remote") or "")
+    if remote:
+        _git(worktree, ["fetch", remote, default])
+        base = _git(worktree, ["rev-parse", "FETCH_HEAD"]).strip()
+        _merge(worktree, base)
+        return base
+    _merge(worktree, default)
+    staging = f"refs/heads/al/ship/{default}"
+    if _default_checked_out(Path(layer.app_root), default) and _ref_exists(worktree, staging):
+        _merge(worktree, staging)  # stack on earlier unmerged shipments instead of clobbering them
+        return staging
+    return default
+
+
+def _never_commit(layer: Any, state: Any) -> list[str]:
+    files: list[str] = []
+    for option_id in layer.adw(state.adw)["environment"]:
+        option = layer.option("environments", option_id)
+        if option["kind"] == "worktree":
+            files += list(option.get("copyFiles", []))
+    return files
 
 
 def _deploy(layer: Any, state: Any, env_stack: Any) -> None:
@@ -145,10 +172,20 @@ def ship(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_
     if env_stack.read_only or not state.worktree:
         raise StepFailed("ship", "shipping needs a worktree environment")
     worktree = Path(state.worktree)
-    commit_pending(worktree, state)
-    decision = review.gate(layer, state, env_stack)
-    action = decision["action"]
+    commit_pending(worktree, state, _never_commit(layer, state))
     client = _forge_client(layer)
+    option = layer.option("reviews", layer.adw(state.adw)["review"])
+    base, extra = None, []
+    if option["kind"] == "auto":
+        reviewed = state.review.get("tree")
+        if reviewed and reviewed != _git(worktree, ["rev-parse", "HEAD^{tree}"]).strip():
+            extra.append("changed-after-review")  # code was modified after the verdict was given
+        try:
+            base = _integrate(layer, worktree, client)
+        except StepFailed as exc:
+            extra.append(f"merge-conflict:{exc}"[:200])
+    decision = review.gate(layer, state, env_stack, base, extra)
+    action = decision["action"]
     body = pr_body(state, str(step.get("message") or ""))
     pr: dict[str, Any] | None = None
     shipped, target = False, ""
