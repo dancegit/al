@@ -1,0 +1,7 @@
+testbeds/
+layers/
+__pycache__/
+compiled/
+.pytest_cache/
+*.pyc
+.venv/

@@ -1,0 +1,73 @@
+#lang racket/base
+
+;; The meta-DSL. Everything `#lang al` can say is declared here ONCE, as data:
+;;
+;;   (define-family NAME #:key "jsonKey" #:letter "Pi" #:default KIND-or-#f "doc")
+;;   (define-kind FAMILY KIND [#:status stable|experimental|planned] "doc"
+;;     [field type default "doc"] ...)
+;;   (define-record NAME "doc" [field type default "doc"] ...)
+;;
+;; From these declarations three things are derived, so they cannot drift:
+;;   1. the DSL forms the compiler accepts   (private/compiler.rkt)
+;;   2. the JSON Schema of the emitted IR    (private/schema.rkt)
+;;   3. the LLM-facing reference document    (private/reference.rkt)
+;;
+;; Field types:
+;;   string | integer | boolean | symbol | (enum a b …) | (list-of T)
+;;   (ref F)           id of a declared option in family F, or `command` / `cmd` / `adw` / `artefact`
+;;   (optional-ref F)  same, or "" for none
+;; A default of #:required makes the field mandatory.
+
+(require racket/list racket/string)
+
+(provide define-family define-kind define-record
+         (struct-out family) (struct-out kind) (struct-out field) (struct-out record)
+         all-families all-records find-family find-kind find-record
+         field-required? kebab->camel field-json-key field-keyword)
+
+(struct field (name type default doc) #:transparent)
+(struct kind (name status doc fields) #:transparent)
+(struct family (name key letter default-kind doc [kinds #:mutable]) #:transparent)
+(struct record (name doc fields) #:transparent)
+
+(define families '())
+(define records '())
+
+(define (all-families) (reverse families))
+(define (all-records) (reverse records))
+(define (find-family name) (findf (lambda (f) (eq? (family-name f) name)) families))
+(define (find-record name) (findf (lambda (r) (eq? (record-name r) name)) records))
+(define (find-kind fam name) (findf (lambda (k) (eq? (kind-name k) name)) (family-kinds fam)))
+
+(define (register-family! f) (set! families (cons f families)))
+(define (register-record! r) (set! records (cons r records)))
+(define (register-kind! fam-name k)
+  (define f (find-family fam-name))
+  (unless f (error 'define-kind "unknown family ~a" fam-name))
+  (set-family-kinds! f (append (family-kinds f) (list k))))
+
+(define (field-required? f) (eq? (field-default f) '#:required))
+
+(define (kebab->camel sym)
+  (define parts (string-split (symbol->string sym) "-"))
+  (string->symbol
+   (apply string-append
+          (car parts)
+          (for/list ([p (in-list (cdr parts))])
+            (string-append (string-upcase (substring p 0 1)) (substring p 1))))))
+
+(define (field-json-key f) (kebab->camel (field-name f)))
+(define (field-keyword f) (string->keyword (symbol->string (field-name f))))
+
+(define-syntax-rule (define-family name #:key key #:letter letter #:default default-kind doc)
+  (register-family! (family 'name key letter 'default-kind doc '())))
+
+(define-syntax define-kind
+  (syntax-rules ()
+    [(_ fam name #:status st doc [fname ftype fdefault fdoc] ...)
+     (register-kind! 'fam (kind 'name 'st doc (list (field 'fname 'ftype 'fdefault fdoc) ...)))]
+    [(_ fam name doc [fname ftype fdefault fdoc] ...)
+     (define-kind fam name #:status stable doc [fname ftype fdefault fdoc] ...)]))
+
+(define-syntax-rule (define-record name doc [fname ftype fdefault fdoc] ...)
+  (register-record! (record 'name doc (list (field 'fname 'ftype 'fdefault fdoc) ...))))

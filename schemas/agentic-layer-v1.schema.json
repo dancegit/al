@@ -1,0 +1,2405 @@
+{
+  "$id": "https://al.local/schemas/agentic-layer-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "IR emitted by #lang al. Generated from racket/al/private/vocab.rkt — do not edit.",
+  "properties": {
+    "adws": {
+      "items": {
+        "additionalProperties": false,
+        "description": "(adw NAME … (steps STEP …)): an AI Developer Workflow. The four PITER choices default to the first declared option of each family.",
+        "properties": {
+          "agent": {
+            "description": "Agent the steps run on.",
+            "type": "string"
+          },
+          "classes": {
+            "description": "Work classes routed to this ADW by classification; empty = any.",
+            "items": {
+              "enum": [
+                "chore",
+                "bug",
+                "feature",
+                "patch"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "description": {
+            "description": "One-line purpose.",
+            "type": "string"
+          },
+          "environment": {
+            "description": "Environment stack, outermost first.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "input": {
+            "description": "Prompt inputs this ADW accepts.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "review": {
+            "description": "Review option.",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "(run NAME #:command C …): one agent, one prompt, one purpose.",
+                  "properties": {
+                    "args": {
+                      "description": "Arguments; $prompt, $plan, $adw_id, $class, $branch and $out.<step> are substituted.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "command": {
+                      "description": "Command or HOP to execute.",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "run"
+                    },
+                    "modelSet": {
+                      "description": "Override the command's model set.",
+                      "enum": [
+                        "inherit",
+                        "base",
+                        "heavy"
+                      ],
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "retries": {
+                      "description": "Re-run on failure.",
+                      "type": "integer"
+                    },
+                    "when": {
+                      "description": "Run only for this work class.",
+                      "enum": [
+                        "always",
+                        "class-feature",
+                        "class-bug",
+                        "class-chore",
+                        "class-patch"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "args",
+                    "command",
+                    "kind",
+                    "modelSet",
+                    "name",
+                    "retries",
+                    "when"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "(check NAME #:cmd C …): a deterministic feedback loop. Runs a codebase command; on failure an agent resolves and the command re-runs.",
+                  "properties": {
+                    "cmd": {
+                      "description": "Codebase command.",
+                      "type": "string"
+                    },
+                    "collect": {
+                      "description": "Artefacts collected after the command.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "kind": {
+                      "const": "check"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "resolve": {
+                      "description": "Command given the failing output; empty = fail the run immediately.",
+                      "type": "string"
+                    },
+                    "retries": {
+                      "description": "Resolve attempts.",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "cmd",
+                    "collect",
+                    "kind",
+                    "name",
+                    "resolve",
+                    "retries"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "(review [NAME] …): run the ADW's review option here.",
+                  "properties": {
+                    "implement": {
+                      "description": "Command/HOP that implements the patch plan.",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "review"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "patch": {
+                      "description": "Command that plans a patch for a blocker; implemented via the ADW's implement command.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "implement",
+                    "kind",
+                    "name",
+                    "patch"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "(ship [NAME]): apply the review option's ship policy (PR / merge / deploy). Must come after a review step.",
+                  "properties": {
+                    "kind": {
+                      "const": "ship"
+                    },
+                    "message": {
+                      "description": "Extra text for the PR/merge message.",
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "message",
+                    "name"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "trigger": {
+            "description": "Triggers that may start it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "agent",
+          "classes",
+          "description",
+          "environment",
+          "input",
+          "name",
+          "review",
+          "steps",
+          "trigger"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "agents": {
+      "description": "The coding agent a step runs on. ADWs name one; the runtime shells out to it headlessly.",
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "Claude Code in programmable mode (`claude -p`), stream-json output.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "claude-code"
+              },
+              "maxTurns": {
+                "description": "Turn cap per step.",
+                "type": "integer"
+              },
+              "modelBase": {
+                "description": "Model for the `base` model set (cheap steps: classify, commit, branch name).",
+                "type": "string"
+              },
+              "modelHeavy": {
+                "description": "Model for the `heavy` model set (plan, implement, review).",
+                "type": "string"
+              },
+              "permissionMode": {
+                "description": "Headless permission mode. bypassPermissions only inside a podman environment.",
+                "enum": [
+                  "acceptEdits",
+                  "bypassPermissions",
+                  "plan",
+                  "default"
+                ],
+                "type": "string"
+              },
+              "safeMode": {
+                "description": "Run with --safe-mode so user CLAUDE.md, hooks, plugins and skills are not loaded.",
+                "type": "boolean"
+              },
+              "status": {
+                "const": "stable"
+              },
+              "timeout": {
+                "description": "Wall-clock seconds per step.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "maxTurns",
+              "modelBase",
+              "modelHeavy",
+              "permissionMode",
+              "safeMode",
+              "status",
+              "timeout"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "OpenAI Codex CLI (`codex exec`).",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "codex"
+              },
+              "modelBase": {
+                "description": "Model for the base set.",
+                "type": "string"
+              },
+              "modelHeavy": {
+                "description": "Model for the heavy set.",
+                "type": "string"
+              },
+              "sandbox": {
+                "description": "Codex sandbox mode.",
+                "enum": [
+                  "read-only",
+                  "workspace-write",
+                  "danger-full-access"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              },
+              "timeout": {
+                "description": "Wall-clock seconds per step.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "modelBase",
+              "modelHeavy",
+              "sandbox",
+              "status",
+              "timeout"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Any CLI agent. The command receives the rendered prompt on stdin.",
+            "properties": {
+              "command": {
+                "description": "Shell command; {model} and {cwd} are substituted.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "custom"
+              },
+              "modelBase": {
+                "description": "Model for the base set.",
+                "type": "string"
+              },
+              "modelHeavy": {
+                "description": "Model for the heavy set.",
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              },
+              "timeout": {
+                "description": "Wall-clock seconds per step.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command",
+              "id",
+              "kind",
+              "modelBase",
+              "modelHeavy",
+              "status",
+              "timeout"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Deterministic stand-in used by tests and dry runs: no LLM, replays scripted responses.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "mock"
+              },
+              "scriptDir": {
+                "description": "Directory (in the layer) holding <step>.json scripted responses and optional <step>.patch files.",
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              },
+              "timeout": {
+                "description": "Wall-clock seconds per step.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "scriptDir",
+              "status",
+              "timeout"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "array"
+    },
+    "artefacts": {
+      "description": "Proof a check or review produces. Collected from the worktree after the producing step and put in storage.",
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "Captured stdout/stderr of codebase commands (always available).",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "log"
+              },
+              "status": {
+                "const": "stable"
+              },
+              "tailLines": {
+                "description": "Lines of each log shown to the reviewer.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "status",
+              "tailLines"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "JUnit XML test report.",
+            "properties": {
+              "glob": {
+                "description": "Glob relative to the worktree.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "junit"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "glob",
+              "id",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Coverage report (lcov, cobertura xml, or text).",
+            "properties": {
+              "glob": {
+                "description": "Glob relative to the worktree.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "coverage"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "glob",
+              "id",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Screenshots or rendered images; the reviewer reads every one.",
+            "properties": {
+              "glob": {
+                "description": "Glob relative to the worktree.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "image"
+              },
+              "maxFiles": {
+                "description": "Upper bound handed to the reviewer.",
+                "type": "integer"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "glob",
+              "id",
+              "kind",
+              "maxFiles",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Screen/session recordings; keyframes are extracted with ffmpeg for the reviewer.",
+            "properties": {
+              "glob": {
+                "description": "Glob relative to the worktree.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "keyframes": {
+                "description": "Evenly spaced frames extracted per video.",
+                "type": "integer"
+              },
+              "kind": {
+                "const": "video"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "glob",
+              "id",
+              "keyframes",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Audio files (e.g. generated speech).",
+            "properties": {
+              "glob": {
+                "description": "Glob relative to the worktree.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "audio"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "glob",
+              "id",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Tool traces such as Playwright trace.zip.",
+            "properties": {
+              "glob": {
+                "description": "Glob relative to the worktree.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "trace"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "glob",
+              "id",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "HTML reports.",
+            "properties": {
+              "glob": {
+                "description": "Glob relative to the worktree.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "html"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "glob",
+              "id",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Any other file worth keeping.",
+            "properties": {
+              "glob": {
+                "description": "Glob relative to the worktree.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "file"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "glob",
+              "id",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "array"
+    },
+    "codebase": {
+      "additionalProperties": false,
+      "description": "The application the layer wraps. Everything codebase-specific that templates need lives here.",
+      "properties": {
+        "commands": {
+          "items": {
+            "additionalProperties": false,
+            "description": "A named shell command of the codebase: (cmd NAME \"shell\" …). Check steps and validation sections refer to these names.",
+            "properties": {
+              "description": {
+                "description": "What the command proves.",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "run": {
+                "description": "Shell command, run from the worktree root.",
+                "type": "string"
+              },
+              "timeout": {
+                "description": "Seconds.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "description",
+              "name",
+              "run",
+              "timeout"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "conditionalDocs": {
+          "items": {
+            "additionalProperties": false,
+            "description": "(conditional-doc \"path\" \"condition\" …): documentation an agent must read when the condition holds.",
+            "properties": {
+              "path": {
+                "description": "Document path relative to the codebase root.",
+                "type": "string"
+              },
+              "when": {
+                "description": "Condition in plain language.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "when"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "defaultBranch": {
+          "description": "Branch that ships.",
+          "type": "string"
+        },
+        "description": {
+          "description": "One-paragraph description used by prime/plan templates.",
+          "type": "string"
+        },
+        "languages": {
+          "description": "Languages, most important first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "packageManager": {
+          "description": "How dependencies are added (e.g. `uv add`, `cargo add`).",
+          "type": "string"
+        },
+        "paths": {
+          "additionalProperties": false,
+          "description": "Where things are: (paths #:source (…) #:tests (…) …).",
+          "properties": {
+            "docs": {
+              "description": "Documentation directories.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "protected": {
+              "description": "Paths agents must not change without a human (CI config, release, security, migrations…).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Source directories.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "tests": {
+              "description": "Test directories.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "docs",
+            "protected",
+            "source",
+            "tests"
+          ],
+          "type": "object"
+        },
+        "readme": {
+          "description": "Entry document agents read first.",
+          "type": "string"
+        },
+        "root": {
+          "description": "Path of the application checkout, relative to the agentic.rkt file or absolute.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "commands",
+        "conditionalDocs",
+        "defaultBranch",
+        "description",
+        "languages",
+        "packageManager",
+        "paths",
+        "readme",
+        "root"
+      ],
+      "type": "object"
+    },
+    "commands": {
+      "items": {
+        "additionalProperties": false,
+        "description": "(command NAME #:template T …): instantiate a kit template as a command of this layer.",
+        "properties": {
+          "description": {
+            "description": "One-line purpose.",
+            "type": "string"
+          },
+          "fabric": {
+            "description": "Fabric patterns vendored into the layer and applied by this command.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "file": {
+            "description": "For template custom: path of a hand-written template relative to the layer.",
+            "type": "string"
+          },
+          "focus": {
+            "description": "Codebase-specific instructions injected into the template's Instructions section.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "modelSet": {
+            "description": "Model set the step runs on.",
+            "enum": [
+              "base",
+              "heavy"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "output": {
+            "description": "What the command must return: free text, JSON per its schema, or a file path.",
+            "enum": [
+              "text",
+              "json",
+              "path"
+            ],
+            "type": "string"
+          },
+          "relevant": {
+            "description": "Codebase paths listed under Relevant Files; empty = codebase source+tests paths.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "template": {
+            "description": "Kit template to instantiate.",
+            "enum": [
+              "prime",
+              "install",
+              "start",
+              "plan-feature",
+              "plan-bug",
+              "plan-chore",
+              "plan-patch",
+              "implement",
+              "build",
+              "test",
+              "resolve-test",
+              "e2e-test",
+              "review",
+              "document",
+              "commit",
+              "pull-request",
+              "classify",
+              "branch-name",
+              "summarize",
+              "question",
+              "self-improve",
+              "track-kpis",
+              "custom"
+            ],
+            "type": "string"
+          },
+          "validation": {
+            "description": "Codebase commands listed as Validation Commands.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "description",
+          "fabric",
+          "file",
+          "focus",
+          "modelSet",
+          "name",
+          "output",
+          "relevant",
+          "template",
+          "validation"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "description": {
+      "type": "string"
+    },
+    "environments": {
+      "description": "PITER · Environment: where the agent works. An ADW lists one or more; they stack in order (worktree → nix → podman).",
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "The application checkout itself, no isolation. Only for read-only workflows.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "host"
+              },
+              "readOnly": {
+                "description": "Refuse steps that are expected to write.",
+                "type": "boolean"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "readOnly",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A dedicated git worktree per run under the layer (trees/<adw-id>), so the app's working tree is never touched.",
+            "properties": {
+              "copyFiles": {
+                "description": "Untracked files copied from the app checkout into the worktree (e.g. .env).",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "dir": {
+                "description": "Worktree parent directory relative to the layer.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "keep": {
+                "description": "When the worktree is kept after the run.",
+                "enum": [
+                  "never",
+                  "on-failure",
+                  "always"
+                ],
+                "type": "string"
+              },
+              "kind": {
+                "const": "worktree"
+              },
+              "portBase": {
+                "description": "First port of the per-run port block.",
+                "type": "integer"
+              },
+              "portsPerRun": {
+                "description": "Ports reserved per run (exported as ADW_PORT_0..n).",
+                "type": "integer"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "copyFiles",
+              "dir",
+              "id",
+              "keep",
+              "kind",
+              "portBase",
+              "portsPerRun",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A Nix flake dev shell generated in the layer; every codebase command and the agent run inside `nix develop`.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "nix-devshell"
+              },
+              "nixpkgs": {
+                "description": "nixpkgs flake reference.",
+                "type": "string"
+              },
+              "packages": {
+                "description": "nixpkgs attribute names providing the toolchain (e.g. python312 uv).",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pure": {
+                "description": "Use `nix develop --ignore-environment` (keeps HOME, PATH is nix-only).",
+                "type": "boolean"
+              },
+              "shellHook": {
+                "description": "Extra shell hook.",
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "nixpkgs",
+              "packages",
+              "pure",
+              "shellHook",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A Home Manager module generated in the layer that installs the toolchain and the layer's helper commands for a user.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "home-manager"
+              },
+              "moduleName": {
+                "description": "Option namespace: programs.<module-name>.enable.",
+                "type": "string"
+              },
+              "packages": {
+                "description": "nixpkgs attribute names.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "stateVersion": {
+                "description": "home.stateVersion used by the standalone example configuration.",
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "moduleName",
+              "packages",
+              "stateVersion",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A light rootless podman container; the worktree is bind-mounted, nothing else of the host is visible.",
+            "properties": {
+              "agentInside": {
+                "description": "Run the agent CLI inside the container too (otherwise only codebase commands run inside).",
+                "type": "boolean"
+              },
+              "baseImage": {
+                "description": "Base image.",
+                "type": "string"
+              },
+              "cpus": {
+                "description": "CPU limit.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "podman"
+              },
+              "memory": {
+                "description": "Memory limit.",
+                "type": "string"
+              },
+              "network": {
+                "description": "Network mode. `none` for fully offline checks.",
+                "enum": [
+                  "none",
+                  "host",
+                  "slirp"
+                ],
+                "type": "string"
+              },
+              "packages": {
+                "description": "Distribution packages installed in the image (apt names for Debian bases).",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "setup": {
+                "description": "Extra RUN lines for the Containerfile.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "agentInside",
+              "baseImage",
+              "cpus",
+              "id",
+              "kind",
+              "memory",
+              "network",
+              "packages",
+              "setup",
+              "status"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "array"
+    },
+    "experts": {
+      "items": {
+        "additionalProperties": false,
+        "description": "(expert NAME …): an agent expert — an expertise file the agent maintains itself (act → learn → reuse).",
+        "properties": {
+          "domain": {
+            "description": "What the expert knows, in one sentence.",
+            "type": "string"
+          },
+          "maxLines": {
+            "description": "Line cap of the expertise file.",
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "paths": {
+            "description": "Codebase paths the expertise is validated against.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "domain",
+          "maxLines",
+          "name",
+          "paths"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "forge": {
+      "description": "The code forge used for issues, PRs and CI integration.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "No forge: branches stay local, review results are written to the layer.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "none"
+            },
+            "remote": {
+              "description": "Optional git remote to push to.",
+              "type": "string"
+            },
+            "status": {
+              "const": "stable"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "remote",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitHub via the `gh` CLI.",
+          "properties": {
+            "botMarker": {
+              "description": "Prefix on every comment the layer posts, so triggers ignore their own comments.",
+              "type": "string"
+            },
+            "host": {
+              "description": "GitHub host (Enterprise supported).",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "github"
+            },
+            "repo": {
+              "description": "owner/name.",
+              "type": "string"
+            },
+            "status": {
+              "const": "stable"
+            },
+            "tokenEnv": {
+              "description": "Environment variable holding the token (falls back to gh auth).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "botMarker",
+            "host",
+            "id",
+            "kind",
+            "repo",
+            "status",
+            "tokenEnv"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Forgejo / Gitea via the REST API (v1).",
+          "properties": {
+            "botMarker": {
+              "description": "Prefix on every comment the layer posts.",
+              "type": "string"
+            },
+            "host": {
+              "description": "Base URL, e.g. https://forgejo.example.org.",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "forgejo"
+            },
+            "repo": {
+              "description": "owner/name.",
+              "type": "string"
+            },
+            "status": {
+              "const": "stable"
+            },
+            "tokenEnv": {
+              "description": "Environment variable holding the API token.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "botMarker",
+            "host",
+            "id",
+            "kind",
+            "repo",
+            "status",
+            "tokenEnv"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitLab via `glab`.",
+          "properties": {
+            "host": {
+              "description": "GitLab host.",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "gitlab"
+            },
+            "repo": {
+              "description": "group/name.",
+              "type": "string"
+            },
+            "status": {
+              "const": "planned"
+            },
+            "tokenEnv": {
+              "description": "Environment variable holding the token.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "host",
+            "id",
+            "kind",
+            "repo",
+            "status",
+            "tokenEnv"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "hops": {
+      "items": {
+        "additionalProperties": false,
+        "description": "(hop NAME #:template T …): a higher-order prompt — it takes another prompt, plan or command as its argument.",
+        "properties": {
+          "description": {
+            "description": "One-line purpose.",
+            "type": "string"
+          },
+          "modelSet": {
+            "description": "Model set.",
+            "enum": [
+              "base",
+              "heavy"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "produces": {
+            "description": "What comes out.",
+            "enum": [
+              "changes",
+              "command",
+              "adw",
+              "expert",
+              "plan"
+            ],
+            "type": "string"
+          },
+          "takes": {
+            "description": "What the argument is.",
+            "enum": [
+              "prompt",
+              "plan",
+              "command",
+              "spec"
+            ],
+            "type": "string"
+          },
+          "template": {
+            "description": "Kit HOP template.",
+            "enum": [
+              "run-plan",
+              "meta-command",
+              "meta-adw",
+              "meta-expert",
+              "plan-build-improve"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "modelSet",
+          "name",
+          "produces",
+          "takes",
+          "template"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "layer": {
+      "description": "Where the generated agentic layer lives. It is never part of the application tree.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A directory next to the application checkout (default: <app>.al).",
+          "properties": {
+            "dir": {
+              "description": "Layer directory; empty = `<codebase root>.al` beside the app.",
+              "type": "string"
+            },
+            "git": {
+              "description": "Initialise the layer as its own git repository.",
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "sibling"
+            },
+            "status": {
+              "const": "stable"
+            }
+          },
+          "required": [
+            "dir",
+            "git",
+            "id",
+            "kind",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A directory under a central layers home, e.g. ~/agentic-layers/<name>.",
+          "properties": {
+            "git": {
+              "description": "Initialise the layer as its own git repository.",
+              "type": "boolean"
+            },
+            "home": {
+              "description": "Parent directory of all layers.",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "central"
+            },
+            "status": {
+              "const": "stable"
+            }
+          },
+          "required": [
+            "git",
+            "home",
+            "id",
+            "kind",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The layer is its own remote repository; the app is referenced by URL only.",
+          "properties": {
+            "dir": {
+              "description": "Local checkout directory; empty = `<name>.al`.",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "separate-repo"
+            },
+            "remote": {
+              "description": "Git remote URL of the layer repository.",
+              "type": "string"
+            },
+            "status": {
+              "const": "stable"
+            }
+          },
+          "required": [
+            "dir",
+            "id",
+            "kind",
+            "remote",
+            "status"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "llmTxt": {
+      "type": "string"
+    },
+    "name": {
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "type": "string"
+    },
+    "promptInputs": {
+      "description": "PITER · Prompt input: where the high-level prompt for a run comes from.",
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "The prompt is passed on the command line (or stdin) of the ADW script.",
+            "properties": {
+              "allowStdin": {
+                "description": "Read the prompt from stdin when no argument is given.",
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "cli"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "allowStdin",
+              "id",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A forge issue (title + body). Requires a forge.",
+            "properties": {
+              "classify": {
+                "description": "Run the classify command to map the issue to chore/bug/feature.",
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string"
+              },
+              "keyword": {
+                "description": "Body/comment keyword prefix that selects a workflow, e.g. `adw: sdlc`.",
+                "type": "string"
+              },
+              "kind": {
+                "const": "issue"
+              },
+              "labels": {
+                "description": "Only issues carrying all of these labels are picked up; empty = any.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "classify",
+              "id",
+              "keyword",
+              "kind",
+              "labels",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A plain-text task list (tasks.md) in the layer: one heading per worktree, one checkbox line per task.",
+            "properties": {
+              "blockedMarker": {
+                "description": "Marker of a task that waits for the tasks above it in the same section.",
+                "type": "string"
+              },
+              "doneMarker": {
+                "description": "Marker written on success (followed by adw id and commit hash).",
+                "type": "string"
+              },
+              "failedMarker": {
+                "description": "Marker written on failure (followed by adw id and reason).",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "tasklist"
+              },
+              "openMarker": {
+                "description": "Marker of a task that is ready to be picked up.",
+                "type": "string"
+              },
+              "path": {
+                "description": "Task file relative to the layer.",
+                "type": "string"
+              },
+              "runningMarker": {
+                "description": "Marker written when an ADW claims the task (followed by the adw id).",
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              },
+              "tagSyntax": {
+                "description": "Tags select workflow/model: `{sdlc, heavy}` or `#sdlc #heavy`.",
+                "enum": [
+                  "braces",
+                  "hash"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "blockedMarker",
+              "doneMarker",
+              "failedMarker",
+              "id",
+              "kind",
+              "openMarker",
+              "path",
+              "runningMarker",
+              "status",
+              "tagSyntax"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A hand-written spec/plan file dropped into a directory of the layer; planning is skipped.",
+            "properties": {
+              "dir": {
+                "description": "Directory relative to the layer that is watched for new specs.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "spec-file"
+              },
+              "pattern": {
+                "description": "Glob of files treated as specs.",
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "dir",
+              "id",
+              "kind",
+              "pattern",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Speak the prompt: local recording → speech recognition → text. Requires a `voice` declaration.",
+            "properties": {
+              "appendToTasklist": {
+                "description": "When routed as task, append to the tasklist instead of running immediately.",
+                "type": "boolean"
+              },
+              "confirm": {
+                "description": "Read the recognised prompt back and wait for a spoken/typed yes before running.",
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "voice"
+              },
+              "route": {
+                "description": "What speech becomes: a new tasklist entry, a codebase question, a status summary, or classified automatically.",
+                "enum": [
+                  "task",
+                  "question",
+                  "summary",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "appendToTasklist",
+              "confirm",
+              "id",
+              "kind",
+              "route",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A JSON payload posted to the webhook trigger by any external system.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "webhook-payload"
+              },
+              "promptField": {
+                "description": "Dotted path of the prompt text in the payload.",
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              },
+              "workflowField": {
+                "description": "Dotted path of the workflow (ADW) name in the payload.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "promptField",
+              "status",
+              "workflowField"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A Notion database row (status Not started → In progress → Done).",
+            "properties": {
+              "databaseIdEnv": {
+                "description": "Environment variable with the database id.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "notion"
+              },
+              "status": {
+                "const": "planned"
+              },
+              "statusFilter": {
+                "description": "Statuses that are picked up.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "databaseIdEnv",
+              "id",
+              "kind",
+              "status",
+              "statusFilter"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A chat message (Telegram / Slack / Matrix).",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "chat"
+              },
+              "platform": {
+                "description": "Chat platform.",
+                "enum": [
+                  "telegram",
+                  "slack",
+                  "matrix"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "const": "planned"
+              },
+              "tokenEnv": {
+                "description": "Environment variable with the bot token.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "platform",
+              "status",
+              "tokenEnv"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "array"
+    },
+    "reviews": {
+      "description": "PITER · Review: how the result is judged and what happens after.",
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "Open a pull request and stop. A human reads it (presence = 2: prompt and review).",
+            "properties": {
+              "draft": {
+                "description": "Open the PR as draft.",
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "human"
+              },
+              "reviewers": {
+                "description": "Forge users requested as reviewers.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "draft",
+              "id",
+              "kind",
+              "reviewers",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "An agent reviews the diff against the spec, with artefacts as proof, and posts a structured verdict. A human still merges.",
+            "properties": {
+              "artefacts": {
+                "description": "Artefacts attached as proof.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "command": {
+                "description": "Review command.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "agent"
+              },
+              "maxRetries": {
+                "description": "Patch-and-re-review attempts on blockers before stopping for a human.",
+                "type": "integer"
+              },
+              "reviewers": {
+                "description": "Independent review agents; all must pass ('double agent check').",
+                "type": "integer"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "artefacts",
+              "command",
+              "id",
+              "kind",
+              "maxRetries",
+              "reviewers",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Zero-touch: agent review + deterministic gates; if everything passes the change ships without a human.",
+            "properties": {
+              "allowedClasses": {
+                "description": "Work classes allowed to ship untouched; others fall back to a human PR.",
+                "items": {
+                  "enum": [
+                    "chore",
+                    "bug",
+                    "feature",
+                    "patch"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "artefacts": {
+                "description": "Artefacts collected, stored and given to the reviewer as proof.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "blockProtectedPaths": {
+                "description": "Any change under codebase protected paths falls back to a human PR.",
+                "type": "boolean"
+              },
+              "command": {
+                "description": "Review command.",
+                "type": "string"
+              },
+              "deployCmd": {
+                "description": "Codebase command run after merge when ship = deploy.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "auto"
+              },
+              "maxDiffLines": {
+                "description": "Larger diffs fall back to a human PR.",
+                "type": "integer"
+              },
+              "maxRetries": {
+                "description": "Patch-and-re-review attempts on blockers.",
+                "type": "integer"
+              },
+              "requireChecks": {
+                "description": "Codebase commands that must exit 0 in the final state (the deterministic gate).",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reviewers": {
+                "description": "Independent review agents; all must pass.",
+                "type": "integer"
+              },
+              "ship": {
+                "description": "On pass: open PR only, merge to the default branch, or merge and run the deploy command.",
+                "enum": [
+                  "pr",
+                  "merge",
+                  "deploy"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "allowedClasses",
+              "artefacts",
+              "blockProtectedPaths",
+              "command",
+              "deployCmd",
+              "id",
+              "kind",
+              "maxDiffLines",
+              "maxRetries",
+              "requireChecks",
+              "reviewers",
+              "ship",
+              "status"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "array"
+    },
+    "schemaVersion": {
+      "const": "agentic-layer-v1"
+    },
+    "storage": {
+      "description": "Where test/review artefacts (logs, reports, screenshots, video) are kept. Local first.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Artefacts stay on disk inside the layer.",
+          "properties": {
+            "dir": {
+              "description": "Directory relative to the layer.",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "local"
+            },
+            "status": {
+              "const": "stable"
+            }
+          },
+          "required": [
+            "dir",
+            "id",
+            "kind",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Any S3-compatible bucket (AWS S3, MinIO, Cloudflare R2, Garage). A local copy is always kept too.",
+          "properties": {
+            "accessKeyEnv": {
+              "description": "Environment variable with the access key.",
+              "type": "string"
+            },
+            "bucket": {
+              "description": "Bucket name.",
+              "type": "string"
+            },
+            "endpoint": {
+              "description": "Endpoint URL for non-AWS stores; empty = AWS.",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "s3"
+            },
+            "localDir": {
+              "description": "Local mirror directory relative to the layer.",
+              "type": "string"
+            },
+            "prefix": {
+              "description": "Key prefix.",
+              "type": "string"
+            },
+            "publicBaseUrl": {
+              "description": "If set, artefact links in reviews use this base URL.",
+              "type": "string"
+            },
+            "region": {
+              "description": "Region.",
+              "type": "string"
+            },
+            "secretKeyEnv": {
+              "description": "Environment variable with the secret key.",
+              "type": "string"
+            },
+            "status": {
+              "const": "stable"
+            }
+          },
+          "required": [
+            "accessKeyEnv",
+            "bucket",
+            "endpoint",
+            "id",
+            "kind",
+            "localDir",
+            "prefix",
+            "publicBaseUrl",
+            "region",
+            "secretKeyEnv",
+            "status"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "triggers": {
+      "description": "PITER · Trigger: the event that starts a run.",
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "Run the ADW script by hand: `adws/adw_<name>.py <prompt-or-ref>`.",
+            "properties": {
+              "confirm": {
+                "description": "Ask for confirmation before starting.",
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "manual"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "confirm",
+              "id",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A polling loop (uv script, optionally a systemd user timer) that checks the prompt inputs.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "intervalSeconds": {
+                "description": "Polling interval.",
+                "type": "integer"
+              },
+              "kind": {
+                "const": "cron"
+              },
+              "maxConcurrent": {
+                "description": "Maximum ADW runs in flight.",
+                "type": "integer"
+              },
+              "status": {
+                "const": "stable"
+              },
+              "systemd": {
+                "description": "Also generate a systemd user service + timer unit.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "intervalSeconds",
+              "kind",
+              "maxConcurrent",
+              "status",
+              "systemd"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A small HTTP server receiving forge webhooks or generic JSON payloads.",
+            "properties": {
+              "bind": {
+                "description": "Bind address; put a tunnel/reverse proxy in front for remote forges.",
+                "type": "string"
+              },
+              "events": {
+                "description": "Which events start a run.",
+                "items": {
+                  "enum": [
+                    "issue-opened",
+                    "issue-comment",
+                    "issue-labeled",
+                    "payload"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "webhook"
+              },
+              "path": {
+                "description": "Endpoint path.",
+                "type": "string"
+              },
+              "port": {
+                "description": "Listen port.",
+                "type": "integer"
+              },
+              "secretEnv": {
+                "description": "Environment variable with the HMAC secret.",
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "bind",
+              "events",
+              "id",
+              "kind",
+              "path",
+              "port",
+              "secretEnv",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A CI workflow file for the forge (GitHub Actions / Forgejo Actions) that runs the ADW on a runner.",
+            "properties": {
+              "events": {
+                "description": "Workflow events.",
+                "items": {
+                  "enum": [
+                    "issue-opened",
+                    "issue-comment",
+                    "issue-labeled",
+                    "schedule",
+                    "workflow-dispatch"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "forge-actions"
+              },
+              "label": {
+                "description": "Issue label that must be present for issue events.",
+                "type": "string"
+              },
+              "runner": {
+                "description": "runs-on label. A self-hosted runner keeps the agent on hardware you control.",
+                "type": "string"
+              },
+              "schedule": {
+                "description": "Cron expression when `schedule` is among the events.",
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "events",
+              "id",
+              "kind",
+              "label",
+              "runner",
+              "schedule",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Watch a file or directory in the layer (tasklist, spec inbox) and start when it changes.",
+            "properties": {
+              "debounceSeconds": {
+                "description": "Quiet period before a change is acted on.",
+                "type": "integer"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "file-watch"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "debounceSeconds",
+              "id",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Push-to-talk loop: press Enter, speak, the recognised text is routed by the voice prompt input.",
+            "properties": {
+              "hotkey": {
+                "description": "Key that starts recording in the terminal loop.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "voice"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "hotkey",
+              "id",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "array"
+    },
+    "voice": {
+      "description": "Local speech stack used by the voice prompt input and trigger, and for spoken summaries.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Kokoro TTS (ONNX, local, English) + faster-whisper speech recognition, both as uv scripts.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "kokoro"
+            },
+            "recordSeconds": {
+              "description": "Push-to-talk recording length when no silence detection is available.",
+              "type": "integer"
+            },
+            "speakSummaries": {
+              "description": "Speak the run summary when an ADW finishes.",
+              "type": "boolean"
+            },
+            "status": {
+              "const": "stable"
+            },
+            "sttDevice": {
+              "description": "Inference device for recognition.",
+              "enum": [
+                "auto",
+                "cpu",
+                "cuda"
+              ],
+              "type": "string"
+            },
+            "sttModel": {
+              "description": "faster-whisper model size.",
+              "type": "string"
+            },
+            "ttsLang": {
+              "description": "Kokoro language code.",
+              "type": "string"
+            },
+            "ttsSpeed": {
+              "description": "Speech speed in percent.",
+              "type": "integer"
+            },
+            "ttsVoice": {
+              "description": "Kokoro voice id.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "recordSeconds",
+            "speakSummaries",
+            "status",
+            "sttDevice",
+            "sttModel",
+            "ttsLang",
+            "ttsSpeed",
+            "ttsVoice"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "required": [
+    "adws",
+    "agents",
+    "artefacts",
+    "codebase",
+    "commands",
+    "description",
+    "environments",
+    "experts",
+    "forge",
+    "hops",
+    "layer",
+    "llmTxt",
+    "name",
+    "promptInputs",
+    "reviews",
+    "schemaVersion",
+    "storage",
+    "triggers",
+    "voice"
+  ],
+  "title": "agentic-layer-v1",
+  "type": "object"
+}

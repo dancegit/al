@@ -1,0 +1,825 @@
+{
+  "adws": [
+    {
+      "agent": "claude-code",
+      "classes": [],
+      "description": "Plan and implement, nothing else",
+      "environment": [
+        "worktree"
+      ],
+      "input": [
+        "issue",
+        "tasklist",
+        "voice"
+      ],
+      "name": "plan-build",
+      "review": "human",
+      "steps": [
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "args": [
+            "$plan"
+          ],
+          "command": "implement",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        }
+      ],
+      "trigger": [
+        "webhook"
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "classes": [],
+      "description": "Plan, build, test, review; a human merges",
+      "environment": [
+        "worktree",
+        "nix-devshell"
+      ],
+      "input": [
+        "issue",
+        "tasklist"
+      ],
+      "name": "sdlc",
+      "review": "human",
+      "steps": [
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "args": [
+            "$plan"
+          ],
+          "command": "implement",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "cmd": "lint",
+          "collect": [],
+          "kind": "check",
+          "name": "lint",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test",
+          "collect": [
+            "junit"
+          ],
+          "kind": "check",
+          "name": "test",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "args": [
+            "$plan"
+          ],
+          "command": "document",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "document",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "args": [],
+          "command": "commit",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "commit",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "implement": "",
+          "kind": "review",
+          "name": "review",
+          "patch": ""
+        },
+        {
+          "kind": "ship",
+          "message": "",
+          "name": "ship"
+        }
+      ],
+      "trigger": [
+        "webhook",
+        "cron",
+        "manual"
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "classes": [
+        "chore",
+        "bug"
+      ],
+      "description": "Zero-touch: ships chores and bugs when every gate passes",
+      "environment": [
+        "worktree",
+        "nix-devshell",
+        "sandbox"
+      ],
+      "input": [
+        "issue",
+        "tasklist"
+      ],
+      "name": "zte",
+      "review": "zero-touch",
+      "steps": [
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "args": [
+            "$plan"
+          ],
+          "command": "implement",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "cmd": "lint",
+          "collect": [],
+          "kind": "check",
+          "name": "lint",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test",
+          "collect": [
+            "junit"
+          ],
+          "kind": "check",
+          "name": "test",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "e2e",
+          "collect": [
+            "screenshots",
+            "recordings"
+          ],
+          "kind": "check",
+          "name": "e2e",
+          "resolve": "resolve-test",
+          "retries": 2
+        },
+        {
+          "args": [],
+          "command": "commit",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "commit",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "implement": "implement",
+          "kind": "review",
+          "name": "review",
+          "patch": "patch"
+        },
+        {
+          "kind": "ship",
+          "message": "",
+          "name": "ship"
+        }
+      ],
+      "trigger": [
+        "webhook",
+        "cron"
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "id": "claude-code",
+      "kind": "claude-code",
+      "maxTurns": 60,
+      "modelBase": "claude-sonnet-5-5",
+      "modelHeavy": "claude-opus-5-5",
+      "permissionMode": "acceptEdits",
+      "safeMode": true,
+      "status": "stable",
+      "timeout": 1800
+    }
+  ],
+  "artefacts": [
+    {
+      "id": "log",
+      "kind": "log",
+      "status": "stable",
+      "tailLines": 200
+    },
+    {
+      "glob": "reports/*.xml",
+      "id": "junit",
+      "kind": "junit",
+      "status": "stable"
+    },
+    {
+      "glob": "e2e-results/**/*.png",
+      "id": "screenshots",
+      "kind": "image",
+      "maxFiles": 12,
+      "status": "stable"
+    },
+    {
+      "glob": "e2e-results/**/*.webm",
+      "id": "recordings",
+      "keyframes": 6,
+      "kind": "video",
+      "status": "stable"
+    }
+  ],
+  "codebase": {
+    "commands": [
+      {
+        "description": "",
+        "name": "install",
+        "run": "bun install && (cd api && uv sync)",
+        "timeout": 1200
+      },
+      {
+        "description": "",
+        "name": "lint",
+        "run": "bun run lint && (cd api && uv run ruff check)",
+        "timeout": 900
+      },
+      {
+        "description": "",
+        "name": "test",
+        "run": "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)",
+        "timeout": 900
+      },
+      {
+        "description": "Playwright; writes e2e-results/",
+        "name": "e2e",
+        "run": "bun run e2e",
+        "timeout": 1800
+      },
+      {
+        "description": "",
+        "name": "deploy",
+        "run": "./scripts/deploy.sh staging",
+        "timeout": 900
+      }
+    ],
+    "conditionalDocs": [
+      {
+        "path": "docs/payments.md",
+        "when": "When touching anything under api/app/payments"
+      }
+    ],
+    "defaultBranch": "main",
+    "description": "Vue storefront + FastAPI backend",
+    "languages": [
+      "typescript",
+      "python"
+    ],
+    "packageManager": "bun add / uv add",
+    "paths": {
+      "docs": [
+        "docs"
+      ],
+      "protected": [
+        ".github",
+        "api/migrations",
+        "scripts/deploy.sh"
+      ],
+      "source": [
+        "web/src",
+        "api/app"
+      ],
+      "tests": [
+        "web/tests",
+        "api/tests"
+      ]
+    },
+    "readme": "README.md",
+    "root": "../webshop"
+  },
+  "commands": [
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "modelSet": "base",
+      "name": "prime",
+      "output": "text",
+      "relevant": [],
+      "template": "prime",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "modelSet": "base",
+      "name": "classify",
+      "output": "json",
+      "relevant": [],
+      "template": "classify",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "modelSet": "heavy",
+      "name": "chore",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-chore",
+      "validation": [
+        "lint",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "modelSet": "heavy",
+      "name": "bug",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-bug",
+      "validation": [
+        "lint",
+        "test",
+        "e2e"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [
+        "create_prd"
+      ],
+      "file": "",
+      "focus": [
+        "New endpoints need a pytest module under api/tests mirroring the source path."
+      ],
+      "modelSet": "heavy",
+      "name": "feature",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-feature",
+      "validation": [
+        "lint",
+        "test",
+        "e2e"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "modelSet": "heavy",
+      "name": "resolve-test",
+      "output": "text",
+      "relevant": [],
+      "template": "resolve-test",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [
+        "review_code"
+      ],
+      "file": "",
+      "focus": [],
+      "modelSet": "heavy",
+      "name": "review",
+      "output": "json",
+      "relevant": [],
+      "template": "review",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "modelSet": "heavy",
+      "name": "patch",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-patch",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "modelSet": "base",
+      "name": "document",
+      "output": "text",
+      "relevant": [],
+      "template": "document",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [
+        "create_git_diff_commit"
+      ],
+      "file": "",
+      "focus": [],
+      "modelSet": "base",
+      "name": "commit",
+      "output": "text",
+      "relevant": [],
+      "template": "commit",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [
+        "write_pull-request"
+      ],
+      "file": "",
+      "focus": [],
+      "modelSet": "base",
+      "name": "pull-request",
+      "output": "text",
+      "relevant": [],
+      "template": "pull-request",
+      "validation": []
+    }
+  ],
+  "description": "Agentic layer for the webshop monorepo",
+  "environments": [
+    {
+      "copyFiles": [
+        ".env"
+      ],
+      "dir": "trees",
+      "id": "worktree",
+      "keep": "on-failure",
+      "kind": "worktree",
+      "portBase": 9100,
+      "portsPerRun": 2,
+      "status": "stable"
+    },
+    {
+      "id": "nix-devshell",
+      "kind": "nix-devshell",
+      "nixpkgs": "github:NixOS/nixpkgs/nixos-unstable",
+      "packages": [
+        "bun",
+        "nodejs_22",
+        "python312",
+        "uv",
+        "ffmpeg"
+      ],
+      "pure": false,
+      "shellHook": "",
+      "status": "stable"
+    },
+    {
+      "agentInside": false,
+      "baseImage": "docker.io/library/debian:stable-slim",
+      "cpus": "2",
+      "id": "sandbox",
+      "kind": "podman",
+      "memory": "4g",
+      "network": "slirp",
+      "packages": [
+        "git",
+        "curl"
+      ],
+      "setup": [],
+      "status": "stable"
+    }
+  ],
+  "experts": [
+    {
+      "domain": "Payment provider integration and reconciliation",
+      "maxLines": 1000,
+      "name": "payments",
+      "paths": [
+        "api/app/payments"
+      ]
+    }
+  ],
+  "forge": {
+    "botMarker": "[ADW-BOT]",
+    "host": "https://forgejo.example.org",
+    "id": "forgejo",
+    "kind": "forgejo",
+    "repo": "acme/webshop",
+    "status": "stable",
+    "tokenEnv": "FORGEJO_TOKEN"
+  },
+  "hops": [
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "implement",
+      "produces": "changes",
+      "takes": "plan",
+      "template": "run-plan"
+    },
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "new-command",
+      "produces": "command",
+      "takes": "prompt",
+      "template": "meta-command"
+    },
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "new-adw",
+      "produces": "adw",
+      "takes": "prompt",
+      "template": "meta-adw"
+    }
+  ],
+  "layer": {
+    "dir": "",
+    "git": true,
+    "id": "sibling",
+    "kind": "sibling",
+    "status": "stable"
+  },
+  "llmTxt": "LLM.txt",
+  "name": "webshop",
+  "promptInputs": [
+    {
+      "classify": true,
+      "id": "issue",
+      "keyword": "adw",
+      "kind": "issue",
+      "labels": [
+        "adw"
+      ],
+      "status": "stable"
+    },
+    {
+      "blockedMarker": "[>]",
+      "doneMarker": "[x]",
+      "failedMarker": "[!]",
+      "id": "tasklist",
+      "kind": "tasklist",
+      "openMarker": "[ ]",
+      "path": "tasks.md",
+      "runningMarker": "[~]",
+      "status": "stable",
+      "tagSyntax": "braces"
+    },
+    {
+      "appendToTasklist": true,
+      "confirm": true,
+      "id": "voice",
+      "kind": "voice",
+      "route": "auto",
+      "status": "stable"
+    }
+  ],
+  "reviews": [
+    {
+      "draft": false,
+      "id": "human",
+      "kind": "human",
+      "reviewers": [],
+      "status": "stable"
+    },
+    {
+      "allowedClasses": [
+        "chore",
+        "bug"
+      ],
+      "artefacts": [
+        "log",
+        "junit",
+        "screenshots",
+        "recordings"
+      ],
+      "blockProtectedPaths": true,
+      "command": "review",
+      "deployCmd": "deploy",
+      "id": "zero-touch",
+      "kind": "auto",
+      "maxDiffLines": 300,
+      "maxRetries": 3,
+      "requireChecks": [
+        "lint",
+        "test",
+        "e2e"
+      ],
+      "reviewers": 1,
+      "ship": "deploy",
+      "status": "stable"
+    }
+  ],
+  "schemaVersion": "agentic-layer-v1",
+  "storage": {
+    "accessKeyEnv": "AWS_ACCESS_KEY_ID",
+    "bucket": "webshop-adw",
+    "endpoint": "https://s3.example.org",
+    "id": "s3",
+    "kind": "s3",
+    "localDir": "artefacts",
+    "prefix": "adw",
+    "publicBaseUrl": "",
+    "region": "us-east-1",
+    "secretKeyEnv": "AWS_SECRET_ACCESS_KEY",
+    "status": "stable"
+  },
+  "triggers": [
+    {
+      "bind": "127.0.0.1",
+      "events": [
+        "issue-opened",
+        "issue-comment"
+      ],
+      "id": "webhook",
+      "kind": "webhook",
+      "path": "/webhook",
+      "port": 8001,
+      "secretEnv": "ADW_WEBHOOK_SECRET",
+      "status": "stable"
+    },
+    {
+      "id": "cron",
+      "intervalSeconds": 15,
+      "kind": "cron",
+      "maxConcurrent": 3,
+      "status": "stable",
+      "systemd": true
+    },
+    {
+      "hotkey": "enter",
+      "id": "voice",
+      "kind": "voice",
+      "status": "stable"
+    },
+    {
+      "confirm": false,
+      "id": "manual",
+      "kind": "manual",
+      "status": "stable"
+    }
+  ],
+  "voice": {
+    "id": "kokoro",
+    "kind": "kokoro",
+    "recordSeconds": 8,
+    "speakSummaries": true,
+    "status": "stable",
+    "sttDevice": "auto",
+    "sttModel": "base.en",
+    "ttsLang": "en-us",
+    "ttsSpeed": 100,
+    "ttsVoice": "af_heart"
+  }
+}
