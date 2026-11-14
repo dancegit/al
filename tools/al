@@ -10,19 +10,25 @@
   al compile LAYER                 agentic.rkt -> agentic-layer.json (validated against the schema)
   al gen     LAYER                 compile + generate commands, HOPs, ADWs, env, triggers, forge files
   al check   LAYER                 verify a generated layer and that the application tree is untouched
+  al verify  LAYER [--cmd NAME …] [--timeout S] [--json]
+                                   run the layer's codebase cmds on a throwaway worktree, in the ADWs' environment
 
 LAYER is the directory holding agentic.rkt. Nothing is ever written into APP.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
+import signal
 import subprocess
 import sys
+import time
 import tomllib
 from collections import Counter
 from pathlib import Path
@@ -768,6 +774,169 @@ def check_layer(layer: Path) -> list[str]:
 
 
 # ------------------------------------------------------------------------------------------
+# verify: the compiler proves the layer is coherent; this proves its codebase cmds are true
+# ------------------------------------------------------------------------------------------
+
+VERIFY_SKIPPED = ("deploy", "start", "install")  # side effects or long-running: only when named with --cmd
+VERIFY_TAIL = 15
+
+
+def app_fingerprint(app: Path) -> dict[str, str]:
+    """What must be identical before and after anything al does next to an application."""
+    def out(*args: str) -> str:
+        cp = run(["git", "-C", str(app), *args], check=False)
+        if cp.returncode != 0:
+            raise AlError(f"git {' '.join(args)} failed in {app}: {cp.stderr.strip()}")
+        return cp.stdout.rstrip("\n")
+    return {"head": out("rev-parse", "HEAD"), "branch": out("branch", "--show-current"),
+            "status": out("status", "--porcelain")}
+
+
+def _run_group(argv: list[str], cwd: Path, env: dict[str, str], timeout: int) -> tuple[int, str]:
+    """Same contract as the runtime's check runner: own process group, combined output, 124 on timeout."""
+    try:
+        proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, errors="replace", start_new_session=True)
+    except OSError as exc:
+        return 127, f"could not start {argv[0]!r}: {exc}\n"
+    try:
+        output, _ = proc.communicate(timeout=max(1, timeout))
+        return int(proc.returncode or 0), output
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        output, _ = proc.communicate()
+        return 124, output + f"\ncommand timed out after {timeout}s\n"
+    except BaseException:  # Ctrl-C: do not leave the command running in the worktree we are about to remove
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        raise
+
+
+class _VerifyState:
+    """Stand-in for the runtime's ADWState: just what adw_modules.envs reads and writes."""
+
+    def __init__(self, adw_id: str, adw: str, worktree: Path) -> None:
+        self.adw_id, self.adw = adw_id, adw
+        self.klass, self.prompt, self.source = "chore", "al verify", "verify"
+        self.worktree, self.branch = str(worktree), ""
+        self.ports: list[int] = []
+        self.dry_run, self.status = True, "running"
+
+
+def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print) -> tuple[list[dict], list[str]]:
+    """Run codebase cmds of a generated layer; returns (report rows, skipped names)."""
+    if not (layer / "agentic-layer.json").is_file() or not (layer / "adws/adw_modules/envs.py").is_file():
+        raise AlError(f"{layer} is not a generated layer: run `al gen {layer}` first")
+    sys.path.insert(0, str(layer / "adws"))  # the layer's own runtime: identical environment semantics
+    try:
+        from adw_modules import envs, ir as ir_module
+        from adw_modules.errors import LayerError, StepFailed
+    except ImportError as exc:
+        raise AlError(f"cannot import the layer runtime from {layer / 'adws'}: {exc}") from exc
+    try:
+        loaded = ir_module.load(layer)
+    except LayerError as exc:
+        raise AlError(str(exc)) from exc
+    declared = loaded.ir["codebase"]["commands"]
+    by_name = {c["name"]: c for c in declared}
+    unknown = [n for n in names if n not in by_name]
+    if unknown:
+        raise AlError(f"not a declared codebase cmd: {', '.join(unknown)}; declared: {', '.join(by_name)}")
+    selected = [c for c in declared if (c["name"] in names if names else c["name"] not in VERIFY_SKIPPED)]
+    skipped = [] if names else [c["name"] for c in declared if c["name"] in VERIFY_SKIPPED]
+    adws = loaded.ir.get("adws", [])
+    if not adws:
+        raise AlError("the layer declares no ADW, so there is no environment to verify in")
+    adw = next((a for a in adws if any(s.get("kind") == "check" for s in a.get("steps", []))), adws[0])
+    app = Path(loaded.app_root)
+    if not (app / ".git").exists():
+        raise AlError(f"application checkout {app} not found")
+    env_ids = list(adw.get("environment", []))
+    tree_dir = "trees"
+    for env_id in env_ids:
+        option = loaded.option("environments", env_id)
+        if option["kind"] == "worktree":
+            tree_dir = str(option.get("dir") or "trees")
+    run_id = f"verify-{secrets.token_hex(4)}"
+    worktree = (layer / tree_dir / run_id).resolve()
+    if worktree == app or app in worktree.parents:
+        raise AlError(f"refusing to verify: {worktree} is inside the application tree")
+    out_dir = layer / "agents" / "verify"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    before = app_fingerprint(app)
+    heads_before = set(git(app, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines())
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    cp = run(["git", "-C", str(app), "worktree", "add", "--detach", str(worktree), loaded.default_branch], check=False)
+    if cp.returncode != 0:
+        raise AlError(f"cannot create the verify worktree: {cp.stderr.strip()}")
+    state = _VerifyState(run_id, adw["name"], worktree)
+    report: list[dict] = []
+    stack = None
+    try:
+        try:
+            stack = envs.build(loaded, state, env_ids)
+            with contextlib.redirect_stdout(sys.stderr):  # runtime progress lines never mix into our stdout
+                stack.setup()
+        except (LayerError, StepFailed) as exc:
+            raise AlError(f"environment setup failed: {exc}") from exc
+        if Path(state.worktree).resolve() != worktree:
+            raise AlError(f"the runtime moved the run to {state.worktree}; refusing to continue")
+        stack.cwd = worktree  # also for host-only stacks: never the application's own working tree
+        say(f"verify: {len(selected)} cmd(s) of `{loaded.name}` in the environment of ADW `{adw['name']}` "
+            f"({' → '.join(env_ids) or 'host'}), worktree {worktree}")
+        for name in skipped:
+            say(f"  skip  {name}  (never run implicitly; name it with --cmd {name})")
+        for c in selected:
+            limit = int(timeout if timeout is not None else c.get("timeout", 900))
+            started = time.monotonic()
+            try:
+                with contextlib.redirect_stdout(sys.stderr):
+                    argv = stack.wrap(str(c["run"]))  # may build an image / start the run's container
+                code, output = _run_group(argv, worktree, stack.process_env(), limit)
+            except (LayerError, StepFailed) as exc:  # e.g. the podman image does not build
+                code, output = 125, f"environment failed before the command ran: {exc}\n"
+            seconds = round(time.monotonic() - started, 1)
+            log = out_dir / f"{c['name']}.log"
+            log.write_text(output)
+            report.append({"name": c["name"], "cmd": c["run"], "exit": code, "seconds": seconds,
+                           "log": log.relative_to(layer).as_posix()})
+            say(f"  {'ok  ' if code == 0 else 'FAIL'}  {c['name']}  exit {code}  {seconds}s")
+            if code != 0:
+                for line in output.splitlines()[-VERIFY_TAIL:]:
+                    say(f"        {line}")
+    finally:
+        problems: list[str] = []
+        if stack is not None:
+            try:
+                with contextlib.redirect_stdout(sys.stderr):
+                    stack.teardown(True)  # removes the run container, releases ports, usually removes the worktree
+            except Exception as exc:  # noqa: BLE001 — foreign runtime code; cleanup below must still happen
+                problems.append(f"environment teardown failed: {exc}")
+        for tree in {worktree, Path(state.worktree).resolve()}:
+            if tree.exists() and tree != app:
+                run(["git", "-C", str(app), "worktree", "remove", "--force", str(tree)], check=False)
+                shutil.rmtree(tree, ignore_errors=True)
+        run(["git", "-C", str(app), "worktree", "prune"], check=False)
+        for branch in set(git(app, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines()) - heads_before:
+            if state.branch and branch == state.branch:  # only a branch the runtime made for this very run
+                run(["git", "-C", str(app), "branch", "-D", branch], check=False)
+        (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        after = app_fingerprint(app)
+        if after != before:
+            changed = ", ".join(k for k in before if before[k] != after[k])
+            problems.append(f"THE APPLICATION CHECKOUT CHANGED DURING VERIFY ({changed}) — {app}\n"
+                            f"  before: {before}\n  after:  {after}")
+        if problems:
+            raise AlError("verify: " + "\n".join(problems))
+    return report, skipped
+
+
+# ------------------------------------------------------------------------------------------
 # cli
 # ------------------------------------------------------------------------------------------
 
@@ -778,6 +947,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("scout"); p.add_argument("app", type=Path); p.add_argument("-o", "--out", type=Path); p.add_argument("--json", action="store_true")
     for name in ("compile", "gen", "check"):
         p = sub.add_parser(name); p.add_argument("layer", type=Path)
+    p = sub.add_parser("verify", help="run the layer's codebase cmds on a throwaway worktree")
+    p.add_argument("layer", type=Path)
+    p.add_argument("--cmd", dest="names", action="append", default=[], metavar="NAME", help="verify only this cmd (repeatable)")
+    p.add_argument("--timeout", type=int, metavar="S", help="seconds per cmd (default: each cmd's own #:timeout)")
+    p.add_argument("--json", action="store_true", help="print the report as JSON on stdout (progress goes to stderr)")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "scout":
@@ -809,6 +983,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"PROBLEM: {pr}")
             print("check: " + ("FAILED" if problems else "ok"))
             return 1 if problems else 0
+        elif a.cmd == "verify":
+            say = (lambda line: print(line, file=sys.stderr, flush=True)) if a.json else (lambda line: print(line, flush=True))
+            report, _ = verify_layer(a.layer.resolve(), a.names, a.timeout, say)
+            failed = [r["name"] for r in report if r["exit"] != 0]
+            if a.json:
+                print(json.dumps(report, indent=2))
+            say(f"verify: {len(report) - len(failed)}/{len(report)} ok" + (f"; failed: {', '.join(failed)}" if failed else "")
+                + f"; report {a.layer.resolve() / 'agents/verify/report.json'}")
+            return 1 if failed else 0
     except AlError as e:
         print(f"al: {e}", file=sys.stderr)
         return 1

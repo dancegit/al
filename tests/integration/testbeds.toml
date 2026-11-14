@@ -1,0 +1,28 @@
+# The example codebases the integration suite runs against. Every testbed is pinned to one commit:
+# the suite refuses to run against a checkout at any other commit or with local modifications.
+# `branch` is the local branch the layer's `#:default-branch` names (worktrees are cut from it).
+
+[flask]
+url = "https://github.com/pallets/flask.git"
+commit = "49943b5a94413a530761350f04e896f76e8d620e"
+branch = "main"
+
+[ripgrep]
+url = "https://github.com/BurntSushi/ripgrep.git"
+commit = "178cc027e283fd965cb72d0a7395b219eada170c"
+branch = "master"
+
+[gin]
+url = "https://github.com/gin-gonic/gin.git"
+commit = "0f09c3a9b4626d9fe9979cf4d0521d6ae32ab646"
+branch = "master"
+
+[express]
+url = "https://github.com/expressjs/express.git"
+commit = "43fca52d28a422c8be48fd489cbd4f2d6152bab6"
+branch = "master"
+
+[jq]
+url = "https://github.com/jqlang/jq.git"
+commit = "5c001b18d7237cce1fdba63608732163f978dd23"
+branch = "master"
