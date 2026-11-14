@@ -62,3 +62,4 @@ def make_layer(tmp_path: Path, app_repo: Path):
             (layer / "hops" / f"{name}.md").write_text(f"# {name}\n$ARGUMENTS\n", encoding="utf-8")
         return layer
     return factory
+

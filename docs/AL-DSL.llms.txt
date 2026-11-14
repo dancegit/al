@@ -249,7 +249,7 @@ Declare any number. Default when omitted: `(environment worktree)`.
   - `#:base-image` (string; default "docker.io/library/debian:stable-slim") — Base image.
   - `#:packages` (list of string; default ()) — Distribution packages installed in the image (apt names for Debian bases).
   - `#:setup` (list of string; default ()) — Extra RUN lines for the Containerfile.
-  - `#:network` (none | host | slirp; default slirp) — Network mode. `none` for fully offline checks.
+  - `#:network` (none | host | slirp; default slirp) — Network mode: `slirp` = podman's default rootless user-mode network, `none` = fully offline checks, `host` = host network.
   - `#:memory` (string; default "4g") — Memory limit.
   - `#:cpus` (string; default "2") — CPU limit.
   - `#:agent-inside` (boolean; default #f) — Run the agent CLI inside the container too (otherwise only codebase commands run inside).

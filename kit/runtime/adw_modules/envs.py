@@ -143,17 +143,18 @@ class EnvStack:
             if not self.state.worktree:
                 raise LayerError("podman environment requires a worktree environment")
             self._ensure_podman_image()
-            network = {"none": "none", "host": "host", "slirp": "slirp4netns"}.get(option.get("network"))
-            if network is None:
+            if option.get("network") not in ("none", "host", "slirp"):
                 raise LayerError(f"Unknown podman network: {option.get('network')}")
+            # "slirp" = podman's default rootless user-mode network (pasta or slirp4netns), so no flag.
+            network = [] if option["network"] == "slirp" else ["--network", option["network"]]
             argv = ["podman", "run", "--rm", "--userns=keep-id", "-v", f"{self.state.worktree}:/work:Z",
-                    "-w", "/work", "--network", network, "--memory", str(option["memory"]),
+                    "-w", "/work", *network, "--memory", str(option["memory"]),
                     "--cpus", str(option["cpus"])]
             for key, value in self.env.items():
                 argv.extend(["-e", f"{key}={value}"])
             return [*argv, self.image, "bash", "-c", cmd]
         if self.nix_option:
-            argv = ["nix", "develop", str(self.layer.layer_dir / "env")]
+            argv = ["nix", "develop", f"path:{self.layer.layer_dir / 'env'}"]
             if self.nix_option.get("pure"):
                 argv.extend(["--ignore-environment", "--keep", "HOME"])
             return [*argv, "--command", "bash", "-c", cmd]
@@ -162,7 +163,7 @@ class EnvStack:
     def wrap_agent(self, argv: list[str]) -> list[str]:
         """Wrap an agent CLI in nix only when it is configured to run there."""
         if self.nix_option and not (self.podman_option and self.podman_option.get("agentInside")):
-            result = ["nix", "develop", str(self.layer.layer_dir / "env")]
+            result = ["nix", "develop", f"path:{self.layer.layer_dir / 'env'}"]
             if self.nix_option.get("pure"):
                 result.extend(["--ignore-environment", "--keep", "HOME"])
             return [*result, "--command", *argv]

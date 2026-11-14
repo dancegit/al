@@ -1,0 +1,126 @@
+# gin
+
+> Gin is an HTTP web framework written in Go, imported by other Go programs as the module `github.com/gin-gonic/gin` (`go.mod:1`). It consists of the root package `gin` (router, context, middleware) and the sub-packages `binding`, `render`, `codec/json`, `ginS` and `internal/*`. It is shipped by pushing a git tag, which runs GoReleaser in GitHub Actions to publish a GitHub release without building binaries (`.github/workflows/goreleaser.yml:5`, `.goreleaser.yaml:7`).
+
+## Identity
+
+- Repo URL: git@github.com:gin-gonic/gin.git
+- Default branch: master
+- License: MIT
+- Primary languages: go
+- Kind: library
+
+## Layout
+
+- `*.go` (repository root, e.g. `gin.go`, `context.go`, `routergroup.go`, `tree.go`, `auth.go`, `logger.go`, `recovery.go`) — source of package `gin`; `test_helpers.go` is non-test source that exports test helpers
+- `*_test.go` (repository root) — Go tests of package `gin`, in the same directory as the source; the test for `<name>.go` is `<name>_test.go` (e.g. `auth.go` and `auth_test.go`)
+- `binding/` — request binding and validation (JSON, XML, form, query, URI, header, YAML, TOML, protobuf, msgpack, BSON); tests are `binding/*_test.go` beside the source
+- `render/` — response renderers (JSON, XML, HTML, YAML, TOML, protobuf, msgpack, BSON, PDF, redirect, text, data, reader); tests are `render/*_test.go` beside the source
+- `codec/json/` — JSON codec selected by build tag (`jsoniter`, `go_json`, `sonic`, default `encoding/json`); no test files
+- `internal/bytesconv/`, `internal/fs/` — internal helpers; tests are `*_test.go` beside the source; these packages are not run by `make test` (`Makefile:7`)
+- `ginS/` — package `ginS`, a default-engine API wrapper; test is `ginS/gins_test.go`
+- `testdata/` — fixtures used by tests: `testdata/certificate/` (TLS certificate and key), `testdata/protoexample/` (protobuf definition and generated Go), `testdata/template/` (HTML templates), `testdata/test_file.txt`
+- `docs/doc.md` — user documentation of every feature; `README.md` is the entry document
+- `examples/README.md` — notice that examples live in another repository; no code
+- `CHANGELOG.md` — release notes per version; `BENCHMARKS.md` — router benchmark report
+- `Makefile` — developer targets `test`, `fmt`, `fmt-check`, `vet`, `lint`, `misspell`, `misspell-check`, `tools`
+- `.golangci.yml` — golangci-lint v2 linter and formatter configuration; `codecov.yml` — coverage targets
+- `.github/` — GitHub Actions workflows, issue and pull request templates, dependabot configuration
+- `.goreleaser.yaml` — release configuration
+- `go.mod`, `go.sum` — module manifest and checksums
+- Generated output (untracked, listed in `.gitignore`): `coverage.out`, `profile.out`, `tmp.out`
+
+## Commands
+
+| name | shell command from repo root | proves what | typical duration | needs network? |
+| --- | --- | --- | --- | --- |
+| lint | `make vet` | `go vet` reports nothing for all packages except `/examples/` | UNVERIFIED | yes (Go modules must be downloaded on a fresh checkout) |
+| format | `make fmt` | rewrites every `*.go` file with `gofmt -s -w`; proves nothing, it changes files | UNVERIFIED | no |
+| test | `make test` | tests of packages `gin`, `ginS`, `binding`, `render` pass with `go test -v -covermode=count`; writes `coverage.out` | UNVERIFIED | yes (Go modules must be downloaded on a fresh checkout) |
+
+## Toolchain
+
+- nixpkgs: `go` (Go 1.26.0 or newer per `go.mod:3`; CI tests 1.26 and 1.27 per `.github/workflows/gin.yml:39`; the exact versioned attribute name is UNVERIFIED), `gnumake`, `git`
+- System packages: `grep`, `cat`, `find`, `rm` (used by `Makefile:6`, `Makefile:13-35`)
+- Services: none
+
+## Artefacts
+
+- coverage: `coverage.out` — produced by `test` (Go cover profile, mode `count`, merged from all tested packages; no extra flag needed)
+
+## Conventions
+
+- Open pull requests against the `master` branch (`CONTRIBUTING.md:34`).
+- A pull request has at most two commits; squash otherwise (`CONTRIBUTING.md:35`).
+- Every code change adds or modifies tests that cover it (`CONTRIBUTING.md:37`); the test goes in `<name>_test.go` in the same directory as the changed `<name>.go`.
+- A new feature is documented in `docs/doc.md`, not in `README.md` (`CONTRIBUTING.md:38`).
+- The pull request description follows the checklist in `.github/PULL_REQUEST_TEMPLATE.md` (`CONTRIBUTING.md:39`).
+- Commit subjects use the form `<type>(<optional scope>): <subject>` with type one of `feat`, `fix`, `chore`, `refactor`, `build`, `ci`, `docs`; the release changelog groups commits by these prefixes (`.goreleaser.yaml:38-53`).
+- Use `any`, not `interface{}` (`.golangci.yml:69-71`).
+- Code is formatted with gofmt, gofumpt and goimports (`.golangci.yml:63-66`); `gin.go` is excluded from the formatters (`.golangci.yml:74-75`).
+- Tests use `github.com/stretchr/testify` assertions and must pass the `testifylint` linter with all checks enabled (`go.mod:16`, `.golangci.yml:16`, `.golangci.yml:29-30`).
+- Coverage targets are 99% for the project and 99% for the patch (`codecov.yml:8`, `codecov.yml:13`).
+- Code must compile and pass tests under each of the build tag sets CI uses: none, `-tags nomsgpack`, `--ldflags="-checklinkname=0" -tags sonic`, `-tags go_json`, and `-race` (`.github/workflows/gin.yml:40-47`).
+
+## Protected paths
+
+- `.github` — CI workflows, release workflow, dependabot and issue/PR templates
+- `.goreleaser.yaml` — release configuration
+- `.golangci.yml` — lint gate configuration used by CI
+- `codecov.yml` — coverage gate configuration used by CI
+- `LICENSE` — licence text
+- `auth.go` — security-sensitive: HTTP Basic authentication middleware with constant-time credential comparison
+- `testdata/certificate` — TLS private key and certificate fixtures
+- `testdata/protoexample/test.pb.go` — generated by protoc-gen-go, marked DO NOT EDIT
+
+## Work classes
+
+- Chore: dependency bump in `go.mod` and `go.sum`, a documentation fix in `docs/doc.md` or `README.md`, or a lint/format cleanup in `*.go` files; proven by `lint` and `test`.
+- Bug: a fix in one source file (e.g. `context.go`, `tree.go`, `binding/form_mapping.go`) plus a regression test in the `<name>_test.go` file beside it; proven by `test`.
+- Feature: a new or changed exported function, method, type or option of package `gin`, `binding` or `render` (the public Go API signature and the HTTP response it produces are what a user sees), with tests beside the source and a section in `docs/doc.md`; proven by `test` output and `coverage.out`.
+- Safe for zero-touch: none (command durations are UNVERIFIED, `test` needs the network on a fresh checkout, and CI additionally runs a 20-job matrix that the local commands do not reproduce)
+
+## Forge
+
+- Forge: github
+- Repo: gin-gonic/gin
+- CI: GitHub Actions, `.github/workflows/gin.yml` (job `lint`: golangci-lint v2.11 through `golangci/golangci-lint-action@v9` with `--verbose`; job `test`: `make test` with `TESTTAGS` from the matrix on ubuntu-latest and macos-latest, Go 1.26 and 1.27, then Codecov upload); `.github/workflows/codeql.yml` (CodeQL for Go); `.github/workflows/trivy-scan.yml` (Trivy filesystem scan); `.github/workflows/goreleaser.yml` (GoReleaser `release --clean` on tag push)
+
+## Conditional docs
+
+- `docs/doc.md` — when adding or changing a feature (it must be documented there), or when working with the build tags `jsoniter`, `go_json`, `sonic`, `nomsgpack`
+- `CONTRIBUTING.md` — when preparing a pull request
+- `.github/PULL_REQUEST_TEMPLATE.md` — when writing a pull request description
+- `ginS/README.md` — when changing anything under `ginS/`
+- `BENCHMARKS.md` — when changing router performance in `tree.go`
+- `CHANGELOG.md` — when checking in which release a feature or fix shipped
+
+## Evidence
+
+- `lint` — `Makefile:54` (target `vet`), `Makefile:55` (`$(GO) vet $(VETPACKAGES)`), `Makefile:5` (package list)
+- `format` — `Makefile:39` (target `fmt`), `Makefile:40` (`$(GOFMT) -w $(GOFILES)`)
+- `test` — `.github/workflows/gin.yml:81` (`run: make test`), `Makefile:12` (target `test`), `Makefile:7` (tested packages)
+- coverage `coverage.out` — `Makefile:13`, `Makefile:32`, `.gitignore:3`
+- needs network for `lint` and `test` — `.github/workflows/gin.yml:58` (`GOPROXY`), `.github/workflows/gin.yml:71-78` (module cache)
+- `.github` — `.github/workflows/gin.yml:1`
+- `.goreleaser.yaml` — `.github/workflows/goreleaser.yml:24-29`
+- `.golangci.yml` — `.github/workflows/gin.yml:26-30`
+- `codecov.yml` — `.github/workflows/gin.yml:83-87`, `codecov.yml:2`
+- `LICENSE` — `LICENSE:1`
+- `auth.go` — `auth.go:37`
+- `testdata/certificate` — `testdata/certificate/key.pem:1`
+- `testdata/protoexample/test.pb.go` — `testdata/protoexample/test.pb.go:1`
+
+## Unknowns
+
+- Typical duration of `lint`, `format` and `test`: UNVERIFIED; no timeout or timing is stated in the repository. A human must time them.
+- The shell command behind CI's lint job: UNVERIFIED. CI runs golangci-lint v2.11 through an action (`.github/workflows/gin.yml:26-30`) and no file states a `golangci-lint` command line; `lint` above is `make vet`, which is a weaker check than CI's. A human must confirm the local equivalent (and that `golangci-lint` v2.11 is available) before relying on `lint` as the CI gate.
+- `make lint` (`Makefile:59-63`) exists but runs `golint` and installs it with `go get -u`; CI does not run it. Not listed as a command.
+- `make fmt-check` (`Makefile:44-50`) is a check-only variant of `format`; CI does not run it and `gin.go` is excluded from CI's formatters, so whether it exits 0 on the current tree is UNVERIFIED.
+- The versioned nixpkgs attribute for Go 1.26 or newer: UNVERIFIED; a human must confirm the attribute name in the nixpkgs revision used.
+- Whether `make test` passes without network when the Go module cache is already populated: UNVERIFIED (not run).
+- `make test` covers only packages `gin`, `ginS`, `binding`, `render` (`Makefile:7`); no command stated in the repository runs the tests in `internal/bytesconv` and `internal/fs`.
+- No command to build, install dependencies, start, or generate docs is stated in the repository; `go build ./...` from the draft is unsupported.
+- No junit XML, HTML report, image, video or trace output is configured anywhere in the repository.
+- Whether `go.sum` and `go.mod` require human approval to change: no policy is stated; dependabot updates them daily (`.github/dependabot.yml:3-6`). Not listed as protected.
+- Commit message convention is inferred from `.goreleaser.yaml` groups and the single commit visible in this checkout (`docs: include HTTP QUERY method in RouterGroup.Any (#4879)`); no document states it as a rule.

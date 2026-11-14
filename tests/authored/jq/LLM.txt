@@ -1,0 +1,151 @@
+# jq
+
+> jq is a command-line JSON processor and the C library `libjq`, written in portable C with no runtime dependencies. It is built with GNU autotools (autoconf, automake, libtool) and optionally links the vendored Oniguruma regex library (git submodule). It ships as standalone executables on GitHub releases, a source tarball (`make dist`), and a container image `ghcr.io/jqlang/jq`; the manual and website are generated from YAML with Python.
+
+## Identity
+
+- Repo URL: git@github.com:jqlang/jq.git
+- Default branch: master
+- License: MIT (code), ICU (vendored decNumber), CC-BY-3.0 (documentation); text in `COPYING`
+- Primary languages: c, shell, python
+- Kind: cli
+
+## Layout
+
+- `src/` — C sources and headers of libjq and the `jq` binary (`src/main.c` is the CLI entry point; `src/builtin.c` C builtins; `src/builtin.jq` builtins written in jq; `src/lexer.l` and `src/parser.y` grammar sources)
+- `src/lexer.c`, `src/lexer.h`, `src/parser.c`, `src/parser.h` — generated from `src/lexer.l` and `src/parser.y`, committed
+- `tests/` — test suite run by `make check`. Driver shell scripts have no extension (`tests/jqtest`, `tests/mantest`, `tests/shtest`, `tests/utf8test`, `tests/base64test`, `tests/uritest`, `tests/optionaltest`, `tests/onigtest`, `tests/manonigtest`) and source `tests/setup`. Data files are `tests/<name>.test`: groups of three lines (program, input, expected output). `tests/modules/` holds jq module fixtures; `tests/jq_fuzz_*.c` and `tests/jq_fuzz_*.cpp` are fuzz harnesses
+- `tests/man.test`, `tests/manonig.test` — generated from the manual examples, committed
+- `docs/` — manual and website sources: `docs/content/manual/dev/manual.yml` (manual for the development version), `docs/content/manual/v*/manual.yml` (released versions), `docs/templates/`, `docs/public/`, Python build scripts `docs/build_manpage.py`, `docs/build_mantests.py`, `docs/build_website.py`, `docs/validate_manual_schema.py`, and `docs/Pipfile`
+- `jq.1.prebuilt` — man page generated from `docs/content/manual/dev/manual.yml`, committed
+- `Makefile.am`, `configure.ac` — autotools build definition; `Makefile.am` lists every source file, test driver (`TESTS`) and distributed file (`EXTRA_DIST`)
+- `config/m4/`, `m4/` — autoconf macros
+- `scripts/` — `scripts/version` (version string from git tags), `scripts/crosscompile`, `scripts/gen_utf8_tables.py`
+- `vendor/decNumber/` — vendored decNumber library
+- `vendor/oniguruma` — git submodule (empty until `install` runs)
+- `sig/` — release signatures and release signing keys
+- `.github/workflows/` — CI, release and website publishing
+- `Dockerfile` — container image build
+- `NEWS.md` — release notes per version
+- `README.md` — entry document
+
+## Commands
+
+| name | shell command from repo root | proves what | typical duration | needs network? |
+| --- | --- | --- | --- | --- |
+| install | `git submodule update --init && autoreconf -i && ./configure --disable-docs --with-oniguruma=builtin --enable-static` | the Oniguruma submodule is fetched and the build system is generated and configured; must run once in a fresh checkout before `build` or `test` | UNVERIFIED | yes |
+| build | `make -j"$(nproc)"` | libjq and the `jq` binary compile and link with `-Wextra -Wall` | UNVERIFIED | no |
+| test | `make check VERBOSE=yes` | every driver in `TESTS` of `Makefile.am` passes against the built `./jq` (builds first if needed); writes `test-suite.log` and `tests/*.log` | UNVERIFIED | no |
+| docs | `(cd docs && pipenv sync && pipenv run python3 build_website.py)` | the website renders from `docs/content` into `docs/output/` | UNVERIFIED | yes |
+
+## Toolchain
+
+- nixpkgs: UNVERIFIED attribute names `gcc`, `gnumake`, `autoconf` (>= 2.65), `automake` (>= 1.11.2), `libtool`, `git`; for `docs` only: `python311` (3.11), `pipenv`
+- System packages: Debian apt names `build-essential`, `autoconf`, `automake`, `libtool`, `git`. For `docs` only: Python 3.11 and `pipenv` (the repository installs it with `pip install pipenv`; apt package names UNVERIFIED). Only when regenerating `src/lexer.c` or `src/parser.c`: `flex` and `bison` >= 3.0
+- Services: none
+
+## Artefacts
+
+- log: `test-suite.log` — produced by `test` (automake test harness, no flag needed)
+- log: `tests/*.log` — produced by `test`, one per test driver
+- html: `docs/output/**/*.html` — produced by `docs`
+
+## Conventions
+
+- A test in `tests/jq.test` is three lines: jq program, input, expected output; blank lines and lines starting with `#` are ignored.
+- A test for a language feature or builtin goes in `tests/jq.test`; a test that needs regex support goes in `tests/onig.test`; a test of command-line options or process behaviour goes in `tests/shtest`.
+- A new test driver script must be added to `TESTS` in `Makefile.am`, and every new test data file to `EXTRA_DIST` in `Makefile.am`.
+- A new C source or header file must be added to `LIBJQ_SRC` or `LIBJQ_INCS` in `Makefile.am`.
+- Builtins that can be written in jq go in `src/builtin.jq`; C builtins go in `src/builtin.c`.
+- Every user-visible builtin or option is documented in `docs/content/manual/dev/manual.yml`; its `examples` entries are tests.
+- After changing `docs/content/manual/dev/manual.yml`, `tests/man.test`, `tests/manonig.test` and `jq.1.prebuilt` must be regenerated (`./configure --enable-docs` then `make jq.1.prebuilt tests/man.test tests/manonig.test`, needs pipenv); CI fails when they are out of date.
+- Never hand-edit `src/lexer.c`, `src/lexer.h`, `src/parser.c`, `src/parser.h`; change `src/lexer.l` or `src/parser.y` and regenerate in maintainer mode.
+- Building and running the tests must leave no change in tracked files (`git diff --exit-code` is run after `make check` in CI).
+- C code must compile with `-Wextra -Wall -Wno-unused-parameter -Wno-unused-function -Woverlength-strings -Wstrict-prototypes`.
+- Public libjq symbols start with `jq_` or `jv_` (only those are exported).
+- Text files use LF line endings.
+- Commit message format: UNVERIFIED (the checkout has one commit: `Fix mktime/0 to allow the last two seconds of 1969 (#3671)`).
+
+## Protected paths
+
+- `.github` — CI, release and website publishing workflows
+- `Dockerfile` — published container image build
+- `COPYING` — license text
+- `SECURITY.md` — vulnerability reporting policy
+- `KEYS` — release signing key list
+- `sig` — release signatures and signing keys
+- `scripts/version` — release version derivation
+- `jq.spec` — RPM packaging
+- `vendor` — vendored decNumber and the Oniguruma submodule
+- `.gitmodules` — submodule pin
+- `src/lexer.c` — generated from `src/lexer.l`
+- `src/lexer.h` — generated from `src/lexer.l`
+- `src/parser.c` — generated from `src/parser.y`
+- `src/parser.h` — generated from `src/parser.y`
+- `tests/man.test` — generated from `docs/content/manual/dev/manual.yml`
+- `tests/manonig.test` — generated from `docs/content/manual/dev/manual.yml`
+- `jq.1.prebuilt` — generated from `docs/content/manual/dev/manual.yml`
+- `docs/Pipfile.lock` — generated lock file
+- `docs/public/CNAME` — website domain
+
+## Work classes
+
+- Chore: build-system, CI-free cleanup or documentation wording change; touches `Makefile.am`, `configure.ac`, `README.md` or `docs/content`; proven by `build` and `test`.
+- Bug: a fix in `src/*.c` or `src/builtin.jq` with a regression test added to `tests/jq.test` (three-line group), `tests/onig.test` for regex, or `tests/shtest` for command-line behaviour; proven by `build` and `test`.
+- Feature: a new builtin, operator or command-line option in `src/`, with tests in `tests/jq.test` or `tests/shtest` and a manual entry with examples in `docs/content/manual/dev/manual.yml`. User-visible change is the output of the `jq` CLI (stdout, stderr, exit code) and the public API in `src/jq.h` and `src/jv.h`; the artefact that proves it is `test-suite.log` with `tests/*.log` showing the new test passing.
+- Safe for zero-touch: UNVERIFIED — the repository states no policy; `test` emits log artefacts but its duration is unknown.
+
+## Forge
+
+- Forge: github
+- Repo: jqlang/jq
+- CI: GitHub Actions, `.github/workflows/ci.yml` (per platform: `autoreconf -i`, `./configure`, `make`, `make check VERBOSE=yes`, `git diff --exit-code`; `make distcheck`; release on `jq-*` tags), `.github/workflows/valgrind.yml`, `.github/workflows/decnum.yml`, `.github/workflows/oniguruma.yml`, `.github/workflows/bsd.yml` (build and `make check` variants), `.github/workflows/manpage.yml` (regenerates man page and man tests), `.github/workflows/scanbuild.yml` (clang scan-build), `.github/workflows/website.yml` (builds and deploys the website)
+
+## Conditional docs
+
+- `docs/README.md` — when changing anything under `docs/`, or regenerating `jq.1.prebuilt`, `tests/man.test` or `tests/manonig.test`
+- `docs/content/manual/dev/manual.yml` — when adding or changing a builtin, operator or command-line option
+- `docs/manual_schema.yml` — when editing any `manual.yml`
+- `tests/setup` — when adding or changing a test driver script under `tests/`
+- `.github/workflows/ci.yml` — when changing configure options or cross-compilation behaviour
+- `NEWS.md` — when a change is user-visible and belongs in release notes
+- `SECURITY.md` — when the task concerns a security vulnerability
+
+## Evidence
+
+- `install` — `README.md:48` (`git submodule update --init`), `README.md:49` and `.github/workflows/ci.yml:91` (`autoreconf -i`), `.github/workflows/bsd.yml:35` (`./configure --disable-docs --with-oniguruma=builtin --enable-static`)
+- `build` — `.github/workflows/ci.yml:99`
+- `test` — `.github/workflows/ci.yml:106`, `Dockerfile:27`; test list at `Makefile.am:144`
+- `docs` — `.github/workflows/website.yml:27` (`pipenv sync`), `.github/workflows/website.yml:29` (`pipenv run python3 build_website.py`), subdirectory at `.github/workflows/website.yml:13`
+- artefact `test-suite.log`, `tests/*.log` — `.github/workflows/ci.yml:115`
+- artefact `docs/output/**/*.html` — `docs/build_website.py:60`, `.github/workflows/website.yml:33`
+- system packages — `Dockerfile:10`, `.github/workflows/ci.yml:87`, `README.md:40`; flex and bison at `configure.ac:35`
+- Python 3.11 and pipenv — `.github/workflows/manpage.yml:29`, `.github/workflows/manpage.yml:32`
+- protected `.github` — `.github/workflows/ci.yml:374` (release job)
+- protected `Dockerfile` — `Dockerfile:1`
+- protected `COPYING` — `README.md:79`
+- protected `SECURITY.md` — `SECURITY.md:1`
+- protected `KEYS` — `KEYS:3`
+- protected `sig` — `.github/workflows/ci.yml:417` (signature update step)
+- protected `scripts/version` — `Makefile.am:108`
+- protected `jq.spec` — `Makefile.am:267`
+- protected `vendor`, `.gitmodules` — `.gitattributes:4`, `.gitmodules:1`
+- protected generated lexer and parser — `.gitattributes:7`, `.gitattributes:8`, `Makefile.am:36`
+- protected `tests/man.test`, `tests/manonig.test`, `jq.1.prebuilt`, `docs/Pipfile.lock` — `.gitattributes:9`, `.gitattributes:10`, `.gitattributes:11`, `.gitattributes:12`, `.github/workflows/manpage.yml:49`
+- protected `docs/public/CNAME` — `.github/workflows/website.yml:33`
+- conventions — `tests/jq.test:1`, `Makefile.am:144`, `Makefile.am:232`, `Makefile.am:13`, `Makefile.am:122`, `Makefile.am:162`, `.github/workflows/manpage.yml:42`, `.github/workflows/ci.yml:107`, `Makefile.am:23`, `Makefile.am:65`, `.gitattributes:3`
+
+## Unknowns
+
+- Typical duration of `install`, `build`, `test` and `docs`: UNVERIFIED; no CI logs in the repository. The only timeout is `timeout-minutes: 60` for a whole BSD VM job (`.github/workflows/bsd.yml:14`).
+- nixpkgs attribute names: UNVERIFIED; the repository names only apt, brew, pacman and pkg packages.
+- apt package names for Python 3.11 and pipenv (needed by `docs`): UNVERIFIED; CI uses `actions/setup-python` and `pip install pipenv`.
+- Commit message format: UNVERIFIED; no CONTRIBUTING file, no pull request template, and the checkout holds a single commit.
+- Safe for zero-touch: UNVERIFIED; a human must decide which classes may ship without review.
+- The flag that enables maintainer mode (needed to regenerate `src/lexer.c` and `src/parser.c`) is not written in the repository; only `--disable-maintainer-mode` appears (`.github/workflows/decnum.yml:25`). Presumably `--enable-maintainer-mode`: UNVERIFIED.
+- The `install` command is composed from three cited lines; CI's Linux job configures with additional flags (`--host=<triplet> --enable-all-static CFLAGS="-O2 -pthread -fstack-protector-all"`, `.github/workflows/ci.yml:92`) and gets the submodule through `actions/checkout` with `submodules: true` instead of the README's `git submodule update --init`.
+- CI runs `git diff --exit-code` after `make check` (`.github/workflows/ci.yml:107`); it is left out of `test` because it fails on any uncommitted work.
+- No lint, format or typecheck command exists. `scan-build --keep-going --exclude vendor/ make -j"$(nproc)"` (`.github/workflows/scanbuild.yml:25`) runs on pushes to master only, needs clang and a clang-configured tree, and has no failing exit status configured; not listed as `lint`.
+- Coverage: `./configure --enable-gcov` exists (`configure.ac:69`, `Makefile.am:90`) but no command or report location is stated; no coverage artefact is listed.
+- No deploy shell command exists; releases and the website are published only by GitHub Actions.
+- Whether `NEWS.md` must be updated in the same change as a user-visible feature is not stated.

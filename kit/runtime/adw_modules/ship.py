@@ -84,8 +84,11 @@ def _forge_client(layer: Any) -> Any | None:
 def _open_pr(layer: Any, state: Any, client: Any, worktree: Path, body: str) -> dict[str, Any]:
     option = layer.option("reviews", layer.adw(state.adw)["review"])
     _git(worktree, ["push", "--set-upstream", "origin", f"HEAD:refs/heads/{state.branch}"])
+    # draft / requested reviewers exist only on `human` reviews; agent/auto `reviewers` is a count of review agents.
+    human = option["kind"] == "human"
     pr = client.create_pr(state.branch, layer.default_branch, _title(state), body,
-                          draft=bool(option.get("draft", False)), reviewers=tuple(option.get("reviewers", [])))
+                          draft=bool(option.get("draft")) if human else False,
+                          reviewers=tuple(option.get("reviewers", [])) if human else ())
     if not isinstance(pr, dict) or not isinstance(pr.get("number"), int):
         raise StepFailed("ship", f"forge create_pr returned an unexpected value: {pr!r}")
     print(f"[adw {state.adw_id}] ship: PR #{pr['number']} {pr.get('url', '')}")

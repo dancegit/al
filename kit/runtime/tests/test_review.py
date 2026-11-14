@@ -23,7 +23,10 @@ def _workflow(make_layer, app_repo, review_kind="agent", retries=0):
         "reviews": [{"id": "review-policy", "kind": review_kind, "status": "stable", "command": "review",
                      "reviewers": 2 if review_kind == "agent" else 1, "maxRetries": retries, "artefacts": []}],
         "adws": [{"name": "demo", "agent": "mock-agent", "review": "review-policy",
-                  "environment": ["worktree"], "steps": []}],
+                  "environment": ["worktree"],
+                  "steps": [{"name": "test", "kind": "check", "cmd": "test", "resolve": "", "retries": 0, "collect": []},
+                            {"name": "review", "kind": "review", "patch": "patch", "implement": "implement"}]}],
+        "forge": {"id": "none", "kind": "none", "status": "stable", "remote": ""},
     })
     layer = ir.load(layer_dir)
     run_state = state.ADWState("b1b2b3b4", "demo", prompt="fix issue")
@@ -59,7 +62,9 @@ def test_blocker_patch_implement_reruns_checks_and_second_round_passes(make_laye
     responses = {
         "review-1": [json.dumps({"success": False, "summary": "blocker", "issues": [
             {"severity": "blocker", "description": "broken", "resolution": "fix it"}]})],
+        "review-2": [json.dumps({"success": True, "summary": "ok", "issues": []})],
         "review-2-1": [json.dumps({"success": True, "summary": "fixed", "issues": []})],
+        "review-2-2": [json.dumps({"success": True, "summary": "fixed", "issues": []})],
     }
     called = []
     def fake_agent(layer_arg, state_arg, step_name, command, args, model_set, env_stack):
@@ -78,3 +83,5 @@ def test_blocker_patch_implement_reruns_checks_and_second_round_passes(make_laye
     assert "patch-1" in called and "implement-1" in called
     assert Path(layer.layer_dir, run_state.checks["test"]["log"]).name == "test.2.log"
     assert (checks_dir / "test.2.log").exists()
+    assert run_state.review["rounds"][0]["patch"]["checks_rerun"] == ["test"]
+    assert run_state.review["verdict"]["success"] is True

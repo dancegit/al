@@ -1,0 +1,129 @@
+# flask
+
+> Flask is a Python WSGI web application framework distributed as the `Flask` package (version 3.2.0.dev, requires Python >=3.11). Application developers import it as a library and use its `flask` command line entry point (`flask.cli:main`). It is built on Werkzeug, Jinja, Click, ItsDangerous, MarkupSafe and Blinker, packaged with flit_core, managed with uv and tox, and shipped to PyPI by a GitHub Actions workflow that runs on tag push.
+
+## Identity
+
+- Repo URL: git@github.com:pallets/flask.git
+- Default branch: main
+- License: BSD-3-Clause
+- Primary languages: python
+- Kind: library
+
+## Layout
+
+- `src/flask` — the `flask` package: application object (`app.py`), blueprints, CLI (`cli.py`), config, contexts (`ctx.py`), helpers, sessions, templating, test client (`testing.py`), views, request/response wrappers
+- `src/flask/sansio` — application, blueprint and scaffold base classes that must not do IO and must not use the Flask globals
+- `src/flask/json` — JSON provider (`provider.py`) and tagged JSON serializer used by sessions (`tag.py`)
+- `tests` — pytest tests in flat modules named `tests/test_<area>.py` (for example `src/flask/blueprints.py` is tested by `tests/test_blueprints.py`, `src/flask/json/tag.py` by `tests/test_json_tag.py`); test functions are named `test_<behaviour>`; shared fixtures are in `tests/conftest.py`; a new test goes into the existing `tests/test_<area>.py` module for the source file it covers
+- `tests/test_apps` — fixture applications imported by the tests
+- `tests/templates` — Jinja templates used by the tests
+- `tests/static` — static files used by the tests
+- `tests/type_check` — modules checked by mypy only (`typing_*.py`), not collected as pytest tests
+- `docs` — Sphinx documentation in reStructuredText; configuration in `docs/conf.py`; build output goes to `docs/_build/` (git-ignored)
+- `examples` — three example applications (`examples/celery`, `examples/javascript`, `examples/tutorial`), each with its own `pyproject.toml`; not covered by the root test command
+- `CHANGES.rst` — changelog, newest version first
+- `pyproject.toml` — package metadata, dependency groups, and pytest, coverage, mypy, ruff, codespell and tox configuration
+- `.pre-commit-config.yaml` — pre-commit hooks: ruff-check, ruff-format, uv-lock, codespell, check-merge-conflict, debug-statements, fix-byte-order-marker, trailing-whitespace, end-of-file-fixer
+- `.editorconfig` — indentation, line ending and line length rules
+- `README.md` — entry document
+
+## Commands
+
+| name | shell command from repo root | proves what | typical duration | needs network? |
+| --- | --- | --- | --- | --- |
+| lint | `uv run --locked --no-default-groups --group pre-commit pre-commit run --show-diff-on-failure --color=always --all-files` | every pre-commit hook passes on all files: ruff lint rules B, E, F, I, UP, W; ruff format; uv.lock matches pyproject.toml; codespell; whitespace and end-of-file hooks. Hooks rewrite files in place and exit non-zero when they changed something | UNVERIFIED | yes |
+| typecheck | `uv run --locked --no-default-groups --group dev tox run -e typing` | mypy in strict mode reports no errors for `src` and `tests/type_check` | UNVERIFIED | yes |
+| test | `TOX_ENV=py3.12 uv run --locked --no-default-groups --group dev tox run -- --junitxml=.tox/reports/junit.xml` | the pytest suite in `tests` passes on Python 3.12 against the locked dependency versions, with every warning treated as an error; writes a JUnit XML report | UNVERIFIED | yes |
+| build | `uv build` | the sdist and wheel build into `dist/` | UNVERIFIED | yes |
+| docs | `uv run --locked --no-default-groups --group dev tox run -e docs` | the Sphinx documentation builds to `docs/_build/dirhtml` with warnings treated as errors | UNVERIFIED | yes |
+
+## Toolchain
+
+- nixpkgs: `python312` (3.12), `uv` (0.12.0 in uv.lock; nixpkgs version UNVERIFIED), `git`
+- System packages: none
+- Services: none
+
+## Artefacts
+
+- junit: `.tox/reports/junit.xml` — produced by `test` with the pytest flag `--junitxml=.tox/reports/junit.xml`, passed through tox positional arguments
+- html: `docs/_build/dirhtml/**/*.html` — produced by `docs`
+
+## Conventions
+
+- Python code passes `ruff check` with rule sets B, E, F, I, UP, W and `ruff format`; maximum line length is 88.
+- Imports are one name per `from … import …` line (ruff isort `force-single-line = true`).
+- Indentation is 4 spaces (2 spaces in css, html, js, json, yaml files); line endings are LF; files end with a newline and have no trailing whitespace.
+- Code under `src` passes `mypy` with `strict = true`.
+- Every warning raised during the tests fails the suite (`filterwarnings = ["error"]`).
+- A code change adds tests that fail without the change, in the `tests/test_<area>.py` module of the source file it changes.
+- A code change adds an entry to `CHANGES.rst` under the topmost (unreleased) version, written as a `-   ` bullet that ends with a ``:issue:`<number>` `` or ``:pr:`<number>` `` reference.
+- A change to documented behaviour adds a `.. versionchanged:: <version>` (or `.. versionadded:: <version>`) entry in the docstring of the changed code and updates the relevant file under `docs`.
+- Code under `src/flask/sansio` does no IO and does not use the Flask globals.
+- A commit message is one lower-case imperative summary line without a type prefix (example: "add `versionchanged` for ctx signature change (#6176)").
+- A pull request description links its issue with `fixes #<issue number>`.
+- Dependencies are declared in `pyproject.toml` and locked in `uv.lock`; `uv.lock` is regenerated with uv, not edited by hand.
+
+## Protected paths
+
+- `.github` — CI workflows, the PyPI publishing workflow, issue and pull request templates
+- `.pre-commit-config.yaml` — hook revisions pinned by commit hash; updated only through the tox `update-pre_commit` environment
+- `.readthedocs.yaml` — documentation publishing configuration
+- `uv.lock` — generated lock file; updated only through the tox `update-requirements` environment
+- `LICENSE.txt` — licence text
+- `src/flask/sessions.py` — security-sensitive: signs and verifies session cookies with itsdangerous
+
+## Work classes
+
+- Chore: dependency pin or lock update, tool configuration change in `pyproject.toml`, documentation correction under `docs`, removal of deprecated code; touches `pyproject.toml`, `docs`, `CHANGES.rst`; proved by `lint`, `typecheck` and `test` (and `docs` when files under `docs` change).
+- Bug: a behaviour correction in one module under `src/flask`; the regression test goes into the matching `tests/test_<area>.py` (issue-specific regressions with no matching module go into `tests/test_regression.py`); adds a `CHANGES.rst` entry; proved by `lint`, `typecheck` and `test`.
+- Feature: a new or changed public API of the `flask` package (a method, decorator, parameter or config key on `Flask`, `Blueprint`, the request/response wrappers or the test client) or a new option or output of the `flask` command line; user-visible as a public API signature, an HTTP response produced by a view under the test client, or CLI output; adds tests, a `CHANGES.rst` entry, `.. versionadded::` / `.. versionchanged::` docstring entries and documentation under `docs`; proved by the junit report from `test` listing the new test cases as passed.
+- Safe for zero-touch: UNVERIFIED — chore and bug are the candidate classes: `lint`, `typecheck` and `test` are deterministic (dependencies locked by `uv.lock`, warnings are errors, no services needed) and `test` emits a junit report; check durations are not stated in the repository, so "fast" is not confirmed.
+
+## Forge
+
+- Forge: github
+- Repo: pallets/flask
+- CI: GitHub Actions, `.github/workflows`. `tests.yaml` runs `uv run --locked --no-default-groups --group dev tox run` with `TOX_ENV` set per matrix entry (Python 3.11, 3.12, 3.13, 3.14, 3.14t, 3.15, pypy-3.11, tests-min, tests-dev; Linux, Windows, macOS) and `uv run --locked --no-default-groups --group dev tox run -e typing`. `pre-commit.yaml` runs `uv run --locked --no-default-groups --group pre-commit pre-commit run --show-diff-on-failure --color=always --all-files`. `publish.yaml` runs `uv build` on tag push and publishes `dist/` to PyPI. `zizmor.yaml` analyses the workflow files. `lock.yaml` locks inactive closed issues. Documentation is built by Read the Docs from `.readthedocs.yaml`.
+
+## Conditional docs
+
+- `src/flask/sansio/README.md` — when changing any file under `src/flask/sansio`
+- `docs/web-security.rst` — when changing session, cookie, JSON or response header handling
+- `docs/extensiondev.rst` — when changing an API that extensions hook into (`Flask.extensions`, `init_app` patterns, signals, teardown callbacks)
+- `docs/async-await.rst` — when changing async view support or `ensure_sync`
+- `docs/cli.rst` — when changing `src/flask/cli.py`
+- `docs/testing.rst` — when changing `src/flask/testing.py`
+- `docs/contributing.rst` — when preparing a pull request (it links to the Pallets contributing guide, which is not in the repository)
+
+## Evidence
+
+- `lint` — `.github/workflows/pre-commit.yaml:29`; hooks in `.pre-commit-config.yaml:5`; rule sets in `pyproject.toml:149`
+- `typecheck` — `.github/workflows/tests.yaml:64`; the `typing` environment runs `mypy` in `pyproject.toml:235`; mypy files and strict mode in `pyproject.toml:128`
+- `test` — `.github/workflows/tests.yaml:43` (command) and `.github/workflows/tests.yaml:45` (`TOX_ENV` selects the environment; `py3.12` from the matrix entry at `.github/workflows/tests.yaml:26`); positional arguments after `--` are appended to the pytest command in `pyproject.toml:188`; pytest test path in `pyproject.toml:107`
+- `build` — `.github/workflows/publish.yaml:26`; output directory `dist/` in `.github/workflows/publish.yaml:31`
+- `docs` — the `docs` tox environment and its sphinx-build command in `pyproject.toml:242`; the `uv run … tox run -e <env>` invocation form in `.github/workflows/tests.yaml:64`
+- junit `.tox/reports/junit.xml` — flag value in the `test` command; pass-through in `pyproject.toml:188`; `.tox/` is git-ignored in `.gitignore:7`
+- html `docs/_build/dirhtml/**/*.html` — `pyproject.toml:245`; git-ignored in `.gitignore:8`
+- `.github` — `.github/workflows/publish.yaml:1`
+- `.pre-commit-config.yaml` — `pyproject.toml:259`
+- `.readthedocs.yaml` — `.readthedocs.yaml:10`
+- `uv.lock` — `pyproject.toml:266`; `.pre-commit-config.yaml:10`
+- `LICENSE.txt` — `pyproject.toml:7`
+- `src/flask/sessions.py` — `src/flask/sessions.py:284`
+- conventions — ruff and isort: `pyproject.toml:149`, `pyproject.toml:159`; editorconfig: `.editorconfig:10`; warnings as errors: `pyproject.toml:108`; tests, docs, changelog, versionchanged: `.github/pull_request_template.md:20`; changelog entry form: `CHANGES.rst:6`; sansio rule: `src/flask/sansio/README.md:3`
+- Python and tool versions — `pyproject.toml:22`, `uv.lock:1363`
+
+## Unknowns
+
+- UNVERIFIED: typical duration of `lint`, `typecheck`, `test`, `build` and `docs`. No timeout or timing is stated in the repository; a human must time each command.
+- UNVERIFIED: Safe for zero-touch. The checks are deterministic by configuration but their speed is not stated; a human must confirm that chore and bug changes may ship without review.
+- UNVERIFIED: nixpkgs `uv` version. The repository locks uv 0.12.0 as a Python dependency; which version the nixpkgs `uv` attribute provides must be confirmed.
+- No command was executed during scouting. A human must confirm that `test` writes `.tox/reports/junit.xml`: `--junitxml` is a pytest flag that no file in the repository states; only the pass-through of extra pytest arguments is stated (`pyproject.toml:188`).
+- Network need is recorded as `yes` for every command because uv and tox download the locked dependencies (and pre-commit downloads its hook repositories) on first run; whether each command runs offline with warm caches must be confirmed.
+- There is no install command stated in the repository; `uv run --locked` installs what each command needs. The draft's `uv sync` appears in no file.
+- The `docs` command differs from what Read the Docs runs: `uv run --group docs sphinx-build -W -b dirhtml docs $READTHEDOCS_OUTPUT/html` (`.readthedocs.yaml:10`), which needs the `READTHEDOCS_OUTPUT` variable. The tox `docs` environment is used here; no CI workflow runs it.
+- `tox run` without `TOX_ENV` runs every environment in `pyproject.toml:166`, which needs Python 3.11 to 3.15 and PyPy; `test` is restricted to `py3.12`.
+- `.devcontainer/on-create-command.sh:5` installs from `requirements/dev.txt`, which is not in the repository; the devcontainer setup is stale.
+- `.github/pull_request_template.md:18` refers to `CONTRIBUTING.rst`, which is not in the repository; the full contributing rules are at https://palletsprojects.com/contributing/ and were not read.
+- The commit message convention is inferred from the single commit available in this checkout.

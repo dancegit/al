@@ -219,7 +219,7 @@
   [base-image string "docker.io/library/debian:stable-slim" "Base image."]
   [packages (list-of string) () "Distribution packages installed in the image (apt names for Debian bases)."]
   [setup (list-of string) () "Extra RUN lines for the Containerfile."]
-  [network (enum none host slirp) slirp "Network mode. `none` for fully offline checks."]
+  [network (enum none host slirp) slirp "Network mode: `slirp` = podman's default rootless user-mode network, `none` = fully offline checks, `host` = host network."]
   [memory string "4g" "Memory limit."]
   [cpus string "2" "CPU limit."]
   [agent-inside boolean #f "Run the agent CLI inside the container too (otherwise only codebase commands run inside)."])

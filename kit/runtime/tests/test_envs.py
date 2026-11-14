@@ -85,8 +85,27 @@ def test_nix_and_podman_argv_shapes(make_layer: object, monkeypatch: object) -> 
     assert argv[argv.index("--userns=keep-id") + 2] == f"{state.worktree}:/work:Z"
     assert f"ADW_PORT_0={state.ports[0]}" in argv and "al-test-layer:latest" in argv
     assert argv[:3] == ["podman", "run", "--rm"]
-    assert "slirp4netns" in argv and "--memory" in argv and "--cpus" in argv
+    assert "--network" not in argv and "--memory" in argv and "--cpus" in argv
     assert argv[-3:] == ["bash", "-c", "pytest -q"]
-    assert stack.wrap_agent(["agent", "--version"])[0:3] == ["nix", "develop", str(layer.layer_dir / "env")]
-    assert envs.EnvStack(layer, state, [layer.option("environments", "nix")]).wrap("true")[:3] == ["nix", "develop", str(layer.layer_dir / "env")]
+    assert stack.wrap_agent(["agent", "--version"])[0:3] == ["nix", "develop", f"path:{layer.layer_dir / 'env'}"]
+    assert envs.EnvStack(layer, state, [layer.option("environments", "nix")]).wrap("true")[:3] == ["nix", "develop", f"path:{layer.layer_dir / 'env'}"]
     stack.teardown(success=True)
+
+
+def test_port_block_skips_busy_slot() -> None:
+    import socket
+
+    import pytest
+
+    busy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        busy.bind(("127.0.0.1", 0))
+    except PermissionError:
+        pytest.skip("socket bind() is not permitted in this sandbox")
+    busy.listen()
+    base = busy.getsockname()[1]
+    try:
+        ports = envs._free_port_block(base, 2)
+    finally:
+        busy.close()
+    assert ports[0] >= base + 10 and (ports[0] - base) % 10 == 0 and ports[1] == ports[0] + 1

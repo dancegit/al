@@ -61,3 +61,7 @@ COMPILE: tools/al compile $2 >/dev/null
 - The path of OUTPUT and the final compile result, with the number of repair rounds.
 - The decisions taken, as "fact, then choice" bullets, including every default you relied on (`#:root` above all).
 - What was left out and why: `UNVERIFIED` items, preferences the language cannot express.
+
+## Fabric patterns
+
+A command may apply vendored Fabric patterns with `#:fabric (pattern …)`; the generator copies each pattern into the layer and the command reads it as its method, while the command's own Report stays in charge of the output format. Use them where a pattern is the method the command needs, and only names that exist in the Fabric pattern library: `review_code` on the review command, `create_git_diff_commit` on commit, `write_pull-request` on pull-request, `create_prd` on plan-feature, `summarize_git_diff` on summarize, `create_stride_threat_model` or `ask_secure_by_design_questions` on plans for security-sensitive codebases.

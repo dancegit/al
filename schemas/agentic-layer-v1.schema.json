@@ -1105,7 +1105,7 @@
                 "type": "string"
               },
               "network": {
-                "description": "Network mode. `none` for fully offline checks.",
+                "description": "Network mode: `slirp` = podman's default rootless user-mode network, `none` = fully offline checks, `host` = host network.",
                 "enum": [
                   "none",
                   "host",

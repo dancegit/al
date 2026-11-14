@@ -8,6 +8,8 @@ from adw_modules.review import decide, is_protected, parse_numstat
 
 @pytest.mark.parametrize(("facts_update", "reason"), [
     ({"check_exits": {"test": 1}}, "check-failed:test"),
+    ({"require_exits": {"lint": 2}}, "require-check-failed:lint"),
+    ({"verdict": {"success": False, "issues": []}}, "review-failed"),
     ({"verdict": {"success": True, "issues": [{"severity": "blocker"}]}}, "review-failed"),
     ({"klass": "bug"}, "class-not-allowed:bug"),
     ({"diff_lines": 11}, "diff-too-large:11>10"),

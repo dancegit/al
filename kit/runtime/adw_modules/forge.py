@@ -1,0 +1,339 @@
+"""Forge clients: issues, comments and pull requests (none / github / forgejo).
+
+Stdlib only. `get_client(layer)` picks the client from `ir["forge"]["kind"]`.
+
+    github  -> shells out to `gh` (GH_HOST for Enterprise, GH_TOKEN from tokenEnv)
+    forgejo -> REST v1 via `http_request` (replace it in tests)
+    none    -> no issues; comments go to <layer>/agents/forge-comments.log
+
+Every comment the layer posts starts with the forge's `botMarker`, so triggers
+can recognise (and ignore) the layer's own comments.
+
+`as_layer(x)` normalises what callers pass as "layer": an object with
+`.ir/.layer_dir/.app_root` (what `ir.load` returns), or a layer directory path.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Callable, Iterable, Mapping
+
+DEFAULT_BOT_MARKER = "[ADW-BOT]"
+
+
+class ForgeError(RuntimeError):
+    """A forge operation failed or is not supported by the configured forge."""
+
+
+# --------------------------------------------------------------------------- layer
+
+
+def as_layer(layer: Any) -> Any:
+    """Return an object with `.ir` (dict), `.layer_dir` (Path), `.app_root` (Path|None).
+
+    Accepts the core's loaded layer (or any duck-typed equivalent) unchanged,
+    or a path to a layer directory, which is loaded with the core `ir.load`
+    when available and by reading `agentic-layer.json` otherwise.
+    """
+    if hasattr(layer, "ir") and hasattr(layer, "layer_dir"):
+        return layer
+    if isinstance(layer, (str, os.PathLike)):
+        layer_dir = Path(layer).resolve()
+        try:
+            from . import ir as ir_mod  # the core loader, when present
+
+            return ir_mod.load(layer_dir)
+        except ImportError:
+            pass
+        data = json.loads((layer_dir / "agentic-layer.json").read_text(encoding="utf-8"))
+        root = (data.get("codebase") or {}).get("root") or ""
+        app_root = (layer_dir / root).resolve() if root else None
+        return SimpleNamespace(ir=data, layer_dir=layer_dir, app_root=app_root)
+    raise TypeError(f"not a layer: {layer!r}")
+
+
+# --------------------------------------------------------------------------- http
+
+
+def http_request(method: str, url: str, headers: Mapping[str, str], body: bytes | None,
+                 timeout: float = 30.0) -> tuple[int, Any]:
+    """Perform one HTTP request; return (status, decoded JSON or None). Raises ForgeError on HTTP errors."""
+    req = urllib.request.Request(url, data=body, method=method, headers=dict(headers))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:500]
+        raise ForgeError(f"{method} {url} -> HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise ForgeError(f"{method} {url} failed: {exc.reason}") from exc
+    if not raw.strip():
+        return status, None
+    try:
+        return status, json.loads(raw)
+    except ValueError:
+        return status, raw.decode("utf-8", "replace")
+
+
+# --------------------------------------------------------------------------- base
+
+
+class ForgeClient:
+    kind = "base"
+
+    def __init__(self, option: Mapping[str, Any], layer_dir: Path | None = None,
+                 env: Mapping[str, str] | None = None):
+        self.option = dict(option)
+        self.layer_dir = Path(layer_dir) if layer_dir else None
+        self.env = dict(os.environ if env is None else env)
+        self.bot_marker = self.option.get("botMarker") or DEFAULT_BOT_MARKER
+
+    def mark(self, body: str) -> str:
+        """Prefix a comment body with the bot marker (idempotent)."""
+        return body if body.startswith(self.bot_marker) else f"{self.bot_marker} {body}"
+
+    def is_bot(self, body: str | None) -> bool:
+        return (body or "").lstrip().startswith(self.bot_marker)
+
+    def get_issue(self, n: int) -> dict:
+        raise NotImplementedError
+
+    def list_issues(self, labels: Iterable[str] = ()) -> list[dict]:
+        raise NotImplementedError
+
+    def list_comments(self, n: int) -> list[dict]:
+        raise NotImplementedError
+
+    def comment(self, n: int, body: str) -> None:
+        raise NotImplementedError
+
+    def create_pr(self, branch: str, base: str, title: str, body: str, draft: bool = False,
+                  reviewers: Iterable[str] = ()) -> dict:
+        raise NotImplementedError
+
+    def merge_pr(self, number: int, method: str = "squash") -> None:
+        raise NotImplementedError
+
+
+def _has_all_labels(issue: Mapping[str, Any], labels: Iterable[str]) -> bool:
+    have = set(issue.get("labels") or [])
+    return all(lbl in have for lbl in labels)
+
+
+# --------------------------------------------------------------------------- none
+
+
+class NoneForge(ForgeClient):
+    kind = "none"
+
+    def _unsupported(self, what: str):
+        raise ForgeError(f"{what}: the layer declares (forge none), which has no issues; "
+                         "declare (forge github …) or (forge forgejo …) to use issue input")
+
+    def get_issue(self, n):
+        self._unsupported("get_issue")
+
+    def list_issues(self, labels=()):
+        self._unsupported("list_issues")
+
+    def list_comments(self, n):
+        self._unsupported("list_comments")
+
+    def comment(self, n, body):
+        if self.layer_dir is None:
+            raise ForgeError("forge none needs a layer directory to log comments")
+        log = self.layer_dir / "agents" / "forge-comments.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} #{n} {self.mark(body)}\n")
+
+    def create_pr(self, branch, base, title, body, draft=False, reviewers=()):
+        return {"number": 0, "url": ""}
+
+    def merge_pr(self, number, method="squash"):
+        return None
+
+
+# --------------------------------------------------------------------------- github
+
+
+class GitHubForge(ForgeClient):
+    kind = "github"
+
+    def __init__(self, option, layer_dir=None, env=None, run: Callable | None = None):
+        super().__init__(option, layer_dir, env)
+        self.repo = self.option["repo"]
+        self.host = self.option.get("host") or "github.com"
+        self._run = run
+
+    def _env(self) -> dict:
+        env = dict(self.env)
+        token_env = self.option.get("tokenEnv") or ""
+        if token_env and env.get(token_env):
+            env["GH_TOKEN"] = env[token_env]
+        if self.host != "github.com":
+            env["GH_HOST"] = self.host
+        return env
+
+    def gh(self, *args: str) -> str:
+        argv = ["gh", *args, "--repo", self.repo]
+        run = self._run or subprocess.run
+        try:
+            proc = run(argv, capture_output=True, text=True, env=self._env(), check=False)
+        except FileNotFoundError as exc:
+            raise ForgeError("the `gh` CLI is not installed or not on PATH") from exc
+        if proc.returncode != 0:
+            raise ForgeError(f"{' '.join(argv[:3])} failed ({proc.returncode}): {(proc.stderr or '').strip()[:500]}")
+        return proc.stdout or ""
+
+    @staticmethod
+    def _issue(d: Mapping[str, Any]) -> dict:
+        return {
+            "number": int(d["number"]),
+            "title": d.get("title") or "",
+            "body": d.get("body") or "",
+            "labels": [lbl["name"] if isinstance(lbl, dict) else str(lbl) for lbl in d.get("labels") or []],
+            "state": str(d.get("state") or "").lower(),
+        }
+
+    def get_issue(self, n):
+        out = self.gh("issue", "view", str(n), "--json", "number,title,body,labels,state")
+        return self._issue(json.loads(out))
+
+    def list_issues(self, labels=()):
+        args = ["issue", "list", "--state", "open", "--limit", "100",
+                "--json", "number,title,body,labels,state"]
+        for lbl in labels:
+            args += ["--label", lbl]
+        issues = [self._issue(d) for d in json.loads(self.gh(*args) or "[]")]
+        return [i for i in issues if _has_all_labels(i, labels)]
+
+    def list_comments(self, n):
+        data = json.loads(self.gh("issue", "view", str(n), "--json", "comments") or "{}")
+        return [{"id": c.get("id"), "body": c.get("body") or "",
+                 "user": (c.get("author") or {}).get("login", "")} for c in data.get("comments") or []]
+
+    def comment(self, n, body):
+        self.gh("issue", "comment", str(n), "--body", self.mark(body))
+
+    def create_pr(self, branch, base, title, body, draft=False, reviewers=()):
+        args = ["pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body]
+        if draft:
+            args.append("--draft")
+        for r in reviewers:
+            args += ["--reviewer", r]
+        out = self.gh(*args).strip()
+        url = out.splitlines()[-1].strip() if out else ""
+        m = re.search(r"/pull/(\d+)", url)
+        return {"number": int(m.group(1)) if m else 0, "url": url}
+
+    def merge_pr(self, number, method="squash"):
+        if method not in ("squash", "merge", "rebase"):
+            raise ForgeError(f"unknown merge method {method!r}")
+        self.gh("pr", "merge", str(number), f"--{method}")
+
+
+# --------------------------------------------------------------------------- forgejo
+
+
+class ForgejoForge(ForgeClient):
+    kind = "forgejo"
+
+    def __init__(self, option, layer_dir=None, env=None, http: Callable | None = None):
+        super().__init__(option, layer_dir, env)
+        self.host = (self.option.get("host") or "").rstrip("/")
+        if not self.host:
+            raise ForgeError("forge forgejo needs #:host")
+        self.repo = self.option["repo"]
+        self._http = http
+
+    @property
+    def base(self) -> str:
+        return f"{self.host}/api/v1/repos/{self.repo}"
+
+    def headers(self) -> dict:
+        h = {"Accept": "application/json", "Content-Type": "application/json"}
+        token = self.env.get(self.option.get("tokenEnv") or "FORGEJO_TOKEN")
+        if token:
+            h["Authorization"] = f"token {token}"
+        return h
+
+    def request(self, method: str, path: str, payload: Any = None, query: Mapping[str, Any] | None = None):
+        url = self.base + path
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
+        http = self._http or http_request  # looked up at call time so tests can patch the module
+        _status, data = http(method, url, self.headers(), body)
+        return data
+
+    @staticmethod
+    def _issue(d: Mapping[str, Any]) -> dict:
+        return {
+            "number": int(d["number"]),
+            "title": d.get("title") or "",
+            "body": d.get("body") or "",
+            "labels": [lbl.get("name", "") for lbl in d.get("labels") or []],
+            "state": str(d.get("state") or "").lower(),
+        }
+
+    def get_issue(self, n):
+        return self._issue(self.request("GET", f"/issues/{int(n)}"))
+
+    def list_issues(self, labels=()):
+        query = {"state": "open", "type": "issues", "limit": 50}
+        labels = list(labels)
+        if labels:
+            query["labels"] = ",".join(labels)
+        issues = [self._issue(d) for d in self.request("GET", "/issues", query=query) or []]
+        return [i for i in issues if _has_all_labels(i, labels)]
+
+    def list_comments(self, n):
+        data = self.request("GET", f"/issues/{int(n)}/comments") or []
+        return [{"id": c.get("id"), "body": c.get("body") or "",
+                 "user": (c.get("user") or {}).get("login", "")} for c in data]
+
+    def comment(self, n, body):
+        self.request("POST", f"/issues/{int(n)}/comments", {"body": self.mark(body)})
+
+    def create_pr(self, branch, base, title, body, draft=False, reviewers=()):
+        # The Forgejo API has no draft flag; a "WIP: " title prefix is the forge's draft convention.
+        if draft and not title.startswith("WIP:"):
+            title = f"WIP: {title}"
+        data = self.request("POST", "/pulls", {"head": branch, "base": base, "title": title, "body": body})
+        number = int(data.get("number") or 0)
+        reviewers = list(reviewers)
+        if reviewers and number:
+            self.request("POST", f"/pulls/{number}/requested_reviewers", {"reviewers": reviewers})
+        return {"number": number, "url": data.get("html_url") or data.get("url") or ""}
+
+    def merge_pr(self, number, method="squash"):
+        if method not in ("squash", "merge", "rebase"):
+            raise ForgeError(f"unknown merge method {method!r}")
+        self.request("POST", f"/pulls/{int(number)}/merge", {"Do": method})
+
+
+# --------------------------------------------------------------------------- factory
+
+CLIENTS = {"none": NoneForge, "github": GitHubForge, "forgejo": ForgejoForge}
+
+
+def get_client(layer: Any, env: Mapping[str, str] | None = None) -> ForgeClient:
+    """Return the forge client for the layer's `forge` option (default: none)."""
+    lay = as_layer(layer)
+    option = (lay.ir.get("forge") or {"kind": "none", "id": "none", "remote": ""})
+    kind = option.get("kind", "none")
+    cls = CLIENTS.get(kind)
+    if cls is None:
+        raise ForgeError(f"forge kind {kind!r} is not supported by this runtime")
+    return cls(option, layer_dir=lay.layer_dir, env=os.environ if env is None else env)

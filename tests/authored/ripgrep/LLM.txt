@@ -1,0 +1,156 @@
+# ripgrep
+
+> ripgrep is a command line tool (binary `rg`, package version 15.2.0) that recursively searches the current directory for a regex pattern, respecting gitignore rules and skipping hidden and binary files by default. It is written in Rust (edition 2024, minimum Rust 1.96) as a Cargo workspace: the root package builds `rg` from `crates/core/main.rs`, and nine library crates under `crates/` hold the search, regex, printing, glob and ignore logic. It is shipped as release binaries and a Debian package built by a GitHub Actions workflow on `x.y.z` tags, and published to crates.io by a maintainer.
+
+## Identity
+
+- Repo URL: git@github.com:BurntSushi/ripgrep.git
+- Default branch: master
+- License: Unlicense OR MIT
+- Primary languages: rust, zsh
+- Kind: cli
+
+## Layout
+
+- `Cargo.toml` — root package `ripgrep`, binary `rg`, workspace members, feature `pcre2`, release profiles
+- `build.rs` — build script: embeds the git revision hash and, on Windows MSVC, `pkg/windows/Manifest.xml`
+- `crates/core` — the `rg` binary: `main.rs`, `search.rs`, `haystack.rs`, `messages.rs`, `logger.rs`; sources sit directly in this directory, not in `src/`
+- `crates/core/flags` — CLI definition: `defs.rs` (one `Flag` implementation per logical flag, including its documentation; the order of `FLAGS` sets the order in `--help` and the man page), `parse.rs`, `lowargs.rs`, `hiargs.rs`, `config.rs`
+- `crates/core/flags/doc` — generators and templates for `-h`, `--help` and the man page (`template.rg.1`, `template.long.help`, `template.short.help`)
+- `crates/core/flags/complete` — shell completions; `rg.zsh` is written by hand and checked against `rg --help` by `ci/test-complete`
+- `crates/matcher/src` — `grep-matcher`: the matcher trait the search core is written against
+- `crates/regex/src` — `grep-regex`: matcher implementation on Rust's regex engine
+- `crates/pcre2/src` — `grep-pcre2`: matcher implementation on PCRE2, compiled only with feature `pcre2`
+- `crates/searcher/src` — `grep-searcher`: line-oriented and multi-line search over readers, files and memory maps
+- `crates/printer/src` — `grep-printer`: standard, summary and JSON output
+- `crates/grep` — `grep`: facade crate re-exporting the `grep-*` crates; example in `crates/grep/examples/simplegrep.rs`
+- `crates/cli/src` — `grep-cli`: helpers for command line applications (decompression, hostname, patterns, stdin detection)
+- `crates/globset/src` — `globset`: glob matching; benchmark in `crates/globset/benches/bench.rs`
+- `crates/ignore/src` — `ignore`: gitignore matching and sequential and parallel directory walking; benchmarks in `crates/ignore/benches/workloads.rs`
+- `tests` — integration tests of the `rg` binary, compiled as the single test target `integration` rooted at `tests/tests.rs`. Each test is an `rgtest!(name, |dir: Dir, mut cmd: TestCommand| { … })` item and runs a second time against PCRE2 when feature `pcre2` is on. Modules: `tests/feature.rs` (tests for new features go here), `tests/regression.rs` (one test per fixed issue, named `r<issue number>`, preceded by a `// See: <issue URL>` comment), `tests/binary.rs`, `tests/json.rs`, `tests/multiline.rs`, `tests/misc.rs` (do not add tests here), helpers `tests/util.rs`, `tests/macros.rs`, `tests/hay.rs`
+- `tests/data` — compressed and binary fixtures for the integration tests
+- `crates/ignore/tests` — integration tests of the `ignore` crate; each `<name>.rs` has a `<name>.gitignore` fixture beside it
+- `crates/matcher/tests` — integration tests of `grep-matcher`, rooted at `crates/matcher/tests/tests.rs`
+- Unit tests — in the source file they cover, inside `#[cfg(test)] mod tests { … }` (for example `crates/regex/src/strip.rs`, `crates/core/flags/defs.rs`)
+- `fuzz` — separate cargo-fuzz crate with its own `fuzz/Cargo.lock`; one target, `fuzz/fuzz_targets/fuzz_glob.rs`
+- `benchsuite` — benchmark runner `benchsuite/benchsuite` and recorded results under `benchsuite/runs`
+- `ci` — scripts run by CI and at release: `ci/test-complete`, `ci/ubuntu-install-packages`, `ci/sha256-releases`, `ci/utils.sh`
+- `pkg` — packaging: `pkg/brew/ripgrep-bin.rb`, `pkg/windows/Manifest.xml`; `HomebrewFormula` is a symlink to `pkg/brew`
+- `scripts/copy-examples` — Python script that copies code blocks from a Rust file into an examples directory
+- `.cargo/config.toml` — static linking flags for the Windows MSVC and x86_64 musl targets
+- `rustfmt.toml` — formatter configuration
+- `README.md`, `GUIDE.md`, `FAQ.md` — user documentation; `CHANGELOG.md` — release notes; each crate has its own `README.md`
+
+## Commands
+
+| name | shell command from repo root | proves what | typical duration | needs network? |
+| --- | --- | --- | --- | --- |
+| format | `cargo fmt --all --check` | every Rust file in the workspace is formatted as `rustfmt.toml` requires | UNVERIFIED | no |
+| build | `cargo build --verbose --workspace` | the `rg` binary and every workspace crate compile; produces `target/debug/rg` | UNVERIFIED | yes |
+| test | `cargo test --verbose --workspace --features pcre2` | unit tests, doc tests and the `integration` target pass for every workspace crate, each integration test once on the default regex engine and once on PCRE2; builds `target/debug/rg` | UNVERIFIED | yes |
+| e2e | `ci/test-complete` | the options in `crates/core/flags/complete/rg.zsh` equal the options in `rg --help`; needs `zsh` and an existing `target/release/rg` or `target/debug/rg`, so it must run after `build` or `test` | UNVERIFIED | no |
+| docs | `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --workspace` | rustdoc for every workspace crate, private items included, builds with no warnings | UNVERIFIED | yes |
+
+## Toolchain
+
+- nixpkgs: `cargo`, `rustc` (1.96.0 or newer), `rustfmt`, `gcc`, `zsh`, `xz`, `lz4`, `brotli`, `zstd` — UNVERIFIED that these nixpkgs attributes provide Rust 1.96.0 or newer
+- System packages: on Ubuntu, CI installs `zsh xz-utils lz4 musl-tools brotli zstd g++`; a C compiler is needed when feature `pcre2` builds PCRE2 from source because `pkg-config` finds no system PCRE2; integration tests of compressed-file search skip themselves when `xzcat`, `gzip`, `bzip2`, `xz` or `lz4` is not installed
+- Services: none
+
+## Artefacts
+
+- log: captured standard output and standard error of each command; no file is written
+- html: UNVERIFIED `target/doc/**/*.html` — produced by `docs`; the repository does not state the output path
+- junit, coverage, images, video, traces: none
+
+## Conventions
+
+- Rust code is formatted with `max_width = 79`, `use_small_heuristics = "max"`, `edition = "2024"`; `cargo fmt --all --check` must pass.
+- Code must compile on Rust 1.96.0; do not use language or library features newer than that.
+- A test for a new feature of `rg` goes in `tests/feature.rs`; do not add tests to `tests/misc.rs`.
+- A test for a fixed bug goes in `tests/regression.rs` as `rgtest!(r<issue number>, …)` with a `// See: https://github.com/BurntSushi/ripgrep/issues/<issue number>` comment on the line above.
+- Integration tests are written with `rgtest!` and must pass on both regex engines, because `rgtest!` runs each test again with PCRE2 when feature `pcre2` is enabled.
+- A unit test goes in the `#[cfg(test)] mod tests` block of the source file it covers.
+- A new or changed command line flag is one `Flag` implementation in `crates/core/flags/defs.rs`, listed in `FLAGS`, with its documentation in that implementation; the same options must be added to `crates/core/flags/complete/rg.zsh` so that `ci/test-complete` prints `OK`.
+- A user-visible change adds an entry under the `TBD` heading at the top of `CHANGELOG.md`, in the form `* [BUG #<n>](<issue or pull request URL>):`, `* [FEATURE #<n>](<URL>):` or `* [PERF #<n>](<URL>):` followed by an indented one-sentence description.
+- `Cargo.lock` and crate version numbers change only as part of a release (`RELEASE-CHECKLIST.md`).
+- `AI_POLICY.md` applies to contributions to the upstream repository BurntSushi/ripgrep: autonomous agents are not allowed to contribute; issue and pull request text and replies to maintainers must be written by a human; AI output quoted in a comment must be in a quote block, disclosed, and accompanied by human commentary.
+- Commit subject format `<area>: <summary> (#<pull request number>)`, with a body paragraph and a trailing `PR #<number>` line — UNVERIFIED: seen in the only commit in this checkout's history (`178cc02`); no file states it.
+
+## Protected paths
+
+- `.github` — CI and release workflows, issue templates, funding configuration
+- `ci` — scripts run by CI and by the release process
+- `pkg` — Homebrew formula with release checksums; Windows manifest linked into the binary
+- `HomebrewFormula` — symlink to `pkg/brew`
+- `Cargo.lock` — updated only at release by `cargo update`
+- `fuzz/Cargo.lock` — lock file of the fuzz crate
+- `.cargo/config.toml` — linker flags that make release binaries static
+- `RELEASE-CHECKLIST.md` — release procedure
+- `AI_POLICY.md` — contribution policy
+- `CONTRIBUTING.md` — contribution policy
+- `COPYING` — license
+- `LICENSE-MIT` — license
+- `UNLICENSE` — license
+
+## Work classes
+
+- Chore: formatting, rustdoc or comment fixes, documentation edits in `README.md`, `GUIDE.md`, `FAQ.md` or a crate `README.md`, a test-only change. Touches no behaviour of `rg`. Proven by `format`, `test` and, when rustdoc changed, `docs`.
+- Bug: a wrong match, wrong output, wrong ignore decision or a crash, fixed in one crate under `crates/`. The regression test goes in `tests/regression.rs` as `r<issue number>` when the bug is visible through `rg`, otherwise in the crate's own `#[cfg(test)] mod tests` or `crates/<crate>/tests`. Add a `[BUG #<n>]` entry to `CHANGELOG.md`. Proven by `format`, `test`, `e2e`.
+- Feature: a new flag or new behaviour of `rg`, or a new public item in a library crate. User-visible change is the standard output, standard error or exit status of `rg`, the text of `rg --help` and the generated man page, or a public API signature of a crate under `crates/`. Add a test in `tests/feature.rs`, the flag in `crates/core/flags/defs.rs` and `crates/core/flags/complete/rg.zsh`, and a `[FEATURE #<n>]` entry in `CHANGELOG.md`. Proven by the log of `test` (the new `rgtest!` asserts the exact output of `rg`), `e2e` and `docs`; no other artefact exists.
+- Safe for zero-touch: none — command durations are UNVERIFIED, the only artefact is the log, and `AI_POLICY.md` requires a human in the loop.
+
+## Forge
+
+- Forge: github
+- Repo: BurntSushi/ripgrep
+- CI: GitHub Actions. `.github/workflows/ci.yml` runs on pull requests, pushes to `master` and daily: `ci/ubuntu-install-packages`, `cargo build --verbose --workspace`, `cargo build --verbose --workspace --features pcre2`, `cargo test --verbose --workspace --features pcre2` (native targets) or `cross test --verbose --workspace` (cross targets), `ci/test-complete`, `cargo build --verbose` for `wasm32-wasip1`, `cargo fmt --all --check`, `cargo doc --no-deps --document-private-items --workspace` with `RUSTDOCFLAGS=-D warnings`, `cargo +nightly test -p ignore --benches`, and `cargo check` in `fuzz`. `.github/workflows/release.yml` runs on tags matching `[0-9]+.[0-9]+.[0-9]+` and builds the release archives and Debian package.
+
+## Conditional docs
+
+- `GUIDE.md` — when changing behaviour it documents: automatic filtering, globs, file types, replacements, the configuration file, file encoding, binary data, preprocessors
+- `FAQ.md` — when changing behaviour that an FAQ answer describes
+- `CHANGELOG.md` — when making a user-visible change, to add the entry under `TBD`
+- `crates/core/README.md` — when changing files under `crates/core`
+- `crates/ignore/benches/README.md` — when changing directory walking or ignore matching in `crates/ignore/src`
+- `fuzz/README.md` — when changing glob parsing in `crates/globset/src` or anything under `fuzz`
+- `pkg/windows/README.md` — when changing `build.rs` or `pkg/windows/Manifest.xml`
+- `RELEASE-CHECKLIST.md` — when asked to change a version number, `Cargo.lock` or anything related to a release
+- `AI_POLICY.md` — when work is intended for the upstream repository BurntSushi/ripgrep
+
+## Evidence
+
+- `format` — `.github/workflows/ci.yml:239`; configuration `rustfmt.toml:1`
+- `build` — `.github/workflows/ci.yml:165` with `CARGO: cargo` at `.github/workflows/ci.yml:36` and empty `TARGET_FLAGS` at `.github/workflows/ci.yml:40`
+- `test` — `.github/workflows/ci.yml:186`; second run on PCRE2 at `tests/macros.rs:9`
+- `e2e` — `.github/workflows/ci.yml:203`; binary lookup at `ci/test-complete:21` and `ci/test-complete:25`; `crates/core/flags/complete/rg.zsh:6`
+- `docs` — `.github/workflows/ci.yml:253` with `RUSTDOCFLAGS` at `.github/workflows/ci.yml:252`
+- `build`, `test`, `docs` need network — `Cargo.lock:8` (dependencies come from the crates.io registry; nothing is vendored)
+- Rust 1.96 — `Cargo.toml:53`, `.github/workflows/ci.yml:56`, `README.md:455`
+- License — `Cargo.toml:14`
+- System packages — `ci/ubuntu-install-packages:14`; PCRE2 build — `README.md:483`; skipped tests — `tests/misc.rs:910`
+- Test placement — `tests/tests.rs:12`, `tests/tests.rs:17`, `tests/tests.rs:21`, `tests/regression.rs:4`; test target — `Cargo.toml:34`
+- Flag definition — `crates/core/flags/defs.rs:39`
+- Changelog form — `CHANGELOG.md:1`, `CHANGELOG.md:18`, `CHANGELOG.md:23`, `CHANGELOG.md:28`
+- AI policy — `AI_POLICY.md:21`, `CONTRIBUTING.md:5`
+- `.github` — `.github/workflows/ci.yml:1`, `.github/workflows/release.yml:7`
+- `ci` — `.github/workflows/ci.yml:125`, `RELEASE-CHECKLIST.md:45`
+- `pkg`, `HomebrewFormula` — `RELEASE-CHECKLIST.md:45`, `build.rs:13`
+- `Cargo.lock` — `RELEASE-CHECKLIST.md:4`
+- `fuzz/Cargo.lock` — `.github/workflows/ci.yml:291`
+- `.cargo/config.toml` — `.cargo/config.toml:1`
+- `RELEASE-CHECKLIST.md` — `RELEASE-CHECKLIST.md:1`
+- `COPYING`, `LICENSE-MIT`, `UNLICENSE` — `Cargo.toml:100`
+- html artefact glob — UNVERIFIED, no file states it
+
+## Unknowns
+
+- Typical duration of `format`, `build`, `test`, `e2e` and `docs`: UNVERIFIED. The CI workflows set no timeouts and no CI logs are in the repository. A human must time them.
+- nixpkgs attributes: UNVERIFIED. The repository names no nixpkgs attribute; the list is a translation of `ci/ubuntu-install-packages` and the Rust toolchain. A human must confirm that the pinned nixpkgs provides Rust 1.96.0 or newer and whether `pkg-config` and `pcre2` should be added.
+- html artefact glob `target/doc/**/*.html`: UNVERIFIED. It is Cargo's default output directory; the repository only states that `target` is ignored (`.gitignore:3`).
+- Commit message format: UNVERIFIED. The checkout history holds one commit and no file states a format.
+- `README.md:513` gives `cargo test --all` as the test command; CI runs `cargo test --verbose --workspace --features pcre2`, which is the one listed.
+- `e2e` is the name given to `ci/test-complete` because no other name in the allowed set fits; it is a completion consistency check, not a browser or service test. It fails when no `rg` binary has been built.
+- No `install`, `lint`, `typecheck`, `test-fast`, `start` or `deploy` command is stated. `cargo clippy` appears nowhere in the repository. `cargo publish` (`RELEASE-CHECKLIST.md:44`) is a maintainer step that needs crates.io credentials and is not listed.
+- Whether `build`, `test` and `docs` need the network once the Cargo registry cache is populated: a human must decide whether the environment pre-fetches dependencies.
+- Whether agent-authored changes may be sent to the upstream repository: `AI_POLICY.md:21` forbids autonomous agents; a human must confirm the layer targets a fork only.
