@@ -32,7 +32,8 @@
   (check-equal? (hash-ref adw 'agent) "claude-code")
   (check-equal? (hash-ref (hash-ref ir 'storage) 'kind) "local")
   (check-equal? (hash-ref (hash-ref ir 'forge) 'kind) "none")
-  (check-equal? (hash-ref ir 'voice) 'null))
+  (check-equal? (hash-ref ir 'voice) 'null)
+  (check-equal? (hash-ref (hash-ref ir 'concurrency) 'maxRuns) 4))
 
 (test-case "output is deterministic and JSON-parseable"
   (define a (json-pretty (compile-layer-datum (layer plan simple-adw))))
@@ -81,7 +82,14 @@
   (check-rejects (layer plan '(prompt-input voice) simple-adw) #rx"needs a \\(voice kokoro")
   (check-rejects (layer plan '(trigger forge-actions) simple-adw) #rx"listens to forge events")
   (check-rejects (layer plan '(agent claude-code #:permission-mode bypassPermissions) simple-adw)
-                 #rx"only accepted inside a podman environment")
+                 #rx"only accepted when the agent itself runs inside a podman")
+  (check-rejects (layer plan '(agent claude-code #:permission-mode bypassPermissions)
+                        '(environment worktree) '(environment podman)
+                        '(adw a #:environment (worktree podman) (steps (run plan #:command plan))))
+                 #rx"add \\(environment podman #:agent-inside #t")
+  (check-rejects (layer plan review-cmd '(review auto #:require-checks (test))
+                        '(adw a (steps (run plan #:command plan) (check t #:cmd test) (review) (ship))))
+                 #rx"must include a podman option")
   (check-rejects (layer plan '(environment host) '(adw a (steps (check t #:cmd test))))
                  #rx"need a `worktree` environment")
   (check-rejects (layer plan '(adw a (steps (run plan #:command plan) (run plan #:command plan))))
@@ -94,11 +102,14 @@
   (define ir (compile-layer-datum
               (layer plan review-cmd
                      '(agent claude-code #:permission-mode bypassPermissions)
-                     '(environment worktree) '(environment podman)
+                     '(environment worktree) '(environment podman #:agent-inside #t #:caches ("uv") #:credentials (claude))
+                     '(concurrency slots #:max-runs 8)
                      '(review auto #:require-checks (test lint))
                      '(adw zte #:environment (worktree podman)
                            (steps (run plan #:command plan) (check t #:cmd test) (review) (ship))))))
-  (check-equal? (hash-ref (car (hash-ref ir 'reviews)) 'ship) "merge"))
+  (check-equal? (hash-ref (car (hash-ref ir 'reviews)) 'ship) "merge")
+  (check-equal? (hash-ref (hash-ref ir 'concurrency) 'maxRuns) 8)
+  (check-equal? (hash-ref (cadr (hash-ref ir 'environments)) 'scope) "run"))
 
 (test-case "#lang al reports the offending clause's source location"
   (define msg

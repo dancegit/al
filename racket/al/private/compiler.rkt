@@ -388,10 +388,18 @@
                    (ormap (lambda (k) (member k '("check" "ship"))) kinds))
           (fail "~a: check/ship steps need a `worktree` environment in the stack so the application checkout is never touched" who))
         (define ag (opt 'agent (hash-ref a 'agent)))
+        (define podman
+          (for/first ([id (in-list (hash-ref a 'environment))]
+                      #:when (equal? (hash-ref (opt 'environment id) 'kind) "podman"))
+            (opt 'environment id)))
         (when (and (equal? (hash-ref ag 'kind) "claude-code")
                    (equal? (hash-ref ag 'permissionMode) "bypassPermissions")
-                   (not (member "podman" env-kinds)))
-          (fail "~a: agent `~a` uses bypassPermissions, which is only accepted inside a podman environment" who (hash-ref ag 'id)))))
+                   (not (and podman (hash-ref podman 'agentInside))))
+          (fail "~a: agent `~a` uses bypassPermissions, which is only accepted when the agent itself runs inside a podman environment: add (environment podman #:agent-inside #t …) to the ADW's #:environment" who (hash-ref ag 'id)))
+        (when (and (equal? (hash-ref rv 'kind) "auto")
+                   (member (hash-ref rv 'ship) '("merge" "deploy"))
+                   (not podman))
+          (fail "~a: review `~a` ships without a human, so the ADW's #:environment must include a podman option (declare (environment podman …) and list its id)" who (hash-ref rv 'id)))))
 
     (define (single fname) (let ([l (opts fname)]) (if (null? l) 'null (car l))))
     (hash-set* top
@@ -401,6 +409,7 @@
                'forge (single 'forge)
                'storage (single 'storage)
                'voice (single 'voice)
+               'concurrency (single 'concurrency)
                'agents (opts 'agent)
                'promptInputs (opts 'prompt-input)
                'triggers (opts 'trigger)

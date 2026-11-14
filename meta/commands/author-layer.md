@@ -65,3 +65,7 @@ COMPILE: tools/al compile $2 >/dev/null
 ## Fabric patterns
 
 A command may apply vendored Fabric patterns with `#:fabric (pattern …)`; the generator copies each pattern into the layer and the command reads it as its method, while the command's own Report stays in charge of the output format. Use them where a pattern is the method the command needs, and only names that exist in the Fabric pattern library: `review_code` on the review command, `create_git_diff_commit` on commit, `write_pull-request` on pull-request, `create_prd` on plan-feature, `summarize_git_diff` on summarize, `create_stride_threat_model` or `ask_secure_by_design_questions` on plans for security-sensitive codebases.
+
+## Scaling and sandboxing
+
+Every run already gets its own git worktree. Declare `(concurrency slots …)` only when the defaults (4 runs, 2 agent calls, 2 checks at once) are wrong for the machine. A zero-touch ADW (`review auto` with `#:ship merge` or `deploy`) MUST list a podman option in its `#:environment`; give that option the toolchain from LLM.txt (`#:base-image`, `#:packages`, `#:setup`) and `#:caches` for the package managers the codebase uses. Use `#:agent-inside #t` with `#:credentials` when the agent itself should be sandboxed; it is required for `bypassPermissions`.

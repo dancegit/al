@@ -594,18 +594,30 @@
       "validation": []
     }
   ],
+  "concurrency": {
+    "id": "slots",
+    "kind": "slots",
+    "maxAgents": 2,
+    "maxChecks": 2,
+    "maxRuns": 4,
+    "status": "stable",
+    "waitSeconds": 3600
+  },
   "description": "Agentic layer for the webshop monorepo",
   "environments": [
     {
       "copyFiles": [
         ".env"
       ],
+      "deleteMergedBranches": true,
       "dir": "trees",
+      "gcDays": 7,
       "id": "worktree",
       "keep": "on-failure",
       "kind": "worktree",
       "portBase": 9100,
       "portsPerRun": 2,
+      "sparse": [],
       "status": "stable"
     },
     {
@@ -626,7 +638,12 @@
     {
       "agentInside": false,
       "baseImage": "docker.io/library/debian:stable-slim",
+      "caches": [
+        "npm",
+        "uv"
+      ],
       "cpus": "2",
+      "credentials": [],
       "id": "sandbox",
       "kind": "podman",
       "memory": "4g",
@@ -635,6 +652,7 @@
         "git",
         "curl"
       ],
+      "scope": "run",
       "setup": [],
       "status": "stable"
     }

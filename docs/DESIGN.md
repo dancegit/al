@@ -151,3 +151,24 @@ meta/              LLM.txt template + the meta commands
 tests/             acceptance script over the testbeds
 testbeds/ layers/  cloned public repos and their generated layers (git-ignored)
 ```
+
+## Scaling out: worktrees, containers, limits
+
+Every run gets its own git worktree (`trees/<adw-id>`), branch and leased port block; that is the
+default environment and what makes N agents on one repository safe. On top of that:
+
+- `(concurrency slots #:max-runs 4 #:max-agents 2 #:max-checks 2)` — layer-wide limits enforced by
+  file-lock slot pools, shared by every trigger and by manual runs. Locks die with their process,
+  so a crashed run cannot leak a slot. Port blocks are leased under the same kind of lock.
+- `(environment podman #:scope run …)` — one container per run; every step execs into it, so
+  installed dependencies persist for the run. `#:caches ("uv" "cargo")` are named volumes shared
+  across runs. Only the worktree and the app's `.git` are mounted (git needs it); the application's
+  working tree is not.
+- `#:agent-inside #t` — the agent CLI itself runs in the container, with the layer mounted
+  read-only except where a run writes, and `#:credentials (claude)` making just that agent's auth
+  available. `bypassPermissions` is only accepted in this configuration.
+- A zero-touch ADW (auto review that merges or deploys) must have a podman option in its stack.
+- Worktree hygiene: `#:sparse` for monorepos, `#:gc-days` for kept worktrees of old runs, and
+  branches that hold nothing unshipped are deleted with their worktree.
+
+Not built yet: `(parallel …)` steps that fan one task out to several agents in sibling worktrees.

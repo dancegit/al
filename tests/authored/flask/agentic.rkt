@@ -35,6 +35,9 @@
   (environment nix-devshell #:packages ("python312" "uv" "git")
                #:nixpkgs "path:/nix/store/243rp6ap5vd4zhgh24fqhvd8m1k48yyi-nixpkgs/nixpkgs")
 
+  (environment podman #:base-image "docker.io/library/python:3.12-slim" #:packages ("git")
+               #:setup ("pip install --no-cache-dir uv") #:caches ("uv" "pre-commit"))
+
   (artefact log)
   (artefact junit #:glob ".tox/reports/junit.xml")
 
@@ -107,7 +110,7 @@
 
   (adw zte #:description "Zero-touch: merges chores and bugs when lint, typecheck and test all pass"
        #:input (tasklist cli) #:trigger (cron manual)
-       #:environment (worktree nix-devshell) #:review zero-touch #:agent claude-code #:classes (chore bug)
+       #:environment (worktree nix-devshell podman) #:review zero-touch #:agent claude-code #:classes (chore bug)
     (steps
       (compose plan-build)
       (check lint #:cmd lint #:resolve resolve-test #:collect (log))

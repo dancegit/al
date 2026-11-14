@@ -908,6 +908,52 @@
       },
       "type": "array"
     },
+    "concurrency": {
+      "description": "How far the layer scales out. Every run has its own worktree; these limits are shared by all triggers and manual runs.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "File-lock slot pools under agents/.slots: a run, an agent call and a check each hold one slot of their pool.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "slots"
+            },
+            "maxAgents": {
+              "description": "Agent (LLM) calls in flight at once across all runs.",
+              "type": "integer"
+            },
+            "maxChecks": {
+              "description": "Codebase check commands in flight at once across all runs (they are the CPU-heavy part).",
+              "type": "integer"
+            },
+            "maxRuns": {
+              "description": "ADW runs in flight at once (each in its own worktree).",
+              "type": "integer"
+            },
+            "status": {
+              "const": "stable"
+            },
+            "waitSeconds": {
+              "description": "How long a run waits for a free slot before failing.",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "maxAgents",
+            "maxChecks",
+            "maxRuns",
+            "status",
+            "waitSeconds"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "description": {
       "type": "string"
     },
@@ -952,9 +998,17 @@
                 },
                 "type": "array"
               },
+              "deleteMergedBranches": {
+                "description": "When a run's worktree is removed, delete its branch if it holds nothing that is not already on the default or al/ship branch.",
+                "type": "boolean"
+              },
               "dir": {
                 "description": "Worktree parent directory relative to the layer.",
                 "type": "string"
+              },
+              "gcDays": {
+                "description": "Kept worktrees of finished runs older than this are removed when a new run starts; 0 = never.",
+                "type": "integer"
               },
               "id": {
                 "type": "string"
@@ -979,18 +1033,28 @@
                 "description": "Ports reserved per run (exported as ADW_PORT_0..n).",
                 "type": "integer"
               },
+              "sparse": {
+                "description": "Sparse-checkout these directories only (cone mode); empty = full checkout. For large monorepos.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "status": {
                 "const": "stable"
               }
             },
             "required": [
               "copyFiles",
+              "deleteMergedBranches",
               "dir",
+              "gcDays",
               "id",
               "keep",
               "kind",
               "portBase",
               "portsPerRun",
+              "sparse",
               "status"
             ],
             "type": "object"
@@ -1083,16 +1147,34 @@
             "description": "A light rootless podman container; the worktree is bind-mounted, nothing else of the host is visible.",
             "properties": {
               "agentInside": {
-                "description": "Run the agent CLI inside the container too (otherwise only codebase commands run inside).",
+                "description": "Run the agent CLI inside the container too, so the agent itself is sandboxed (the image must provide the agent CLI). Otherwise only codebase commands run inside.",
                 "type": "boolean"
               },
               "baseImage": {
                 "description": "Base image.",
                 "type": "string"
               },
+              "caches": {
+                "description": "Named cache volumes shared across runs, mounted at /caches/NAME. Known names also set the tool's cache variable: uv, pip, cargo, go, npm, pre-commit.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "cpus": {
                 "description": "CPU limit.",
                 "type": "string"
+              },
+              "credentials": {
+                "description": "Agent credentials made available inside the container (read-only auth file + API key variable). Only meaningful with #:agent-inside #t.",
+                "items": {
+                  "enum": [
+                    "claude",
+                    "codex"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
               },
               "id": {
                 "type": "string"
@@ -1120,6 +1202,14 @@
                 },
                 "type": "array"
               },
+              "scope": {
+                "description": "`run` = one container per ADW run, every step execs into it (installed dependencies persist for the run); `command` = a fresh container per command.",
+                "enum": [
+                  "run",
+                  "command"
+                ],
+                "type": "string"
+              },
               "setup": {
                 "description": "Extra RUN lines for the Containerfile.",
                 "items": {
@@ -1134,12 +1224,15 @@
             "required": [
               "agentInside",
               "baseImage",
+              "caches",
               "cpus",
+              "credentials",
               "id",
               "kind",
               "memory",
               "network",
               "packages",
+              "scope",
               "setup",
               "status"
             ],
@@ -2385,6 +2478,7 @@
     "artefacts",
     "codebase",
     "commands",
+    "concurrency",
     "description",
     "environments",
     "experts",

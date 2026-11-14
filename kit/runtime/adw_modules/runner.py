@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from . import envs, ir, state as state_module, steps
+from . import slots
 from .agents import CLASSES
 from .errors import LayerError, StepFailed
 
@@ -159,7 +160,11 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
     try:
         if request is not None and request.hooks is not None:
             request.hooks.on_start(state)
-        _execute(layer, state, adw, stack)
+        with slots.slot(layer, "runs", f"adw {state.adw_id}"):
+            if stack.worktree_option:
+                for removed in envs.collect_garbage(layer, stack.worktree_option):
+                    print(f"[adw {state.adw_id}] gc: removed stale worktree {removed}")
+            _execute(layer, state, adw, stack)
         state.status, exit_code = "passed", 0
     except (StepFailed, LayerError) as exc:
         state.status = "failed"

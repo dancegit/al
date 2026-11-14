@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from . import storage
+from . import slots
 from .errors import LayerError, StepFailed
 from .templates import render
 
@@ -343,11 +344,14 @@ def run_agent(layer: Any, state: Any, step_name: str, command_name: str, args: l
     if kind == "mock":
         output = _run_mock(layer, state, agent, step_name, command, args, raw_path)
     elif kind == "claude-code":
-        output = _run_claude(layer, agent, prompt, model_set, cwd, env_stack, step_name, raw_path)
+        with slots.slot(layer, "agents", f"adw {state.adw_id} step {step_name}"):
+            output = _run_claude(layer, agent, prompt, model_set, cwd, env_stack, step_name, raw_path)
     elif kind == "codex":
-        output = _run_codex(agent, prompt, model_set, cwd, env_stack, step_name, raw_path)
+        with slots.slot(layer, "agents", f"adw {state.adw_id} step {step_name}"):
+            output = _run_codex(agent, prompt, model_set, cwd, env_stack, step_name, raw_path)
     elif kind == "custom":
-        output = _run_custom(agent, prompt, model_set, cwd, env_stack, step_name, raw_path)
+        with slots.slot(layer, "agents", f"adw {state.adw_id} step {step_name}"):
+            output = _run_custom(agent, prompt, model_set, cwd, env_stack, step_name, raw_path)
     else:
         raise LayerError(f"Unknown agent kind: {kind!r}")
     result = process_output(layer, state, command, output, step_name)

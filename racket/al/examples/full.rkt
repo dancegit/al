@@ -30,7 +30,7 @@
 
   (environment worktree #:copy-files (".env"))
   (environment nix-devshell #:packages ("bun" "nodejs_22" "python312" "uv" "ffmpeg"))
-  (environment podman #:id sandbox #:packages ("git" "curl") #:network slirp)
+  (environment podman #:id sandbox #:packages ("git" "curl") #:network slirp #:caches ("npm" "uv"))
 
   (artefact log)
   (artefact junit #:glob "reports/*.xml")
@@ -38,6 +38,7 @@
   (artefact video #:id recordings #:glob "e2e-results/**/*.webm" #:keyframes 6)
 
   (review human)
+  (concurrency slots #:max-runs 4 #:max-agents 2)
   (review auto #:id zero-touch #:artefacts (log junit screenshots recordings)
           #:ship deploy #:deploy-cmd deploy #:require-checks (lint test e2e)
           #:allowed-classes (chore bug) #:max-diff-lines 300)

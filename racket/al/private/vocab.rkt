@@ -93,6 +93,15 @@
   [secret-key-env string "AWS_SECRET_ACCESS_KEY" "Environment variable with the secret key."]
   [local-dir string "artefacts" "Local mirror directory relative to the layer."])
 
+(define-family concurrency #:key "concurrency" #:letter "" #:default slots
+  "How far the layer scales out. Every run has its own worktree; these limits are shared by all triggers and manual runs.")
+(define-kind concurrency slots
+  "File-lock slot pools under agents/.slots: a run, an agent call and a check each hold one slot of their pool."
+  [max-runs integer 4 "ADW runs in flight at once (each in its own worktree)."]
+  [max-agents integer 2 "Agent (LLM) calls in flight at once across all runs."]
+  [max-checks integer 2 "Codebase check commands in flight at once across all runs (they are the CPU-heavy part)."]
+  [wait-seconds integer 3600 "How long a run waits for a free slot before failing."])
+
 (define-family voice #:key "voice" #:letter "" #:default #f
   "Local speech stack used by the voice prompt input and trigger, and for spoken summaries.")
 (define-kind voice kokoro
@@ -202,7 +211,10 @@
   [port-base integer 9100 "First port of the per-run port block."]
   [ports-per-run integer 2 "Ports reserved per run (exported as ADW_PORT_0..n)."]
   [copy-files (list-of string) () "Untracked files copied from the app checkout into the worktree (e.g. .env)."]
-  [keep (enum never on-failure always) on-failure "When the worktree is kept after the run."])
+  [keep (enum never on-failure always) on-failure "When the worktree is kept after the run."]
+  [sparse (list-of string) () "Sparse-checkout these directories only (cone mode); empty = full checkout. For large monorepos."]
+  [gc-days integer 7 "Kept worktrees of finished runs older than this are removed when a new run starts; 0 = never."]
+  [delete-merged-branches boolean #t "When a run's worktree is removed, delete its branch if it holds nothing that is not already on the default or al/ship branch."])
 (define-kind environment nix-devshell
   "A Nix flake dev shell generated in the layer; every codebase command and the agent run inside `nix develop`."
   [packages (list-of string) #:required "nixpkgs attribute names providing the toolchain (e.g. python312 uv)."]
@@ -222,7 +234,10 @@
   [network (enum none host slirp) slirp "Network mode: `slirp` = podman's default rootless user-mode network, `none` = fully offline checks, `host` = host network."]
   [memory string "4g" "Memory limit."]
   [cpus string "2" "CPU limit."]
-  [agent-inside boolean #f "Run the agent CLI inside the container too (otherwise only codebase commands run inside)."])
+  [agent-inside boolean #f "Run the agent CLI inside the container too, so the agent itself is sandboxed (the image must provide the agent CLI). Otherwise only codebase commands run inside."]
+  [scope (enum run command) run "`run` = one container per ADW run, every step execs into it (installed dependencies persist for the run); `command` = a fresh container per command."]
+  [caches (list-of string) () "Named cache volumes shared across runs, mounted at /caches/NAME. Known names also set the tool's cache variable: uv, pip, cargo, go, npm, pre-commit."]
+  [credentials (list-of (enum claude codex)) () "Agent credentials made available inside the container (read-only auth file + API key variable). Only meaningful with #:agent-inside #t."])
 
 ;; ---------------------------------------------------------------------------------------
 ;; R — Review
@@ -399,7 +414,7 @@
 (define artefact-types (map kind-name (family-kinds (find-family 'artefact))))
 
 ;; Families that hold exactly one option (emitted as an object, not an array).
-(define singleton-families '(layer forge storage voice))
+(define singleton-families '(layer forge storage voice concurrency))
 
 (define semantic-rules
   '("Exactly one (codebase …) clause and at least one (adw …) clause."
@@ -412,6 +427,7 @@
     "prompt-input `issue`, trigger `forge-actions`, and webhook issue events need a forge other than `none`."
     "prompt-input `voice` and trigger `voice` need a (voice …) declaration."
     "An ADW's environment stack has at most one option per kind; `host` cannot be combined with `worktree`; an ADW with run steps that write needs `worktree`."
-    "claude-code #:permission-mode bypassPermissions is only accepted for ADWs whose environment stack contains a podman option."
+    "claude-code #:permission-mode bypassPermissions is only accepted for ADWs whose environment stack contains a podman option with #:agent-inside #t (the agent itself must be sandboxed)."
+    "An ADW whose review option is `auto` with #:ship merge or deploy must have a podman option in its environment stack: nothing ships untouched from an unsandboxed environment."
     "(compose ADW) inlines another ADW's steps; cycles are rejected."
     "Kinds marked planned compile but are refused by the generator."))

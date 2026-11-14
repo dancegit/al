@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import artefacts
+from . import slots
 from .agents import run_agent
 from .errors import LayerError, StepFailed
 from .templates import render_step_arg
@@ -65,8 +66,9 @@ def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
     check_dir.mkdir(parents=True, exist_ok=True)
     attempt = max(_log_number(check_dir, name), attempt_offset + 1)
     log_path = check_dir / f"{name}.{attempt}.log"
-    exit_code, output = run_command(env_stack.wrap(cmd), env_stack.cwd, env_stack.process_env(),
-                                     int(command.get("timeout", 900)))
+    with slots.slot(layer, "checks", f"adw {state.adw_id} check {name}"):
+        exit_code, output = run_command(env_stack.wrap(cmd), env_stack.cwd, env_stack.process_env(),
+                                         int(command.get("timeout", 900)))
     log_path.write_text(output, encoding="utf-8")
     relative_log = log_path.relative_to(layer.layer_dir).as_posix()
     state.checks[name] = {"cmd": cmd, "exit": exit_code, "log": relative_log}
