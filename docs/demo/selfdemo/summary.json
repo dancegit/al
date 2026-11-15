@@ -1,0 +1,80 @@
+{
+  "date": "2026-11-15T14:05:08Z",
+  "model": "claude-opus-5-5",
+  "forgejo": "11.0.16+gitea-1.22.0",
+  "dry_run": false,
+  "change_1": {
+    "request": "I want to queue work in a text file: add a task-file prompt input and a poller trigger, and let the ui-change workflow accept them.",
+    "run_id": "5e1f0001",
+    "wall_clock_seconds": 158,
+    "agent_cost_usd": 0.9828,
+    "agent_steps": 3,
+    "pull_request": 1,
+    "check_attempts": {
+      "definition": 1,
+      "regenerate": 1,
+      "scope": 1,
+      "layer-check": 1,
+      "dry-runs": 1,
+      "verify": 1
+    },
+    "resolve_steps": [],
+    "source_files_changed": [
+      "agentic/agentic.rkt"
+    ]
+  },
+  "change_2": {
+    "request": "Every plan must end with a 'Rollback' section that says exactly how to undo the change.",
+    "run_id": "5e1f0002",
+    "wall_clock_seconds": 163,
+    "agent_cost_usd": 0.8784,
+    "agent_steps": 3,
+    "pull_request": 2,
+    "check_attempts": {
+      "definition": 1,
+      "regenerate": 1,
+      "scope": 1,
+      "layer-check": 1,
+      "dry-runs": 1,
+      "verify": 1
+    },
+    "resolve_steps": [],
+    "source_files_changed": [
+      "agentic/templates/.al-eject.json",
+      "agentic/templates/commands/plan-chore.md",
+      "agentic/templates/commands/plan-feature.md"
+    ]
+  },
+  "plan_step_after_change_2": {
+    "run_id": "4108b660",
+    "prompt": "Make the label of the Add button bold.",
+    "step": "plan-chore of ui-change (worktree + podman, agent inside)",
+    "seconds": 30,
+    "agent_cost_usd": 0.1671,
+    "agent_steps": 1
+  },
+  "task_from_the_task_file": {
+    "adw": "ui-change",
+    "source": "tasklist:8",
+    "status": "passed",
+    "dry_run": true,
+    "checks": {
+      "e2e": 0,
+      "test": 0
+    },
+    "ship": "pr"
+  },
+  "implicit_protection": {
+    "workflow": "feature",
+    "review": "zero-touch (auto, ship merge)",
+    "status": "passed",
+    "action": "pr",
+    "shipped": false,
+    "reasons": [
+      "protected-path:agentic/commands/plan-chore.md",
+      "layer-changed: this run changed the agentic layer itself; layer changes are made with `al improve` and always pass a person"
+    ]
+  },
+  "earlier_attempts": [],
+  "total_agent_cost_usd": 2.0283
+}

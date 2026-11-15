@@ -29,8 +29,9 @@ PROPOSAL_FILE: ${specs_dir}/improve-${adw_id}-<descriptive-name>.md
   - context: the step was given too much, too little, or the wrong argument;
   - environment: a tool, port, file or permission was missing;
   - not the layer: the request was ambiguous, or the model erred despite a correct prompt. Then say so and propose nothing.
-- Prefer the edit with the widest leverage and the smallest surface, in this order: a `#:focus` line on the command; a `#:validation` entry or a `(check …)` step; a step-level change in the `(adw …)`; a new `(conditional-doc …)`; a new command or expert; a change to the kit template itself (last resort; say that it affects every layer).
-- Generated files under `${layer_dir}/commands/` are overwritten on regeneration. Propose the edit in LAYER_SOURCE whenever the DSL can express it; DSL_REFERENCE is the whole language.
+- Prefer the edit with the widest leverage and the smallest surface, in this order: a `#:focus` line on the command; a `#:validation` entry or a `(check …)` step; a step-level change in the `(adw …)`; a new `(conditional-doc …)`; a new command or expert; a layer-local template (`al eject <layer> command NAME` copies the kit template into `${layer_dir}/templates/`, where it can be edited and survives regeneration).
+- Generated files under `${layer_dir}/commands/` and `hops/` are overwritten on regeneration and `al gen` refuses to run over a hand edit: never propose editing them. Propose the edit in LAYER_SOURCE whenever the DSL can express it; DSL_REFERENCE is the whole language.
+- End the proposal's Verification with the one-sentence request a person can give to `al improve ${layer_dir} "…"`, al's reviewed path: it makes the change, checks and regenerates the layer, and opens a pull request.
 - A focus line is specific and checkable ("New endpoints need a test module mirroring the source path"), never generic ("be careful with tests").
 - Give the edit as an exact before/after snippet with its file path, and state how to verify it: the compile command and the input that failed, which must now succeed.
 {{focus}}

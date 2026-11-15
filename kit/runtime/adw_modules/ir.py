@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,19 @@ class Layer:
     @property
     def default_branch(self) -> str:
         return str(self.ir["codebase"].get("defaultBranch") or "main")
+
+    @property
+    def in_repo_dir(self) -> str:
+        """The layer directory relative to the repository root when the layer is checked in with
+        the application (`layer in-repo`), else ""."""
+        placement = self.ir.get("layer") or {}
+        if not isinstance(placement, dict) or placement.get("kind") != "in-repo":
+            return ""
+        return str(placement.get("dir") or "agentic").strip("/")
+
+    def changes_layer(self, adw_name: str) -> bool:
+        """True for a layer-change workflow (`#:changes layer`), e.g. the one `al improve` runs."""
+        return str(self.adw(adw_name).get("changes") or "codebase") == "layer"
 
     def option(self, family_key: str, option_id: str) -> dict[str, Any]:
         """Return the option `option_id` of a family; singletons ignore option_id when it is empty."""
@@ -123,4 +137,21 @@ def load(layer_dir: Path) -> Layer:
         entry = raw.get(family)
         if isinstance(entry, dict):
             _refuse_planned(family, entry)
-    return Layer(raw, root, (root / codebase_root).resolve())
+    return Layer(raw, root, app_root(root, codebase_root))
+
+
+APP_ROOT_ENV = "AL_APP_ROOT"
+
+
+def app_root(layer_dir: Path, codebase_root: str) -> Path:
+    """Where the application checkout is: `codebase.root` resolved against the layer directory,
+    unless AL_APP_ROOT names it. The override exists for a layer that is checked out somewhere
+    its relative root does not reach, e.g. in a worktree of the layer's own repository during
+    `al improve`; the definition is never rewritten for that."""
+    override = os.environ.get(APP_ROOT_ENV, "").strip()
+    if override:
+        path = Path(override).expanduser().resolve()
+        if not path.is_dir():
+            raise LayerError(f"{APP_ROOT_ENV}={override} is not a directory")
+        return path
+    return (Path(layer_dir) / codebase_root).resolve()

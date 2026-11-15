@@ -1,0 +1,41 @@
+al improve: agent `claude-sandboxed`: permission mode bypassPermissions becomes acceptEdits here (the workflow runs on the host, where bypassPermissions is not allowed)
+al improve: layer <tmp>/notes/agentic (in-repo); the change is made in a worktree of <tmp>/notes (branch from `main`), never in your checkout
+al improve: workflow: <tmp>/notes/agentic/.al-improve/agentic.rkt (run id 5e1f0001); environment: a host worktree (no container: the checks need racket, uv, the al tools and podman); review: a person, in the pull request
+[adw 5e1f0001] improve start: class=chore dry_run=False
+[adw 5e1f0001] step plan (run) start
+[adw 5e1f0001] step plan (run) passed: <tmp>/notes/agentic/.al-improve/specs/layer-change-5e1f0001-tasklist-poller-for-ui-change.md
+[adw 5e1f0001] step implement (run) start
+[adw 5e1f0001] step implement (run) passed: I added the task file input and the poller trigger to the layer, and the `ui-change` workflow now accepts both. Both validation commands pass. Nothing is commit
+[adw 5e1f0001] step definition (check) start
+[adw 5e1f0001] step definition (check) passed: exit 0, log agents/5e1f0001/checks/definition.1.log
+[adw 5e1f0001] step regenerate (check) start
+[adw 5e1f0001] step regenerate (check) passed: exit 0, log agents/5e1f0001/checks/regenerate.1.log
+[adw 5e1f0001] step scope (check) start
+[adw 5e1f0001] step scope (check) passed: exit 0, log agents/5e1f0001/checks/scope.1.log
+[adw 5e1f0001] step layer-check (check) start
+[adw 5e1f0001] step layer-check (check) passed: exit 0, log agents/5e1f0001/checks/layer-check.1.log
+[adw 5e1f0001] step dry-runs (check) start
+[adw 5e1f0001] step dry-runs (check) passed: exit 0, log agents/5e1f0001/checks/dry-runs.1.log
+[adw 5e1f0001] step verify (check) start
+[adw 5e1f0001] step verify (check) passed: exit 0, log agents/5e1f0001/checks/verify.1.log
+[adw 5e1f0001] step commit (run) start
+[adw 5e1f0001] step commit (run) passed: **Commit:** `f99793ec27d1f15867489fe4b9f507194797b2fe`: `agentic layer: queue ui-change work in tasks.md, polled by cron`
+[adw 5e1f0001] step review (review) start
+[adw 5e1f0001] step review (review) passed: ok
+[adw 5e1f0001] step ship (ship) start
+[adw 5e1f0001] gate: action pr
+[adw 5e1f0001] ship: PR #1 http://127.0.0.1:51319/adw/notes/pulls/1
+[adw 5e1f0001] step ship (ship) passed: ok
+[adw 5e1f0001] worktree removed: <tmp>/notes/agentic/.al-improve/trees/5e1f0001
+=== ADW summary ===
+adw:       improve 5e1f0001
+status:    passed
+branch:    chore/5e1f0001-i-want-to-queue-work-in
+plan:      <tmp>/notes/agentic/.al-improve/specs/layer-change-5e1f0001-tasklist-poller-for-ui-change.md
+checks:    definition=0, regenerate=0, scope=0, layer-check=0, dry-runs=0, verify=0
+review:    pass (human)
+ship:      pr -> http://127.0.0.1:51319/adw/notes/pulls/1 (shipped=False)
+artefacts: 0
+state:     <tmp>/notes/agentic/.al-improve/agents/5e1f0001/state.json
+al improve: done: pull request #1 http://127.0.0.1:51319/adw/notes/pulls/1 (branch chore/5e1f0001-i-want-to-queue-work-in) waits for a person
+al improve: the pull request includes the regenerated files: merging it is all that is needed

@@ -232,6 +232,21 @@
   (for/list ([a (in-list adws)])
     (hash-set a 'steps (steps-of (hash-ref a 'name) '()))))
 
+;; --- in-repo placement --------------------------------------------------------------------
+
+;; Path components of a relative path, without "" and "." parts.
+(define (components p) (filter (lambda (x) (not (member x '("" ".")))) (string-split p "/")))
+
+(define (check-in-repo dir root)
+  (define parts (components dir))
+  (when (or (null? parts) (regexp-match? #rx"^/" dir) (member ".." parts))
+    (fail "(layer in-repo): #:dir must be a relative directory inside the repository without `..` (got ~s), e.g. \"agentic\"" dir))
+  (define expected (string-join (for/list ([_ (in-list parts)]) "..") "/"))
+  (define up (components root))
+  (unless (and (not (regexp-match? #rx"^/" root)) (= (length up) (length parts)) (andmap (lambda (x) (equal? x "..")) up))
+    (fail "(layer in-repo #:dir ~s): (codebase #:root …) must lead from the layer directory back to the repository root, i.e. ~s (got ~s)"
+          dir expected root)))
+
 ;; --- whole layer ------------------------------------------------------------------------
 
 (define (compile-layer-datum datum)
@@ -262,6 +277,7 @@
     (define hops '())
     (define experts '())
     (define adw-clauses '())
+    (define layer-clause #f)
     (define clause-heads
       (append (map family-name (all-families)) '(codebase command hop expert adw)))
 
@@ -280,6 +296,7 @@
                    (family-name fam) (hash-ref o 'kind) (hash-ref o 'id)))
            (when (and (memq (family-name fam) singleton-families) (pair? existing))
              (fail "(~a …): only one ~a may be declared" (family-name fam) (family-name fam)))
+           (when (eq? (family-name fam) 'layer) (set! layer-clause (car c)))
            (hash-set! options (family-name fam) (cons o existing))]
           [(eq? (car d) 'codebase)
            (when codebase (fail "(codebase …) given twice"))
@@ -344,6 +361,10 @@
 
     ;; ---- semantic rules -----------------------------------------------------------------
     (define (opt fname id) (findf (lambda (o) (equal? (hash-ref o 'id) id)) (opts fname)))
+    (let ([placement (car (opts 'layer))])
+      (when (equal? (hash-ref placement 'kind) "in-repo")
+        (parameterize ([current-clause layer-clause])
+          (check-in-repo (hash-ref placement 'dir) (hash-ref codebase 'root)))))
     (define forge (car (opts 'forge)))
     (define no-forge? (equal? (hash-ref forge 'kind) "none"))
     (define voice (let ([v (opts 'voice)]) (and (pair? v) (car v))))
@@ -438,6 +459,10 @@
                    (ormap (lambda (k) (member k '("check" "ship"))) kinds))
           (fail "~a: check/ship steps need a `worktree` environment in the stack so the application checkout is never touched" who))
         (check-fan-outs a who steps review-i ship-i env-kinds)
+        (when (and (equal? (hash-ref a 'changes) "layer")
+                   (not (member (hash-ref rv 'kind) '("human" "agent"))))
+          (fail "~a: #:changes layer needs a review option of kind human or agent (got `~a`, kind ~a): a change to how agents work always passes a person; there is no zero-touch mode for layer changes"
+                who (hash-ref rv 'id) (hash-ref rv 'kind)))
         (define ag (opt 'agent (hash-ref a 'agent)))
         (define podman
           (for/first ([id (in-list (hash-ref a 'environment))]

@@ -16,7 +16,8 @@ COMPILE: ${layer_dir}/bin/al compile ${layer_dir} >/dev/null
 
 ## Instructions
 
-- You edit exactly one file, LAYER_SOURCE. Do not edit application code, generated files in the layer, or DSL_REFERENCE. Never switch branches, push, or touch the main checkout.
+- You edit exactly one file, LAYER_SOURCE. Do not edit application code, generated files in the layer (`commands/`, `hops/`, `adws/`, `env/`, `agentic-layer.json`: `al gen` overwrites them and refuses to run over a hand edit), or DSL_REFERENCE. Never switch branches, push, or touch the main checkout.
+{{layer_change_rule}}
 - Read DSL_REFERENCE in full first. It is the complete language: any form, kind, field or value not listed there does not exist and will be rejected. Read the `adw` record, the four step records and "Rules the compiler enforces" twice.
 - Read LAYER_SOURCE in full and list what is declared: cmds, prompt inputs, triggers, environments, reviews, agents, artefacts, commands, hops and existing adws. The new workflow may use only these names.
 - Do not declare new options, commands or cmds to make the workflow possible. If WORKFLOW needs something that is not declared, build the closest workflow from what exists and report what is missing.
@@ -49,5 +50,6 @@ COMPILE: ${layer_dir}/bin/al compile ${layer_dir} >/dev/null
 - The new `(adw …)` clause, in a code block.
 - The final compile result, and how many compile-and-repair rounds it took.
 - Anything WORKFLOW asked for that could not be expressed with declared names, as the declarations a human would have to add.
+- The one-sentence request a person can give to `al improve` to have this workflow added through review.
 
 {{output_contract}}

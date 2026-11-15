@@ -118,14 +118,28 @@ def run_review(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> 
 
 # ---------------------------------------------------------------- gate
 
+LAYER_CHANGED = "layer-changed: this run changed the agentic layer itself; layer changes are made with `al improve` and always pass a person"
+LAYER_CHANGE_NEEDS_A_PERSON = "layer-change: a change to how agents work always passes a person"
+
+
+def layer_reasons(facts: dict[str, Any]) -> list[str]:
+    """Implicit protection of an in-repo layer: `protected-path:` for every changed file under the
+    layer directory, whatever the review option says (block-protected-paths cannot turn it off)."""
+    hits = [path for path in facts.get("changed_files", []) if is_protected(path, facts.get("layer_protected") or [])]
+    return [f"protected-path:{path}" for path in hits] + ([LAYER_CHANGED] if hits else [])
+
+
 def decide(option: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
     """Pure ship decision. `ship` is True only when the change ships without a human."""
     kind = option.get("kind")
+    implicit = layer_reasons(facts)
     if kind in {"human", "agent"}:
-        return {"action": "pr", "ship": False, "reasons": [f"review-{kind}: a human merges"]}
+        return {"action": "pr", "ship": False, "reasons": [f"review-{kind}: a human merges", *implicit]}
     if kind != "auto":
         raise LayerError(f"Unknown review kind: {kind!r}")
     reasons: list[str] = []
+    if facts.get("changes") == "layer":  # the compiler refuses this; the runtime refuses it again
+        reasons.append(LAYER_CHANGE_NEEDS_A_PERSON)
     reasons += [f"check-failed:{name}" for name, code in facts["check_exits"].items() if code != 0]
     reasons += [f"require-check-failed:{name}" for name, code in facts["require_exits"].items() if code != 0]
     verdict = facts.get("verdict") or {}
@@ -140,6 +154,7 @@ def decide(option: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
     if option.get("blockProtectedPaths"):
         reasons += [f"protected-path:{path}" for path in facts["changed_files"]
                     if is_protected(path, facts["protected"])]
+    reasons += [reason for reason in implicit if reason not in reasons]
     if reasons:
         return {"action": "pr", "ship": False, "reasons": reasons}
     return {"action": str(option.get("ship") or "pr"), "ship": True, "reasons": []}
@@ -252,7 +267,13 @@ def gather_facts(layer: Any, state: Any, option: dict[str, Any], env_stack: Any,
         # a declared check with no recorded result never ran: that is not a pass
         if step["kind"] == "check" and step["name"] not in check_exits:
             check_exits[step["name"]] = -1
+    adw = layer.adw(state.adw)
+    changes = str(adw.get("changes") or "codebase")
+    in_repo = getattr(layer, "in_repo_dir", "")
     return {
+        "changes": changes,
+        # an in-repo layer is protected from every ADW that is not a layer-change workflow
+        "layer_protected": [in_repo] if in_repo and changes != "layer" else [],
         "check_exits": check_exits,
         "require_exits": _rerun_required(layer, state, option, env_stack) if option["kind"] == "auto" else {},
         "verdict": state.review.get("verdict", {}),

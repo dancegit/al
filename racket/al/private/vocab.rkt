@@ -12,7 +12,7 @@
 ;; ---------------------------------------------------------------------------------------
 
 (define-family layer #:key "layer" #:letter "" #:default sibling
-  "Where the generated agentic layer lives. It is never part of the application tree.")
+  "Where the generated agentic layer lives. Only `in-repo` puts it inside the application repository; the others keep it out of the application tree.")
 (define-kind layer sibling
   "A directory next to the application checkout (default: <app>.al)."
   [dir string "" "Layer directory; empty = `<codebase root>.al` beside the app."]
@@ -25,6 +25,9 @@
   "The layer is its own remote repository; the app is referenced by URL only."
   [remote string #:required "Git remote URL of the layer repository."]
   [dir string "" "Local checkout directory; empty = `<name>.al`."])
+(define-kind layer in-repo
+  "The layer is a directory INSIDE the application repository, committed with the code. agentic.rkt lives in that directory and (codebase #:root …) is the way back up to the repository root (\"..\" for a top-level directory). Run state (worktrees, run logs, artefacts, plans, the task list) stays in git-ignored directories of the layer, and every ADW that does not change the layer itself treats the layer directory as a protected path."
+  [dir string "agentic" "Layer directory relative to the repository root (no `..`, no leading `/`)."])
 
 (define-family agent #:key "agents" #:letter "" #:default claude-code
   "The coding agent a step runs on. ADWs name one; the runtime shells out to it headlessly.")
@@ -264,13 +267,15 @@
 (define-kind review human
   "Open a pull request and stop. A human reads it (presence = 2: prompt and review)."
   [reviewers (list-of string) () "Forge users requested as reviewers."]
-  [draft boolean #f "Open the PR as draft."])
+  [draft boolean #f "Open the PR as draft."]
+  [body-cmd (optional-ref cmd) "" "Codebase command run in the worktree just before the pull request is written; its standard output (markdown) opens the PR description. It gets ADW_STATE (path of the run's state.json) and ADW_BASE (the commit the change is based on)."])
 (define-kind review agent
   "An agent reviews the diff against the spec, with artefacts as proof, and posts a structured verdict. A human still merges."
   [command (ref command) review "Review command."]
   [artefacts (list-of (ref artefact)) () "Artefacts attached as proof."]
   [reviewers integer 1 "Independent review agents; all must pass ('double agent check')."]
-  [max-retries integer 3 "Patch-and-re-review attempts on blockers before stopping for a human."])
+  [max-retries integer 3 "Patch-and-re-review attempts on blockers before stopping for a human."]
+  [body-cmd (optional-ref cmd) "" "Codebase command whose standard output opens the PR description (see review human)."])
 (define-kind review auto
   "Zero-touch: agent review + deterministic gates; if everything passes the change ships without a human."
   [command (ref command) review "Review command."]
@@ -283,7 +288,8 @@
   [allowed-classes (list-of (enum chore bug feature patch)) (chore bug)
    "Work classes allowed to ship untouched; others fall back to a human PR."]
   [max-diff-lines integer 400 "Larger diffs fall back to a human PR."]
-  [block-protected-paths boolean #t "Any change under codebase protected paths falls back to a human PR."])
+  [block-protected-paths boolean #t "Any change under codebase protected paths falls back to a human PR."]
+  [body-cmd (optional-ref cmd) "" "Codebase command whose standard output opens the PR description (see review human)."])
 
 ;; ---------------------------------------------------------------------------------------
 ;; Artefacts
@@ -354,8 +360,8 @@
 
 (define-record command
   "(command NAME #:template T …): instantiate a kit template as a command of this layer."
-  [template (enum prime install start plan-feature plan-bug plan-chore plan-patch implement build
-                  test resolve-test e2e-test review document commit pull-request classify
+  [template (enum prime install start plan-feature plan-bug plan-chore plan-patch plan-layer-change
+                  implement build test resolve-test e2e-test review document commit pull-request classify
                   branch-name summarize question self-improve track-kpis custom)
             #:required "Kit template to instantiate."]
   [description string "" "One-line purpose."]
@@ -389,7 +395,8 @@
   [environment (list-of (ref environment)) #:first "Environment stack, outermost first."]
   [review (ref review) #:first "Review option."]
   [agent (ref agent) #:first "Agent the steps run on."]
-  [classes (list-of (enum chore bug feature patch)) () "Work classes routed to this ADW by classification; empty = any."])
+  [classes (list-of (enum chore bug feature patch)) () "Work classes routed to this ADW by classification; empty = any."]
+  [changes (enum codebase layer) codebase "What the ADW changes. `codebase`: the application. `layer`: an agentic layer (its codebase is the repository that holds a layer, as in the workflow `al improve` runs); such an ADW never ships without a person and is exempt from the in-repo layer protection."])
 
 (define-record step-run
   "(run NAME #:command C …): one agent, one prompt, one purpose."
@@ -457,4 +464,6 @@
     "(compose ADW) inlines another ADW's steps; cycles are rejected."
     "(fan-out NAME #:adw CHILD …): CHILD is a declared ADW other than the parent, with no cycle through fan-out or compose; CHILD (after compose expansion) contains no (ship) and no (fan-out) step and has a `worktree` environment, so each candidate ends with its work committed on its own branch; #:count is 2–8 and #:max-parallel 0–#:count; the fan-out step comes before the parent's (review) and (ship) steps; the parent has a `worktree` environment."
     "A child ADW used by (fan-out …) must leave its changes committed (e.g. a final (run commit #:command commit) step): a candidate that committed nothing counts as failed."
+    "(layer in-repo #:dir D): D is a relative path inside the repository (no `..`, no leading `/`), and (codebase #:root …) is the way back up from D to the repository root: \"..\" for a top-level directory, \"../..\" for D = \"tools/agentic\"."
+    "An ADW with #:changes layer must use a review option of kind `human` or `agent`: a change to how agents work always passes a person."
     "Kinds marked planned compile but are refused by the generator."))

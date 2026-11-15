@@ -1,0 +1,64 @@
+#lang al
+;; al's own layer-change workflow: what `al improve LAYER "request"` runs.
+;;
+;; `al improve` fills the @…@ placeholders for one layer and writes the result to
+;; <layer>/.al-improve/agentic.rkt (git-ignored run state), then generates and runs it with the
+;; ordinary runtime. Its codebase is the repository that HOLDS the layer (the application repository
+;; for an in-repo layer, the layer's own repository otherwise): it changes the layer, never the
+;; application. It is itself an in-repo layer of that repository, in an ignored directory.
+;;
+;; The agent is the layer's own (bypassPermissions becomes acceptEdits: this workflow runs on the
+;; host, because its checks need racket, uv, the al tools and podman, which no layer image has).
+;; The forge is the one of the repository that holds the layer. There is no zero-touch: the ADW
+;; changes a layer (#:changes layer), so the compiler only accepts a human or agent review.
+(agentic-layer #:name @NAME@ #:description @DESCRIPTION@
+  (codebase #:root @REPO_ROOT@ #:languages (racket markdown) #:default-branch @DEFAULT_BRANCH@
+            #:description @CODEBASE_DESCRIPTION@
+            #:readme @README@
+    (cmd definition @CMD_DEFINITION@ #:timeout 300
+         #:description "agentic.rkt compiles: the definition is coherent.")
+    (cmd regenerate @CMD_REGENERATE@ #:timeout 300
+         #:description "al gen regenerates the layer without overwriting a hand-edited generated file, and a second al gen changes nothing.")
+    (cmd scope @CMD_SCOPE@ #:timeout 120
+         #:description "The change touches the layer only, never the application.")
+    (cmd layer-check @CMD_CHECK@ #:timeout 600
+         #:description "al check passes: every generated file is present and well-formed.")
+    (cmd dry-runs @CMD_DRY_RUNS@ #:timeout 3600
+         #:description "Every workflow of the changed layer completes a --dry-run (mock agent, real checks) against a pristine copy of the application.")
+    (cmd verify @CMD_VERIFY@ #:timeout 3600
+         #:description "When the change touches codebase cmds or environments: al verify runs the affected cmds for real.")
+    (cmd report @CMD_REPORT@ #:timeout 600
+         #:description "Writes the pull request description for a person who does not read Racket.")
+    (paths #:source (@SUB@)))
+
+  (layer in-repo #:dir @SELF_DIR@)
+  @FORGE@
+  @AGENT@
+  (environment worktree #:keep on-failure #:ports-per-run 0)
+  @REVIEW@
+
+  (command plan-layer-change #:template plan-layer-change #:model-set heavy #:output path
+           #:validation (definition regenerate)
+           #:focus (@FOCUS@))
+  (hop implement #:template run-plan #:takes plan #:model-set heavy)
+  (command resolve-layer #:template resolve-test #:model-set heavy
+           #:focus (@RESOLVE_FOCUS@))
+  (command commit #:template commit
+           #:focus ("The commit message starts with 'agentic layer: ' and says in under 72 characters what changes for the people who use the layer."))
+  @REVIEW_COMMAND@
+
+  (adw improve #:changes layer
+       #:description "Plan, make and check a change to the agentic layer; a person reviews the pull request"
+       #:environment (worktree) #:review @REVIEW_ID@ #:agent @AGENT_ID@
+    (steps
+      (run plan #:command plan-layer-change #:args ("$prompt"))
+      (run implement #:command implement #:args ("$plan"))
+      (check definition #:cmd definition #:resolve resolve-layer #:retries 2)
+      (check regenerate #:cmd regenerate #:resolve resolve-layer #:retries 2)
+      (check scope #:cmd scope #:resolve resolve-layer #:retries 1)
+      (check layer-check #:cmd layer-check #:resolve resolve-layer #:retries 2)
+      (check dry-runs #:cmd dry-runs #:resolve resolve-layer #:retries 2)
+      (check verify #:cmd verify #:resolve resolve-layer #:retries 1)
+      (run commit #:command commit)
+      (review)
+      (ship))))

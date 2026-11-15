@@ -6,15 +6,21 @@
 """al — generate an agentic layer for any codebase.
 
   al init    APP [--layer DIR]     create the layer directory beside the app and scout a draft LLM.txt
+  al init    APP --in-repo [--dir agentic]   … or inside the application repository, committed with it
   al scout   APP [-o LLM.txt]      deterministic LLM.txt draft (an LLM completes it: meta/commands/scout-codebase.md)
   al compile LAYER                 agentic.rkt -> agentic-layer.json (validated against the schema)
-  al gen     LAYER                 compile + generate commands, HOPs, ADWs, env, triggers, forge files
+  al gen     LAYER [--discard-edits]  compile + generate commands, HOPs, ADWs, env, triggers, forge files
   al explain LAYER [--md F] [--gif F]  explain the layer definition in plain language, block by block
   al check   LAYER                 verify a generated layer and that the application tree is untouched
+  al eject   LAYER (command|hop|expert) NAME [--force] | --list
+                                   copy a kit template into LAYER/templates/ so your edits to it survive `al gen`
+  al improve LAYER "request" [--dry-run] [--review human|agent]
+                                   change the layer through al's own reviewed workflow: ends in a pull request
   al verify  LAYER [--cmd NAME …] [--timeout S] [--json]
                                    run the layer's codebase cmds on a throwaway worktree, in the ADWs' environment
 
-LAYER is the directory holding agentic.rkt. Nothing is ever written into APP.
+LAYER is the directory holding agentic.rkt. Nothing is ever written into APP, except with `al init APP --in-repo`,
+which puts the layer (a directory that is committed with the code) inside the application repository.
 """
 from __future__ import annotations
 
@@ -91,6 +97,8 @@ def scout(app: Path) -> dict:
     if not (app / ".git").exists():
         raise AlError(f"{app} is not a git checkout")
     files = [f for f in git(app, "ls-files").splitlines() if f]
+    layers = [f[: -len(MANIFEST)] for f in files if f == MANIFEST or f.endswith("/" + MANIFEST)]  # in-repo layers
+    files = [f for f in files if not any(f.startswith(prefix) for prefix in layers if prefix)]
     exts = Counter(LANG_BY_EXT[Path(f).suffix.lower()] for f in files if Path(f).suffix.lower() in LANG_BY_EXT)
     langs = [l for l, _ in exts.most_common() if l not in ("shell", "nix")][:4] or [l for l, _ in exts.most_common()][:1]
     top = Counter(f.split("/")[0] for f in files if "/" in f)
@@ -321,6 +329,16 @@ def compile_layer(layer: Path) -> dict:
 # gen
 # ------------------------------------------------------------------------------------------
 
+TEMPLATES_README = """# Layer-local templates
+
+A template here replaces the kit template of the same name for every command, hop or expert of this
+layer that uses it: `commands/<template>.md`, `hops/<template>.md`, `experts/<file>`. It uses the same
+`{{placeholders}}` as the kit's; an unknown placeholder is an error at `al gen`.
+
+Make one with `al eject <layer> command|hop|expert NAME` rather than by hand, and see which templates
+are yours, and whether the kit's version has changed since, with `al eject <layer> --list`.
+"""
+
 OUTPUT_CONTRACT = {
     "text": "Finish with a concise report in plain markdown. No preamble.",
     "path": "Your final message must be ONLY the path of the file you created, on a single line, with no other text.",
@@ -355,21 +373,107 @@ def fabric_pattern(name: str) -> Path:
     raise AlError(f"fabric pattern `{name}` not found in {', '.join(map(str, FABRIC_DIRS))} (set AL_FABRIC_DIR)")
 
 
+MANIFEST = ".al-manifest.json"              # generated files that are the same on every machine (committed)
+LOCAL_MANIFEST = ".al-manifest.local.json"  # generated files that name this machine's paths (git-ignored)
+GENERATOR = "al 0.2"
+IMPROVE_DIR = ".al-improve"                 # run state of `al improve` inside a layer
+TEMPLATE_KINDS = ("commands", "hops", "experts")
+EXPERT_TEMPLATES = ("expertise.yaml", "question.md", "self-improve.md")
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_manifest(layer: Path) -> dict[str, str | None]:
+    """Generated file -> sha256 recorded by the last `al gen`. A manifest written by al 0.1 is a
+    plain file list: its files map to None (hash unknown: never reported as hand-edited)."""
+    entries: dict[str, str | None] = {}
+    for name in (MANIFEST, LOCAL_MANIFEST):
+        path = layer / name
+        if not path.is_file():
+            continue
+        try:
+            files = json.loads(path.read_text()).get("files", [])
+        except (json.JSONDecodeError, AttributeError) as exc:
+            raise AlError(f"{path} is not a manifest written by al ({exc}); delete it and run `al gen` again") from exc
+        if isinstance(files, dict):
+            entries.update({str(k): (str(v) if v else None) for k, v in files.items()})
+        else:
+            entries.update({str(f): None for f in files})
+    return entries
+
+
+class HandEditError(AlError):
+    def __init__(self, message: str, files: list[str]):
+        super().__init__(message)
+        self.files = files
+
+
+def eject_hint(layer: Path, rel: str) -> str:
+    """How to make a hand edit of the generated file `rel` permanent."""
+    parts = rel.split("/")
+    if parts[0] in ("commands", "hops") and len(parts) == 2 and rel.endswith(".md"):
+        kind = "command" if parts[0] == "commands" else "hop"
+        return f"al eject {layer} {kind} {parts[1][:-3]}"
+    if parts[0] == "experts" and len(parts) == 3:
+        return f"al eject {layer} expert {parts[1]}"
+    return "change agentic.rkt instead: this file is generated from the definition and the kit"
+
+
+def app_root_of(layer: Path, ir: dict) -> Path:
+    """The application checkout: AL_APP_ROOT when set (see `al improve`), else codebase.root
+    resolved against the layer. The same rule as the runtime's ir.load."""
+    override = os.environ.get("AL_APP_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return (layer / ir["codebase"]["root"]).resolve()
+
+
+def template_path(layer: Path, kind: str, filename: str) -> tuple[Path, bool]:
+    """(path, is_layer_local): <layer>/templates/<kind>/<filename> first, then the kit."""
+    local = layer / "templates" / kind / filename
+    if local.is_file():
+        return local, True
+    return KIT / "templates" / kind / filename, False
+
+
 class Generator:
     def __init__(self, layer: Path, ir: dict):
-        self.layer, self.ir, self.written = layer, ir, []
+        self.layer, self.ir = layer, ir
+        self.outputs: dict[str, tuple[str, int, bool, bool]] = {}  # rel -> (content, mode, keep_existing, local)
+        self.template_sources: dict[str, Path] = {}             # "commands/plan-chore.md" -> the file used
+        self.changed: list[str] = []
+        self.scaffolded: list[str] = []
         self.cb = ir["codebase"]
         self.cmds = {c["name"]: c for c in self.cb["commands"]}
+        self.in_repo = (ir.get("layer") or {}).get("kind") == "in-repo"
 
-    def write(self, rel: str, content: str, mode: int = 0o644, keep_existing: bool = False) -> None:
-        path = self.layer / rel
-        if keep_existing and path.exists():
-            return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
-        path.chmod(mode)
-        if not keep_existing:
-            self.written.append(rel)
+    @property
+    def written(self) -> list[str]:
+        """Every generated file (not the scaffolding that is written once and then belongs to you)."""
+        return sorted(rel for rel, (_c, _m, keep, _l) in self.outputs.items() if not keep)
+
+    def write(self, rel: str, content: str, mode: int = 0o644, keep_existing: bool = False, local: bool = False) -> None:
+        """Queue a file; nothing touches the disk before generate() has checked for hand edits.
+        `local`: the content names this machine's paths, so the file is git-ignored and recorded
+        in the local manifest (a committed layer must generate identically on every machine)."""
+        self.outputs[rel] = (content, mode, keep_existing, local)
+
+    def template(self, kind: str, filename: str) -> Path:
+        src, _ = template_path(self.layer, kind, filename)
+        self.template_sources[f"{kind}/{filename}"] = src
+        return src
+
+    def render(self, src: Path, values: dict[str, str]) -> str:
+        try:
+            return fill(src.read_text(), values)
+        except AlError as exc:
+            raise AlError(f"{src}: {exc}") from exc
 
     def copy_tree(self, src: Path, rel: str) -> None:
         for f in sorted(src.rglob("*")):
@@ -396,9 +500,24 @@ class Generator:
             "relevant_files": bullets([f"`{x}`" for x in [cb["readme"], *p["source"], *p["tests"]] if x]),
             "validation_commands": bullets([self.cmd_line(n) for n in self.cmds if n in ("lint", "typecheck", "test", "build")]),
             "focus": "", "fabric": "", "output_contract": OUTPUT_CONTRACT["text"],
+            "layer_change_rule": self.layer_change_rule(),
             "command_name": "", "description": "",
             "expert_name": "", "expert_domain": "", "expert_paths": "", "expert_max_lines": "", "expertise_path": "",
         }
+
+    def layer_change_rule(self) -> str:
+        """The meta HOPs' rule for changing the layer itself, by placement."""
+        if self.in_repo:
+            d = self.ir["layer"]["dir"]
+            return (f"- This layer is checked in with the application (`{d}/` of its repository), and ordinary runs may not "
+                    f"change it: do not edit any file under `${{layer_dir}}`. Where the instructions below say to write or edit "
+                    f"a file of the layer, write it under `${{specs_dir}}/proposal-${{adw_id}}/` instead, with the same relative "
+                    f"path (compile a copied definition with `${{layer_dir}}/bin/al compile <the copy>`). A person makes the "
+                    f"change through review with `al improve {d} \"<request>\"`; end your report with that command.")
+        return ("- Change only the layer's source: LAYER_SOURCE and files under `${layer_dir}/templates/` (to change a kit "
+                "prompt, copy it there first with `${layer_dir}/bin/al eject ${layer_dir} command NAME`). These edits are not "
+                "reviewed by anyone; for a reviewed change, a person runs `al improve ${layer_dir} \"<request>\"` instead, "
+                "which makes the change in a worktree, checks and regenerates the layer, and opens a pull request.")
 
     def fabric_section(self, patterns: list[str]) -> str:
         if not patterns:
@@ -411,12 +530,11 @@ class Generator:
 
     def commands(self) -> None:
         base = self.base_values()
-        for kind, items, src_dir in (("commands", self.ir["commands"], KIT / "templates/commands"),
-                                     ("hops", self.ir["hops"], KIT / "templates/hops")):
+        for kind, items in (("commands", self.ir["commands"]), ("hops", self.ir["hops"])):
             for c in items:
                 v = dict(base, command_name=c["name"], description=yaml_safe(c["description"] or f"{c['template']} for {self.ir['name']}"))
                 if kind == "commands":
-                    src = self.layer / c["file"] if c["template"] == "custom" else src_dir / f"{c['template']}.md"
+                    src = self.layer / c["file"] if c["template"] == "custom" else self.template(kind, f"{c['template']}.md")
                     if c["relevant"]:
                         v["relevant_files"] = bullets([f"`{x}`" for x in c["relevant"]])
                     if c["validation"]:
@@ -429,10 +547,10 @@ class Generator:
                         contract += f"\n\nIt must validate against this JSON Schema:\n\n```json\n{schema.read_text().strip()}\n```"
                     v["output_contract"] = contract
                 else:
-                    src = src_dir / f"{c['template']}.md"
+                    src = self.template(kind, f"{c['template']}.md")
                 if not src.exists():
                     raise AlError(f"{kind[:-1]} `{c['name']}`: template file {src} is missing")
-                self.write(f"{kind}/{c['name']}.md", fill(src.read_text(), v))
+                self.write(f"{kind}/{c['name']}.md", self.render(src, v))
 
     def experts(self) -> None:
         base = self.base_values()
@@ -441,10 +559,9 @@ class Generator:
             v = dict(base, expert_name=e["name"], expert_domain=e["domain"],
                      expert_paths=bullets(e["paths"]), expert_max_lines=str(e["maxLines"]),
                      expertise_path=f"${{layer_dir}}/{rel}/expertise.yaml", command_name=e["name"], description=yaml_safe(e["domain"]))
-            src = KIT / "templates/experts"
-            self.write(f"{rel}/expertise.yaml", fill((src / "expertise.yaml").read_text(), v), keep_existing=True)
+            self.write(f"{rel}/expertise.yaml", self.render(self.template("experts", "expertise.yaml"), v), keep_existing=True)
             for f in ("question.md", "self-improve.md"):
-                self.write(f"{rel}/{f}", fill((src / f).read_text(), v))
+                self.write(f"{rel}/{f}", self.render(self.template("experts", f), v))
 
     def adws(self) -> None:
         self.copy_tree(KIT / "runtime/adw_modules", "adws/adw_modules")
@@ -545,14 +662,14 @@ in {{
     home.sessionVariables.AL_{re.sub(r'[^A-Z0-9]', '_', name.upper())}_LAYER = cfg.layerDir;{service}
   }};
 }}
-''')
+''', local=True)
             self.write("env/home.example.nix", f'''# Standalone Home Manager example using the generated module.
 {{ pkgs, ... }}: {{
   imports = [ ./home-manager.nix ];
   home.stateVersion = "{e['stateVersion']}";
   programs."{mod}".enable = true;
 }}
-''')
+''', local=True)
         if "podman" in envs:
             e = envs["podman"]
             lines = [f"# Generated by al from agentic.rkt — do not edit.\nFROM {e['baseImage']}"]
@@ -578,7 +695,7 @@ RestartSec=10
 
 [Install]
 WantedBy=default.target
-""")
+""", local=True)
             if t["kind"] == "webhook":
                 self.write(f"systemd/al-{name}-webhook.service", f"""# Generated by al. Install: cp to ~/.config/systemd/user/ && systemctl --user enable --now al-{name}-webhook
 [Unit]
@@ -590,7 +707,7 @@ Restart=on-failure
 
 [Install]
 WantedBy=default.target
-""")
+""", local=True)
             if t["kind"] == "forge-actions" and forge["kind"] in ("github", "forgejo"):
                 ctx = "github"  # Forgejo Actions keeps the `github` context for compatibility
                 on: list[str] = []
@@ -606,11 +723,19 @@ WantedBy=default.target
                     on.append("  workflow_dispatch:\n    inputs:\n      prompt:\n        description: High-level prompt\n        required: true\n"
                               "      adw:\n        description: ADW name (empty = pick automatically)\n        required: false")
                 marker = forge["botMarker"]
+                if self.in_repo:  # the layer is in the checkout: the workflow checks it out and runs it from there
+                    where = f"the repository's own `{self.ir['layer']['dir']}/` directory"
+                    layer_default = f"format('{{0}}/{self.ir['layer']['dir']}', {ctx}.workspace)"
+                    checkout = "      - uses: actions/checkout@v4\n"
+                else:
+                    where = f"$AL_LAYER_DIR (default {self.layer})"
+                    layer_default = f"'{self.layer}'"
+                    checkout = ""
                 label_cond = (f"contains({ctx}.event.issue.labels.*.name, '{t['label']}')" if t["label"] else "true")
                 wf = f"""# Generated by al for the {name} agentic layer.
 # This is the ONLY file that belongs in the application repository, and only if you want the
 # forge's CI to be the trigger. It contains no logic: it calls into the layer, which lives on
-# the runner at $AL_LAYER_DIR (default {self.layer}).
+# the runner at {where}.
 name: adw
 on:
 {chr(10).join(on)}
@@ -626,10 +751,10 @@ jobs:
       {ctx}.event_name == 'workflow_dispatch' || {ctx}.event_name == 'schedule' ||
       (({label_cond}) && !startsWith({ctx}.event.comment.body || '', '{marker}'))
     env:
-      AL_LAYER_DIR: ${{{{ vars.AL_LAYER_DIR || '{self.layer}' }}}}
+      AL_LAYER_DIR: ${{{{ vars.AL_LAYER_DIR || {layer_default} }}}}
       {forge['tokenEnv']}: ${{{{ secrets.{forge['tokenEnv']} }}}}
     steps:
-      - name: Run the agentic layer
+{checkout}      - name: Run the agentic layer
         env:
           ADW_PROMPT: ${{{{ inputs.prompt }}}}
           ADW_NAME: ${{{{ inputs.adw }}}}
@@ -644,7 +769,7 @@ jobs:
           fi
 """
                 d = ".github" if forge["kind"] == "github" else ".forgejo"
-                self.write(f"forge/{d}/workflows/adw.yml", wf)
+                self.write(f"forge/{d}/workflows/adw.yml", wf, local=not self.in_repo)
 
     def scaffolding(self) -> None:
         ir = self.ir
@@ -661,10 +786,11 @@ jobs:
                 self.write(f"{pi['dir']}/.gitkeep", "")
         for rel in ("specs/.gitkeep", "mock/.gitkeep", "docs/.gitkeep"):
             self.write(rel, "", keep_existing=True)
+        self.write("templates/README.md", TEMPLATES_README, keep_existing=True)
         self.write("conditional_docs.md", "# Conditional documentation\n\nRead a document below before working when its condition holds.\n\n"
                    + bullets([f"`{d['path']}` — {d['when']}" for d in self.cb["conditionalDocs"]]) + "\n", keep_existing=True)
-        self.write("bin/al", f"#!/bin/sh\n# Generated by al: the layer's handle on the generator and compiler.\nexec {ROOT / 'tools' / 'al'} \"$@\"\n", 0o755)
-        self.write(".gitignore", "trees/\nagents/\nartefacts/\n__pycache__/\nenv/flake.lock\n")
+        self.write("bin/al", f"#!/bin/sh\n# Generated by al: the layer's handle on the generator and compiler.\nexec {ROOT / 'tools' / 'al'} \"$@\"\n",
+                   0o755, local=True)
         self.write("AL-DSL.llms.txt", REFERENCE.read_text())
         by_id = lambda key: {o["id"]: o for o in ir[key]}  # noqa: E731
         pi, tr, en, rv = by_id("promptInputs"), by_id("triggers"), by_id("environments"), by_id("reviews")
@@ -673,13 +799,22 @@ jobs:
             f"{' → '.join(en[i]['kind'] for i in a['environment'])} | {rv[a['review']]['kind']}"
             f"{' → ' + rv[a['review']]['ship'] if rv[a['review']]['kind'] == 'auto' else ''} | {' → '.join(s['name'] for s in a['steps'])} |"
             for a in ir["adws"])
+        if self.in_repo:
+            where = (f"This directory is the agentic layer of the repository it sits in (`{ir['layer']['dir']}/`, placement "
+                     f"`in-repo`) and is committed with the code. It changes how agents work on that repository; it is "
+                     f"not application code, and ordinary runs may not change it (see below).")
+            gen_cmd, run_prefix = f"al gen {ir['layer']['dir']}", f"{ir['layer']['dir']}/"
+        else:
+            where = (f"This directory wraps the application at `{self.cb['root']}`; it is not part of it.")
+            gen_cmd, run_prefix = "al gen <this directory>", ""
+        ignored, committed = self.ignore_lists()
         self.write("README.md", f"""# Agentic layer — {ir['name']}
 
 {ir['description']}
 
-Generated by `al gen` from `agentic.rkt` (derived from `{ir['llmTxt']}`). This directory wraps the
-application at `{self.cb['root']}`; it is not part of it. Agents work in git worktrees under `trees/`,
-plans land in `specs/`, run state and logs in `agents/<adw-id>/`, proof in `artefacts/<adw-id>/`.
+Generated by `al gen` from `agentic.rkt` (derived from `{ir['llmTxt']}`). {where} Agents work in
+git worktrees under `trees/`, plans land in `specs/`, run state and logs in `agents/<adw-id>/`, proof in
+`artefacts/<adw-id>/`.
 
 ## Workflows
 
@@ -690,27 +825,129 @@ plans land in `specs/`, run state and logs in `agents/<adw-id>/`, proof in `arte
 ## Run
 
 ```bash
-uv run adws/adw_{ir['adws'][0]['name']}.py "your high-level prompt"          # manual trigger
-uv run adws/adw_{ir['adws'][0]['name']}.py "…" --dry-run                     # mock agent, no LLM
-uv run adws/dispatch.py --source tasklist:<line>                             # from a prompt input
+uv run {run_prefix}adws/adw_{ir['adws'][0]['name']}.py "your high-level prompt"          # manual trigger
+uv run {run_prefix}adws/adw_{ir['adws'][0]['name']}.py "…" --dry-run                     # mock agent, no LLM
+uv run {run_prefix}adws/dispatch.py --source tasklist:<line>                             # from a prompt input
 ```
 
 ## Change the layer
 
-Edit `agentic.rkt` (language reference: `AL-DSL.llms.txt`), then `al gen {self.layer}`. The compiler
-rejects incoherent layers; generated files are overwritten, your `tasks.md`, `specs/`, `mock/` and
-expert `expertise.yaml` files are kept.
-""")
+The layer has two kinds of source: `agentic.rkt` (language reference: `AL-DSL.llms.txt`) and the
+layer-local templates under `templates/`. Everything else here is generated by `{gen_cmd}`.
 
-    def generate(self) -> list[str]:
+- A short, permanent instruction for one prompt: a `#:focus` line on that command in `agentic.rkt`.
+- A bigger change to a prompt: `al eject <layer> command NAME` copies the kit template it uses into
+  `templates/commands/`; edit the copy there (its `{{{{placeholders}}}}` stay). `al eject <layer> --list`
+  shows which templates are yours and whether the kit has changed since.
+- A reviewed change, made by al's own workflow and ending in a pull request:
+  `al improve <layer> "what to change, in plain words"`.
+- Never edit a generated file. `al gen` notices a hand edit, writes nothing, and says how to keep it
+  (`al eject …`) or drop it (`al gen <layer> --discard-edits`).
+{self.protection_note()}
+## What is committed
+
+Committed: {committed}.
+
+Not committed (`.gitignore`, written by `al gen`): {ignored}.
+""")
+        self.write(".gitignore", self.gitignore())
+
+    def ignore_lists(self) -> tuple[str, str]:
+        ignored = ("run state (worktrees, run logs, artefacts, plans, run documents, the task list and spec inbox, "
+                   "`al improve` runs), files that name this machine's paths (`bin/al`, systemd units, the Home Manager "
+                   "module" + ("" if self.in_repo else ", the forge workflow") + ") and caches")
+        committed = ("`agentic.rkt`, `LLM.txt`, `templates/`, `mock/`, expert `expertise.yaml` files and "
+                     "`conditional_docs.md` (source); `agentic-layer.json`, `commands/`, `hops/`, `experts/`, `adws/`, "
+                     "`env/`, `fabric/`, " + ("`forge/`, " if self.in_repo else "") +
+                     "`AL-DSL.llms.txt`, this README, `.gitignore` and `.al-manifest.json` (generated; the manifest "
+                     "lets `al gen` notice hand edits)")
+        return ignored, committed
+
+    def protection_note(self) -> str:
+        if not self.in_repo:
+            return ""
+        d = self.ir["layer"]["dir"]
+        return (f"\nAn ordinary workflow that changes anything under `{d}/` in its worktree is stopped at the gate with a\n"
+                f"`protected-path:` reason and goes to a person: only a workflow with `#:changes layer` (the one\n"
+                f"`al improve` runs) may change the layer.\n")
+
+    def gitignore(self) -> str:
+        ir = self.ir
+        state = {"trees", "agents", "artefacts", "specs", "docs", IMPROVE_DIR}
+        state |= {str(o.get("dir") or "trees") for o in ir["environments"] if o["kind"] == "worktree"}
+        storage = ir["storage"] or {}
+        state.add(str(storage.get("localDir") or storage.get("dir") or "artefacts"))
+        queues = sorted({str(o["path"]) for o in ir["promptInputs"] if o["kind"] == "tasklist"}
+                        | {str(o["dir"]) for o in ir["promptInputs"] if o["kind"] == "spec-file"
+                           and not str(o["dir"]).split("/")[0] in state})
+        local = sorted(rel for rel, (_c, _m, _k, is_local) in self.outputs.items() if is_local)
+        lines = ["# Written by `al gen`. Run state, work queues and machine-specific files: never source.",
+                 "# The definition, the layer-local templates and the generated files are committed.",
+                 "# run state", *[f"/{d.strip('/')}/" for d in sorted(state)],
+                 "# work queues of whoever runs the layer", *[f"/{q.strip('/')}" for q in queues],
+                 "# generated with this machine's paths; `al gen` writes them on every machine",
+                 *[f"/{rel}" for rel in local], f"/{LOCAL_MANIFEST}",
+                 "# caches and lock files", "__pycache__/", "*.pyc", "*.lock", ".cache/", ".*_cache/"]
+        return "\n".join(lines) + "\n"
+
+    def check_placement(self) -> None:
+        app = app_root_of(self.layer, self.ir)
+        here = self.layer.resolve()
+        if self.in_repo:
+            expected = (app / self.ir["layer"]["dir"]).resolve()
+            if here != expected:
+                raise AlError(f"(layer in-repo #:dir \"{self.ir['layer']['dir']}\") puts the layer at {expected}, but its "
+                              f"agentic.rkt is in {here}: move the layer, or fix #:dir and (codebase #:root …)")
+            if not (app / ".git").exists():
+                raise AlError(f"an in-repo layer lives in a git repository, but {app} (the codebase root) is not one")
+        elif here == app or app in here.parents:
+            raise AlError(f"the layer ({self.layer}) must not live inside the application tree ({app}); "
+                          "to check the layer in with the application, declare (layer in-repo #:dir \"agentic\")")
+
+    def hand_edits(self, old: dict[str, str | None]) -> list[str]:
+        """Generated files whose content is neither what the last `al gen` wrote nor what this one
+        would write: regenerating would lose a hand edit. Unknown hashes (al 0.1) never count."""
+        edited = []
+        for rel, recorded in sorted(old.items()):
+            path = self.layer / rel
+            if not recorded or not path.is_file():
+                continue
+            actual = sha256_file(path)
+            if actual == recorded:
+                continue
+            new = self.outputs.get(rel)
+            if new is not None and not new[2] and sha256_text(new[0]) == actual:
+                continue
+            edited.append(rel)
+        return edited
+
+    def hand_edit_message(self, edited: list[str]) -> str:
+        templates = {f"commands/{c['name']}.md": f"templates/commands/{c['template']}.md"
+                     for c in self.ir["commands"] if c["template"] != "custom"}
+        templates |= {f"hops/{h['name']}.md": f"templates/hops/{h['template']}.md" for h in self.ir["hops"]}
+        width = max(len(rel) for rel in edited)
+        rows = []
+        for rel in edited:
+            hint = eject_hint(self.layer, rel)
+            if rel in templates:
+                hint += f"   (copies its template to {templates[rel]})"
+            rows.append(f"  {rel.ljust(width)}   {hint}")
+        return (f"{len(edited)} generated file(s) in {self.layer} were edited by hand since the last `al gen`.\n"
+                "Generating now would overwrite those edits, so nothing was written:\n\n" + "\n".join(rows) + "\n\n"
+                "Two ways forward:\n"
+                "  1. Keep the change: make it in a layer-local template, which every `al gen` uses from then on.\n"
+                "     Run the `al eject` command shown above, make your edit in the copy under templates/ (keep its\n"
+                "     {{placeholders}}), then run `al gen` again. A one-line instruction is simpler as a #:focus line\n"
+                "     on the command in agentic.rkt. Files with no template come from agentic.rkt: change that.\n"
+                f"  2. Throw the edit away:  al gen {self.layer} --discard-edits")
+
+    def generate(self, discard_edits: bool = False) -> list[str]:
         planned = [f"{k}:{o['id']}" for k in ("promptInputs", "triggers", "environments", "reviews", "agents", "artefacts")
                    for o in self.ir[k] if o["status"] == "planned"]
         planned += [f"{k}:{self.ir[k]['kind']}" for k in ("forge", "storage", "layer") if self.ir[k]["status"] == "planned"]
         if planned:
             raise AlError("these options are declared `planned` in the vocabulary and have no runtime yet: " + ", ".join(planned))
-        app = (self.layer / self.cb["root"]).resolve()
-        if self.layer.resolve() == app or app in self.layer.resolve().parents:
-            raise AlError(f"the layer ({self.layer}) must not live inside the application tree ({app})")
+        self.check_placement()
         self.write("agentic-layer.json", json.dumps(self.ir, indent=2, sort_keys=True) + "\n")
         self.commands()
         self.experts()
@@ -718,19 +955,110 @@ expert `expertise.yaml` files are kept.
         self.environments()
         self.triggers_and_forge()
         self.scaffolding()
-        manifest = self.layer / ".al-manifest.json"
-        old = json.loads(manifest.read_text())["files"] if manifest.exists() else []
-        for stale in sorted(set(old) - set(self.written)):
-            (self.layer / stale).unlink(missing_ok=True)
-        manifest.write_text(json.dumps({"generator": "al 0.1", "files": sorted(self.written)}, indent=1) + "\n")
+        old = load_manifest(self.layer)
+        edited = self.hand_edits(old)
+        if edited and not discard_edits:
+            raise HandEditError(self.hand_edit_message(edited), edited)
+        self.flush(old)
         if self.ir["layer"].get("git") and not (self.layer / ".git").exists():
             run(["git", "init", "-q", "-b", "main", str(self.layer)], check=False)
         return self.written
+
+    def flush(self, old: dict[str, str | None]) -> None:
+        """Write what differs from the disk, remove files the definition no longer produces, and
+        record a sha256 per generated file. Identical content is not rewritten, so a second
+        `al gen` changes nothing (self.changed is empty)."""
+        changed: list[str] = []
+        self.scaffolded = []
+        for rel, (content, mode, keep, _local) in sorted(self.outputs.items()):
+            path = self.layer / rel
+            if keep and path.exists():
+                continue
+            if keep:  # scaffolding written once (task list, expertise seed, .gitkeep): yours from now on
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+                path.chmod(mode)
+                self.scaffolded.append(rel)
+                continue
+            if path.is_file() and not path.is_symlink() and path.read_bytes() == content.encode("utf-8"):
+                if path.stat().st_mode & 0o777 != mode:
+                    path.chmod(mode)
+                    changed.append(rel)
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.is_symlink():
+                path.unlink()
+            path.write_text(content, encoding="utf-8")
+            path.chmod(mode)
+            changed.append(rel)
+        for stale in sorted(set(old) - set(self.written)):
+            if (self.layer / stale).is_file():
+                (self.layer / stale).unlink()
+                changed.append(stale)
+        for name, local in ((MANIFEST, False), (LOCAL_MANIFEST, True)):
+            files = {rel: sha256_text(content) for rel, (content, _m, keep, is_local) in sorted(self.outputs.items())
+                     if not keep and is_local == local}
+            text = json.dumps({"generator": GENERATOR, "files": files}, indent=1) + "\n"
+            path = self.layer / name
+            if not path.is_file() or path.read_text() != text:
+                path.write_text(text)
+                changed.append(name)
+        self.changed = changed
 
 
 # ------------------------------------------------------------------------------------------
 # check
 # ------------------------------------------------------------------------------------------
+
+SOURCE_FILES = ("agentic.rkt", "LLM.txt", "conditional_docs.md", "templates/README.md", ".gitignore")
+
+
+def is_layer_file(rel: str, manifest: dict[str, str | None]) -> bool:
+    """A file that belongs in a committed layer: source, scaffolding or generated."""
+    return (rel in manifest or rel in SOURCE_FILES or rel in (MANIFEST,) or rel.startswith(("templates/", "mock/"))
+            or bool(re.fullmatch(r"experts/[^/]+/expertise\.yaml", rel)))
+
+
+def porcelain(repo: Path) -> list[tuple[str, str]]:
+    """(XY, path) of `git status --porcelain -z --untracked-files=all`; rename sources included."""
+    cp = run(["git", "-C", str(repo), "status", "--porcelain=v1", "-z", "--untracked-files=all"], check=False)
+    if cp.returncode != 0:
+        raise AlError(f"git status failed in {repo}: {cp.stderr.strip()}")
+    entries, items = [], cp.stdout.split("\0")
+    index = 0
+    while index < len(items):
+        item = items[index]
+        index += 1
+        if len(item) < 4:
+            continue
+        xy, path = item[:2], item[3:]
+        entries.append((xy, path))
+        if xy[0] in "RC":  # -z: the rename/copy source follows as its own field
+            if index < len(items) and items[index]:
+                entries.append((xy, items[index]))
+            index += 1
+    return entries
+
+
+def in_repo_problems(layer: Path, ir: dict, app: Path) -> list[str]:
+    """`al check` for a layer checked in with the application: changes to the layer's own files
+    (uncommitted edits, regenerated files) are fine; anything else in the working tree is not:
+    changes outside the layer, and untracked run state that escaped the ignored directories."""
+    try:
+        rel = layer.resolve().relative_to(app).as_posix()
+    except ValueError:
+        return [f"in-repo layer {layer} is not inside the application repository {app}"]
+    manifest = load_manifest(layer)
+    problems = []
+    for xy, path in porcelain(app):
+        inside = path == rel or path.startswith(rel + "/")
+        if not inside:
+            problems.append(f"application working tree changed outside the layer: {xy} {path}")
+        elif xy == "??" and not is_layer_file(path[len(rel) + 1:], manifest):
+            problems.append(f"untracked file in the layer that is neither source nor generated (run state outside "
+                            f"the ignored directories?): {path}")
+    return problems
+
 
 def check_layer(layer: Path) -> list[str]:
     import yaml
@@ -751,6 +1079,9 @@ def check_layer(layer: Path) -> list[str]:
         left = re.findall(r"\{\{[a-z_]+\}\}", f.read_text())
         if left:
             problems.append(f"{f.relative_to(layer)}: unfilled placeholders {sorted(set(left))}")
+    for rel, recorded in sorted(load_manifest(layer).items()):
+        if recorded and (layer / rel).is_file() and sha256_file(layer / rel) != recorded:
+            problems.append(f"{rel} was edited by hand since the last `al gen` (`al gen` says how to keep or drop it)")
     for f in layer.glob("forge/**/*.yml"):
         try:
             doc = yaml.safe_load(f.read_text())
@@ -762,9 +1093,11 @@ def check_layer(layer: Path) -> list[str]:
         cp = run([sys.executable, "-m", "py_compile", str(f)], check=False)
         if cp.returncode != 0:
             problems.append(f"{f.relative_to(layer)}: does not compile: {cp.stderr.strip().splitlines()[-1]}")
-    app = (layer / ir["codebase"]["root"]).resolve()
+    app = app_root_of(layer, ir)
     if not app.exists():
         problems.append(f"application checkout {app} not found")
+    elif (ir.get("layer") or {}).get("kind") == "in-repo":
+        problems += in_repo_problems(layer, ir, app)
     else:
         dirty = git(app, "status", "--porcelain")
         if dirty:
@@ -772,6 +1105,100 @@ def check_layer(layer: Path) -> list[str]:
         if layer.resolve() == app or app in layer.resolve().parents:
             problems.append("layer lives inside the application tree")
     return problems
+
+
+def template_rows(layer: Path, ir: dict) -> list[dict]:
+    """Every template the layer uses (and every layer-local one it does not), where it resolves
+    from, and how the layer's copy compares with the kit's current version."""
+    used: dict[tuple[str, str], list[str]] = {}
+    for c in ir["commands"]:
+        if c["template"] != "custom":
+            used.setdefault(("commands", f"{c['template']}.md"), []).append(c["name"])
+    for h in ir["hops"]:
+        used.setdefault(("hops", f"{h['template']}.md"), []).append(h["name"])
+    for x in ir["experts"]:
+        for f in EXPERT_TEMPLATES:
+            used.setdefault(("experts", f), []).append(x["name"])
+    local_dir = layer / "templates"
+    for kind in TEMPLATE_KINDS:
+        for f in sorted((local_dir / kind).glob("*")) if (local_dir / kind).is_dir() else []:
+            if f.is_file():
+                used.setdefault((kind, f.name), [])
+    ejected = eject_record(layer)
+    rows = []
+    for (kind, filename), names in sorted(used.items()):
+        src, is_local = template_path(layer, kind, filename)
+        kit = KIT / "templates" / kind / filename
+        row = {"kind": kind, "template": filename, "used_by": names, "from": "layer" if is_local else "kit",
+               "path": str(src), "differs": False, "status": "kit"}
+        if is_local:
+            mine = sha256_file(src)
+            theirs = sha256_file(kit) if kit.is_file() else ""
+            at_eject = ejected.get(f"{kind}/{filename}", "")
+            row["differs"] = mine != theirs
+            if not theirs:
+                row["status"] = "layer only (no kit template of this name)"
+            elif mine == theirs:
+                row["status"] = "layer copy, identical to the kit"
+            else:
+                notes = []
+                if at_eject and at_eject != theirs:
+                    notes.append("the KIT'S VERSION HAS CHANGED since you ejected it")
+                if not at_eject or mine != at_eject:
+                    notes.append("edited in the layer" if at_eject else "differs from the kit")
+                row["status"] = "layer copy: " + " and ".join(notes or ["differs from the kit"])
+            if not names:
+                row["status"] += "; not used by any command, hop or expert"
+        rows.append(row)
+    return rows
+
+
+EJECT_RECORD = "templates/.al-eject.json"
+
+
+def eject_record(layer: Path) -> dict[str, str]:
+    path = layer / EJECT_RECORD
+    try:
+        return json.loads(path.read_text()) if path.is_file() else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def eject(layer: Path, kind: str, name: str, force: bool = False) -> list[tuple[Path, Path, list[str]]]:
+    """Copy the kit template(s) NAME uses into <layer>/templates/…, unrendered. Returns
+    (kit file, layer file, users) per copied file; refuses to overwrite an override unless forced."""
+    ir = compile_layer(layer)
+    if kind in ("command", "hop"):
+        items = ir["commands"] if kind == "command" else ir["hops"]
+        item = next((c for c in items if c["name"] == name), None)
+        if item is None:
+            raise AlError(f"`{name}` is not a declared {kind}; declared: {', '.join(c['name'] for c in items) or '(none)'}")
+        if item["template"] == "custom":
+            raise AlError(f"command `{name}` already uses a layer file (#:file \"{item['file']}\"): edit that file")
+        folder = "commands" if kind == "command" else "hops"
+        files = [(folder, f"{item['template']}.md")]
+        users = [c["name"] for c in items if c["template"] == item["template"]]
+    elif kind == "expert":
+        if not any(x["name"] == name for x in ir["experts"]):
+            raise AlError(f"`{name}` is not a declared expert; declared: {', '.join(x['name'] for x in ir['experts']) or '(none)'}")
+        files = [("experts", f) for f in EXPERT_TEMPLATES]
+        users = [x["name"] for x in ir["experts"]]
+    else:
+        raise AlError(f"unknown template kind {kind!r}: command, hop or expert")
+    taken = [layer / "templates" / k / f for k, f in files if (layer / "templates" / k / f).exists()]
+    if taken and not force:
+        raise AlError("already ejected (your copy would be overwritten): "
+                      + ", ".join(str(t.relative_to(layer)) for t in taken) + "; use --force to replace it with the kit's version")
+    record = eject_record(layer)
+    copied = []
+    for k, f in files:
+        src, dst = KIT / "templates" / k / f, layer / "templates" / k / f
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+        record[f"{k}/{f}"] = sha256_file(src)
+        copied.append((src, dst, users))
+    (layer / EJECT_RECORD).write_text(json.dumps(dict(sorted(record.items())), indent=1) + "\n")
+    return copied
 
 
 # ------------------------------------------------------------------------------------------
@@ -865,7 +1292,8 @@ def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print) 
             tree_dir = str(option.get("dir") or "trees")
     run_id = f"verify-{secrets.token_hex(4)}"
     worktree = (layer / tree_dir / run_id).resolve()
-    if worktree == app or app in worktree.parents:
+    inside_ignored = bool(loaded.in_repo_dir) and layer.resolve() in worktree.parents  # in-repo: an ignored dir of the layer
+    if (worktree == app or app in worktree.parents) and not inside_ignored:
         raise AlError(f"refusing to verify: {worktree} is inside the application tree")
     out_dir = layer / "agents" / "verify"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -941,15 +1369,99 @@ def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print) 
 # cli
 # ------------------------------------------------------------------------------------------
 
+IMPROVE_COMMANDS = ("improve", "improve-check")
+
+
+def improve_parsers(sub) -> None:
+    p = sub.add_parser("improve", help="change a layer through al's own reviewed workflow (ends in a pull request)")
+    p.add_argument("layer", type=Path)
+    p.add_argument("request", help="what to change, in plain words")
+    p.add_argument("--dry-run", action="store_true", help="the mock agent does the work (no LLM, no cost)")
+    p.add_argument("--review", default="human", metavar="human|agent",
+                   help="human (default): a person reviews the pull request; agent: an agent reviews first, a person merges")
+    p.add_argument("--mock-scripts", type=Path, metavar="DIR",
+                   help="scripted mock responses (<step>.json) for --dry-run, copied into the workflow's mock/improve/")
+    p.add_argument("--adw-id", help=argparse.SUPPRESS)
+    p = sub.add_parser("improve-check", help="one check of the layer-change workflow (run by `al improve`, in its worktree)")
+    p.add_argument("what", choices=("definition", "regenerate", "scope", "check", "dry-runs", "verify", "report"))
+    p.add_argument("--sub", default=".", help="the layer directory inside the worktree")
+    p.add_argument("--app", type=Path, required=True, help="the application checkout the layer wraps")
+    p.add_argument("--default-branch", default="main", help="the branch the change is based on")
+
+
+def improve_main(a: argparse.Namespace) -> int:
+    """`al improve` lives in tools/al_improve.py; it uses this module's compiler and generator."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    import al_improve
+    return al_improve.main(a, sys.modules[__name__])
+
+
+def init_in_repo(app: Path, directory: str, layer_arg: Path | None) -> None:
+    if layer_arg:
+        raise AlError("--layer and --in-repo exclude each other: an in-repo layer is <repository>/<--dir>")
+    top = git(app, "rev-parse", "--show-toplevel")
+    if not top or Path(top).resolve() != app:
+        raise AlError(f"{app} is not the top directory of a git repository")
+    parts = [x for x in directory.split("/") if x not in ("", ".")]
+    if not parts or ".." in parts or directory.startswith("/"):
+        raise AlError(f"--dir must be a relative directory inside the repository without `..` (got {directory!r})")
+    rel = "/".join(parts)
+    layer = app / rel
+    layer.mkdir(parents=True, exist_ok=True)
+    if not (layer / "LLM.txt").exists():
+        (layer / "LLM.txt").write_text(render_llm_txt(scout(app)))
+    shutil.copy(REFERENCE, layer / "AL-DSL.llms.txt")
+    if not (layer / ".gitignore").exists():  # `al gen` replaces it with the full list
+        (layer / ".gitignore").write_text(f"/trees/\n/agents/\n/artefacts/\n/specs/\n/docs/\n/{IMPROVE_DIR}/\n/tasks.md\n__pycache__/\n*.lock\n")
+    up = "/".join([".."] * len(parts))
+    print(f"layer: {layer}   (in-repo: committed with the application)\n"
+          f"  LLM.txt          draft — complete it with meta/commands/scout-codebase.md\n"
+          f"  AL-DSL.llms.txt  language reference\n"
+          f"next: author {rel}/agentic.rkt (meta/commands/author-layer.md) with\n"
+          f"        (codebase #:root \"{up}\" …)\n        (layer in-repo #:dir \"{rel}\")\n"
+          f"      then `al gen {layer}` and commit the directory: git add {rel} && git commit")
+
+
+def eject_cli(a: argparse.Namespace) -> int:
+    layer = a.layer.resolve()
+    if a.list:
+        rows = template_rows(layer, compile_layer(layer))
+        width = max([len(f"{r['kind']}/{r['template']}") for r in rows] + [8])
+        print(f"{'template'.ljust(width)}  from   used by / status")
+        for r in rows:
+            print(f"{(r['kind'] + '/' + r['template']).ljust(width)}  {r['from'].ljust(5)}  "
+                  f"{', '.join(r['used_by']) or '-'}  [{r['status']}]")
+            if r["from"] == "layer" and r["differs"] and (KIT / "templates" / r["kind"] / r["template"]).is_file():
+                print(f"{''.ljust(width)}         compare: diff -u {KIT / 'templates' / r['kind'] / r['template']} {r['path']}")
+        return 0
+    if not a.kind or not a.name:
+        raise AlError("usage: al eject LAYER (command|hop|expert) NAME [--force]   or   al eject LAYER --list")
+    for src, dst, users in eject(layer, a.kind, a.name, a.force):
+        print(f"ejected {dst.relative_to(layer)}  (the kit's {src.name}, unrendered; used by {', '.join(users)})")
+    print(f"next:\n  1. edit the copy under {layer / 'templates'}; keep its {{{{placeholders}}}} (an unknown one is an error)\n"
+          f"  2. al gen {layer}    every {a.kind} using this template now renders from your copy\n"
+          f"  3. al eject {layer} --list   shows when the kit's own version changes, so you can take its improvements")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="al", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init"); p.add_argument("app", type=Path); p.add_argument("--layer", type=Path)
+    p.add_argument("--in-repo", action="store_true", help="put the layer inside the application repository (committed with it)")
+    p.add_argument("--dir", default="agentic", help="with --in-repo: the layer directory, relative to the repository root")
     p = sub.add_parser("scout"); p.add_argument("app", type=Path); p.add_argument("-o", "--out", type=Path); p.add_argument("--json", action="store_true")
     p = sub.add_parser("explain", help="explain a layer definition in plain language, block by block")
     p.add_argument("layer", type=Path); p.add_argument("--md", type=Path); p.add_argument("--gif", type=Path)
-    for name in ("compile", "gen", "check"):
+    for name in ("compile", "check"):
         p = sub.add_parser(name); p.add_argument("layer", type=Path)
+    p = sub.add_parser("gen"); p.add_argument("layer", type=Path)
+    p.add_argument("--discard-edits", action="store_true", help="overwrite generated files that were edited by hand")
+    p = sub.add_parser("eject", help="copy a kit template into the layer so changes to it survive `al gen`")
+    p.add_argument("layer", type=Path); p.add_argument("kind", nargs="?", choices=("command", "hop", "expert"))
+    p.add_argument("name", nargs="?"); p.add_argument("--list", action="store_true", help="every template and where it resolves from")
+    p.add_argument("--force", action="store_true", help="replace an existing layer copy with the kit's version")
+    improve_parsers(sub)
     p = sub.add_parser("verify", help="run the layer's codebase cmds on a throwaway worktree")
     p.add_argument("layer", type=Path)
     p.add_argument("--cmd", dest="names", action="append", default=[], metavar="NAME", help="verify only this cmd (repeatable)")
@@ -964,6 +1476,8 @@ def main(argv: list[str] | None = None) -> int:
             facts = scout(a.app)
             text = json.dumps(facts, indent=2) if a.json else render_llm_txt(facts)
             a.out.write_text(text) if a.out else print(text)
+        elif a.cmd == "init" and a.in_repo:
+            init_in_repo(a.app.resolve(), a.dir, a.layer)
         elif a.cmd == "init":
             app = a.app.resolve()
             layer = (a.layer or app.with_name(app.name + ".al")).resolve()
@@ -981,14 +1495,32 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(ir, indent=2, sort_keys=True))
         elif a.cmd == "gen":
             layer = a.layer.resolve()
-            written = Generator(layer, compile_layer(layer)).generate()
-            print(f"generated {len(written)} files in {layer}")
+            gen = Generator(layer, compile_layer(layer))
+            try:
+                written = gen.generate(discard_edits=a.discard_edits)
+            except HandEditError as exc:
+                print(f"al gen: {exc}", file=sys.stderr)
+                return 3
+            shown = (": " + ", ".join(gen.changed)) if 0 < len(gen.changed) <= 8 else ""
+            new = [rel for rel in gen.scaffolded if not rel.endswith(".gitkeep")]
+            print((f"scaffolded (written once, yours from now on): {', '.join(new)}\n" if new else "")
+                  + f"generated {len(written)} files in {layer} ({len(gen.changed)} changed{shown})")
         elif a.cmd == "check":
-            problems = check_layer(a.layer.resolve())
+            layer = a.layer.resolve()
+            problems = check_layer(layer)
             for pr in problems:
                 print(f"PROBLEM: {pr}")
+            if (layer / "agentic-layer.json").is_file():
+                for row in template_rows(layer, json.loads((layer / "agentic-layer.json").read_text())):
+                    if row["from"] == "layer":
+                        print(f"note: template overridden by the layer: templates/{row['kind']}/{row['template']} "
+                              f"(used by {', '.join(row['used_by']) or 'nothing'}; {row['status']})")
             print("check: " + ("FAILED" if problems else "ok"))
             return 1 if problems else 0
+        elif a.cmd == "eject":
+            return eject_cli(a)
+        elif a.cmd in IMPROVE_COMMANDS:
+            return improve_main(a)
         elif a.cmd == "verify":
             say = (lambda line: print(line, file=sys.stderr, flush=True)) if a.json else (lambda line: print(line, flush=True))
             report, _ = verify_layer(a.layer.resolve(), a.names, a.timeout, say)

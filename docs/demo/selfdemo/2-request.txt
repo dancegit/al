@@ -1,0 +1,1 @@
+Every plan must end with a 'Rollback' section that says exactly how to undo the change.

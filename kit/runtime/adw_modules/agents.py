@@ -18,7 +18,7 @@ CLASSES = ("chore", "bug", "feature", "patch")
 SEVERITIES = ("blocker", "tech_debt", "skippable")
 GIT_TIMEOUT = 120
 _STRIPPED_ENV = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
-_MOCK_KEYS = {"output", "files", "layer_files", "delete", "commit"}
+_MOCK_KEYS = {"output", "files", "raw_files", "layer_files", "delete", "commit"}
 _FENCED_JSON = re.compile(r"```json\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 
 
@@ -173,7 +173,7 @@ def _load_mock_script(script: Path, step: str) -> dict[str, Any]:
         raise StepFailed(step, f"mock script {script} has unknown keys {sorted(unknown)}")
     if not isinstance(data.get("output", ""), str):
         raise StepFailed(step, "mock output must be a string")
-    for key in ("files", "layer_files"):
+    for key in ("files", "raw_files", "layer_files"):
         mapping = data.get(key, {})
         if not isinstance(mapping, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()):
             raise StepFailed(step, f"mock {key} must map relative paths to string content")
@@ -193,11 +193,12 @@ def _inside(root: Path, relative: str, step: str) -> Path:
     return target
 
 
-def _write_files(root: Path, files: dict[str, str], variables: dict[str, str], args: list[str], step: str) -> None:
+def _write_files(root: Path, files: dict[str, str], variables: dict[str, str], args: list[str], step: str,
+                 verbatim: bool = False) -> None:
     for relative, content in files.items():
         target = _inside(root, relative, step)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(render(content, variables, args), encoding="utf-8")
+        target.write_text(content if verbatim else render(content, variables, args), encoding="utf-8")
 
 
 def _delete_paths(root: Path, paths: list[str], step: str) -> None:
@@ -271,6 +272,7 @@ def _run_mock(layer: Any, state: Any, agent: dict[str, Any], step: str, command:
     variables = template_variables(layer, state)
     worktree = work_dir(layer, state)
     _write_files(worktree, data.get("files", {}), variables, args, step)
+    _write_files(worktree, data.get("raw_files", {}), {}, [], step, verbatim=True)  # e.g. a template: no ${…} rendering
     _write_files(Path(layer.layer_dir), data.get("layer_files", {}), variables, args, step)
     _delete_paths(worktree, data.get("delete", []), step)
     if data.get("commit"):
