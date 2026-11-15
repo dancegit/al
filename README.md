@@ -137,6 +137,9 @@ browser scenario so that the run's **video** demonstrates the feature. This is t
 
 ![The recorded proof: the search box filtering notes](docs/demo/webdemo/b-feature.gif)
 
+Play the original recording: [`b-feature.mp4`](docs/demo/webdemo/b-feature.mp4). A human reviewer gets this
+file; the frames further down are only for the reviewer agents, who cannot watch a video.
+
 Reviewers cannot watch a video, so the run cuts it into frames. Two independent reviewer agents each
 examined all of them, together with the screenshots and the test logs:
 
@@ -151,6 +154,9 @@ final result, the change small enough, no protected file touched. Only then was 
 [`b-verdicts.json`](docs/demo/webdemo/b-verdicts.json); one of them reads, in part: *"…the screenshots and
 keyframes show filtering by 'milk', case-insensitive 'WATER', the 'No notes match' state for 'xyz', and the
 full list coming back when the box is cleared."*
+
+**What the proof looks like, for a person and for an agent:** [`docs/ARTEFACTS.md`](docs/ARTEFACTS.md) shows the real recordings a
+human reviewer can play, the frames reviewer agents get instead, screenshots, logs and verdicts.
 
 | | Visual change | New feature |
 |---|---|---|

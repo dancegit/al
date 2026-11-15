@@ -263,6 +263,8 @@ For anything a user can see, add an end-to-end command to your codebase that dri
 application and saves screenshots or a video; the two demo applications show one way
 ([`tests/webdemo/app/e2e`](../tests/webdemo/app/e2e)). On Forgejo the pictures are attached to the pull request.
 
+What each kind of proof looks like, with real recordings you can play: [ARTEFACTS.md](ARTEFACTS.md).
+
 ## Step 12 — Let small things ship by themselves
 
 Only after a streak of runs you merged without changes. A workflow may ship without you when its review is
