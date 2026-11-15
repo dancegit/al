@@ -88,7 +88,9 @@ def notifiers(layer: Any) -> list[dict[str, Any]]:
 
 
 def event_of(state: Any) -> str:
-    """The one event a run reports."""
+    """The one event a run reports ("" for a waiting run: it neither failed nor finished)."""
+    if state.status == "waiting":
+        return ""
     ship = state.ship or {}
     if state.status != "passed":
         if ship.get("action") == "handoff" and not ship.get("handoff_error"):
@@ -428,6 +430,8 @@ def report(layer: Any, state: Any, force: bool = False, at: str = "end") -> bool
         if not declared or state.fanout_parent:
             return False
         event = event_of(state)
+        if not event:
+            return False
         if at == "handover" and event != "needs-human":
             return False
         due = [item for item in declared

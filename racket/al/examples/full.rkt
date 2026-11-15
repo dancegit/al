@@ -85,7 +85,7 @@
       (check lint #:cmd lint #:resolve resolve-test)
       (check test #:cmd test #:resolve resolve-test #:collect (junit))
       (run document #:command document #:args ("$plan"))
-      (script changelog #:cmd changelog #:args ("$prompt"))
+      (script changelog #:cmd changelog #:args ("$prompt") #:waiting-exit (75) #:journal ".work/changelog/{adw_id}")
       (run commit #:command commit)
       (review)
       (ship)))
