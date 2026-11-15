@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from dataclasses import dataclass
@@ -51,6 +52,18 @@ class Layer:
         if not isinstance(placement, dict) or placement.get("kind") != "in-repo":
             return ""
         return str(placement.get("dir") or "agentic").strip("/")
+
+    def display_path(self, path: str | Path) -> str:
+        """A path as a person reads it in a pull request, PR.md or a comment: relative to the
+        repository for an in-repo layer, else to the layer directory; never an absolute path of
+        this machine (a path outside both is shown by its name). Relative input is layer-relative."""
+        target = Path(path)
+        target = (target if target.is_absolute() else Path(self.layer_dir) / target).resolve()
+        bases = ([Path(self.app_root)] if self.in_repo_dir else []) + [Path(self.layer_dir)]
+        for base in bases:
+            with contextlib.suppress(ValueError):
+                return target.relative_to(base.resolve()).as_posix()
+        return target.name
 
     def changes_layer(self, adw_name: str) -> bool:
         """True for a layer-change workflow (`#:changes layer`), e.g. the one `al improve` runs."""

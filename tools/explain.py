@@ -195,8 +195,9 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         for o in ir["reviews"]:
             body = f"; the description opens with the output of the `{o['bodyCmd']}` command" if o.get("bodyCmd") else ""
             if o["kind"] == "human":
-                kinds.append("a person, through a pull request")
-                bullets.append(f"`{o['id']}`: open a pull request and stop; a person reads it and merges{body}")
+                kinds.append(f"a person, through {for_review(ir)}")
+                opening = "open a pull request" if has_forge(ir) else "keep the work on a branch, write `PR.md`"
+                bullets.append(f"`{o['id']}`: {opening} and stop; a person reads it and merges{body}")
             elif o["kind"] == "agent":
                 kinds.append("an agent that reviews on evidence, with a person merging")
                 bullets.append(f"`{o['id']}`: {o['reviewers']} reviewer agent(s) judge the change against the plan; a person merges")
@@ -207,7 +208,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
                 if o["blockProtectedPaths"]:
                     rules.append("no protected path was touched")
                 bullets.append(f"`{o['id']}`: {o['reviewers']} reviewer agent(s) must approve, and then every rule must hold: "
-                               + "; ".join(rules) + f". If so it ships by `{o['ship']}`; otherwise a person decides")
+                               + "; ".join(rules) + f". If so it ships by `{o['ship']}` ({ship_words(ir, o['ship'])}); "
+                               f"otherwise a person decides, through {for_review(ir)}")
         return "Who decides it is done", "Review: " + listing(kinds, "or") + ".", bullets
     if head == "agent":
         return models_text(ir)
@@ -251,7 +253,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         text = (f"{len(cmds)} prompts written for this codebase, each for one kind of job: "
                 + listing(["`" + c["name"] + "`" for c in cmds]) + ".")
         if focus:
-            text += f" {len(focus)} of their instructions are specific to this codebase."
+            text += (f" {len(focus)} of their instructions are specific to this codebase"
+                     + ("; the first 6:" if len(focus) > 6 else ":"))
         bullets = [describe_command(c) for c in cmds]
         bullets += [f"Codebase-specific rule: “{f}”" for f in focus[:6]]
         return "The prompts", text, bullets
@@ -266,8 +269,11 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         adw = next(a for a in ir["adws"] if a["name"] == name)
         pi, tr, en, rv = by_id(ir, "promptInputs"), by_id(ir, "triggers"), by_id(ir, "environments"), by_id(ir, "reviews")
         review = rv[adw["review"]]
-        outcome = {"human": "A person reviews the pull request.", "agent": "An agent reviews on evidence; a person merges.",
-                   "auto": f"No person is involved if every rule holds; it ships by {review.get('ship', 'pr')}."}[review["kind"]]
+        reviewed = "the pull request" if has_forge(ir) else "the branch and its description file (`PR.md`)"
+        outcome = {"human": f"A person reviews {reviewed}.", "agent": f"An agent reviews on evidence; a person merges ({reviewed}).",
+                   "auto": f"No person is involved if every rule holds; it ships by {ship_words(ir, review.get('ship', 'pr'))}."}[review["kind"]]
+        if not any(s.get("kind") == "ship" for s in adw["steps"]):
+            outcome = "No ship step: nothing is reviewed or published; the result stays with the run."
         steps = [s for s in adw["steps"]]
         short = " → ".join(s["name"] for s in steps)
         text = (f"The `{name}` workflow" + (f": {adw['description'].rstrip('.')}" if adw["description"] else "") + f". Steps: {short}. {outcome}")
@@ -280,6 +286,22 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
             bullets.append(f"The reviewers run on agent `{review['agent']}`, not on the agent that did the work")
         return f"Workflow: {name}", text, bullets
     return head, f"`({head} …)`", []
+
+
+def has_forge(ir: dict) -> bool:
+    return (ir.get("forge") or {}).get("kind", "none") != "none"
+
+
+def for_review(ir: dict) -> str:
+    """What a person reviews: a pull request on the forge, else a branch and PR.md."""
+    return "a pull request" if has_forge(ir) else "a branch and a description file (`PR.md`)"
+
+
+def ship_words(ir: dict, ship: str) -> str:
+    if ship == "pr":
+        return for_review(ir)
+    merged = "merging the pull request" if has_forge(ir) else "merging into the default branch (a remote, or locally)"
+    return merged + (", then deploying" if ship == "deploy" else "")
 
 
 def describe_command(c: dict) -> str:
@@ -393,7 +415,7 @@ def markdown(name: str, source_label: str, lines: list[str], blocks: list[dict],
         out += [f"![The {name} layer, block by block]({gif})", ""]
     adws = ir["adws"]
     out += ["## In one paragraph", "",
-            f"`{name}` is {ir['description'] or 'an agentic layer'}. It declares {len(ir['codebase']['commands'])} codebase commands, "
+            f"The `{name}` layer: {(ir['description'] or 'an agentic layer').rstrip('.')}. It declares {len(ir['codebase']['commands'])} codebase commands, "
             f"{len(ir['commands'])} prompts and {len(adws)} workflow{'s' if len(adws) != 1 else ''} "
             f"({listing(['`' + a['name'] + '`' for a in adws])}).", "", "## Block by block", ""]
     for b in blocks:

@@ -105,7 +105,9 @@ def _attr(state: Any, name: str, default: Any = None) -> Any:
     return getattr(state, name, default)
 
 
-def summarise(state: Any) -> str:
+def summarise(state: Any, layer: Any = None) -> str:
+    """The issue comment at the end of a run. A local target (PR.md) is named as a person reads
+    it: relative to the repository (in-repo layer) or the layer, never by a machine path."""
     adw_id = _attr(state, "adw_id", "?")
     status = _attr(state, "status", "unknown")
     branch = _attr(state, "branch")
@@ -118,13 +120,19 @@ def summarise(state: Any) -> str:
     url = ship.get("url") or ship.get("pr_url") or pr.get("url")
     if ship.get("action") == "handoff":   # a stopped run whose work was handed over (ship.handoff)
         parts.append(f"stopped at `{ship.get('stopped_at', '?')}`; the work needs a human: "
-                     + (f"PR {url}" if url else str(ship.get("target") or "see the run")))
+                     + (f"PR {url}" if url else _local_target(ship.get("target"), layer)))
     elif url:
         parts.append(f"PR {url}")
     commit = ship.get("commit") if isinstance(ship, Mapping) else None
     if commit:
         parts.append(f"commit {commit}")
     return ", ".join(parts)
+
+
+def _local_target(target: Any, layer: Any) -> str:
+    if not target:
+        return "see the run"
+    return f"see `{layer.display_path(str(target)) if layer is not None else target}`"
 
 
 def keyword_selection(text: str, keyword: str,
@@ -271,7 +279,7 @@ def _resolve_issue(lay, option, ref, env, base, forge) -> Request:
         client.comment(n, f"adw {_attr(state, 'adw_id')} started")
 
     def finish(state):
-        client.comment(n, summarise(state))
+        client.comment(n, summarise(state, lay))
 
     prompt = f"{issue.get('title', '')}\n\n{issue.get('body', '')}".strip()
     return Request(prompt=prompt, klass=klass, model_set=model_set, workflow=workflow,

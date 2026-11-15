@@ -26,16 +26,12 @@ Languages: python. Entry document: `README.md`. Default branch: `main`.
 - Think hard about the root cause: the earliest point where state or logic goes wrong, cited as `path:line`. A symptom is not a root cause.
 - Plan the minimal fix at the root cause. No refactoring, no drive-by cleanups, no new abstractions.
 - Tests: plan a regression test that fails before the fix and passes after it; name its path. List any existing test that must change and why.
-- Write PLAN_FILE in exactly the Plan Format: keep every heading, replace every `<placeholder>`, add no sections. `<descriptive-name>` is 3-6 lowercase hyphenated words.
+- Write PLAN_FILE in the Plan Format: keep every heading, replace every `<placeholder>`, add no sections (unless a codebase-specific instruction below says otherwise). `<descriptive-name>` is 3-6 lowercase hyphenated words.
 - Keep the commands already present under `## Validation Commands` in the Plan Format unchanged and in order; add the reproduction command and bug-specific commands after them.
 - If the bug is user-visible, name in Notes the artefacts that will prove the fix (screenshots, video, reports) and the step that produces them.
 - Never plan a change under a protected path. If the fix cannot avoid one, plan everything else and add a line starting `REQUIRES HUMAN` to Notes naming the path and the reason.
 - A new dependency is a last resort; add it with `(not specified — do not add dependencies without flagging it)` and justify it in Notes.
 - Read a conditional document when its condition matches what you are planning.
-- The regression test goes into the existing tests/test_<area>.py module of the source file being fixed (src/flask/blueprints.py -> tests/test_blueprints.py, src/flask/json/tag.py -> tests/test_json_tag.py); a regression with no matching module goes into tests/test_regression.py.
-- The regression test must fail without the fix.
-- Add an entry to CHANGES.rst under the topmost (unreleased) version, as a '-   ' bullet ending with an :issue:`<number>` or :pr:`<number>` reference.
-- Code under src/flask/sansio does no IO and does not use the Flask globals.
 
 ## Relevant Files
 
@@ -65,6 +61,8 @@ Protected paths (do not plan changes here):
 
 
 ## Plan Format
+
+Codebase-specific instructions below take precedence over the defaults in this section.
 
 ```md
 # Bug: <bug name>
@@ -113,6 +111,15 @@ Execute every command from the worktree root; all must exit 0.
 ## Notes
 <new dependencies; artefacts that prove a user-visible fix; REQUIRES HUMAN lines; risks and anything the implementer must know>
 ```
+
+## Codebase-specific instructions
+
+The layer's own instructions for this command (`#:focus` in `agentic.rkt`), if any. Where one says otherwise than a default above, it wins. They never change where the plan is written, the `REQUIRES HUMAN` rule or the Report section: the runtime reads those, so they are fixed.
+
+- The regression test goes into the existing tests/test_<area>.py module of the source file being fixed (src/flask/blueprints.py -> tests/test_blueprints.py, src/flask/json/tag.py -> tests/test_json_tag.py); a regression with no matching module goes into tests/test_regression.py.
+- The regression test must fail without the fix.
+- Add an entry to CHANGES.rst under the topmost (unreleased) version, as a '-   ' bullet ending with an :issue:`<number>` or :pr:`<number>` reference.
+- Code under src/flask/sansio does no IO and does not use the Flask globals.
 
 ## Validation Commands
 

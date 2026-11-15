@@ -72,6 +72,6 @@ An ordinary workflow that changes anything under `agentic/` in its worktree is s
 
 ## What is committed
 
-Committed: `agentic.rkt`, `LLM.txt`, `templates/`, `mock/`, `adopted/` (what `al adopt` wrote), expert `expertise.yaml` files and `conditional_docs.md` (source); `agentic-layer.json`, `commands/`, `hops/`, `experts/`, `adws/`, `env/`, `fabric/`, `forge/`, `AL-DSL.llms.txt`, this README, `.gitignore` and `.al-manifest.json` (generated; the manifest lets `al gen` notice hand edits).
+Committed: `agentic.rkt`, `LLM.txt`, `templates/`, `mock/`, `adopted/` (what `al adopt` wrote), and expert `expertise.yaml` files (source); `agentic-layer.json`, `conditional_docs.md`, `commands/`, `hops/`, `experts/`, `adws/`, `env/`, `fabric/`, `forge/`, `AL-DSL.llms.txt`, this README, `.gitignore` and `.al-manifest.json` (generated; the manifest lets `al gen` notice hand edits).
 
 Not committed (`.gitignore`, written by `al gen`): run state (worktrees, run logs, artefacts, plans, run documents, the task list and spec inbox, `al improve` runs), files that name this machine's paths (`bin/al`, systemd units, the Home Manager module) and caches.

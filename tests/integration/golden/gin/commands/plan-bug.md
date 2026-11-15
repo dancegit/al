@@ -26,15 +26,12 @@ Languages: go. Entry document: `README.md`. Default branch: `master`.
 - Think hard about the root cause: the earliest point where state or logic goes wrong, cited as `path:line`. A symptom is not a root cause.
 - Plan the minimal fix at the root cause. No refactoring, no drive-by cleanups, no new abstractions.
 - Tests: plan a regression test that fails before the fix and passes after it; name its path. List any existing test that must change and why.
-- Write PLAN_FILE in exactly the Plan Format: keep every heading, replace every `<placeholder>`, add no sections. `<descriptive-name>` is 3-6 lowercase hyphenated words.
+- Write PLAN_FILE in the Plan Format: keep every heading, replace every `<placeholder>`, add no sections (unless a codebase-specific instruction below says otherwise). `<descriptive-name>` is 3-6 lowercase hyphenated words.
 - Keep the commands already present under `## Validation Commands` in the Plan Format unchanged and in order; add the reproduction command and bug-specific commands after them.
 - If the bug is user-visible, name in Notes the artefacts that will prove the fix (screenshots, video, reports) and the step that produces them.
 - Never plan a change under a protected path. If the fix cannot avoid one, plan everything else and add a line starting `REQUIRES HUMAN` to Notes naming the path and the reason.
 - A new dependency is a last resort; add it with `(not specified — do not add dependencies without flagging it)` and justify it in Notes.
 - Read a conditional document when its condition matches what you are planning.
-- The regression test goes in the <name>_test.go file beside the fixed <name>.go, using github.com/stretchr/testify assertions.
-- The fix must compile and pass under the CI build tag sets: none, -tags nomsgpack, -tags sonic with --ldflags=-checklinkname=0, -tags go_json, and -race.
-- Use any, not interface{}.
 
 ## Relevant Files
 
@@ -77,6 +74,8 @@ Protected paths (do not plan changes here):
 
 
 ## Plan Format
+
+Codebase-specific instructions below take precedence over the defaults in this section.
 
 ```md
 # Bug: <bug name>
@@ -124,6 +123,14 @@ Execute every command from the worktree root; all must exit 0.
 ## Notes
 <new dependencies; artefacts that prove a user-visible fix; REQUIRES HUMAN lines; risks and anything the implementer must know>
 ```
+
+## Codebase-specific instructions
+
+The layer's own instructions for this command (`#:focus` in `agentic.rkt`), if any. Where one says otherwise than a default above, it wins. They never change where the plan is written, the `REQUIRES HUMAN` rule or the Report section: the runtime reads those, so they are fixed.
+
+- The regression test goes in the <name>_test.go file beside the fixed <name>.go, using github.com/stretchr/testify assertions.
+- The fix must compile and pass under the CI build tag sets: none, -tags nomsgpack, -tags sonic with --ldflags=-checklinkname=0, -tags go_json, and -race.
+- Use any, not interface{}.
 
 ## Validation Commands
 

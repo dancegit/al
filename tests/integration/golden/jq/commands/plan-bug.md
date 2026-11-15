@@ -26,16 +26,12 @@ Languages: c, shell, python. Entry document: `README.md`. Default branch: `maste
 - Think hard about the root cause: the earliest point where state or logic goes wrong, cited as `path:line`. A symptom is not a root cause.
 - Plan the minimal fix at the root cause. No refactoring, no drive-by cleanups, no new abstractions.
 - Tests: plan a regression test that fails before the fix and passes after it; name its path. List any existing test that must change and why.
-- Write PLAN_FILE in exactly the Plan Format: keep every heading, replace every `<placeholder>`, add no sections. `<descriptive-name>` is 3-6 lowercase hyphenated words.
+- Write PLAN_FILE in the Plan Format: keep every heading, replace every `<placeholder>`, add no sections (unless a codebase-specific instruction below says otherwise). `<descriptive-name>` is 3-6 lowercase hyphenated words.
 - Keep the commands already present under `## Validation Commands` in the Plan Format unchanged and in order; add the reproduction command and bug-specific commands after them.
 - If the bug is user-visible, name in Notes the artefacts that will prove the fix (screenshots, video, reports) and the step that produces them.
 - Never plan a change under a protected path. If the fix cannot avoid one, plan everything else and add a line starting `REQUIRES HUMAN` to Notes naming the path and the reason.
 - A new dependency is a last resort; add it with `(not specified — do not add dependencies without flagging it)` and justify it in Notes.
 - Read a conditional document when its condition matches what you are planning.
-- Add a regression test: language or builtin behaviour in tests/jq.test, regex behaviour in tests/onig.test, command-line or process behaviour in tests/shtest.
-- A test in tests/jq.test is three lines: jq program, input, expected output; blank lines and lines starting with # are ignored.
-- Never hand-edit src/lexer.c, src/lexer.h, src/parser.c or src/parser.h; change src/lexer.l or src/parser.y instead.
-- Building and running the tests must leave no change in tracked files.
 
 ## Relevant Files
 
@@ -84,6 +80,8 @@ Protected paths (do not plan changes here):
 
 ## Plan Format
 
+Codebase-specific instructions below take precedence over the defaults in this section.
+
 ```md
 # Bug: <bug name>
 
@@ -130,6 +128,15 @@ Execute every command from the worktree root; all must exit 0.
 ## Notes
 <new dependencies; artefacts that prove a user-visible fix; REQUIRES HUMAN lines; risks and anything the implementer must know>
 ```
+
+## Codebase-specific instructions
+
+The layer's own instructions for this command (`#:focus` in `agentic.rkt`), if any. Where one says otherwise than a default above, it wins. They never change where the plan is written, the `REQUIRES HUMAN` rule or the Report section: the runtime reads those, so they are fixed.
+
+- Add a regression test: language or builtin behaviour in tests/jq.test, regex behaviour in tests/onig.test, command-line or process behaviour in tests/shtest.
+- A test in tests/jq.test is three lines: jq program, input, expected output; blank lines and lines starting with # are ignored.
+- Never hand-edit src/lexer.c, src/lexer.h, src/parser.c or src/parser.h; change src/lexer.l or src/parser.y instead.
+- Building and running the tests must leave no change in tracked files.
 
 ## Validation Commands
 

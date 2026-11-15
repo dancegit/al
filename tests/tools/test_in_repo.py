@@ -59,11 +59,21 @@ def test_al_check_ignores_the_layer_s_own_changes_but_nothing_else(in_repo, app)
     (in_repo / "stray-run-output.json").write_text("{}\n")                         # run state outside the ignored dirs
     (app / "app.py").write_text("NOTES = ['changed']\n")                           # the application itself
     out = al("check", in_repo, ok=False).stdout
-    assert "PROBLEM: application working tree changed outside the layer:  M app.py" in out
     assert "PROBLEM: untracked file in the layer that is neither source nor generated" in out
     assert "agentic/stray-run-output.json" in out
     problems = [line for line in out.splitlines() if line.startswith("PROBLEM:")]
-    assert len(problems) == 2 and not any("LLM.txt" in p or "plan-chore.md" in p or "agents/x" in p for p in problems)
+    assert len(problems) == 1 and not any("LLM.txt" in p or "plan-chore.md" in p or "agents/x" in p for p in problems)
+    # the developer's own work outside the layer is not the layer's doing: a note, not a failure
+    assert "note: uncommitted change outside the layer (not checked):  M app.py" in out
+
+
+def test_al_check_passes_with_unrelated_work_in_progress(in_repo, app) -> None:
+    (app / "scratch.txt").write_text("my notes\n")
+    (app / "app.py").write_text("NOTES = ['work in progress']\n")
+    cp = al("check", in_repo)
+    assert cp.stdout.strip().endswith("check: ok"), cp.stdout
+    assert "note: uncommitted change outside the layer (not checked): ?? scratch.txt" in cp.stdout
+    assert "note: uncommitted change outside the layer (not checked):  M app.py" in cp.stdout
 
 
 def test_a_mock_run_leaves_the_application_status_clean(in_repo, app) -> None:

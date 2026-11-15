@@ -185,3 +185,26 @@ def test_runs_without_events_still_use_file_times(fx):
     data = model.run_detail("demo-shop", "a1000003")
     assert data["summary"]["timing"] == "files"
     assert data["summary"]["last_seen"] is None
+
+
+# ---------------------------------------------------------------- paths a person reads
+
+@pytest.mark.parametrize("in_repo", [False, True])
+def test_paths_the_runtime_recorded_are_shown_relative_not_absolute(tmp_path: Path, in_repo: bool):
+    """The plan path is recorded as an absolute path of the machine; the page shows it relative to
+    the layer, or to the repository when the layer is checked in with it."""
+    repo = tmp_path / "repo"
+    layer = repo / "agentic" if in_repo else tmp_path / "shop.al"
+    ir = dict(fixtures.IR, name="shop", layer={"kind": "in-repo", "dir": "agentic"} if in_repo else {"kind": "sibling"},
+              codebase={**fixtures.IR["codebase"], "root": ".." if in_repo else str(repo)})
+    fixtures.write(layer / "agentic-layer.json", json.dumps(ir))
+    st = fixtures.state("b1000001", "zte", "Fix it", "passed", 0, 10, [fixtures.rec("classify", "run", "passed", 0, 10)],
+                        plan=str(layer.resolve() / "specs" / "plan-b1000001.md"),
+                        worktree=str(layer.resolve() / "trees" / "b1000001"))
+    fixtures.write(layer / "agents" / "b1000001" / "state.json", json.dumps(st))
+    model = dashboard.Model([layer], [])
+    model.discover()
+    model.tick()
+    plan = model.run_detail("shop", "b1000001")["state"]["plan"]
+    assert str(tmp_path) not in plan
+    assert plan == ("agentic/specs/plan-b1000001.md" if in_repo else "layer:specs/plan-b1000001.md")

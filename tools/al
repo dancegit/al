@@ -12,6 +12,7 @@
   al gen     LAYER [--discard-edits]  compile + generate commands, HOPs, ADWs, env, triggers, forge files
   al explain LAYER [--md F] [--gif F]  explain the layer definition in plain language, block by block
   al check   LAYER                 verify a generated layer and that the application tree is untouched
+                                   (in-repo layer: changes outside the layer are listed as notes, not failures)
   al eject   LAYER (command|hop|expert) NAME [--force] | --list
                                    copy a kit template into LAYER/templates/ so your edits to it survive `al gen`
   al improve LAYER "request" [--dry-run] [--review human|agent] [--model-set T] [--model T=ID] [--max-cost USD]
@@ -43,6 +44,7 @@ import sys
 import time
 import tomllib
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -198,9 +200,10 @@ def scout(app: Path) -> dict:
     skip = set(test_dirs) | set(doc_dirs) | {".github", ".forgejo", "examples", "benches", "scripts", "ci"}
     src_dirs = [d for d, _ in top.most_common(8) if d not in skip and not d.startswith(".")][:5]
     protected = [p for p in PROTECTED_CANDIDATES if has(p)]
-    remote = git(app, "remote", "get-url", "origin")
+    raw_remote = git(app, "remote", "get-url", "origin")
+    remote = web_url(raw_remote)  # the draft may be committed: never an ssh form, a token or a local path
     forge, repo = "none", ""
-    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$", remote)
+    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", remote)
     if m:
         repo = m.group(1)
         forge = "github" if "github.com" in remote else "forgejo" if re.search(r"forgejo|gitea|codeberg", remote) else "unknown"
@@ -220,8 +223,8 @@ def scout(app: Path) -> dict:
     if has("bun.lock") or has("bun.lockb"):
         nix.append("bun")
     return {
-        "name": re.sub(r"[^a-z0-9._-]", "-", app.name.lower()), "app": str(app), "summary": summary,
-        "remote": remote, "repo": repo, "forge": forge, "ci": ci, "default_branch": head,
+        "name": re.sub(r"[^a-z0-9._-]", "-", repository_name(app, repo).lower()), "app": str(app), "summary": summary,
+        "remote": remote, "remote_kind": "" if remote or not raw_remote else "local", "repo": repo, "forge": forge, "ci": ci, "default_branch": head,
         "license": license_file, "languages": langs, "lang_counts": dict(exts.most_common(6)),
         "files": len(files), "top": top.most_common(14), "src": src_dirs, "tests": test_dirs,
         "docs": doc_dirs, "readme": readme, "commands": cmds, "evidence": evidence, "notes": notes,
@@ -229,6 +232,33 @@ def scout(app: Path) -> dict:
         "contributing": next((p for p in ("CONTRIBUTING.md", "CONTRIBUTING.rst", "docs/contributing.rst", "HACKING.md") if has(p)), ""),
         "existing_agent_setup": existing,
     }
+
+
+def web_url(remote: str) -> str:
+    """The web URL of a git remote, without user, password or token: `git@host:o/r.git` and
+    `ssh://git@host:22/o/r.git` become `https://host/o/r`; http(s) URLs keep their scheme and
+    port. A local path or file:// remote is not a URL anyone else can open: ""."""
+    remote = remote.strip()
+    m = re.fullmatch(r"(?:ssh://)?(?:[^@/]+@)?([\w.-]+)(?::\d+)?[:/](.+?)(?:\.git)?/?", remote)
+    if remote.startswith(("http://", "https://")):
+        scheme, rest = remote.split("://", 1)
+        host, _, path = rest.partition("/")
+        path = re.sub(r"\.git/?$", "", path).rstrip("/")
+        return f"{scheme}://{host.rpartition('@')[2]}/{path}" if path else f"{scheme}://{host.rpartition('@')[2]}"
+    if m and not remote.startswith(("/", ".", "file:")) and ("@" in remote or remote.startswith("ssh://")):
+        return f"https://{m.group(1)}/{m.group(2)}"
+    return ""
+
+
+def repository_name(app: Path, repo: str) -> str:
+    """What the repository is called: the remote's repository name, else the directory of the main
+    checkout (in a linked worktree the checkout's own directory name is usually arbitrary)."""
+    if repo:
+        return repo.rsplit("/", 1)[-1]
+    common = git(app, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common and Path(common).name == ".git":
+        return Path(common).parent.name
+    return app.name
 
 
 def adopt_module():
@@ -260,7 +290,7 @@ def render_llm_txt(s: dict) -> str:
 
 ## Identity
 
-- Repo URL: {s['remote'] or 'UNVERIFIED (no origin remote)'}
+- Repo URL: {s['remote'] or ('UNVERIFIED (origin is not a web URL)' if s.get('remote_kind') == 'local' else 'UNVERIFIED (no origin remote)')}
 - Default branch: {s['default_branch']}
 - License: {s['license'] or 'UNVERIFIED'}
 - Primary languages: {', '.join(s['languages'])} (tracked files by language: {s['lang_counts']})
@@ -544,6 +574,8 @@ def eject_hint(layer: Path, rel: str) -> str:
     if parts[0] in ("commands", "hops") and len(parts) == 2 and rel.endswith(".md"):
         kind = "command" if parts[0] == "commands" else "hop"
         return f"al eject {layer} {kind} {parts[1][:-3]}"
+    if rel == "conditional_docs.md":
+        return "move the lines to keep into agentic.rkt as (conditional-doc \"path\" \"when …\") clauses: the file is generated from them"
     if parts[0] == "experts" and len(parts) == 3:
         return f"al eject {layer} expert {parts[1]}"
     return "change agentic.rkt instead: this file is generated from the definition and the kit"
@@ -1032,8 +1064,10 @@ WantedBy=default.target
         for rel in ("specs/.gitkeep", "mock/.gitkeep", "docs/.gitkeep"):
             self.write(rel, "", keep_existing=True)
         self.write("templates/README.md", TEMPLATES_README, keep_existing=True)
-        self.write("conditional_docs.md", "# Conditional documentation\n\nRead a document below before working when its condition holds.\n\n"
-                   + bullets([f"`{d['path']}` — {d['when']}" for d in self.cb["conditionalDocs"]]) + "\n", keep_existing=True)
+        # generated from the (conditional-doc …) clauses: a run that edits it is a hand edit `al check` reports
+        self.write("conditional_docs.md", "# Conditional documentation\n\nRead a document below before working when its condition holds.\n"
+                   + CONDITIONAL_DOCS_SOURCE + "\n"
+                   + bullets([f"`{d['path']}` — {d['when']}" for d in self.cb["conditionalDocs"]]) + "\n")
         self.write("bin/al", f"#!/bin/sh\n# Generated by al: the layer's handle on the generator and compiler.\nexec {ROOT / 'tools' / 'al'} \"$@\"\n",
                    0o755, local=True)
         self.write("AL-DSL.llms.txt", REFERENCE.read_text())
@@ -1103,8 +1137,8 @@ Not committed (`.gitignore`, written by `al gen`): {ignored}.
         ignored = ("run state (worktrees, run logs, artefacts, plans, run documents, the task list and spec inbox, "
                    "`al improve` runs), files that name this machine's paths (`bin/al`, systemd units, the Home Manager "
                    "module" + ("" if self.in_repo else ", the forge workflow") + ") and caches")
-        committed = ("`agentic.rkt`, `LLM.txt`, `templates/`, `mock/`, `adopted/` (what `al adopt` wrote), expert `expertise.yaml` files and "
-                     "`conditional_docs.md` (source); `agentic-layer.json`, `commands/`, `hops/`, `experts/`, `adws/`, "
+        committed = ("`agentic.rkt`, `LLM.txt`, `templates/`, `mock/`, `adopted/` (what `al adopt` wrote), and expert `expertise.yaml` files "
+                     "(source); `agentic-layer.json`, `conditional_docs.md`, `commands/`, `hops/`, `experts/`, `adws/`, "
                      "`env/`, `fabric/`, " + ("`forge/`, " if self.in_repo else "") +
                      "`AL-DSL.llms.txt`, this README, `.gitignore` and `.al-manifest.json` (generated; the manifest "
                      "lets `al gen` notice hand edits)")
@@ -1166,6 +1200,12 @@ Not committed (`.gitignore`, written by `al gen`): {ignored}.
             if new is not None and not new[2] and sha256_text(new[0]) == actual:
                 continue
             edited.append(rel)
+        for rel, unchanged in FORMERLY_SCAFFOLDED.items():  # written once by older versions: maybe extended by hand
+            path, new = self.layer / rel, self.outputs.get(rel)
+            if rel in old or new is None or not path.is_file():
+                continue
+            if sha256_file(path) not in (sha256_text(new[0]), sha256_text(unchanged(new[0]))):
+                edited.append(rel)
         return edited
 
     def hand_edit_message(self, edited: list[str]) -> str:
@@ -1258,7 +1298,11 @@ Not committed (`.gitignore`, written by `al gen`): {ignored}.
 # check
 # ------------------------------------------------------------------------------------------
 
-SOURCE_FILES = ("agentic.rkt", "LLM.txt", "conditional_docs.md", "templates/README.md", ".gitignore")
+SOURCE_FILES = ("agentic.rkt", "LLM.txt", "templates/README.md", ".gitignore")
+CONDITIONAL_DOCS_SOURCE = "Generated by `al gen` from the `(conditional-doc …)` clauses of `agentic.rkt`; change them there.\n"
+# Generated now; before, written once and yours. Each maps to what the older version wrote for the
+# same definition, which `al gen` may replace without asking.
+FORMERLY_SCAFFOLDED = {"conditional_docs.md": lambda text: text.replace(CONDITIONAL_DOCS_SOURCE, "")}
 ADOPTED_DIR = "adopted"   # what `al adopt` wrote: included by agentic.rkt, regenerated by `al adopt`
 
 
@@ -1292,22 +1336,28 @@ def porcelain(repo: Path) -> list[tuple[str, str]]:
 
 def in_repo_problems(layer: Path, ir: dict, app: Path) -> list[str]:
     """`al check` for a layer checked in with the application: changes to the layer's own files
-    (uncommitted edits, regenerated files) are fine; anything else in the working tree is not:
-    changes outside the layer, and untracked run state that escaped the ignored directories."""
+    (uncommitted edits, regenerated files) are fine; untracked run state that escaped the ignored
+    directories is not. Changes outside the layer are the developer's own work in progress (or
+    anyone's): nothing ties them to the layer, so they are notes (`in_repo_notes`), not problems."""
     try:
         rel = layer.resolve().relative_to(app).as_posix()
     except ValueError:
         return [f"in-repo layer {layer} is not inside the application repository {app}"]
     manifest = load_manifest(layer)
-    problems = []
-    for xy, path in porcelain(app):
-        inside = path == rel or path.startswith(rel + "/")
-        if not inside:
-            problems.append(f"application working tree changed outside the layer: {xy} {path}")
-        elif xy == "??" and not is_layer_file(path[len(rel) + 1:], manifest):
-            problems.append(f"untracked file in the layer that is neither source nor generated (run state outside "
-                            f"the ignored directories?): {path}")
-    return problems
+    return [f"untracked file in the layer that is neither source nor generated (run state outside "
+            f"the ignored directories?): {path}"
+            for xy, path in porcelain(app)
+            if (path == rel or path.startswith(rel + "/")) and xy == "??" and not is_layer_file(path[len(rel) + 1:], manifest)]
+
+
+def in_repo_notes(layer: Path, app: Path) -> list[str]:
+    """Uncommitted changes outside an in-repo layer, reported by `al check` without failing it."""
+    try:
+        rel = layer.resolve().relative_to(app).as_posix()
+    except ValueError:
+        return []
+    return [f"uncommitted change outside the layer (not checked): {xy} {path}"
+            for xy, path in porcelain(app) if not (path == rel or path.startswith(rel + "/"))]
 
 
 def check_layer(layer: Path) -> list[str]:
@@ -1517,19 +1567,45 @@ def eject(layer: Path, kind: str, name: str, force: bool = False) -> list[tuple[
 # verify: the compiler proves the layer is coherent; this proves its codebase cmds are true
 # ------------------------------------------------------------------------------------------
 
+VERIFY_DESCRIPTION = """\
+Run the layer's codebase cmds on a throwaway worktree of the default branch, in the environment of
+the layer's workflows, and report which are true.
+
+The report, LAYER/agents/verify/report.json, keeps the latest result of every cmd: a cmd run now
+replaces its earlier row, the others keep theirs. Each row has name, cmd, exit, seconds, log (the
+cmd's full output, LAYER/agents/verify/NAME.log) and at (when it ran, UTC). --json prints only the
+rows of this invocation.
+
+Verify fails if the application checkout's HEAD, branch or index changed while it ran (only a git
+command does that). Files edited in the checkout meanwhile are listed as a note: verify runs every
+cmd in its own worktree, so it cannot tell them from your own work in progress."""
+
 VERIFY_SKIPPED = ("deploy", "start", "install")  # side effects or long-running: only when named with --cmd
 VERIFY_TAIL = 15
 
 
 def app_fingerprint(app: Path) -> dict[str, str]:
-    """What must be identical before and after anything al does next to an application."""
+    """What `al verify` may not change in the application checkout: what only a git command changes
+    there (the commit checked out, the branch, the index). A person editing files changes none of
+    them; a cmd or al itself running git against the checkout does. The working tree is not part
+    of it: edits made while verify runs (by the developer, an editor, another process) are not
+    attributable to verify, which runs every cmd in its own worktree (see `worktree_changes`)."""
     def out(*args: str) -> str:
         cp = run(["git", "-C", str(app), *args], check=False)
         if cp.returncode != 0:
             raise AlError(f"git {' '.join(args)} failed in {app}: {cp.stderr.strip()}")
         return cp.stdout.rstrip("\n")
     return {"head": out("rev-parse", "HEAD"), "branch": out("branch", "--show-current"),
-            "status": out("status", "--porcelain")}
+            "index": hashlib.sha256(out("ls-files", "--stage").encode()).hexdigest()}
+
+
+def worktree_status(app: Path) -> set[str]:
+    return set(git(app, "status", "--porcelain", "--untracked-files=all").splitlines())
+
+
+def worktree_changes(before: set[str], after: set[str]) -> list[str]:
+    """Paths whose `git status` entry differs between two snapshots."""
+    return sorted({line[3:] for line in before ^ after})
 
 
 def _run_group(argv: list[str], cwd: Path, env: dict[str, str], timeout: int) -> tuple[int, str]:
@@ -1609,7 +1685,7 @@ def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print) 
         raise AlError(f"refusing to verify: {worktree} is inside the application tree")
     out_dir = layer / "agents" / "verify"
     out_dir.mkdir(parents=True, exist_ok=True)
-    before = app_fingerprint(app)
+    before, files_before = app_fingerprint(app), worktree_status(app)
     heads_before = set(git(app, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines())
     worktree.parent.mkdir(parents=True, exist_ok=True)
     cp = run(["git", "-C", str(app), "worktree", "add", "--detach", str(worktree), loaded.default_branch], check=False)
@@ -1645,7 +1721,8 @@ def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print) 
             log = out_dir / f"{c['name']}.log"
             log.write_text(output)
             report.append({"name": c["name"], "cmd": c["run"], "exit": code, "seconds": seconds,
-                           "log": log.relative_to(layer).as_posix()})
+                           "log": log.relative_to(layer).as_posix(),
+                           "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
             say(f"  {'ok  ' if code == 0 else 'FAIL'}  {c['name']}  exit {code}  {seconds}s")
             if code != 0:
                 for line in output.splitlines()[-VERIFY_TAIL:]:
@@ -1666,15 +1743,33 @@ def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print) 
         for branch in set(git(app, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines()) - heads_before:
             if state.branch and branch == state.branch:  # only a branch the runtime made for this very run
                 run(["git", "-C", str(app), "branch", "-D", branch], check=False)
-        (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        write_verify_report(out_dir / "report.json", report, [c["name"] for c in declared])
         after = app_fingerprint(app)
         if after != before:
             changed = ", ".join(k for k in before if before[k] != after[k])
             problems.append(f"THE APPLICATION CHECKOUT CHANGED DURING VERIFY ({changed}) — {app}\n"
                             f"  before: {before}\n  after:  {after}")
+        edited = worktree_changes(files_before, worktree_status(app))
+        if edited:
+            say(f"note: {len(edited)} file(s) changed in the checkout while verify ran (not by verify, which works "
+                f"in its own worktree, unless a cmd writes outside it): {', '.join(edited[:10])}"
+                + (" …" if len(edited) > 10 else ""))
         if problems:
             raise AlError("verify: " + "\n".join(problems))
     return report, skipped
+
+
+def write_verify_report(path: Path, rows: list[dict], declared: list[str]) -> None:
+    """agents/verify/report.json keeps the latest result of every cmd: this invocation's rows
+    replace earlier rows of the same cmd, the others stay (each row says when it ran: `at`).
+    Rows are in declaration order; a cmd no longer declared is dropped."""
+    try:
+        old = json.loads(path.read_text()) if path.is_file() else []
+    except ValueError:
+        old = []
+    latest = {row["name"]: row for row in old if isinstance(row, dict) and "name" in row}
+    latest.update({row["name"]: row for row in rows})
+    path.write_text(json.dumps([latest[name] for name in declared if name in latest], indent=2) + "\n")
 
 
 # ------------------------------------------------------------------------------------------
@@ -1824,7 +1919,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--only", nargs="+", choices=("rules", "prompts", "workflows"), metavar="rules|prompts|workflows",
                    help="adopt only these (default: all three); conflicts are always reported")
     p.add_argument("--force", action="store_true", help="overwrite files `al adopt` wrote even if they were edited by hand")
-    p = sub.add_parser("verify", help="run the layer's codebase cmds on a throwaway worktree")
+    p = sub.add_parser("verify", help="run the layer's codebase cmds on a throwaway worktree",
+                       description=VERIFY_DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("layer", type=Path)
     p.add_argument("--cmd", dest="names", action="append", default=[], metavar="NAME", help="verify only this cmd (repeatable)")
     p.add_argument("--timeout", type=int, metavar="S", help="seconds per cmd (default: each cmd's own #:timeout)")
@@ -1879,6 +1975,12 @@ def main(argv: list[str] | None = None) -> int:
                               f"(used by {', '.join(row['used_by']) or 'nothing'}; {row['status']})")
             for line in died_runs(layer):
                 print(f"note: {line}")
+            if (layer / "agentic-layer.json").is_file():
+                ir = json.loads((layer / "agentic-layer.json").read_text())
+                app = app_root_of(layer, ir)
+                if (ir.get("layer") or {}).get("kind") == "in-repo" and app.exists():
+                    for line in in_repo_notes(layer, app):
+                        print(f"note: {line}")
             if (layer / "agentic-layer.json").is_file():
                 app = app_root_of(layer, json.loads((layer / "agentic-layer.json").read_text()))
                 for line in (adopt_module().check(layer, app)[1] if app.exists() else []):

@@ -23,7 +23,7 @@ Languages: python. Entry document: `README.md`. Default branch: `main`.
 - You are in `${worktree}`, a git worktree of the application. Read it, do not modify it. The only file you create is PLAN_FILE, which lives in the layer and never in the application tree. Never switch branches, push, or touch the main checkout.
 - Research before writing: read `README.md`, then the Relevant Files, then follow the code until you can name every file the chore touches.
 - Think hard about the smallest change that fully satisfies PROMPT. A chore changes no behaviour users rely on; if PROMPT needs a behaviour change, say so in Notes and plan only the chore part.
-- Write PLAN_FILE in exactly the Plan Format: keep every heading, replace every `<placeholder>`, add no sections. `<descriptive-name>` is 3-6 lowercase hyphenated words.
+- Write PLAN_FILE in the Plan Format: keep every heading, replace every `<placeholder>`, add no sections (unless a codebase-specific instruction below says otherwise). `<descriptive-name>` is 3-6 lowercase hyphenated words.
 - Be surgical: list only files that must change, name the function or block in each, and leave unrelated code, formatting and dependencies alone.
 - Tests: name every test to add or update, with its path. If the chore needs none, state why in Notes.
 - Keep the commands already present under `## Validation Commands` in the Plan Format unchanged and in order; add chore-specific commands only after them.
@@ -31,9 +31,6 @@ Languages: python. Entry document: `README.md`. Default branch: `main`.
 - Never plan a change under a protected path. If the chore cannot be done without one, plan everything else and add a line starting `REQUIRES HUMAN` to Notes naming the path and the reason.
 - A new dependency is added with `(not specified — do not add dependencies without flagging it)` and listed in Notes with its justification.
 - Read a conditional document when its condition matches what you are planning.
-- Dependencies are declared in pyproject.toml and locked in uv.lock; uv.lock is regenerated with uv, never edited by hand, and is a protected path.
-- When files under docs change, the plan also lists the docs cmd as a validation step.
-- A code change adds an entry to CHANGES.rst under the topmost (unreleased) version, as a '-   ' bullet ending with an :issue:`<number>` or :pr:`<number>` reference.
 
 ## Relevant Files
 
@@ -64,6 +61,8 @@ Protected paths (do not plan changes here):
 
 ## Plan Format
 
+Codebase-specific instructions below take precedence over the defaults in this section.
+
 ```md
 # Chore: <chore name>
 
@@ -93,6 +92,14 @@ Execute every command from the worktree root; all must exit 0.
 ## Notes
 <tests added or why none; new dependencies; artefacts that prove a user-visible result; REQUIRES HUMAN lines; anything the implementer must know>
 ```
+
+## Codebase-specific instructions
+
+The layer's own instructions for this command (`#:focus` in `agentic.rkt`), if any. Where one says otherwise than a default above, it wins. They never change where the plan is written, the `REQUIRES HUMAN` rule or the Report section: the runtime reads those, so they are fixed.
+
+- Dependencies are declared in pyproject.toml and locked in uv.lock; uv.lock is regenerated with uv, never edited by hand, and is a protected path.
+- When files under docs change, the plan also lists the docs cmd as a validation step.
+- A code change adds an entry to CHANGES.rst under the topmost (unreleased) version, as a '-   ' bullet ending with an :issue:`<number>` or :pr:`<number>` reference.
 
 ## Validation Commands
 

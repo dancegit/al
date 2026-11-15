@@ -127,3 +127,32 @@ def test_generation_is_deterministic_and_a_second_gen_is_a_no_op(sibling) -> Non
     data = manifest(sibling)
     assert data["generator"] == "al 0.2" and "bin/al" not in data["files"]            # machine-specific: local manifest
     assert "bin/al" in json.loads((sibling / ".al-manifest.local.json").read_text())["files"]
+
+
+FORMAT_TEMPLATES = {"commit": "## Message Format", "pull-request": "## Body Format", "document": "## Document Format",
+                    "plan-chore": "## Plan Format", "plan-bug": "## Plan Format", "plan-feature": "## Plan Format",
+                    "plan-patch": "## Plan Format"}
+
+
+def test_templates_that_prescribe_a_format_say_codebase_instructions_take_precedence() -> None:
+    for name, heading in FORMAT_TEMPLATES.items():
+        text = (KIT / "templates" / "commands" / f"{name}.md").read_text()
+        precedence = text.index(heading) + len(heading)
+        assert text[precedence:].lstrip().startswith("Codebase-specific instructions below take precedence over the "
+                                                     "defaults in this section."), name
+        section = text.index("## Codebase-specific instructions")
+        assert precedence < section < text.index("{{focus}}") < text.index("## Report"), name
+        assert text.count("{{focus}}") == 1 and "fixed" in text[section:text.index("{{focus}}")], name
+
+
+def test_a_focus_line_is_rendered_where_it_takes_precedence_and_the_output_contract_stays_last(sibling) -> None:
+    rkt = sibling / "agentic.rkt"
+    rkt.write_text(rkt.read_text().replace("(command commit #:template commit)",
+                                           '(command commit #:template commit #:focus ("One summary line, no trailer lines."))'))
+    al("gen", sibling)
+    text = (sibling / "commands" / "commit.md").read_text()
+    assert (text.index("## Message Format") < text.index("Codebase-specific instructions below take precedence")
+            < text.index("## Codebase-specific instructions") < text.index("- One summary line, no trailer lines.")
+            < text.index("## Report") < text.index("Finish with a concise report"))
+    plan = (sibling / "commands" / "plan.md").read_text()                   # no focus: the section stays, empty
+    assert plan.index("## Codebase-specific instructions") < plan.index("## Report") < plan.index("ONLY the path")

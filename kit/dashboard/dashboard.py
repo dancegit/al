@@ -213,7 +213,9 @@ class Shortener:
         text = "" if text is None else str(text)
         for prefix, replacement in self.pairs:
             if prefix in text:
-                if replacement:
+                if replacement.endswith(":"):      # "layer:" + "specs/x.md", not "layer:/specs/x.md"
+                    text = text.replace(prefix + "/", replacement).replace(prefix, replacement)
+                elif replacement:
                     text = text.replace(prefix, replacement)
                 else:
                     text = text.replace(prefix + "/", "").replace(prefix, ".")
@@ -346,7 +348,8 @@ def strip_ansi(text: str) -> str:
 
 class Tail:
     """Reads a growing file incrementally: complete lines only, a partial last line is held back
-    until it is finished (or the file has been quiet for `settle` seconds). A file that shrinks or
+    until it is finished (or the file has been quiet for `settle` seconds; `open` is then true until
+    the rest of that line arrives, which comes as the next item). A file that shrinks or
     is replaced (new inode) restarts from the beginning and reports `reset`. Opens and closes the
     file on every read, so no handle is ever held between polls."""
 
@@ -357,6 +360,7 @@ class Tail:
         self.inode: int | None = None
         self.pending = b""
         self.settle = settle
+        self.open = False   # the last item returned was a partial line shown early: the next one continues it
 
     def read(self, max_bytes: int = 4 * 1024 * 1024) -> tuple[bool, list[tuple[int, int, str]]]:
         """→ (reset, [(line_no, start_offset, text)]). line_no starts at 1."""
@@ -368,7 +372,7 @@ class Tail:
         replaced = self.inode is not None and info.st_ino != self.inode
         if replaced or info.st_size < self.offset + len(self.pending):
             reset = replaced or self.offset > 0 or bool(self.pending)
-            self.offset, self.line_no, self.pending = 0, 0, b""
+            self.offset, self.line_no, self.pending, self.open = 0, 0, b"", False
         self.inode = info.st_ino
         start = self.offset + len(self.pending)
         data = b""
@@ -392,12 +396,15 @@ class Tail:
             cursor = newline + 1
         self.offset += cursor
         self.pending = buffer[cursor:]
+        if lines:
+            self.open = False
         if self.pending and (time.time() - info.st_mtime) >= self.settle and start + len(data) >= info.st_size:
             text = self.pending.decode("utf-8", errors="replace")
             self.line_no += 1
             lines.append((self.line_no, self.offset, text))
             self.offset += len(self.pending)
             self.pending = b""
+            self.open = True
         return reset, lines
 
 
@@ -846,21 +853,27 @@ def build_graph(adw: dict[str, Any], layer_ir: dict[str, Any] | None = None) -> 
             continue
         columns.append([_node(step, "flow")])
         index += 1
-    tallest = max((len(column) for column in columns), default=1)
-    has_loop = any(s.get("kind") == "check" and s.get("resolve") for s in steps)
     has_back = any(s.get("kind") == "review" and s.get("patch") and s.get("implement") for s in steps)
-    top_margin = 40 if has_loop else 16
-    content = tallest * node_h + (tallest - 1) * gap_y
-    height = top_margin + content + (58 if has_back else 16)
-    middle = top_margin + content / 2
+    looped = {s["name"] for s in steps if s.get("kind") == "check" and s.get("resolve")}
     nodes: list[dict[str, Any]] = []
-    for col, column in enumerate(columns):
-        span = len(column) * node_h + (len(column) - 1) * gap_y
-        top = middle - span / 2
-        for row, node in enumerate(column):
-            node.update(col=col, row=row, x=pad + col * (node_w + gap_x), y=round(top + row * (node_h + gap_y), 1),
-                        w=node_w, h=node_h)
-            nodes.append(node)
+    band, widest, col = 0.0, 1, 0
+    for band_columns in _graph_rows(columns):
+        # a long workflow wraps onto further rows, so that it fits a laptop window without scrolling
+        tallest = max(len(column) for column in band_columns)
+        top_margin = 40 if any(node["id"] in looped for column in band_columns for node in column) else 16
+        content = tallest * node_h + (tallest - 1) * gap_y
+        middle = band + top_margin + content / 2
+        for x_index, column in enumerate(band_columns):
+            span = len(column) * node_h + (len(column) - 1) * gap_y
+            top = middle - span / 2
+            for row, node in enumerate(column):
+                node.update(col=col, row=row, x=pad + x_index * (node_w + gap_x),
+                            y=round(top + row * (node_h + gap_y), 1), w=node_w, h=node_h, band=band)
+                nodes.append(node)
+            col += 1
+        widest = max(widest, len(band_columns))
+        band += top_margin + content + GRAPH_ROW_GAP
+    height = max(band - GRAPH_ROW_GAP, 16 + node_h) + (58 if has_back else 16)
     edges: list[dict[str, Any]] = []
     for col in range(len(columns) - 1):
         for source in columns[col]:
@@ -885,10 +898,33 @@ def build_graph(adw: dict[str, Any], layer_ir: dict[str, Any] | None = None) -> 
             edges.append({"from": step["name"], "to": target, "kind": "patch",
                           "label": f"blocker → {step['patch']} → {step['implement']} → re-check"
                                    + (f" (≤{retries})" if retries else "")})
-    width = pad * 2 + max(1, len(columns)) * (node_w + gap_x) - gap_x
+    width = pad * 2 + widest * (node_w + gap_x) - gap_x
     return {"nodes": nodes, "edges": edges, "width": width, "height": height,
             "review": {"kind": review_option.get("kind", ""), "reviewers": review_option.get("reviewers", 0),
                        "ship": review_option.get("ship", ""), "maxRetries": review_option.get("maxRetries", 0)}}
+
+
+GRAPH_MAX_COLUMNS = 7   # 7 columns are 1248 graph units: a 1280-pixel window shows them without scrolling
+GRAPH_ROW_GAP = 30
+
+
+def _graph_rows(columns: list[list[dict[str, Any]]]) -> list[list[list[dict[str, Any]]]]:
+    """Columns split into rows of at most GRAPH_MAX_COLUMNS, balanced (12 columns: 6 + 6). A row
+    does not end on a column of alternatives (branches) when it can avoid it: the edge into the
+    next row then leaves from one node."""
+    if len(columns) <= GRAPH_MAX_COLUMNS:
+        return [columns] if columns else []
+    count = -(-len(columns) // GRAPH_MAX_COLUMNS)
+    per_row = -(-len(columns) // count)
+    rows: list[list[list[dict[str, Any]]]] = []
+    rest = list(columns)
+    while rest:
+        take = min(per_row, len(rest))
+        if take < len(rest) and take > 1 and len(rest[take - 1]) > 1:
+            take -= 1
+        rows.append(rest[:take])
+        rest = rest[take:]
+    return rows
 
 
 def _node(step: dict[str, Any], role: str) -> dict[str, Any]:
@@ -929,6 +965,21 @@ class Layer:
             return None
         return {name: (float(option[key]) if isinstance(option.get(key), (int, float)) else None)
                 for name, key in (("run", "runUsd"), ("step", "stepUsd"), ("day", "dayUsd"))}
+
+    def shortener(self, state: Any = None) -> Shortener:
+        """Absolute paths a run recorded, made relative for reading: the run's worktree is the
+        repository; the layer is `layer:` beside the repository, or its directory in the repository
+        when it is checked in with it (`agentic/specs/…`)."""
+        short = Shortener()
+        if isinstance(state, dict) and state.get("worktree"):
+            short.add(str(state["worktree"]), "")
+        placement = self.ir.get("layer") if isinstance(self.ir.get("layer"), dict) else {}
+        root = str((self.ir.get("codebase") or {}).get("root") or "")
+        if placement.get("kind") == "in-repo" and root:
+            short.add(str((self.path / root).resolve()), "")
+        else:
+            short.add(str(self.path), "layer:")
+        return short
 
     def explain_file(self) -> str | None:
         for name in EXPLAIN_FILES:
@@ -1242,11 +1293,7 @@ class RunModel:
         self.files = RunFiles(layer, run_id)
 
     def _short(self, state: dict[str, Any] | None) -> Shortener:
-        short = Shortener()
-        if state and state.get("worktree"):
-            short.add(str(state["worktree"]), "")
-        short.add(str(self.layer.path), "layer:")
-        return short
+        return self.layer.shortener(state)
 
     def collect(self) -> dict[str, Any]:
         state, problem = load_state(self.files)
@@ -2521,10 +2568,7 @@ class Handler(BaseHTTPRequestHandler):
         if directory is None:
             return self._error(404, "no such step")
         state = read_json(run.dir / "state.json") or {}
-        short = Shortener()
-        if isinstance(state, dict) and state.get("worktree"):
-            short.add(str(state["worktree"]), "")
-        short.add(str(layer.path), "layer:")
+        short = layer.shortener(state)
         raw = directory / "raw.jsonl"
         self._json({"dir": directory.name, "prompt": short(read_text(directory / "prompt.md")),
                     "output": short(read_text(directory / "output.txt")),
@@ -2671,10 +2715,7 @@ class Handler(BaseHTTPRequestHandler):
         layer, run = resolved
         what = self._q(query, "what")
         state = read_json(run.dir / "state.json") or {}
-        short = Shortener()
-        if isinstance(state, dict) and state.get("worktree"):
-            short.add(str(state["worktree"]), "")
-        short.add(str(layer.path), "layer:")
+        short = layer.shortener(state)
         if what == "transcript":
             directory = self._agent_dir(run, self._q(query, "dir"))
             if directory is None:
@@ -2727,7 +2768,8 @@ class Handler(BaseHTTPRequestHandler):
                         if rows and not self._write(sse_frame("rows", json_bytes(rows), chunk_id)):
                             return
                 else:
-                    text = "\n".join(short(line[2]) for line in lines) + "\n"
+                    # a partial line shown early ends without a newline, so its rest continues the same line
+                    text = "\n".join(short(line[2]) for line in lines) + ("" if tail.open else "\n")
                     segments, ansi = ansi_segments(text, ansi)
                     first = lines[0][0]
                     if not self._write(sse_frame("text", json_bytes({"from": first, "segments": segments,

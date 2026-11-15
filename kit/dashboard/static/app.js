@@ -326,6 +326,11 @@
         const depth = Math.max(y1, y2) + 34;
         d = `M${x1},${y1} C${x1},${depth} ${x2},${depth} ${x2},${y2}`;
         lx = (x1 + x2) / 2; ly = depth + 6;
+      } else if (b.x < a.x && b.y > a.y + a.h) {
+        // the workflow wrapped onto the next row: down from this node, back left in the gap between the rows, into the next
+        const x1 = a.x + a.w / 2, y1 = a.y + a.h, x2 = b.x, y2 = b.y + b.h / 2, gap = (b.band ?? b.y) - 15, xl = Math.max(4, x2 - 14);
+        d = `M${x1},${y1} V${gap} H${xl} V${y2 - 8} Q${xl},${y2} ${xl + 8},${y2} H${x2}`;
+        lx = xl; ly = gap - 4;
       } else {
         const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2, dx = (x2 - x1) / 2;
         d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
@@ -736,6 +741,17 @@
       if (this.follow) { this.autoScrolling = true; this.pre.scrollTop = this.pre.scrollHeight; requestAnimationFrame(() => { this.autoScrolling = false; }); }
     }
 
+    /** True when this view streams the log `opts` asks for. */
+    shows(opts) { return ["layer", "run", "what", "file"].every((key) => (this.opts[key] || "") === (opts[key] || "")); }
+
+    /** Move the streaming log, with its text and position, into a freshly drawn panel. */
+    mount(container) {
+      const top = this.pre.scrollTop;
+      container.appendChild(this.pre);
+      this.pre.scrollTop = this.follow ? this.pre.scrollHeight : top;
+      return this;
+    }
+
     toggleFollow() { this.follow = !this.follow; if (this.follow) this.pre.scrollTop = this.pre.scrollHeight; }
     destroy() { this.source.close(); }
   }
@@ -1126,7 +1142,7 @@
         h("div", { class: "table-wrap" }, h("table", {},
           h("thead", {}, h("tr", {}, ["step", "agent", "model", "turns", "in", "out", "cache", "time", "cost", "share"].map((label, i) => h("th", { class: i >= 3 && i <= 8 ? "right" : "", text: label })))),
           h("tbody", {}, rows.length ? rows : h("tr", {}, h("td", { colspan: 10, class: "dim", text: "no agent steps yet" }))),
-          h("tfoot", {}, h("tr", { class: "totals" }, h("td", { text: "total" }), h("td", { text: `${agents.length} agents` }), h("td"),
+          h("tfoot", {}, h("tr", { class: "sum-row" }, h("td", { text: "total" }), h("td", { text: `${agents.length} agents` }), h("td"),
             h("td", { class: "right num", text: agents.reduce((s2, a) => s2 + (a.turns || 0), 0) }), h("td", { class: "right num", text: fmt.tokens(sumKey("in")) }),
             h("td", { class: "right num", text: fmt.tokens(sumKey("out")) }), h("td", { class: "right num", text: `${fmt.tokens(sumKey("cache_read"))} / ${fmt.tokens(sumKey("cache_write"))}` }),
             h("td"), h("td", { class: "right num", text: fmt.cost(total) }), h("td"))))));
@@ -1245,7 +1261,14 @@
     }
 
     function openStep() {
-      if (sub) { sub.destroy(); sub = null; }
+      // A log that is already streaming is kept when the panel is drawn again for the same file
+      // (a running check that settles): emptying it and fetching it afresh would blank it meanwhile.
+      const previous = sub;
+      sub = null;
+      try { renderStep(previous); } finally { if (previous && previous !== sub) previous.destroy(); }
+    }
+
+    function renderStep(previous) {
       for (const child of [...body.children]) if (child !== graphCard) child.remove();
       const step = state.step;
       const { node, type, sources } = sourcesFor(step);
@@ -1323,7 +1346,10 @@
           resolveAfter ? h("a", { href: link(["step", step], { agent: resolveAfter.dir }), class: "toggle", text: `→ resolved by ${resolveAfter.dir}` }) : null,
           h("span", { class: "spacer" }),
           !source.pending ? h("a", { class: "toggle", href: `/files/${enc(layerKey)}/agents/${enc(runId)}/checks/${enc(at.file)}?download=1`, text: "download log" }) : null));
-        if (!source.pending) sub = new LogView(content, { layer: layerKey, run: runId, what: "check", file: at.file, running: !!at.running, label: source.label });
+        if (!source.pending) {
+          const opts = { layer: layerKey, run: runId, what: "check", file: at.file, running: !!at.running, label: source.label };
+          sub = previous instanceof LogView && previous.shows(opts) ? previous.mount(content) : new LogView(content, opts);
+        }
       }
     }
 

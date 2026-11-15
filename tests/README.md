@@ -156,8 +156,11 @@ runs the selected cmds there in declaration order inside the environment stack o
 that has a `check` step (through the layer's own `adws/adw_modules`, so nix / podman behave exactly
 as in a run), and removes the worktree. Cmds share that worktree, as the checks of one run do.
 Per cmd it prints name, exit code and seconds (plus the last 15 output lines on failure), writes
-`<layer>/agents/verify/<name>.log`, and records `[{name, cmd, exit, seconds, log}]` in
-`<layer>/agents/verify/report.json`. Exit status is 0 only when every verified cmd exited 0.
-`deploy`, `start` and `install` are skipped unless named with `--cmd`. The application's
-`git status --porcelain`, `HEAD` and current branch are compared before and after; a difference is
-an error.
+`<layer>/agents/verify/<name>.log`, and records `[{name, cmd, exit, seconds, log, at}]` in
+`<layer>/agents/verify/report.json`. The report keeps the latest result of every cmd: a cmd verified
+now replaces its earlier row, the others keep theirs (`at` says when each ran; `--json` prints only
+this invocation's rows). Exit status is 0 only when every verified cmd exited 0.
+`deploy`, `start` and `install` are skipped unless named with `--cmd`. The application's `HEAD`,
+current branch and index are compared before and after; a difference is an error. Files edited in
+the checkout meanwhile are reported as a note, not an error: verify runs every cmd in its own
+worktree, so it cannot tell them from the developer's own work in progress.

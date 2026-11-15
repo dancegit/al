@@ -37,11 +37,24 @@ def _ref_exists(repo: Path, ref: str, sandbox: gitsafe.Sandbox | None = None) ->
     return result.returncode == 0
 
 
+TITLE_MAX = 72
+_SENTENCE_END = re.compile(r"[.!?](?=\s)")
+
+
 def _title(state: Any, layer: Any = None) -> str:
+    """`<class>: <first sentence of the first line of the request>`, at most TITLE_MAX characters
+    (cut at a word boundary, with an ellipsis). The whole request is in the body."""
+    prefix = "agentic layer: " if layer is not None and _changes_layer(layer, state) else f"{state.klass}: "
     first = next((line.strip() for line in state.prompt.splitlines() if line.strip()), "adw changes")
-    if layer is not None and _changes_layer(layer, state):
-        return f"agentic layer: {first}"
-    return f"{state.klass}: {first}"
+    end = _SENTENCE_END.search(first)
+    first = first[:end.start()] if end else first.rstrip(".")
+    room = TITLE_MAX - len(prefix)
+    if len(first) > room:
+        cut = first[:room - 1]
+        if first[room - 1] != " " and " " in cut[room // 2:]:  # a word boundary, unless the last word is huge
+            cut = cut[:cut.rfind(" ")]
+        first = cut.rstrip() + "…"
+    return prefix + first
 
 
 def _changes_layer(layer: Any, state: Any) -> bool:
@@ -80,30 +93,77 @@ def _merge(worktree: Path, ref: str, sandbox: gitsafe.Sandbox | None = None) -> 
         raise
 
 
-def _sections(state: Any) -> dict[str, str]:
-    """The standard sections of a run's pull request description, by name."""
+def _artefact_ref(layer: Any, item: dict[str, Any]) -> str:
+    """A stored artefact's URL; for local storage (file://) its path as a person reads it."""
+    url = str(item.get("url") or "")
+    if (not url or url.startswith("file:")) and item.get("path"):
+        return f"`{layer.display_path(str(item['path']))}`"
+    return url
+
+
+def run_documents(layer: Any, state: Any) -> list[Path]:
+    """The documents this run's `document` step wrote: run state in the layer's ignored docs/,
+    named `<class>-<adw id>-<name>.md` (kit template `document`)."""
+    directory = Path(layer.layer_dir) / "docs"
+    return sorted(directory.glob(f"*-{state.adw_id}-*.md")) if directory.is_dir() else []
+
+
+MAX_DOCUMENT_CHARS = 12000
+
+
+def _without_machine_paths(layer: Any, state: Any, text: str) -> str:
+    """Text an agent wrote, with the run's worktree, the layer and the application named as a
+    person reads them (an agent sees only absolute paths, and may copy one)."""
+    layer_shown = layer.display_path(layer.layer_dir)  # `agentic` in the repository; `.` beside it
+    prefixes = {str(Path(layer.app_root).resolve()): "",          # repository paths
+                str(Path(layer.layer_dir).resolve()): "" if layer_shown == "." else layer_shown + "/"}
+    if getattr(state, "worktree", ""):
+        prefixes[str(Path(state.worktree).resolve())] = ""         # the run's copy of the repository
+    for root in sorted(prefixes, key=len, reverse=True):          # the most specific first
+        text = text.replace(root + "/", prefixes[root])
+    return text
+
+
+def _documents_section(layer: Any, state: Any) -> str:
+    parts = []
+    for path in run_documents(layer, state):
+        text = _without_machine_paths(layer, state, path.read_text(encoding="utf-8", errors="replace").strip())
+        if len(text) > MAX_DOCUMENT_CHARS:
+            text = text[:MAX_DOCUMENT_CHARS].rstrip() + "\n\n…"
+        parts.append(f"`{layer.display_path(path)}` (written by the run; run state, not committed):\n\n"
+                     f"<details>\n<summary>{path.name}</summary>\n\n{text}\n\n</details>")
+    return "## Documentation\n\n" + "\n\n".join(parts) if parts else ""
+
+
+def _sections(state: Any, layer: Any) -> dict[str, str]:
+    """The standard sections of a run's pull request description, by name. Paths are shown as a
+    person reads them (`layer.display_path`): this text is published, the machine's paths are not."""
     verdict = state.review.get("verdict", {})
-    checks = "\n".join(f"- `{name}`: exit {data.get('exit')} — log `{data.get('log', '')}`"
+    checks = "\n".join(f"- `{name}`: exit {data.get('exit')} — log `{layer.display_path(str(data.get('log', '')))}`"
                        for name, data in state.checks.items()) or "- none"
     issues = "\n".join(f"- **{issue['severity']}** {issue['description']} → {issue['resolution']}"
                        for issue in verdict.get("issues", [])) or "- none"
-    links = "\n".join(f"- {item.get('id')} ({item.get('type')}): {item.get('url')}" for item in state.artefacts) or "- none"
+    links = "\n".join(f"- {item.get('id')} ({item.get('type')}): {_artefact_ref(layer, item)}"
+                      for item in state.artefacts) or "- none"
     reasons = "\n".join(f"- {reason}" for reason in state.ship.get("gate", {}).get("reasons", [])) or "- none"
+    plan = f"`{layer.display_path(state.plan)}`" if state.plan else "none"
     return {
         "summary": f"## Summary\n\n{state.prompt.strip()}\n\nADW `{state.adw}` run `{state.adw_id}`, class `{state.klass}`, branch `{state.branch}`.",
-        "plan": f"## Plan\n\n`{state.plan or 'none'}`",
+        "plan": f"## Plan\n\n{plan}",
         "checks": f"## Checks\n\n{checks}",
         "review": f"## Review verdict\n\n{'PASS' if verdict.get('success') else 'FAIL'} ({verdict.get('mode', 'n/a')}): {verdict.get('summary', '')}\n\n{issues}",
         "why": f"## Why a human is needed\n\n{reasons}",
         "artefacts": f"## Artefacts\n\n{links}",
+        "documents": _documents_section(layer, state),
     }
 
 
-def pr_body(state: Any, message: str, lead: str = "") -> str:
+def pr_body(layer: Any, state: Any, message: str, lead: str = "") -> str:
     """The PR description. `lead` (the output of the review option's #:body-cmd) opens it; the
     standard sections follow as the run's record."""
-    sections = _sections(state)
-    parts = [sections[name] for name in ("summary", "plan", "checks", "review", "why", "artefacts")]
+    sections = _sections(state, layer)
+    parts = [sections[name] for name in ("summary", "plan", "checks", "review", "why", "documents", "artefacts")
+             if sections[name]]
     if message:
         parts.append(f"## Notes\n\n{message}")
     if lead.strip():
@@ -411,7 +471,7 @@ def ship(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_
     reasons = list(decision["reasons"])
     message = str(step.get("message") or "")
     lead = body_lead(layer, state, env_stack, sandbox, shipping)
-    body = pr_body(state, message, lead)
+    body = pr_body(layer, state, message, lead)
     pr: dict[str, Any] | None = None
     shipped, target = False, ""
     if action == "pr":
@@ -435,7 +495,7 @@ def ship(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_
             print(f"[adw {state.adw_id}] ship: {action} failed ({reason}); falling back to a human PR")
             note = (f"The gate decided `{action}`, but shipping failed: {reason}\n\n"
                     f"Nothing was merged or deployed. The run's commits are on `{state.branch}`.")
-            pr, target = _fallback(layer, state, client, worktree, sandbox, pr_body(state, "\n\n".join(
+            pr, target = _fallback(layer, state, client, worktree, sandbox, pr_body(layer, state, "\n\n".join(
                 part for part in (message, note) if part), lead), pr, note, exc)
             state.ship["fallback"] = {"decided": action, "error": str(exc)[:2000]}
             if action == "deploy":
@@ -574,14 +634,6 @@ def human_requests(text: str) -> list[str]:
     return found
 
 
-def _layer_relative(layer: Any, path: Path) -> str:
-    path = path if path.is_absolute() else Path(layer.layer_dir) / path
-    try:
-        return path.resolve().relative_to(Path(layer.layer_dir).resolve()).as_posix()
-    except ValueError:
-        return str(path)
-
-
 def _request_sources(layer: Any, state: Any) -> list[tuple[str, str]]:
     """(label, text) to search for REQUIRES HUMAN: the run's plan file, then every agent output."""
     sources: list[tuple[str, str]] = []
@@ -589,7 +641,7 @@ def _request_sources(layer: Any, state: Any) -> list[tuple[str, str]]:
         plan = Path(state.plan)
         plan = plan if plan.is_absolute() else Path(layer.layer_dir) / plan
         if plan.is_file():
-            sources.append((f"the plan (`{_layer_relative(layer, plan)}`)",
+            sources.append((f"the plan (`{layer.display_path(plan)}`)",
                             plan.read_text(encoding="utf-8", errors="replace")))
     for name, output in (state.outputs or {}).items():
         if isinstance(output, str) and output.strip() != str(state.plan).strip():
@@ -623,7 +675,7 @@ def handoff_body(layer: Any, state: Any, step: str, kind: str, reason: str) -> s
     log = str(state.checks.get(step, {}).get("log") or "") if kind == "check" else ""
     if log and (Path(layer.layer_dir) / log).is_file():
         tail = (Path(layer.layer_dir) / log).read_text(encoding="utf-8", errors="replace").splitlines()[-LOG_TAIL_LINES:]
-        stopped.append(f"Last {len(tail)} lines of `{log}`:\n\n" + _fenced("\n".join(tail)))
+        stopped.append(f"Last {len(tail)} lines of `{layer.display_path(log)}`:\n\n" + _fenced("\n".join(tail)))
     asks: list[str] = []
     seen: set[str] = set()
     total = 0
@@ -643,15 +695,13 @@ def handoff_body(layer: Any, state: Any, step: str, kind: str, reason: str) -> s
         asks.append(f"({total - MAX_REQUESTS} more `{MARKER}` item(s) are in the run's records.)")
     if not asks:
         asks = [f"No `{MARKER}` line in the plan or in the agents' reports. Start from why the run stopped, above."]
-    sections = _sections(state)
-    if state.plan:  # relative to the layer: a local absolute path means nothing to a reader on the forge
-        sections["plan"] = f"## Plan\n\n`{_layer_relative(layer, Path(state.plan))}`"
+    sections = _sections(state, layer)
     parts = ["## Why this stopped\n\n" + "\n\n".join(stopped),
              "## What the agent asks a human to do\n\n" + "\n\n".join(asks),
              sections["summary"], sections["plan"], sections["checks"]]
     if state.review.get("verdict"):
         parts.append(sections["review"])
-    parts.append(sections["artefacts"])
+    parts += [sections[name] for name in ("documents", "artefacts") if sections[name]]
     return "\n\n".join(parts) + "\n"
 
 

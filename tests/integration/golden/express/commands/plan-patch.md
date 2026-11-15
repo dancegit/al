@@ -25,8 +25,7 @@ PATCH_FILE: ${specs_dir}/patch-${adw_id}-<descriptive-name>.md
 - If CHANGE_REQUEST contradicts ORIGINAL_PLAN, follow CHANGE_REQUEST and record the contradiction in Issue Summary.
 - If the fix affects behaviour covered by a test, plan the test change; if nothing covers it, plan the smallest test that would have caught the issue.
 - Never plan a change under a protected path; if unavoidable, write a line starting `REQUIRES HUMAN` in Solution naming the path and the reason, and plan nothing under it.
-- Write PATCH_FILE in exactly the Plan Format. `<descriptive-name>` is 3-6 lowercase hyphenated words.
-
+- Write PATCH_FILE in the Plan Format (unless a codebase-specific instruction below says otherwise). `<descriptive-name>` is 3-6 lowercase hyphenated words.
 
 ## Relevant Files
 
@@ -44,6 +43,8 @@ Protected paths (do not plan changes here):
 
 
 ## Plan Format
+
+Codebase-specific instructions below take precedence over the defaults in this section.
 
 ```md
 # Patch: <patch name>
@@ -68,6 +69,12 @@ Execute every command from the worktree root; all must exit 0.
 - `npm run test-ci` — the whole mocha suite (test/ and test/acceptance/) passes with global-leak checking, under nyc, writing coverage/lcov.info and a text coverage table to stdout
 <the one command or check that shows this specific issue is gone>
 ```
+
+## Codebase-specific instructions
+
+The layer's own instructions for this command (`#:focus` in `agentic.rkt`), if any. Where one says otherwise than a default above, it wins. They never change where the plan is written, the `REQUIRES HUMAN` rule or the Report section: the runtime reads those, so they are fixed.
+
+
 
 ## Validation Commands
 

@@ -264,7 +264,7 @@ def test_transcript_normalises_every_claude_event_type(fx):
         assert kind in kinds, kind
     tools = {r["tool"]: r for r in rows if r["k"] == "tool"}
     assert set(tools) == {"Read", "Grep", "Glob", "Edit", "Write", "Bash", "TodoWrite"}
-    assert tools["Read"]["title"] == "read layer:/specs/chore-a1000001.md"
+    assert tools["Read"]["title"] == "read layer:specs/chore-a1000001.md"
     assert tools["Grep"]["title"] == "search /def total/ in shop"
     assert tools["Glob"]["title"] == "find files tests/test_*.py"
     edit = next(r for r in rows if r["k"] == "tool" and r["tool"] == "Edit")

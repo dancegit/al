@@ -24,10 +24,9 @@ ORIGINAL_PROMPT: ${prompt}
 - REVIEW_VERDICT is the review's JSON (inline or a path), possibly empty. Report it faithfully: verdict, each blocker and each tech-debt issue. Never soften or omit an issue. Empty means "not reviewed".
 - ARTEFACT_MANIFEST is a JSON list of artefacts, possibly empty. List each by path with what it proves. Do not describe an artefact you have not opened.
 - Validation results come from the logs in the manifest. Do not claim a command passed without a log that shows it. No log means "not run".
-- Title: `<class>: <summary>`, at most 72 characters, imperative mood, where `<class>` is WORK_CLASS.
+- Title and body follow the Body Format below.
 - Write for a reviewer with five minutes: what, why, how to verify. No filler, no praise, no restating the diff line by line.
 - If the diff touches a protected path, put a line starting `REQUIRES HUMAN` at the top of Summary naming the path.
-- The description links its issue with 'fixes #<issue number>'.
 
 ## Relevant Files
 
@@ -44,12 +43,17 @@ Protected paths:
 
 ## Body Format
 
+Codebase-specific instructions below take precedence over the defaults in this section.
+
+- Title: `<class>: <summary>`, at most 72 characters, imperative mood, where `<class>` is WORK_CLASS.
+- Body:
+
 ```md
 ## Summary
 <2-4 sentences: what this changes and why>
 
 ## Plan
-<plan path, then one line on what it asked for; "No plan" when empty>
+<the plan's file name (never an absolute path: this text is published), then one line on what it asked for; "No plan" when empty>
 
 ## Changes
 <bullets grouped by area: behaviour first, then notable implementation points and deviations from the plan>
@@ -61,10 +65,16 @@ Protected paths:
 <pass or fail or not reviewed; then each issue as: severity, description, resolution>
 
 ## Artefacts
-<bullet per artefact: path, then what it proves; "None" when empty>
+<bullet per artefact: its path relative to the artefacts directory, then what it proves; "None" when empty>
 
 ADW: <adw id>
 ```
+
+## Codebase-specific instructions
+
+The layer's own instructions for this command (`#:focus` in `agentic.rkt`), if any. Where one says otherwise than a default above, it wins. They never change the read-only rule, the `REQUIRES HUMAN` line or the Report section: the runtime reads those, so they are fixed.
+
+- The description links its issue with 'fixes #<issue number>'.
 
 ## Validation Commands
 

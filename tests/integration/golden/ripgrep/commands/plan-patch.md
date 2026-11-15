@@ -25,8 +25,7 @@ PATCH_FILE: ${specs_dir}/patch-${adw_id}-<descriptive-name>.md
 - If CHANGE_REQUEST contradicts ORIGINAL_PLAN, follow CHANGE_REQUEST and record the contradiction in Issue Summary.
 - If the fix affects behaviour covered by a test, plan the test change; if nothing covers it, plan the smallest test that would have caught the issue.
 - Never plan a change under a protected path; if unavoidable, write a line starting `REQUIRES HUMAN` in Solution naming the path and the reason, and plan nothing under it.
-- Write PATCH_FILE in exactly the Plan Format. `<descriptive-name>` is 3-6 lowercase hyphenated words.
-- Do not change Cargo.lock or any crate version number; those change only as part of a release (RELEASE-CHECKLIST.md).
+- Write PATCH_FILE in the Plan Format (unless a codebase-specific instruction below says otherwise). `<descriptive-name>` is 3-6 lowercase hyphenated words.
 
 ## Relevant Files
 
@@ -66,6 +65,8 @@ Protected paths (do not plan changes here):
 
 ## Plan Format
 
+Codebase-specific instructions below take precedence over the defaults in this section.
+
 ```md
 # Patch: <patch name>
 
@@ -89,6 +90,12 @@ Execute every command from the worktree root; all must exit 0.
 - `cargo test --verbose --workspace --features pcre2` — unit tests, doc tests and the integration target pass for every workspace crate, each integration test once on the default regex engine and once on PCRE2; builds target/debug/rg
 <the one command or check that shows this specific issue is gone>
 ```
+
+## Codebase-specific instructions
+
+The layer's own instructions for this command (`#:focus` in `agentic.rkt`), if any. Where one says otherwise than a default above, it wins. They never change where the plan is written, the `REQUIRES HUMAN` rule or the Report section: the runtime reads those, so they are fixed.
+
+- Do not change Cargo.lock or any crate version number; those change only as part of a release (RELEASE-CHECKLIST.md).
 
 ## Validation Commands
 

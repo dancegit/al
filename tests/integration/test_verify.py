@@ -20,7 +20,7 @@ REAL = {
 
 def _report(lay) -> dict[str, dict]:
     rows = json.loads((lay.dir / "agents" / "verify" / "report.json").read_text())
-    assert all(set(row) == {"name", "cmd", "exit", "seconds", "log"} for row in rows), rows
+    assert all(set(row) == {"name", "cmd", "exit", "seconds", "log", "at"} for row in rows), rows
     return {row["name"]: row for row in rows}
 
 
@@ -59,7 +59,9 @@ def test_verify_reports_true_and_false(layer):
     only = lay.al("verify", "--cmd", "ok", "--cmd", "install", "--json", check=False)
     assert only.returncode == 1, alit.describe(only)
     rows = json.loads(only.stdout)
-    assert [(r["name"], r["exit"]) for r in rows] == [("ok", 0), ("install", 7)] and rows == list(_report(lay).values())
+    assert [(r["name"], r["exit"]) for r in rows] == [("ok", 0), ("install", 7)]
+    report = _report(lay)                     # the latest result of every cmd: the earlier rows stay
+    assert [report[n] for n in ("ok", "install")] == rows and report["bad"]["exit"] == 1 and "where" in report
 
     good = lay.al("verify", "--cmd", "ok", check=False)
     assert good.returncode == 0, alit.describe(good)

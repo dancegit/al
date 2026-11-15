@@ -21,12 +21,22 @@ PLAN_FILE: ${plan}
 - Stage by path. Stage the files that belong to this change; do not use a blanket add.
 - Never stage: test outputs and artefacts (reports, screenshots, recordings, coverage), build output, caches, editor files, environment files, or anything that looks like a secret. If such a file is untracked and not ignored, leave it and name it in the report.
 - If the diff touches a protected path, do not stage that path; commit the rest and report the path on a line starting `REQUIRES HUMAN`.
-- Message subject, at most 72 characters, imperative mood, no trailing period:
-  `<class>: <summary>` where `<class>` is WORK_CLASS.
-- Body, only when the subject cannot carry it: blank line, then up to 5 bullets on what changed and why. Last line: `ADW: <adw id>`.
+- Write the message in the Message Format below.
 - One commit. Do not amend, rebase, squash or rewrite existing commits. Do not skip hooks.
 - If a commit hook fails, read its output. Fix what it reports when the fix is mechanical (formatting, lint autofix), re-stage, and commit again. Otherwise stop and report the hook output.
 - If there is nothing to commit, change nothing and say so.
+
+## Message Format
+
+Codebase-specific instructions below take precedence over the defaults in this section.
+
+- Subject, at most 72 characters, imperative mood, no trailing period: `<class>: <summary>` where `<class>` is WORK_CLASS.
+- Body, only when the subject cannot carry it: blank line, then up to 5 bullets on what changed and why. Last line: `ADW: <adw id>`.
+
+## Codebase-specific instructions
+
+The layer's own instructions for this command (`#:focus` in `agentic.rkt`), if any. Where one says otherwise than a default above, it wins. They never change the staging rules, the protected-path rule (`REQUIRES HUMAN`) or the Report section: those keep the change safe and are what the runtime reads, so they are fixed.
+
 - Do not commit a change to Cargo.lock or to a crate version number; those change only as part of a release (RELEASE-CHECKLIST.md).
 
 ## Relevant Files
