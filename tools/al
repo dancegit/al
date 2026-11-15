@@ -215,6 +215,7 @@ def scout(app: Path) -> dict:
                 summary = re.sub(r"\s+", " ", text)[:400]
                 break
     license_file = next((p for p in ("LICENSE", "LICENSE.txt", "LICENSE.md", "COPYING", "LICENSE-MIT") if has(p)), "")
+    existing = adopt_module().detect(app, git(app, "ls-files").splitlines())
     nix = list(dict.fromkeys(pkg for l in langs for pkg in NIX_BY_LANG.get(l, [])))
     if has("bun.lock") or has("bun.lockb"):
         nix.append("bun")
@@ -226,7 +227,21 @@ def scout(app: Path) -> dict:
         "docs": doc_dirs, "readme": readme, "commands": cmds, "evidence": evidence, "notes": notes,
         "protected": protected, "nix": nix + ["git"], "package_manager": pm,
         "contributing": next((p for p in ("CONTRIBUTING.md", "CONTRIBUTING.rst", "docs/contributing.rst", "HACKING.md") if has(p)), ""),
+        "existing_agent_setup": existing,
     }
+
+
+def adopt_module():
+    """tools/al_adopt.py: detection of an existing agent setup and `al adopt`."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_adopt
+    return al_adopt
+
+
+def kit_template_names() -> list[str]:
+    """Command and HOP template names of the kit (an adopted prompt must not take one)."""
+    return sorted({p.stem for kind in ("commands", "hops") for p in (KIT / "templates" / kind).glob("*.md")})
 
 
 def render_llm_txt(s: dict) -> str:
@@ -299,6 +314,10 @@ def render_llm_txt(s: dict) -> str:
 
 - UNVERIFIED
 
+## Existing agent setup
+
+{adopt_module().render_section(s.get('existing_agent_setup') or [])}
+
 ## Evidence
 
 {bullets(s['evidence'])}
@@ -338,7 +357,10 @@ TEMPLATES_README = """# Layer-local templates
 
 A template here replaces the kit template of the same name for every command, hop or expert of this
 layer that uses it: `commands/<template>.md`, `hops/<template>.md`, `experts/<file>`. It uses the same
-`{{placeholders}}` as the kit's; an unknown placeholder is an error at `al gen`.
+`{{placeholders}}` as the kit's; an unknown placeholder is an error at `al gen`. `{{open_braces}}`
+writes a literal `{{`, so `{{open_braces}}name}}` ends up as `{{name}}` in the prompt.
+`custom/` holds the hand-written templates of `#:template custom` commands, among them the prompts
+`al adopt` copied from the codebase (each names its origin in its first comment).
 
 Make one with `al eject <layer> command|hop|expert NAME` rather than by hand, and see which templates
 are yours, and whether the kit's version has changed since, with `al eject <layer> --list`.
@@ -603,7 +625,7 @@ class Generator:
             "validation_commands": bullets([self.cmd_line(n) for n in self.cmds if n in ("lint", "typecheck", "test", "build")]),
             "focus": "", "fabric": "", "output_contract": OUTPUT_CONTRACT["text"],
             "layer_change_rule": self.layer_change_rule(),
-            "command_name": "", "description": "",
+            "command_name": "", "description": "", "open_braces": "{{",
             "expert_name": "", "expert_domain": "", "expert_paths": "", "expert_max_lines": "", "expertise_path": "",
         }
 
@@ -1307,7 +1329,10 @@ def check_layer(layer: Path) -> list[str]:
     for rel in need:
         if not (layer / rel).is_file():
             problems.append(f"missing {rel}")
+    custom = {f"{c['name']}.md" for c in ir["commands"] if c["template"] == "custom"}  # may keep {{…}} literally
     for f in list((layer / "commands").glob("*.md")) + list((layer / "hops").glob("*.md")):
+        if f.parent.name == "commands" and f.name in custom:
+            continue
         left = re.findall(r"\{\{[a-z_]+\}\}", f.read_text())
         if left:
             problems.append(f"{f.relative_to(layer)}: unfilled placeholders {sorted(set(left))}")
@@ -1325,7 +1350,13 @@ def check_layer(layer: Path) -> list[str]:
         cp = run([sys.executable, "-m", "py_compile", str(f)], check=False)
         if cp.returncode != 0:
             problems.append(f"{f.relative_to(layer)}: does not compile: {cp.stderr.strip().splitlines()[-1]}")
+    for c in ir["commands"]:
+        if c["template"] == "custom" and not (layer / c["file"]).is_file():
+            problems.append(f"command `{c['name']}`: its template {c['file']} is missing")
     app = app_root_of(layer, ir)
+    if app.exists():
+        adopted_problems, _notes = adopt_module().check(layer, app)
+        problems += adopted_problems
     if not app.exists():
         problems.append(f"application checkout {app} not found")
     elif (ir.get("layer") or {}).get("kind") == "in-repo":
@@ -1786,6 +1817,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--token", help="access token (needed for a non-loopback --bind; also AL_DASHBOARD_TOKEN)")
     p.add_argument("--open", action="store_true", help="open the page in a browser")
     p.add_argument("--podman", action="store_true", help="run it in its own locked-down podman container")
+    p = sub.add_parser("adopt", help="bring the codebase's existing agent setup (rules, prompts, workflow scripts) into a layer")
+    p.add_argument("layer", type=Path)
+    p.add_argument("--app", type=Path, help="the application checkout (needed before the layer has an agentic.rkt)")
+    p.add_argument("--dry-run", action="store_true", help="print what would happen; write nothing")
+    p.add_argument("--only", nargs="+", choices=("rules", "prompts", "workflows"), metavar="rules|prompts|workflows",
+                   help="adopt only these (default: all three); conflicts are always reported")
+    p.add_argument("--force", action="store_true", help="overwrite files `al adopt` wrote even if they were edited by hand")
     p = sub.add_parser("verify", help="run the layer's codebase cmds on a throwaway worktree")
     p.add_argument("layer", type=Path)
     p.add_argument("--cmd", dest="names", action="append", default=[], metavar="NAME", help="verify only this cmd (repeatable)")
@@ -1841,6 +1879,10 @@ def main(argv: list[str] | None = None) -> int:
                               f"(used by {', '.join(row['used_by']) or 'nothing'}; {row['status']})")
             for line in died_runs(layer):
                 print(f"note: {line}")
+            if (layer / "agentic-layer.json").is_file():
+                app = app_root_of(layer, json.loads((layer / "agentic-layer.json").read_text()))
+                for line in (adopt_module().check(layer, app)[1] if app.exists() else []):
+                    print(f"note: {line}")
             print("check: " + ("FAILED" if problems else "ok"))
             return 1 if problems else 0
         elif a.cmd == "eject":
@@ -1849,6 +1891,13 @@ def main(argv: list[str] | None = None) -> int:
             return dashboard_cli(a)
         elif a.cmd in IMPROVE_COMMANDS:
             return improve_main(a)
+        elif a.cmd == "adopt":
+            module = adopt_module()
+            try:
+                return module.adopt(sys.modules[__name__], a.layer, a.app, set(a.only or ("rules", "prompts", "workflows")),
+                                    a.dry_run, a.force)
+            except module.AdoptError as exc:
+                raise AlError(f"adopt: {exc}") from exc
         elif a.cmd == "verify":
             say = (lambda line: print(line, file=sys.stderr, flush=True)) if a.json else (lambda line: print(line, flush=True))
             report, _ = verify_layer(a.layer.resolve(), a.names, a.timeout, say)
