@@ -179,6 +179,25 @@ should see each step start and pass, ending with `status: passed`. It proves the
 copy of your repository is created, the steps run in order, state and logs land in `agents/<run id>/`.
 The workflow names are in the layer's `README.md`; yours may differ from `plan-build`.
 
+## Watch the work
+
+Every generated layer comes with a live dashboard. Start it before your first real run and leave it open:
+
+```bash
+cd ~/code/myapp.al
+uv run adws/dashboard.py --open            # http://127.0.0.1:8765/
+```
+
+It shows what is running now, each workflow as a graph that colours in as steps finish, where the time
+and the money went, and every agent step's transcript in readable form, with filters and search. A
+check's log can be read while the check is still running. A run whose process was killed is shown as
+"died", which is different from "failed". The page only reads; it cannot start, stop or change anything.
+
+To watch several codebases at once: `al dashboard ~/code` (finds every layer under that folder). To run
+it in its own locked-down container, declare `(dashboard podman)` in `agentic.rkt`; to turn it off,
+`(dashboard none)`. It listens on your own machine only; exposing it elsewhere requires naming a token
+variable with `#:token-env`.
+
 ## Step 9 — The first real run
 
 Pick something small and well defined: a missing test, a documentation fix. Write the request as you

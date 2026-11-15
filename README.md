@@ -283,6 +283,23 @@ Three rules make this safe:
 
 Details: step 14 of the [guide](docs/GUIDE.md).
 
+## Watching the agents work
+
+Every generated layer has a live dashboard (`uv run adws/dashboard.py`, or `al dashboard DIR` for several
+codebases at once). It shows what each agent is doing as it happens: runs in flight, the workflow as a
+graph, time and cost per step, and each agent's transcript formatted for reading.
+
+![Three runs watched live: the workflow graph fills in, a third run waits for a free slot](docs/demo/dashboard/live.gif)
+
+This is a real run from above (Claude Opus 5.5 adding a test to flask), opened afterwards: 3 minutes,
+$0.68, the branch the classifier chose, and the build step's transcript filtered for one word.
+
+![A real run: workflow graph, cost per step, and a searchable transcript](docs/demo/dashboard/step-transcript.png)
+
+It only reads. It cannot start, stop or change a run, agent output is displayed as text and never
+interpreted, and it listens on your own machine unless you give it a token. It can also run in its own
+container with no way out to the network. More: [`kit/dashboard/README.md`](kit/dashboard/README.md).
+
 ## The example repositories
 
 Five well-known public repositories, chosen to cover different languages, build tools and ways of working.
@@ -401,6 +418,7 @@ raco test racket/al/tests                                    # the language rule
 (cd kit/runtime && uv run --with pytest pytest -q)           # the runtime, including attempts to escape the container
 uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q   # full runs on the five repositories
 uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q         # the al command itself: eject, in-repo layers, al improve
+(cd kit/dashboard && uv run --with pytest --with playwright pytest -q tests)       # the dashboard, including real-browser tests
 tests/forge/forgejo_live.sh                                  # a throwaway Forgejo: issue → PR, merge, webhook
 tests/forge/proof_video_live.sh                              # the recording is playable on the pull request
 tests/selfdemo/selfdemo_live.sh                              # two layer changes through al improve with a real agent (about $2)
