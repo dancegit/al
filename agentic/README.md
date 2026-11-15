@@ -8,10 +8,11 @@ git worktrees under `trees/`, plans land in `specs/`, run state and logs in `age
 
 ## Workflows
 
-| ADW | Prompt input | Trigger | Environment | Review | Steps |
-|---|---|---|---|---|---|
-| `plan-build` | cli, tasklist | manual, cron | worktree | human | classify → plan-chore → plan-bug → plan-feature → build |
-| `sdlc` | cli, tasklist | manual, cron | worktree | human | classify → plan-chore → plan-bug → plan-feature → build → test-compiler → test-runtime → test-tools → test-dashboard → test-integration → document → commit → review → ship |
+| ADW | Prompt input | Trigger | Environment | Agent runs in | Checks run in | Review | Steps |
+|---|---|---|---|---|---|---|---|
+| `plan-build` | cli, tasklist | manual, cron | worktree | your machine | your machine | human | classify → plan-chore → plan-bug → plan-feature → build |
+| `sdlc` | cli, tasklist | manual, cron | worktree | your machine | your machine | human | classify → plan-chore → plan-bug → plan-feature → build → test-compiler → test-runtime → test-tools → test-dashboard → test-integration → document → commit → review → ship |
+| `reviewed` | cli, tasklist | manual, cron | worktree | your machine | your machine | auto → pr | classify → plan-chore → plan-bug → plan-feature → build → test-compiler → test-runtime → test-tools → test-dashboard → test-integration → document → commit → review → ship |
 
 ## Run
 

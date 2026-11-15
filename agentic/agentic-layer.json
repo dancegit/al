@@ -244,6 +244,170 @@
         "manual",
         "cron"
       ]
+    },
+    {
+      "agent": "claude-code",
+      "changes": "codebase",
+      "classes": [],
+      "description": "Everything sdlc does, then two independent reviewer agents must both approve before a human gets the branch and PR.md; never merges",
+      "environment": [
+        "worktree"
+      ],
+      "input": [
+        "cli",
+        "tasklist"
+      ],
+      "name": "reviewed",
+      "review": "two-reviewers",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "implement",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "cmd": "test-compiler",
+          "collect": [
+            "log"
+          ],
+          "kind": "check",
+          "name": "test-compiler",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test-runtime",
+          "collect": [
+            "log"
+          ],
+          "kind": "check",
+          "name": "test-runtime",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test-tools",
+          "collect": [
+            "log"
+          ],
+          "kind": "check",
+          "name": "test-tools",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test-dashboard",
+          "collect": [
+            "log"
+          ],
+          "kind": "check",
+          "name": "test-dashboard",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test-integration",
+          "collect": [
+            "log"
+          ],
+          "kind": "check",
+          "name": "test-integration",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "document",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "document",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [],
+          "command": "commit",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "commit",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "implement": "implement",
+          "kind": "review",
+          "name": "review",
+          "patch": "plan-patch"
+        },
+        {
+          "kind": "ship",
+          "message": "",
+          "name": "ship"
+        }
+      ],
+      "trigger": [
+        "manual",
+        "cron"
+      ]
     }
   ],
   "agents": [
@@ -297,13 +461,13 @@
       {
         "description": "The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container",
         "name": "test-runtime",
-        "run": "(cd kit/runtime && uv run --with pytest pytest -q)",
+        "run": "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q)",
         "timeout": 900
       },
       {
         "description": "The al command itself works: eject, in-repo layers, al improve, dashboard generation",
         "name": "test-tools",
-        "run": "uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q",
+        "run": "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q",
         "timeout": 900
       },
       {
@@ -321,7 +485,7 @@
       {
         "description": "The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots",
         "name": "test-integration",
-        "run": "uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q",
+        "run": "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q",
         "timeout": 1800
       }
     ],
@@ -716,6 +880,32 @@
       "id": "human",
       "kind": "human",
       "reviewers": [],
+      "status": "stable"
+    },
+    {
+      "agent": "",
+      "allowedClasses": [
+        "chore",
+        "bug",
+        "feature"
+      ],
+      "artefacts": [
+        "log"
+      ],
+      "blockProtectedPaths": true,
+      "bodyCmd": "",
+      "command": "review",
+      "deployCmd": "",
+      "id": "two-reviewers",
+      "kind": "auto",
+      "maxDiffLines": 400,
+      "maxRetries": 2,
+      "requireChecks": [
+        "test-compiler",
+        "test-runtime"
+      ],
+      "reviewers": 2,
+      "ship": "pr",
       "status": "stable"
     }
   ],

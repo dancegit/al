@@ -12,9 +12,9 @@
             #:package-manager "inline script metadata in the script that needs it, or uv run --with for a test command; there is no manifest or lock file"
     (cmd test-compiler "PLTCOLLECTS=\"$PWD/racket:\" raco test racket/al/tests/compiler-test.rkt"
          #:description "The language rules: the compiler accepts the examples and rejects each invalid definition with the documented error")
-    (cmd test-runtime "(cd kit/runtime && uv run --with pytest pytest -q)"
+    (cmd test-runtime "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q)"
          #:description "The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container")
-    (cmd test-tools "uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q"
+    (cmd test-tools "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q"
          #:description "The al command itself works: eject, in-repo layers, al improve, dashboard generation")
     (cmd test-dashboard "(cd kit/dashboard && uv run --with pytest pytest -q tests)"
          #:description "The dashboard's model and HTTP server work: unit and HTTP tests, no browser")
@@ -22,7 +22,7 @@
     ;; is not deterministic (see LLM.txt, Unknowns).
     (cmd test-dashboard-browser "(cd kit/dashboard && uv run --with pytest --with playwright pytest -q tests)"
          #:description "The dashboard tests plus the real-browser tests of the page in the host's Chrome")
-    (cmd test-integration "uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q"
+    (cmd test-integration "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q"
          #:timeout 1800
          #:description "The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots")
     (paths #:source ("racket/al" "tools" "kit/runtime" "kit/templates" "kit/schemas" "kit/dashboard" "kit/self" "meta")
@@ -59,6 +59,8 @@
   (artefact log)
 
   (review human)
+  (review auto #:id two-reviewers #:artefacts (log) #:reviewers 2 #:max-retries 2 #:ship pr
+          #:require-checks (test-compiler test-runtime) #:allowed-classes (chore bug feature))
   (dashboard local)
 
   (command prime #:template prime)
@@ -131,4 +133,18 @@
       (run document #:command document #:args ("$plan"))
       (run commit #:command commit)
       (review)
+      (ship)))
+
+  (adw reviewed #:description "Everything sdlc does, then two independent reviewer agents must both approve before a human gets the branch and PR.md; never merges"
+       #:input (cli tasklist) #:trigger (manual cron) #:environment (worktree) #:review two-reviewers
+    (steps
+      (compose plan-build)
+      (check test-compiler #:cmd test-compiler #:resolve resolve-test #:collect (log))
+      (check test-runtime #:cmd test-runtime #:resolve resolve-test #:collect (log))
+      (check test-tools #:cmd test-tools #:resolve resolve-test #:collect (log))
+      (check test-dashboard #:cmd test-dashboard #:resolve resolve-test #:collect (log))
+      (check test-integration #:cmd test-integration #:resolve resolve-test #:collect (log))
+      (run document #:command document #:args ("$plan"))
+      (run commit #:command commit)
+      (review #:patch plan-patch #:implement implement)
       (ship))))
