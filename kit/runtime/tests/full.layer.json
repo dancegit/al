@@ -890,7 +890,7 @@
       "status": "stable"
     },
     {
-      "agentInside": false,
+      "agentInside": true,
       "baseImage": "docker.io/library/debian:stable-slim",
       "caches": [
         "npm",

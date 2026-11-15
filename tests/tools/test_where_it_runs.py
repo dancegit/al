@@ -85,3 +85,8 @@ def test_readme_table_says_where_agent_and_checks_run(app, environments, stack, 
     layer = _layer(app, environments, stack)
     assert HEADER in (layer / "README.md").read_text().splitlines()
     assert _row(layer)[4:6] == [agent_cell, checks_cell]
+
+
+def test_a_container_puts_the_agent_inside_by_default(app, tmp_path) -> None:
+    layer = _layer(app, "(environment worktree) (environment podman)", "worktree podman")
+    assert "The agent runs inside the container; checks run inside the container." in _workflow(layer, tmp_path)

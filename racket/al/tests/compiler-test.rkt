@@ -127,6 +127,16 @@
   (check-equal? (agent-inside-of '#:agent-inside #f) #f)
   (check-equal? (agent-inside-of '#:agent-inside #t) #t))
 
+(test-case "a container means the agent is inside unless the layer says otherwise"
+  (check-equal? (agent-inside-of) #t)
+  ;; so a plain container is enough for bypassPermissions
+  (check-not-exn
+   (lambda ()
+     (compile-layer-datum
+      (layer plan '(agent claude-code #:permission-mode bypassPermissions)
+             '(environment worktree) '(environment podman)
+             '(adw a #:environment (worktree podman) (steps (run plan #:command plan))))))))
+
 (define build-cmd '(command build #:template build))
 (define candidate-adw '(adw candidate (steps (run plan #:command plan) (run build #:command build))))
 (define (race-adw . fan-out-fields)

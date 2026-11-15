@@ -320,7 +320,7 @@ Declare any number. Default when omitted: `(environment worktree)`.
   - `#:network` (none | host | slirp; default slirp) — Network mode: `slirp` = podman's default rootless user-mode network, `none` = fully offline checks, `host` = host network.
   - `#:memory` (string; default "4g") — Memory limit.
   - `#:cpus` (string; default "2") — CPU limit.
-  - `#:agent-inside` (boolean; default #f) — Run the agent CLI inside the container too, so the agent itself is sandboxed (the image must provide the agent CLI). Otherwise only codebase commands run inside.
+  - `#:agent-inside` (boolean; default #t) — Run the agent CLI inside the container, so the agent itself is sandboxed (the image must provide the agent CLI). #f = only the codebase commands (the checks) run inside; the agent then runs on the host with the user's own access.
   - `#:scope` (run | command; default run) — `run` = one container per ADW run, every step execs into it (installed dependencies persist for the run); `command` = a fresh container per command.
   - `#:caches` (list of string; default ()) — Named cache volumes shared across runs, mounted at /caches/NAME. Known names also set the tool's cache variable: uv, pip, cargo, go, npm, pre-commit.
   - `#:credentials` (list of claude | codex; default ()) — Agent credentials made available inside the container (read-only auth file + API key variable). Only meaningful with #:agent-inside #t.

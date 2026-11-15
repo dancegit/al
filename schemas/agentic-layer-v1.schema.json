@@ -1519,7 +1519,7 @@
             "description": "A light rootless podman container; the worktree is bind-mounted, nothing else of the host is visible.",
             "properties": {
               "agentInside": {
-                "description": "Run the agent CLI inside the container too, so the agent itself is sandboxed (the image must provide the agent CLI). Otherwise only codebase commands run inside.",
+                "description": "Run the agent CLI inside the container, so the agent itself is sandboxed (the image must provide the agent CLI). #f = only the codebase commands (the checks) run inside; the agent then runs on the host with the user's own access.",
                 "type": "boolean"
               },
               "baseImage": {

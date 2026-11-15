@@ -273,7 +273,7 @@
   [network (enum none host slirp) slirp "Network mode: `slirp` = podman's default rootless user-mode network, `none` = fully offline checks, `host` = host network."]
   [memory string "4g" "Memory limit."]
   [cpus string "2" "CPU limit."]
-  [agent-inside boolean #f "Run the agent CLI inside the container too, so the agent itself is sandboxed (the image must provide the agent CLI). Otherwise only codebase commands run inside."]
+  [agent-inside boolean #t "Run the agent CLI inside the container, so the agent itself is sandboxed (the image must provide the agent CLI). #f = only the codebase commands (the checks) run inside; the agent then runs on the host with the user's own access."]
   [scope (enum run command) run "`run` = one container per ADW run, every step execs into it (installed dependencies persist for the run); `command` = a fresh container per command."]
   [caches (list-of string) () "Named cache volumes shared across runs, mounted at /caches/NAME. Known names also set the tool's cache variable: uv, pip, cargo, go, npm, pre-commit."]
   [credentials (list-of (enum claude codex)) () "Agent credentials made available inside the container (read-only auth file + API key variable). Only meaningful with #:agent-inside #t."]
