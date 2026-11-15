@@ -156,6 +156,23 @@
 (define-kind dashboard none
   "No dashboard is generated.")
 
+(define-family notify #:key "notifiers" #:letter "" #:default none
+  "Tell a person when a run needs them or has ended. Each notifier lists the events it reports: `needs-human` (the run stopped and was handed to a person, including a spending or usage limit stop), `failed` (the run failed and nothing was handed over), `passed` (the run finished; nothing was merged by al), `shipped` (the run finished and its change was merged or deployed). A run reports exactly one of them, at most once per notifier, and a notifier that fails never fails the run. Nothing private is written here: an address, a server or a password is given as the NAME of an environment variable, whose value comes from the environment, from `local.env` in the layer directory (git-ignored, never committed) or from `$XDG_CONFIG_HOME/al/<layer name>.env`. `al notify-test LAYER` sends a test message through every notifier.")
+(define-kind notify none
+  "Nothing is sent.")
+(define-kind notify email
+  "An e-mail over SMTP (standard library only). The message is short: workflow, run id, what happened, where to look."
+  [events (list-of (enum needs-human failed passed shipped)) (needs-human failed) "Events this notifier reports."]
+  [to-env string "AL_NOTIFY_TO" "NAME of the environment variable holding the recipient address (several: separated by commas). Never the address itself."]
+  [from-env string "AL_NOTIFY_FROM" "NAME of the environment variable holding the sender address. Never the address itself."]
+  [smtp-url-env string "AL_NOTIFY_SMTP_URL" "NAME of the environment variable holding the SMTP URL: `smtp://host:port` (plain; only to a loopback host, e.g. a local mail bridge, unless the URL ends in `?insecure=plaintext`), `smtp+starttls://user:pass@host:port` or `smtps://user:pass@host:port`. Never the URL itself."]
+  [timeout integer 10 "Seconds one attempt may take, 1–60; after that the run goes on without it."])
+(define-kind notify command
+  "Run a shell command with the message on standard input (first line: the subject). The generic way out: a chat webhook, a desktop notification, a pager. It runs in the layer directory with the variables of `local.env` in its environment, plus AL_NOTIFY_EVENT and AL_NOTIFY_SUBJECT; exit code 0 means accepted. Its output is discarded."
+  [run string #:required "Shell command (sh -c). Refer to anything private as $VARIABLE; never write an address, a URL with a token or a password here."]
+  [events (list-of (enum needs-human failed passed shipped)) (needs-human failed) "Events this notifier reports."]
+  [timeout integer 10 "Seconds one attempt may take, 1–60; after that the command is killed and the run goes on."])
+
 ;; ---------------------------------------------------------------------------------------
 ;; P — Prompt input
 ;; ---------------------------------------------------------------------------------------
@@ -521,6 +538,7 @@
     "(dashboard …) is declared at most once; omitted, it is (dashboard local) on 127.0.0.1:8765. A #:bind that is not a loopback address (127.x.x.x, ::1, localhost) needs #:token-env naming the environment variable that holds the access token; #:port is 1–65535 and #:poll-ms at least 100."
     "Model tiers: an agent's tiers are `base` and `heavy` (from #:model-base / #:model-heavy, which have defaults) plus every (TIER \"MODEL\") in its #:models; a tier given both ways, or twice, is an error, and `inherit` is not a tier name. Every tier a workflow can use must be declared on the agent that runs it: run steps (their #:model-set, else their command's) on the step's #:agent or the ADW's agent; check #:resolve commands and review #:patch / #:implement commands on the ADW's agent; the review command on the review option's #:agent, else the ADW's agent. The mock agent accepts every tier. #:effort is only available for claude-code and codex (codex: not `max`)."
     "(budget limits …) is declared at most once; every limit given is greater than 0; #:limit-stop-percent is 0–100 (0 = off), #:on-limit wait needs a #:limit-stop-percent above 0, and #:limit-wait-minutes is at least 1."
+    "(notify …): #:to-env, #:from-env and #:smtp-url-env of `email` take the NAME of an environment variable in capitals (A–Z, 0–9, _); a value that looks like an e-mail address, a URL or a host name is rejected, because the layer file is committed. #:events lists at least one event and #:timeout is 1–60. Two notifiers of the same kind need #:id."
     "A (script …) step needs a `worktree` environment in the ADW's stack, like check and ship."
     "(include \"FILE\") splices the clauses of FILE (plain s-expressions, no #lang line; a path relative to agentic.rkt) where it stands: at the top level of (agentic-layer …), or inside (codebase …) for cmd, paths and conditional-doc clauses. Errors point into FILE. An included file cannot include another. `al adopt` writes its declarations this way."
     "Kinds marked planned compile but are refused by the generator."))

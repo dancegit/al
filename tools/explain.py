@@ -27,7 +27,7 @@ import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-GROUPED = {"prompt-input", "trigger", "environment", "artefact", "review", "agent", "command", "hop", "expert", "service"}
+GROUPED = {"prompt-input", "trigger", "environment", "artefact", "review", "agent", "command", "hop", "expert", "service", "notify"}
 CLAUSE = re.compile(r"^  \(([a-z][a-z-]*)\b")
 INCLUDED_CLAUSE = re.compile(r"^\(([a-z][a-z-]*)\b")       # an included file's clauses start in column 0
 INCLUDE = re.compile(r'\(include\s+"([^"]+)"\s*\)')
@@ -234,6 +234,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         return models_text(ir)
     if head == "budget":
         return budget_text(ir)
+    if head == "notify":
+        return notify_text(ir)
     if head == "include":
         return ("More of the definition, from another file", f"These clauses are in `{block.get('target', '?')}`"
                 + (", written by `al adopt` from the codebase's existing agent setup" if "adopted/" in block.get("target", "") else "")
@@ -384,6 +386,36 @@ def models_text(ir: dict) -> tuple[str, str, list[str]]:
     bullets.append("For one run, `--model-set TIER`, `--model TIER=MODEL_ID` (or AL_MODEL_SET / AL_MODELS) change this "
                    "without editing the file")
     return "Which agents and models do the work", text, bullets
+
+
+NOTIFY_PHRASES = {"needs-human": "needs them", "failed": "fails", "passed": "finishes", "shipped": "ships its change"}
+
+
+def notify_text(ir: dict) -> tuple[str, str, list[str]]:
+    """The (notify …) block in plain words. Only the compiled layer is read, never the environment
+    or `local.env`: the names of the variables are shown, and no value can be printed."""
+    declared = [n for n in ir.get("notifiers") or [] if isinstance(n, dict) and n.get("kind") != "none"]
+    if not declared:
+        return ("Telling a person", "No notifications: nothing is sent when a run ends or needs a person.", [])
+
+    def phrases(events) -> str:
+        return listing([words for event, words in NOTIFY_PHRASES.items() if event in events], "or")
+
+    union = {event for n in declared for event in n.get("events") or []}
+    bullets = []
+    for n in declared:
+        when = phrases(n.get("events") or [])
+        if n["kind"] == "email":
+            bullets.append(f"`{n['id']}`: an e-mail when a run {when}; the recipient, the sender and the mail server are "
+                           f"read from the environment variables `{n['toEnv']}`, `{n['fromEnv']}` and `{n['smtpUrlEnv']}`")
+        else:
+            bullets.append(f"`{n['id']}`: runs `{n['run']}` with the message on standard input when a run {when}")
+    bullets += ["The values of those variables are not in this file: they come from the environment or from `local.env` "
+                "in the layer folder, which is never committed",
+                "A message names the workflow, the run, what happened and where to look; it carries no prompt text "
+                "beyond the title and no logs",
+                "`al notify-test` sends a test message through every notifier"]
+    return "Telling a person", f"Notifications: a person is told when a run {phrases(union)}.", bullets
 
 
 def budget_text(ir: dict) -> tuple[str, str, list[str]]:

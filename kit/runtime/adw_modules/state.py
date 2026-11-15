@@ -63,6 +63,8 @@ class ADWState:
     budget: dict[str, Any] = field(default_factory=dict)
     # subscription usage seen by this run: {billing, windows: {name: {window, status, used, resets_at, at, step}}, stopped: {window, cause, status, used, percent, resets_at, step, reason}, waits: [{step, window, seconds, until}]}
     usage: dict[str, Any] = field(default_factory=dict)
+    # notifications already attempted by this run: {notifier id: [event, …]}; at most one attempt per notifier and event, also over --resume
+    notified: dict[str, list[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):

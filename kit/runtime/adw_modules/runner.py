@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import budget, envs, events, ir, models, state as state_module, steps
+from . import budget, envs, events, ir, models, notify, state as state_module, steps
 from . import slots
 from .agents import CLASSES
 from .errors import LayerError, StepFailed
@@ -81,6 +81,8 @@ which tier an agent step runs on (first match wins):
   then --model / AL_MODELS may give that tier another model id for this run.
   state.json (agent_calls) and the run's events record the tier, model and reason of every call.
 
+notifications: a --dry-run sends none of the layer's (notify …) messages unless --notify is given.
+
 exit codes: 0 passed, 1 failed (handed to a person where the workflow ships),
             2 usage error, 3 refused: the layer's day limit (#:day-usd) or its subscription usage threshold (#:limit-stop-percent) is reached
 """
@@ -101,6 +103,7 @@ def _parser(adw: str) -> argparse.ArgumentParser:
     parser.add_argument("--model", action="append", default=[], metavar="TIER=MODEL_ID",
                         help="use MODEL_ID for tier TIER in this run (repeatable)")
     parser.add_argument("--max-cost", metavar="USD", help="run spending limit in US dollars for this run")
+    parser.add_argument("--notify", action="store_true", help="send the layer's notifications even in a --dry-run")
     return parser
 
 
@@ -292,11 +295,15 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
         state.status = "failed"
         print(f"[adw {state.adw_id}] run failed: {exc}")
         _hand_off(layer, state, adw, stack, exc)
+        if notify.report(layer, state, force=bool(getattr(args, "notify", False)), at="handover"):
+            state.save(layer.layer_dir)
     except Exception as exc:  # last-resort boundary: record the crash in state instead of leaving it "running"
         state.status = "failed"
         print(f"[adw {state.adw_id}] run crashed: {type(exc).__name__}: {exc}")
         traceback.print_exc()
         _hand_off(layer, state, adw, stack, exc)
+        if notify.report(layer, state, force=bool(getattr(args, "notify", False)), at="handover"):
+            state.save(layer.layer_dir)
     finally:
         try:
             stack.teardown(state.status == "passed")
@@ -312,6 +319,8 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
         beat.stop()
         state.ended = state_module.now()
         state.save(layer.layer_dir)
+        if notify.report(layer, state, force=bool(getattr(args, "notify", False))):
+            state.save(layer.layer_dir)
         events.emit("run.end", status=state.status, exit=exit_code)
     return exit_code
 

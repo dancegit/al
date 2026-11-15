@@ -2,7 +2,7 @@
 ;; A layer that uses most of the vocabulary: several prompt inputs and triggers,
 ;; a stacked environment, artefacts on S3, and a zero-touch (auto review → merge) ADW
 ;; next to a human-reviewed one, model tiers, a second vendor as reviewer, spending limits, and a
-;; script step that runs one of the team's own scripts.
+;; script step that runs one of the team's own scripts, and notifications when a run needs a person.
 (agentic-layer #:name "webshop" #:description "Agentic layer for the webshop monorepo"
   (codebase #:root "../webshop" #:languages (typescript python) #:default-branch "main"
             #:description "Vue storefront + FastAPI backend" #:package-manager "bun add / uv add"
@@ -23,6 +23,8 @@
   (agent claude-code #:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:effort high)))
   (agent codex #:id second-opinion)
   (budget limits #:run-usd 5 #:step-usd 2 #:day-usd 50 #:limit-stop-percent 90 #:on-limit wait #:limit-wait-minutes 120)
+  (notify email #:events (needs-human failed shipped))   ; addresses and the server: variables in local.env, never here
+  (notify command #:id desktop #:run "notify-send \"$AL_NOTIFY_SUBJECT\"" #:events (needs-human))
 
   (prompt-input issue #:labels ("adw"))
   (prompt-input tasklist)

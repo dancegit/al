@@ -972,6 +972,32 @@
   },
   "llmTxt": "LLM.txt",
   "name": "webshop",
+  "notifiers": [
+    {
+      "events": [
+        "needs-human",
+        "failed",
+        "shipped"
+      ],
+      "fromEnv": "AL_NOTIFY_FROM",
+      "id": "email",
+      "kind": "email",
+      "smtpUrlEnv": "AL_NOTIFY_SMTP_URL",
+      "status": "stable",
+      "timeout": 10,
+      "toEnv": "AL_NOTIFY_TO"
+    },
+    {
+      "events": [
+        "needs-human"
+      ],
+      "id": "desktop",
+      "kind": "command",
+      "run": "notify-send \"$AL_NOTIFY_SUBJECT\"",
+      "status": "stable",
+      "timeout": 10
+    }
+  ],
   "promptInputs": [
     {
       "classify": true,
