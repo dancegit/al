@@ -20,6 +20,10 @@ import dashboard  # noqa: E402
 import fixtures  # noqa: E402
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "browser: drives a real Chrome through Playwright (skipped without one)")
+
+
 @pytest.fixture(scope="session")
 def fixture_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("fixtures")
@@ -64,7 +68,8 @@ class Running:
 
 
 def start_server(args: list[str], static_dir: Path | None = None) -> Running:
-    parsed = dashboard.parse_args([*args, "--port", "0", "--poll", "0.2", "--no-podman"])
+    defaults = [] if "--port" in args else ["--port", "0"]
+    parsed = dashboard.parse_args([*args, *defaults, "--poll", "0.2", "--no-podman"])
     server = dashboard.make_server(parsed, static_dir or dashboard.STATIC_DIR)
     threading.Thread(target=server.model.run_forever, daemon=True).start()
     threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True).start()

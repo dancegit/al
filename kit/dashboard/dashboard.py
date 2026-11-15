@@ -57,6 +57,7 @@ EXPLAIN_FILES = ("EXPLAIN.md", "explain.md", "docs/EXPLAIN.md", "docs/explain.md
 DEFINITION_FILES = (LAYER_FILE, "agentic.rkt")
 SERVED_TREES = ("agents", "artefacts", "specs")
 PREVIEW_CHARS = 1600
+TRANSCRIPT_SETTLE = 20.0   # a JSON line without its newline is held this long before it counts as truncated
 TEXT_CAP = 400_000
 POOLS = ("runs", "agents", "checks")
 POOL_DEFAULTS = {"runs": ("maxRuns", 4), "agents": ("maxAgents", 2), "checks": ("maxChecks", 2)}
@@ -756,7 +757,7 @@ def build_graph(adw: dict[str, Any], layer_ir: dict[str, Any] | None = None) -> 
     reviews = {r.get("id"): r for r in layer_ir.get("reviews") or [] if isinstance(r, dict)}
     review_option = reviews.get(adw.get("review"), {})
     steps = [s for s in adw.get("steps") or [] if isinstance(s, dict)]
-    node_w, node_h, gap_x, gap_y, pad = 132, 54, 46, 18, 30
+    node_w, node_h, gap_x, gap_y, pad = 132, 54, 46, 18, 24
     columns: list[list[dict[str, Any]]] = []
     index = 0
     while index < len(steps):
@@ -781,8 +782,12 @@ def build_graph(adw: dict[str, Any], layer_ir: dict[str, Any] | None = None) -> 
         columns.append([_node(step, "flow")])
         index += 1
     tallest = max((len(column) for column in columns), default=1)
-    height = pad * 2 + tallest * node_h + (tallest - 1) * gap_y + 40
-    middle = pad + 20 + (tallest * node_h + (tallest - 1) * gap_y) / 2
+    has_loop = any(s.get("kind") == "check" and s.get("resolve") for s in steps)
+    has_back = any(s.get("kind") == "review" and s.get("patch") and s.get("implement") for s in steps)
+    top_margin = 40 if has_loop else 16
+    content = tallest * node_h + (tallest - 1) * gap_y
+    height = top_margin + content + (58 if has_back else 16)
+    middle = top_margin + content / 2
     nodes: list[dict[str, Any]] = []
     for col, column in enumerate(columns):
         span = len(column) * node_h + (len(column) - 1) * gap_y
@@ -816,8 +821,7 @@ def build_graph(adw: dict[str, Any], layer_ir: dict[str, Any] | None = None) -> 
                           "label": f"blocker → {step['patch']} → {step['implement']} → re-check"
                                    + (f" (≤{retries})" if retries else "")})
     width = pad * 2 + max(1, len(columns)) * (node_w + gap_x) - gap_x
-    has_back = any(edge["kind"] == "patch" for edge in edges)
-    return {"nodes": nodes, "edges": edges, "width": width, "height": height + (34 if has_back else 0),
+    return {"nodes": nodes, "edges": edges, "width": width, "height": height,
             "review": {"kind": review_option.get("kind", ""), "reviewers": review_option.get("reviewers", 0),
                        "ship": review_option.get("ship", ""), "maxRetries": review_option.get("maxRetries", 0)}}
 
@@ -973,7 +977,7 @@ class AggCache:
         with self.lock:
             entry = self.entries.get(key)
             if entry is None:
-                entry = (Tail(path, settle=1.0), Transcript())
+                entry = (Tail(path, settle=TRANSCRIPT_SETTLE), Transcript())
                 self.entries[key] = entry
             tail, transcript = entry
             reset, lines = tail.read(max_bytes=64 * 1024 * 1024)
@@ -1701,6 +1705,8 @@ class Model:
         self.stop = threading.Event()
         self.detail_cache: dict[str, tuple[tuple, dict[str, Any]]] = {}
         self.ticks = 0
+        self.parents: dict[str, str] = {}
+        self._parents_size, self._parents_dirty = -1, True
 
     # ---------------------------------------------------------------- discovery
     def discover(self) -> bool:
@@ -1740,12 +1746,23 @@ class Model:
             self.layers = fresh
         return changed
 
+    def display_path(self, path: Path) -> str:
+        """A layer's path as shown: relative to the --scan root it was found under (prefixed with
+        that root's name), else just its directory name. Readable, and it keeps the absolute
+        location (often a home directory) off the screen."""
+        for root in self.scan_dirs:
+            real = Path(os.path.realpath(root))
+            if path == real or real in path.parents:
+                relative = path.relative_to(real).as_posix()
+                return f"{real.name}/{relative}" if relative != "." else real.name
+        return path.name
+
     def layer_list(self) -> list[dict[str, Any]]:
         with self.lock:
             out = []
             for layer in sorted(self.layers.values(), key=lambda l: l.key):
                 runs = [s for s in self.summaries.values() if s["layer"] == layer.key]
-                out.append({"key": layer.key, "name": layer.name, "dir": Shortener()(str(layer.path)),
+                out.append({"key": layer.key, "name": layer.name, "dir": self.display_path(layer.path),
                             "description": str(layer.ir.get("description", "")),
                             "adws": [a.get("name") for a in layer.ir.get("adws") or [] if isinstance(a, dict)],
                             "runs": len(runs), "running": sum(1 for r in runs if r["status"] == "running"),
@@ -1810,6 +1827,8 @@ class Model:
                 if fresh != summary:
                     with self.lock:
                         self.summaries[key] = fresh
+                        if fresh.get("fanout_children") != (summary or {}).get("fanout_children"):
+                            self._parents_dirty = True
                     self.hub.publish("run", self._decorated(fresh))
                     changed_layer = True
             for key in [k for k in list(self.summaries) if k.startswith(layer.key + "/") and k not in seen]:
@@ -1842,13 +1861,24 @@ class Model:
         return {}
 
     def _decorated(self, summary: dict[str, Any]) -> dict[str, Any]:
+        """Add what other runs and podman know: container status, fan-out parent and candidates' cost."""
         layer = self.layers.get(summary["layer"])
+        extra: dict[str, Any] = {}
         container = self.probe.lookup(layer, summary["id"]) if layer else None
         if container:
-            merged = dict(summary.get("container") or {})
-            merged.update(container)
-            return {**summary, "container": merged}
-        return summary
+            extra["container"] = {**(summary.get("container") or {}), **container}
+        children = [self.summaries.get(f"{summary['layer']}/{cid}") for cid in summary.get("fanout_children") or []]
+        costs = [c["cost"] for c in children if c and isinstance(c.get("cost"), (int, float))]
+        if costs:
+            extra["cost_children"] = round(sum(costs), 6)
+        if self._parents_size != len(self.summaries) or self._parents_dirty:
+            self.parents = {f"{s['layer']}/{cid}": s["id"] for s in self.summaries.values()
+                            for cid in s.get("fanout_children") or []}
+            self._parents_size, self._parents_dirty = len(self.summaries), False
+        parent = self.parents.get(summary["key"])
+        if parent:
+            extra["fanout_parent"] = parent
+        return {**summary, **extra} if extra else summary
 
     def containers(self) -> dict[str, Any]:
         return self.probe.info()
@@ -2321,7 +2351,7 @@ class Handler(BaseHTTPRequestHandler):
         last_id = self.headers.get("Last-Event-ID", "") or self._q(query, "from")
         if re.match(r"^\d+:\d+$", last_id):
             offset, line_no = (int(x) for x in last_id.split(":"))
-        tail = Tail(path, offset=offset, line_no=line_no, settle=1.5)
+        tail = Tail(path, offset=offset, line_no=line_no, settle=TRANSCRIPT_SETTLE if what == "transcript" else 1.5)
         transcript = Transcript(short)
         if offset and what == "transcript":
             # rebuild aggregates and tool names quietly from what the client already has

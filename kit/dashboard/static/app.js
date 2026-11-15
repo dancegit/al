@@ -286,6 +286,7 @@
     const svg = s("svg", { viewBox: `0 0 ${graph.width} ${graph.height}`, class: opts.static ? "g-static" : "",
       role: "img", "aria-label": "workflow graph" });
     svg.style.minWidth = `${Math.round(graph.width * 0.72)}px`;
+    svg.style.maxWidth = `${graph.width}px`;
     svg.appendChild(s("defs", {}, s("marker", { id: marker, viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" },
       s("path", { d: "M0,0 L8,4 L0,8 z", class: "g-arrow" }))));
     const live = (st) => ["passed", "failed", "running", "done"].includes(st);
@@ -302,9 +303,9 @@
         lx = a.x + a.w / 2; ly = y - 26;
       } else if (edge.kind === "patch") {
         const x1 = a.x + a.w / 2, x2 = b.x + b.w / 2, y1 = a.y + a.h, y2 = b.y + b.h;
-        const depth = Math.max(y1, y2) + 38;
+        const depth = Math.max(y1, y2) + 34;
         d = `M${x1},${y1} C${x1},${depth} ${x2},${depth} ${x2},${y2}`;
-        lx = (x1 + x2) / 2; ly = depth - 4;
+        lx = (x1 + x2) / 2; ly = depth + 6;
       } else {
         const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2, dx = (x2 - x1) / 2;
         d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
@@ -327,7 +328,8 @@
       if (node.picked) classes.push("picked");
       const meta = [];
       if (!opts.static) {
-        if (node.duration !== null && node.duration !== undefined) meta.push(fmt.dur(node.duration));
+        if (status === "skipped") meta.push("skipped");
+        else if (node.duration !== null && node.duration !== undefined) meta.push(fmt.dur(node.duration));
         if (node.cost) meta.push(fmt.cost(node.cost));
         if (node.type === "check" && node.attempts > 1) meta.push(`${node.attempts} tries`);
         if (node.resolves) meta.push(`${node.resolves} fix`);
@@ -378,7 +380,7 @@
     const bars = timeline.bars.filter((bar) => bar.start);
     const t0 = timeline.start || Math.min(...bars.map((b) => b.start));
     const tEnd = Math.max(timeline.end || 0, ...bars.map((b) => b.end || now()), t0 + 1);
-    const W = 1000, labelW = 190, right = 64, rowH = 17, top = 20;
+    const W = Math.max(420, opts.width || 1000), labelW = Math.min(190, Math.round(W * 0.26)), right = 70, rowH = 18, top = 20;
     const span = tEnd - t0, k = (W - labelW - right) / span;
     const height = top + bars.length * rowH + 6;
     const svg = s("svg", { viewBox: `0 0 ${W} ${height}`, role: "img", "aria-label": "timeline" });
@@ -787,9 +789,13 @@
 
     function renderPools() {
       clear(pools);
+      const idle = [];
       for (const layer of store.layers) {
         const data = store.slots[layer.key];
         if (!data) continue;
+        const busy = Object.values(data.pools).some((p) => p.used) || (data.ports || []).some((p) => p.alive !== false)
+          || store.runList().some((r) => r.layer === layer.key && r.status === "running");
+        if (!busy) { idle.push(layer.key); continue; }
         const rows = Object.entries(data.pools).map(([pool, p]) => {
           const meter = h("span", { class: "meter" });
           for (let i = 0; i < p.total; i += 1) meter.appendChild(h("i", { class: i < p.used ? "on" : "" }));
@@ -802,6 +808,11 @@
             h("span", { class: "faint", text: data.source === "locks" ? "from lock files" : "inferred from run state" }),
             data.waiting && data.waiting.length ? h("span", { class: "badge warn", text: `${data.waiting.length} waiting` }) : null),
           rows, h("div", { class: "ports", text: ports ? `ports ${ports}` : "no leased ports" })));
+      }
+      if (idle.length) {
+        pools.appendChild(h("div", { class: "pool" }, h("div", { class: "name" }, h("span", { text: `${idle.length} idle layer${idle.length === 1 ? "" : "s"}` }),
+          h("span", { class: "faint", text: "no slot held, no port leased" })),
+          h("div", { class: "ports" }, idle.map((key, i) => [i ? " · " : "", h("a", { href: `#/layer/${enc(key)}`, text: key })]))));
       }
       if (!pools.children.length) pools.appendChild(h("div", { class: "empty", text: "no layers yet" }));
     }
@@ -947,6 +958,9 @@
     let detail = null;
     let sub = null;            // the open step panel / log viewer
     let state = { tab: "overview", step: "", params: {} };
+    let timelineDraw = null;
+    const onResize = debounce(() => { if (timelineDraw && state.tab === "overview") timelineDraw(); }, 200);
+    window.addEventListener("resize", onResize);
     const head = h("div", { class: "run-head" });
     const tabs = h("div", { class: "tabs" });
     const graphCard = h("div", { class: "card" });
@@ -983,12 +997,14 @@
           h("div", { class: "line1" }, pill(sm.status), h("h1", { text: `${sm.adw}` }), h("span", { class: "mono dim", text: sm.id }),
             h("span", { class: "badge", text: sm.layer }), sm.klass ? h("span", { class: "badge", text: `class ${sm.klass}` }) : null,
             sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, outcomeBadge(sm),
+            sm.fanout_parent ? h("a", { class: "badge info", href: `#/run/${enc(layerKey)}/${enc(sm.fanout_parent)}`, text: `candidate of ${sm.fanout_parent}` }) : null,
             sm.waiting ? h("span", { class: "badge warn", text: `waiting for a ${sm.waiting} slot` }) : null,
             sm.current ? h("span", { class: "badge info", text: `▶ ${sm.current.step}: ${sm.current.action}` }) : null,
             h("button", { class: "toggle", type: "button", text: "copy link", title: "copy a deep link to this view", onclick: (e) => copyLink(e.target) })),
           prompt,
           sm.problem ? h("div", { class: "badge warn", text: sm.problem }) : null),
-        h("div", { class: "figures" }, fig("time", elapsed), fig("cost", h("b", { text: fmt.cost(sm.cost) })),
+        h("div", { class: "figures" }, fig("time", elapsed), fig("cost", h("b", { text: fmt.cost(sm.cost_children ? (sm.cost || 0) + sm.cost_children : sm.cost) },
+          sm.cost_children ? h("small", { text: ` incl. ${fmt.cost(sm.cost_children)} candidates` }) : null)),
           fig("tokens out", h("b", { text: fmt.tokens(sm.tokens.out) })), fig("turns", h("b", { text: sm.turns || "—" }))));
     }
 
@@ -1019,12 +1035,16 @@
     function timelineCard() {
       const t = detail.timeline.totals;
       const sw = (colour) => { const i = h("i"); i.style.background = colour; return i; };
-      return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", { text: "Timeline" })),
-        h("div", { class: "tl-wrap" }, renderTimeline(detail.timeline, { onBar: (bar) => {
-          if (bar.kind === "agent") go(link(["step", bar.step || bar.ref], { agent: bar.ref }));
-          else if (bar.kind === "check" || bar.kind === "gate") go(link(["step", bar.step || bar.check], { attempt: bar.ref }));
-          else go(link(["step", bar.step]));
-        } })),
+      const wrap = h("div", { class: "tl-wrap" });
+      const draw = () => replace(wrap, renderTimeline(detail.timeline, { width: wrap.clientWidth || 800, onBar: (bar) => {
+        if (bar.kind === "agent") go(link(["step", bar.step || bar.ref], { agent: bar.ref }));
+        else if (bar.kind === "check" || bar.kind === "gate") go(link(["step", bar.step || bar.check], { attempt: bar.ref }));
+        else go(link(["step", bar.step]));
+      } }));
+      requestAnimationFrame(draw);
+      timelineDraw = draw;
+      return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", { text: "Timeline" }),
+        h("span", { class: "spacer" }), h("span", { class: "faint", text: "click a bar to open it" })), wrap,
         h("div", { class: "totals" }, h("span", {}, "run ", h("b", { text: fmt.dur(t.run) })),
           h("span", {}, sw("var(--agent)"), "agents ", h("b", { text: fmt.dur(t.agent) })),
           h("span", {}, sw("var(--check)"), "checks ", h("b", { text: fmt.dur(t.check) })),
@@ -1330,7 +1350,7 @@
     return {
       accepts: (r) => r.parts[1] === layerKey && r.parts[2] === runId,
       route: (r) => apply(r),
-      destroy() { off(); clearInterval(timer); if (sub) sub.destroy(); },
+      destroy() { off(); clearInterval(timer); window.removeEventListener("resize", onResize); if (sub) sub.destroy(); },
       get searchInput() { return sub && sub.search; },
       move(delta) {
         if (sub && sub.move) return sub.move(delta);

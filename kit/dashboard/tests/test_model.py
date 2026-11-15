@@ -56,6 +56,24 @@ def test_layers_appearing_later_are_picked_up(tmp_path):
     assert list(model.layers) == ["late"]
 
 
+def test_layer_paths_are_shown_relative_to_their_scan_root(fx):
+    model = d.Model([], [fx["root"]])
+    model.discover()
+    shown = {l["key"]: l["dir"] for l in model.layer_list()}
+    assert shown == {"demo-shop": "fx/demo-shop.al", "other-layer": "fx/repo/layers/other"}
+    only = d.Model([fx["layer"]], [])
+    only.discover()
+    assert only.layer_list()[0]["dir"] == "demo-shop.al"
+
+
+def test_fan_out_parent_and_candidates_cost_are_linked(fx):
+    model = model_for(fx)
+    parent = model._decorated(summary(model, "a1000005"))
+    assert parent["cost_children"] == pytest.approx(3 * (0.06 + 0.08))
+    child = model._decorated(summary(model, "c1000002"))
+    assert child["fanout_parent"] == "a1000005"
+
+
 def test_non_run_directories_are_ignored(fx):
     model = model_for(fx)
     ids = {s["id"] for s in model.summaries.values()}
