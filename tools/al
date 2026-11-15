@@ -14,8 +14,11 @@
   al check   LAYER                 verify a generated layer and that the application tree is untouched
   al eject   LAYER (command|hop|expert) NAME [--force] | --list
                                    copy a kit template into LAYER/templates/ so your edits to it survive `al gen`
-  al improve LAYER "request" [--dry-run] [--review human|agent]
+  al improve LAYER "request" [--dry-run] [--review human|agent] [--model-set T] [--model T=ID] [--max-cost USD]
                                    change the layer through al's own reviewed workflow: ends in a pull request
+  al adopt   LAYER [--app APP] [--dry-run] [--only rules|prompts|workflows …]
+                                   bring a codebase's existing agent setup (rule files, prompts, workflow
+                                   scripts) into the layer, deterministically; reports what a person must decide
   al dashboard [LAYER_OR_DIR …] [--port N] [--open] [--podman]
                                    watch the runs of any layers (or every layer below a directory) live, read-only
   al verify  LAYER [--cmd NAME …] [--timeout S] [--json]
@@ -212,6 +215,7 @@ def scout(app: Path) -> dict:
                 summary = re.sub(r"\s+", " ", text)[:400]
                 break
     license_file = next((p for p in ("LICENSE", "LICENSE.txt", "LICENSE.md", "COPYING", "LICENSE-MIT") if has(p)), "")
+    existing = adopt_module().detect(app, git(app, "ls-files").splitlines())
     nix = list(dict.fromkeys(pkg for l in langs for pkg in NIX_BY_LANG.get(l, [])))
     if has("bun.lock") or has("bun.lockb"):
         nix.append("bun")
@@ -223,7 +227,21 @@ def scout(app: Path) -> dict:
         "docs": doc_dirs, "readme": readme, "commands": cmds, "evidence": evidence, "notes": notes,
         "protected": protected, "nix": nix + ["git"], "package_manager": pm,
         "contributing": next((p for p in ("CONTRIBUTING.md", "CONTRIBUTING.rst", "docs/contributing.rst", "HACKING.md") if has(p)), ""),
+        "existing_agent_setup": existing,
     }
+
+
+def adopt_module():
+    """tools/al_adopt.py: detection of an existing agent setup and `al adopt`."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_adopt
+    return al_adopt
+
+
+def kit_template_names() -> list[str]:
+    """Command and HOP template names of the kit (an adopted prompt must not take one)."""
+    return sorted({p.stem for kind in ("commands", "hops") for p in (KIT / "templates" / kind).glob("*.md")})
 
 
 def render_llm_txt(s: dict) -> str:
@@ -296,6 +314,10 @@ def render_llm_txt(s: dict) -> str:
 
 - UNVERIFIED
 
+## Existing agent setup
+
+{adopt_module().render_section(s.get('existing_agent_setup') or [])}
+
 ## Evidence
 
 {bullets(s['evidence'])}
@@ -335,7 +357,10 @@ TEMPLATES_README = """# Layer-local templates
 
 A template here replaces the kit template of the same name for every command, hop or expert of this
 layer that uses it: `commands/<template>.md`, `hops/<template>.md`, `experts/<file>`. It uses the same
-`{{placeholders}}` as the kit's; an unknown placeholder is an error at `al gen`.
+`{{placeholders}}` as the kit's; an unknown placeholder is an error at `al gen`. `{{open_braces}}`
+writes a literal `{{`, so `{{open_braces}}name}}` ends up as `{{name}}` in the prompt.
+`custom/` holds the hand-written templates of `#:template custom` commands, among them the prompts
+`al adopt` copied from the codebase (each names its origin in its first comment).
 
 Make one with `al eject <layer> command|hop|expert NAME` rather than by hand, and see which templates
 are yours, and whether the kit's version has changed since, with `al eject <layer> --list`.
@@ -600,7 +625,7 @@ class Generator:
             "validation_commands": bullets([self.cmd_line(n) for n in self.cmds if n in ("lint", "typecheck", "test", "build")]),
             "focus": "", "fabric": "", "output_contract": OUTPUT_CONTRACT["text"],
             "layer_change_rule": self.layer_change_rule(),
-            "command_name": "", "description": "",
+            "command_name": "", "description": "", "open_braces": "{{",
             "expert_name": "", "expert_domain": "", "expert_paths": "", "expert_max_lines": "", "expertise_path": "",
         }
 
@@ -932,6 +957,46 @@ RestartSec=5
 WantedBy=default.target
 """, local=True)
 
+    def models_section(self, run_prefix: str) -> str:
+        """Model tiers, how to override them for one run, and the spending limits."""
+        lines = ["## Models and spending", ""]
+        for agent in self.ir["agents"]:
+            tiers = agent.get("models")
+            if tiers is None:
+                lines.append(f"- Agent `{agent['id']}` ({agent['kind']}): takes any tier, runs no model.")
+                continue
+            shown = ", ".join(f"`{t['tier']}` = `{t['model'] or '(the CLI default)'}`"
+                              + (f" (effort {t['effort']})" if t.get("effort", "default") != "default" else "")
+                              for t in tiers)
+            lines.append(f"- Agent `{agent['id']}` ({agent['kind']}): {shown}.")
+        adw = self.ir["adws"][0]["name"]
+        lines += ["",
+                  "Every command and hop runs on a tier (its `#:model-set`); a run step may name its own. For one run,",
+                  "without changing `agentic.rkt`:", "",
+                  "```bash",
+                  f"uv run {run_prefix}adws/adw_{adw}.py \"…\" --model-set heavy               # every agent step on one tier",
+                  f"uv run {run_prefix}adws/adw_{adw}.py \"…\" --model heavy=MODEL_ID          # another model for a tier (repeatable)",
+                  f"uv run {run_prefix}adws/adw_{adw}.py \"…\" --max-cost 3                    # hand over once the run costs more than $3",
+                  "```", "",
+                  "The same as environment variables, which the triggers and `al improve` pass on: `AL_MODEL_SET=TIER`,",
+                  "`AL_MODELS=\"heavy=…,base=…\"`, `AL_MAX_COST=USD`. Flags win. A task-file tag (`{heavy}`) or an issue",
+                  "keyword (`adw: <workflow> heavy`) naming any declared tier selects it for the steps that do not set their",
+                  "own. Which tier wins: `--model-set`, then the step's own `#:model-set`, then the request's tier, then the",
+                  "command's; `--model` then picks that tier's model id. `state.json` (`agent_calls`) and the run's events",
+                  "record the tier, model and reason of every agent call; `--help` of any workflow script says the same.", ""]
+        b = self.ir.get("budget")
+        if isinstance(b, dict):
+            parts = [f"{label} ${b[key]:g}" for key, label in (("runUsd", "per run"), ("stepUsd", "per agent call"),
+                                                                ("dayUsd", "per day in this layer")) if b.get(key) is not None]
+            lines.append("Spending limits (`budget limits`): " + (", ".join(parts) or "none") + ". A run that goes over is "
+                         "stopped after the agent call that crossed the limit and handed to a person (`budget:<limit>` "
+                         "is the reason); once the day's limit is reached no run or agent step starts (exit code 3). "
+                         "Costs are what the agents report; codex and custom agents report none and count as $0.")
+        else:
+            lines.append("Spending limits: none declared (add `(budget limits #:run-usd … #:day-usd …)`); `--max-cost` "
+                         "still limits one run.")
+        return "\n".join(lines) + "\n"
+
     def watch_section(self) -> str:
         d = self.dash
         if d["kind"] == "none":
@@ -1010,6 +1075,7 @@ uv run {run_prefix}adws/adw_{ir['adws'][0]['name']}.py "…" --dry-run          
 uv run {run_prefix}adws/dispatch.py --source tasklist:<line>                             # from a prompt input
 ```
 
+{self.models_section(run_prefix)}
 {self.watch_section()}
 ## Change the layer
 
@@ -1037,7 +1103,7 @@ Not committed (`.gitignore`, written by `al gen`): {ignored}.
         ignored = ("run state (worktrees, run logs, artefacts, plans, run documents, the task list and spec inbox, "
                    "`al improve` runs), files that name this machine's paths (`bin/al`, systemd units, the Home Manager "
                    "module" + ("" if self.in_repo else ", the forge workflow") + ") and caches")
-        committed = ("`agentic.rkt`, `LLM.txt`, `templates/`, `mock/`, expert `expertise.yaml` files and "
+        committed = ("`agentic.rkt`, `LLM.txt`, `templates/`, `mock/`, `adopted/` (what `al adopt` wrote), expert `expertise.yaml` files and "
                      "`conditional_docs.md` (source); `agentic-layer.json`, `commands/`, `hops/`, `experts/`, `adws/`, "
                      "`env/`, `fabric/`, " + ("`forge/`, " if self.in_repo else "") +
                      "`AL-DSL.llms.txt`, this README, `.gitignore` and `.al-manifest.json` (generated; the manifest "
@@ -1193,11 +1259,13 @@ Not committed (`.gitignore`, written by `al gen`): {ignored}.
 # ------------------------------------------------------------------------------------------
 
 SOURCE_FILES = ("agentic.rkt", "LLM.txt", "conditional_docs.md", "templates/README.md", ".gitignore")
+ADOPTED_DIR = "adopted"   # what `al adopt` wrote: included by agentic.rkt, regenerated by `al adopt`
 
 
 def is_layer_file(rel: str, manifest: dict[str, str | None]) -> bool:
     """A file that belongs in a committed layer: source, scaffolding or generated."""
-    return (rel in manifest or rel in SOURCE_FILES or rel in (MANIFEST,) or rel.startswith(("templates/", "mock/"))
+    return (rel in manifest or rel in SOURCE_FILES or rel in (MANIFEST,)
+            or rel.startswith(("templates/", "mock/", ADOPTED_DIR + "/"))
             or bool(re.fullmatch(r"experts/[^/]+/expertise\.yaml", rel)))
 
 
@@ -1261,7 +1329,10 @@ def check_layer(layer: Path) -> list[str]:
     for rel in need:
         if not (layer / rel).is_file():
             problems.append(f"missing {rel}")
+    custom = {f"{c['name']}.md" for c in ir["commands"] if c["template"] == "custom"}  # may keep {{…}} literally
     for f in list((layer / "commands").glob("*.md")) + list((layer / "hops").glob("*.md")):
+        if f.parent.name == "commands" and f.name in custom:
+            continue
         left = re.findall(r"\{\{[a-z_]+\}\}", f.read_text())
         if left:
             problems.append(f"{f.relative_to(layer)}: unfilled placeholders {sorted(set(left))}")
@@ -1279,7 +1350,13 @@ def check_layer(layer: Path) -> list[str]:
         cp = run([sys.executable, "-m", "py_compile", str(f)], check=False)
         if cp.returncode != 0:
             problems.append(f"{f.relative_to(layer)}: does not compile: {cp.stderr.strip().splitlines()[-1]}")
+    for c in ir["commands"]:
+        if c["template"] == "custom" and not (layer / c["file"]).is_file():
+            problems.append(f"command `{c['name']}`: its template {c['file']} is missing")
     app = app_root_of(layer, ir)
+    if app.exists():
+        adopted_problems, _notes = adopt_module().check(layer, app)
+        problems += adopted_problems
     if not app.exists():
         problems.append(f"application checkout {app} not found")
     elif (ir.get("layer") or {}).get("kind") == "in-repo":
@@ -1616,6 +1693,10 @@ def improve_parsers(sub) -> None:
                    help="human (default): a person reviews the pull request; agent: an agent reviews first, a person merges")
     p.add_argument("--mock-scripts", type=Path, metavar="DIR",
                    help="scripted mock responses (<step>.json) for --dry-run, copied into the workflow's mock/improve/")
+    p.add_argument("--model-set", metavar="TIER", help="every agent step of the change uses TIER (also AL_MODEL_SET)")
+    p.add_argument("--model", action="append", default=[], metavar="TIER=MODEL_ID",
+                   help="use MODEL_ID for tier TIER in this change (repeatable; also AL_MODELS)")
+    p.add_argument("--max-cost", metavar="USD", help="stop the change once its agent calls cost more (also AL_MAX_COST)")
     p.add_argument("--adw-id", help=argparse.SUPPRESS)
     p = sub.add_parser("improve-check", help="one check of the layer-change workflow (run by `al improve`, in its worktree)")
     p.add_argument("what", choices=("definition", "regenerate", "scope", "check", "dry-runs", "verify", "report"))
@@ -1736,6 +1817,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--token", help="access token (needed for a non-loopback --bind; also AL_DASHBOARD_TOKEN)")
     p.add_argument("--open", action="store_true", help="open the page in a browser")
     p.add_argument("--podman", action="store_true", help="run it in its own locked-down podman container")
+    p = sub.add_parser("adopt", help="bring the codebase's existing agent setup (rules, prompts, workflow scripts) into a layer")
+    p.add_argument("layer", type=Path)
+    p.add_argument("--app", type=Path, help="the application checkout (needed before the layer has an agentic.rkt)")
+    p.add_argument("--dry-run", action="store_true", help="print what would happen; write nothing")
+    p.add_argument("--only", nargs="+", choices=("rules", "prompts", "workflows"), metavar="rules|prompts|workflows",
+                   help="adopt only these (default: all three); conflicts are always reported")
+    p.add_argument("--force", action="store_true", help="overwrite files `al adopt` wrote even if they were edited by hand")
     p = sub.add_parser("verify", help="run the layer's codebase cmds on a throwaway worktree")
     p.add_argument("layer", type=Path)
     p.add_argument("--cmd", dest="names", action="append", default=[], metavar="NAME", help="verify only this cmd (repeatable)")
@@ -1791,6 +1879,10 @@ def main(argv: list[str] | None = None) -> int:
                               f"(used by {', '.join(row['used_by']) or 'nothing'}; {row['status']})")
             for line in died_runs(layer):
                 print(f"note: {line}")
+            if (layer / "agentic-layer.json").is_file():
+                app = app_root_of(layer, json.loads((layer / "agentic-layer.json").read_text()))
+                for line in (adopt_module().check(layer, app)[1] if app.exists() else []):
+                    print(f"note: {line}")
             print("check: " + ("FAILED" if problems else "ok"))
             return 1 if problems else 0
         elif a.cmd == "eject":
@@ -1799,6 +1891,13 @@ def main(argv: list[str] | None = None) -> int:
             return dashboard_cli(a)
         elif a.cmd in IMPROVE_COMMANDS:
             return improve_main(a)
+        elif a.cmd == "adopt":
+            module = adopt_module()
+            try:
+                return module.adopt(sys.modules[__name__], a.layer, a.app, set(a.only or ("rules", "prompts", "workflows")),
+                                    a.dry_run, a.force)
+            except module.AdoptError as exc:
+                raise AlError(f"adopt: {exc}") from exc
         elif a.cmd == "verify":
             say = (lambda line: print(line, file=sys.stderr, flush=True)) if a.json else (lambda line: print(line, flush=True))
             report, _ = verify_layer(a.layer.resolve(), a.names, a.timeout, say)

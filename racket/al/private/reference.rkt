@@ -9,7 +9,15 @@
 (define-runtime-path examples-dir "../examples")
 
 (define (show-type t)
-  (cond [(symbol? t) (symbol->string t)]
+  (cond [(eq? t 'tier) "tier name: base | heavy | a tier from the agent's #:models"]
+        [(eq? t 'decimal) "number ≥ 0, e.g. 5 or 2.5"]
+        [(symbol? t) (symbol->string t)]
+        [(eq? (car t) 'record)
+         (define r (find-record (cadr t)))
+         (format "(~a [#:field value …]), see record `~a`"
+                 (string-join (map (lambda (p) (string-upcase (symbol->string p))) (record-positional r)) " ")
+                 (cadr t))]
+        [(eq? (car t) 'shorthand) (format "string; shorthand for the `~a` entry of #:~a" (caddr t) (cadr t))]
         [(eq? (car t) 'enum) (string-join (map symbol->string (cdr t)) " | ")]
         [(eq? (car t) 'list-of) (format "list of ~a" (show-type (cadr t)))]
         [(eq? (car t) 'ref) (format "name of a declared ~a" (cadr t))]
@@ -17,6 +25,7 @@
 
 (define (show-default f)
   (cond [(field-required? f) "REQUIRED"]
+        [(field-none? f) "none"]
         [(eq? (field-default f) '#:first) "the first declared option of that family"]
         [else (format "~s" (field-default f))]))
 
@@ -38,13 +47,14 @@
   (p "```racket")
   (p "#lang al")
   (p "(agentic-layer #:name \"repo-name\" #:description \"…\" #:llm-txt \"LLM.txt\"")
-  (p "  (codebase #:root \"…\" #:languages (…) (cmd NAME \"shell\") … (paths …) (conditional-doc \"path\" \"when\") …)")
+  (p "  (codebase #:root \"…\" #:languages (…) (cmd NAME \"shell\") … (paths …) (conditional-doc \"path\" \"when\") … (include \"FILE\") …)")
   (p "  (FAMILY KIND #:id ID #:field value …) …   ; options, see families below")
   (p "  (command NAME #:template T …) …")
   (p "  (hop NAME #:template T …) …")
   (p "  (expert NAME …) …")
   (p "  (adw NAME #:input (…) #:trigger (…) #:environment (…) #:review ID #:agent ID")
-  (p "    (steps (run NAME …) (check NAME …) (fan-out NAME …) (review) (ship) (compose ADW) …)) …)")
+  (p "    (steps (run NAME …) (check NAME …) (script NAME …) (fan-out NAME …) (review) (ship) (compose ADW) …)) …")
+  (p "  (include \"FILE\") …)                       ; more clauses from FILE, e.g. what `al adopt` wrote")
   (p "```")
   (p)
   (p "Syntax notes: strings use double quotes; names are bare symbols; lists are parenthesised without")
@@ -52,6 +62,8 @@
   (p "`(agentic-layer …)` form per file. Every field is `#:keyword value`. Omitted fields take the default.")
   (p "Families with a default kind may be omitted entirely. `(cmd NAME \"shell\" …)` and")
   (p "`(conditional-doc \"path\" \"when\")` take their first values positionally, exactly as shown.")
+  (p "A record type such as `model-tier` is written as a small list: its positional values, then `#:keyword value`")
+  (p "pairs, e.g. `#:models ((fast \"claude-haiku-5-5\") (heavy \"claude-fable-5-2\" #:effort high))`.")
   (p)
   (p "## Rules the compiler enforces")
   (p)

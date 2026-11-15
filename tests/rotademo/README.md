@@ -4,6 +4,7 @@ This demo runs `al` on a small staffing app for hospital wards. A real agent (Cl
 `claude-opus-5-5`) works inside a container on issues filed on a throwaway Forgejo server. The demo
 follows the pattern of the [notes web demo](../webdemo/README.md): the same container image recipe,
 Forgejo setup and teardown, proof comment on the pull request, and screenshot and video capture.
+The recorded outputs in `docs/demo/rotademo/` were produced with Claude Opus 5.5 on every step, before the default changed to Claude Opus 5.5 for routine steps and Claude Fable 5.2 (`claude-fable-5-2`) for planning, building and review.
 
 **All data is synthetic.** The organisations, people, registration numbers and shifts are invented
 (`app/seed.py`). The app handles staffing only: who works which shift. It holds no clinical or patient

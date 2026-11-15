@@ -19,7 +19,7 @@
                         "requirements.txt" ".gitignore" "CONTRIBUTING.md")))
 
   (forge forgejo #:host "@FORGE_HOST@" #:repo "@REPO@" #:token-env "AL_ROTADEMO_FORGEJO_TOKEN")
-  (agent claude-code #:id claude-sandboxed #:model-base "claude-opus-5-5" #:model-heavy "claude-opus-5-5"
+  (agent claude-code #:id claude-sandboxed
          #:permission-mode bypassPermissions #:max-turns 80)
   ;; Scenario C only: a scripted stand-in for the build step that applies a deliberately flawed
   ;; change (tests/rotademo/planted/). Everything else in that workflow runs on the real agent.

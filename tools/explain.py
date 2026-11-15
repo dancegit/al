@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GROUPED = {"prompt-input", "trigger", "environment", "artefact", "review", "agent", "command", "hop", "expert", "service"}
 CLAUSE = re.compile(r"^  \(([a-z][a-z-]*)\b")
+INCLUDED_CLAUSE = re.compile(r"^\(([a-z][a-z-]*)\b")       # an included file's clauses start in column 0
+INCLUDE = re.compile(r'\(include\s+"([^"]+)"\s*\)')
+# what kind of work a kit template does, in plain words (for "planning and review use MODEL")
+WORK = {"plan-feature": "planning", "plan-bug": "planning", "plan-chore": "planning", "plan-patch": "patch plans",
+        "plan-layer-change": "planning", "run-plan": "building", "implement": "building", "build": "building",
+        "review": "review", "resolve-test": "fixing failed checks", "classify": "classifying the work",
+        "commit": "commits", "document": "documentation", "pull-request": "pull requests", "branch-name": "branch names",
+        "prime": "reading the codebase", "summarize": "summaries", "question": "answering questions",
+        "e2e-test": "browser tests", "test": "tests", "install": "installing", "start": "starting the app",
+        "self-improve": "expert notes", "track-kpis": "KPIs", "meta-command": "new prompts", "meta-adw": "new workflows",
+        "meta-expert": "new experts", "plan-build-improve": "building"}
 
 
 def compile_ir(source: Path) -> dict:
@@ -37,19 +49,19 @@ def compile_ir(source: Path) -> dict:
     return json.loads(cp.stdout)
 
 
-def split_blocks(lines: list[str]) -> list[dict]:
+def split_blocks(lines: list[str], clause: re.Pattern = CLAUSE, comment: str = "  ;") -> list[dict]:
     """Top-level clauses of (agentic-layer …) with their leading comments; consecutive clauses of
     the same family form one block. Line numbers are 1-based and inclusive."""
-    starts = [(i, m.group(1)) for i, line in enumerate(lines) if (m := CLAUSE.match(line))]
+    starts = [(i, m.group(1)) for i, line in enumerate(lines) if (m := clause.match(line))]
     if not starts:
         return []
     raw = []
     for n, (i, head) in enumerate(starts):
         begin = i
-        while begin > 0 and lines[begin - 1].startswith("  ;"):
+        while begin > 0 and lines[begin - 1].startswith(comment):
             begin -= 1
         end = (starts[n + 1][0] if n + 1 < len(starts) else len(lines)) - 1
-        while end > i and (not lines[end].strip() or lines[end].startswith("  ;")):
+        while end > i and (not lines[end].strip() or lines[end].startswith(comment)):
             end -= 1
         raw.append({"head": head, "start": begin + 1, "end": end + 1, "first": lines[i]})
     blocks = [{"head": "header", "start": 1, "end": raw[0]["start"] - 1, "first": ""}]
@@ -60,6 +72,26 @@ def split_blocks(lines: list[str]) -> list[dict]:
         else:
             blocks.append(dict(item))
     return [b for b in blocks if b["end"] >= b["start"]]
+
+
+def with_included(blocks: list[dict], base: Path) -> list[dict]:
+    """After each top-level (include "FILE") block, the blocks of FILE (an included file's clauses
+    start in column 0); includes inside (codebase …) are folded into the codebase description."""
+    out = []
+    for b in blocks:
+        if b["head"] != "include":
+            out.append(b)
+            continue
+        m = INCLUDE.search(b["first"])
+        target = m.group(1) if m else "?"
+        out.append({**b, "target": target})
+        path = base / target
+        if m and path.is_file():
+            inc_lines = path.read_text().splitlines()
+            for ib in split_blocks(inc_lines, INCLUDED_CLAUSE, ";"):
+                if ib["head"] != "header":
+                    out.append({**ib, "file": target, "lines": inc_lines})
+    return out
 
 
 def listing(items: list[str], last: str = "and") -> str:
@@ -73,11 +105,19 @@ def by_id(ir: dict, key: str) -> dict:
     return {o["id"]: o for o in ir.get(key) or []}
 
 
-def describe_step(step: dict) -> str:
+def describe_step(step: dict, ir: dict | None = None) -> str:
     kind = step["kind"]
+    if kind == "script":
+        cmd = next((c for c in (ir or {}).get("codebase", {}).get("commands", []) if c["name"] == step["cmd"]), None)
+        given = f" with {listing(['`' + a + '`' for a in step.get('args', [])])}" if step.get("args") else ""
+        return (f"script `{step['name']}`: runs the codebase's own `{step['cmd']}` command"
+                + (f" (`{cmd['run']}`)" if cmd else "") + given
+                + "; if it fails, the run stops (it is not a check: nothing fixes it and it proves nothing to the gate)")
     if kind == "run":
         only = "" if step.get("when", "always") == "always" else f" (only for {step['when'].removeprefix('class-')} work)"
-        return f"agent step `{step['name']}` using the `{step['command']}` prompt{only}"
+        tier = f", on the {step['modelSet']} model tier" if step.get("modelSet", "inherit") != "inherit" else ""
+        agent = f", by agent `{step['agent']}`" if step.get("agent") else ""
+        return f"agent step `{step['name']}` using the `{step['command']}` prompt{tier}{agent}{only}"
     if kind == "check":
         fix = (f"; on failure the `{step['resolve']}` prompt fixes it, up to {step['retries']} tries" if step.get("resolve") else "")
         return f"check `{step['name']}`: run the `{step['cmd']}` command{fix}"
@@ -170,9 +210,13 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
                                + "; ".join(rules) + f". If so it ships by `{o['ship']}`; otherwise a person decides")
         return "Who decides it is done", "Review: " + listing(kinds, "or") + ".", bullets
     if head == "agent":
-        return ("Which agents do the work", "Agent: " + listing([f"{o['kind']}" + (f" (`{o['id']}`)" if o["id"] != o["kind"] else "") for o in ir["agents"]]) + ".",
-                [f"`{o['id']}`: {o['kind']}" + (f", models `{o['modelBase']}` / `{o['modelHeavy']}`" if o.get("modelHeavy") else "")
-                 + (f", permission mode `{o['permissionMode']}`" if o.get("permissionMode") else "") for o in ir["agents"]])
+        return models_text(ir)
+    if head == "budget":
+        return budget_text(ir)
+    if head == "include":
+        return ("More of the definition, from another file", f"These clauses are in `{block.get('target', '?')}`"
+                + (", written by `al adopt` from the codebase's existing agent setup" if "adopted/" in block.get("target", "") else "")
+                + "; they are explained below with the file's own blocks.", [])
     if head == "forge":
         f = ir["forge"]
         return ("The forge", "No forge: results stay as local branches." if f["kind"] == "none"
@@ -208,8 +252,7 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
                 + listing(["`" + c["name"] + "`" for c in cmds]) + ".")
         if focus:
             text += f" {len(focus)} of their instructions are specific to this codebase."
-        bullets = [f"`{c['name']}`: the {c['template']} template" + (f", applying the Fabric pattern {listing(c['fabric'])}" if c["fabric"] else "")
-                   for c in cmds]
+        bullets = [describe_command(c) for c in cmds]
         bullets += [f"Codebase-specific rule: “{f}”" for f in focus[:6]]
         return "The prompts", text, bullets
     if head == "hop":
@@ -232,9 +275,86 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
             text += " It changes the agentic layer itself, so a person always reviews it."
         bullets = [f"Work from {listing([pi[i]['kind'] for i in adw['input']], 'or')}; started by {listing([tr[i]['kind'] for i in adw['trigger']], 'or')}; "
                    f"runs in {listing([en[i]['kind'] for i in adw['environment']])}; agent `{adw['agent']}`"]
-        bullets += [f"{n}. {describe_step(s)}" for n, s in enumerate(steps, 1)]
+        bullets += [f"{n}. {describe_step(s, ir)}" for n, s in enumerate(steps, 1)]
+        if review.get("agent") and review["kind"] in ("agent", "auto"):
+            bullets.append(f"The reviewers run on agent `{review['agent']}`, not on the agent that did the work")
         return f"Workflow: {name}", text, bullets
     return head, f"`({head} …)`", []
+
+
+def describe_command(c: dict) -> str:
+    if c["template"] == "custom":
+        desc = c.get("description") or ""
+        if desc.startswith("adopted from "):
+            origin = desc.removeprefix("adopted from ").split(":", 1)[0]
+            return (f"`{c['name']}`: a prompt the team already had, adopted unchanged from `{origin}` "
+                    f"(copied to `{c['file']}`)")
+        return f"`{c['name']}`: a hand-written prompt (`{c['file']}`)"
+    return (f"`{c['name']}`: the {c['template']} template"
+            + (f", applying the Fabric pattern {listing(c['fabric'])}" if c["fabric"] else ""))
+
+
+def tiers_of(agent: dict) -> list[dict]:
+    if isinstance(agent.get("models"), list):
+        return agent["models"]
+    if "modelBase" in agent or "modelHeavy" in agent:   # compiled before named tiers
+        return [{"tier": "base", "model": agent.get("modelBase", ""), "effort": "default"},
+                {"tier": "heavy", "model": agent.get("modelHeavy", ""), "effort": "default"}]
+    return []
+
+
+def models_text(ir: dict) -> tuple[str, str, list[str]]:
+    """Which agents work, and which model does which kind of work, in plain words."""
+    agents = ir["agents"]
+    first = agents[0]
+    work: dict[str, list[str]] = {}
+    for c in ir["commands"] + ir["hops"]:
+        words = WORK.get(c["template"], f"the `{c['name']}` prompt") if c["template"] != "custom" else f"the `{c['name']}` prompt"
+        bucket = work.setdefault(c["modelSet"], [])
+        if words not in bucket:
+            bucket.append(words)
+    tiers = {t["tier"]: t for t in tiers_of(first)}
+    sentences = []
+    for tier, words in work.items():
+        model = tiers.get(tier, {}).get("model") or ("whatever model the CLI defaults to" if tier in tiers else None)
+        if model is None:
+            continue
+        effort = tiers[tier].get("effort", "default")
+        verb = "uses" if len(words) == 1 else "use"
+        sentences.append(f"{listing(words)} {verb} {model}" + (f" with {effort} reasoning effort" if effort != "default" else ""))
+    text = "Agent: " + listing([f"{o['kind']}" + (f" (`{o['id']}`)" if o["id"] != o["kind"] else "") for o in agents]) + "."
+    if sentences:
+        text += (f" On `{first['id']}`, " if len(agents) > 1 else " ") + "; ".join(sentences) + "."
+        if len(agents) == 1:
+            text = text.replace(". " + sentences[0][0], ". " + sentences[0][0].upper(), 1)
+    bullets = []
+    for o in agents:
+        shown = tiers_of(o)
+        line = f"`{o['id']}`: {o['kind']}"
+        if shown:
+            line += ", model tiers " + listing([f"{t['tier']} = `{t['model'] or 'the CLI default'}`"
+                                               + (f" (effort {t['effort']})" if t.get("effort", "default") != "default" else "")
+                                               for t in shown])
+        elif o["kind"] == "mock":
+            line += ", a stand-in that runs no model"
+        if o.get("permissionMode"):
+            line += f", permission mode `{o['permissionMode']}`"
+        bullets.append(line)
+    bullets.append("For one run, `--model-set TIER`, `--model TIER=MODEL_ID` (or AL_MODEL_SET / AL_MODELS) change this "
+                   "without editing the file")
+    return "Which agents and models do the work", text, bullets
+
+
+def budget_text(ir: dict) -> tuple[str, str, list[str]]:
+    b = ir.get("budget")
+    if not isinstance(b, dict):
+        return ("What it may cost", "No spending limits. `--max-cost USD` (or AL_MAX_COST) still limits a single run.", [])
+    parts = [f"${b[key]:g} {label}" for key, label in (("runUsd", "per run"), ("stepUsd", "per agent call"),
+                                                        ("dayUsd", "a day for the whole layer")) if b.get(key) is not None]
+    text = (f"At most {listing(parts) or 'no limit'}. A run that goes over is stopped after the agent call that crossed "
+            "the limit and handed to a person, with the reason. Once the day's limit is reached, nothing new starts.")
+    return ("What it may cost", text, ["Costs are what the agents report; codex and custom agents report none and count as $0",
+                                       "`--max-cost USD` replaces the per-run limit for one run"])
 
 
 def dashboard_text(ir: dict) -> tuple[str, str, list[str]]:
@@ -278,13 +398,15 @@ def markdown(name: str, source_label: str, lines: list[str], blocks: list[dict],
             f"({listing(['`' + a['name'] + '`' for a in adws])}).", "", "## Block by block", ""]
     for b in blocks:
         heading, text, bullets = explain(b, ir)
-        out += [f"### {heading}", "", f"Lines {b['start']}–{b['end']}. {text}", ""]
+        where = f"`{b['file']}` lines" if b.get("file") else "Lines"
+        out += [f"### {heading}", "", f"{where} {b['start']}–{b['end']}. {text}", ""]
         out += [f"- {x}" for x in bullets] + ([""] if bullets else [])
-        out += ["```racket", *lines[b["start"] - 1:b["end"]], "```", ""]
-    if not any(b["head"] == "dashboard" for b in blocks):
-        heading, text, bullets = dashboard_text(ir)
-        out += [f"### {heading} (not written down: the default)", "", text, ""]
-        out += [f"- {x}" for x in bullets] + ([""] if bullets else [])
+        out += ["```racket", *b.get("lines", lines)[b["start"] - 1:b["end"]], "```", ""]
+    for head, describe in (("agent", models_text), ("dashboard", dashboard_text)):
+        if not any(b["head"] == head for b in blocks):
+            heading, text, bullets = describe(ir)
+            out += [f"### {heading} (not written down: the default)", "", text, ""]
+            out += [f"- {x}" for x in bullets] + ([""] if bullets else [])
     return "\n".join(out)
 
 
@@ -313,15 +435,17 @@ def render_gif(name: str, lines: list[str], blocks: list[dict], ir: dict, out: P
             d.text((x + pos * cw, y), text[pos:cols], font=font, fill=dim if faded else fg)
 
     frames, durations = [], []
+    source_lines = lines
     for b in blocks:
         heading, text, _ = explain(b, ir)
+        lines = b.get("lines", source_lines)   # a block from an included file shows that file
         size = b["end"] - b["start"] + 1
         top = max(1, min(b["start"] - max(0, (rows - size) // 2), max(1, len(lines) - rows + 1)))
         top = min(top, b["start"])
         img = Image.new("RGB", (width, height), bg)
         d = ImageDraw.Draw(img)
         d.rectangle([0, 0, width, 30], fill="#161b22")
-        d.text((14, 7), f"{name} — agentic.rkt", font=bold, fill=dim)
+        d.text((14, 7), f"{name} — {b.get('file') or 'agentic.rkt'}", font=bold, fill=dim)
         d.text((width - 14, 7), f"lines {b['start']}–{b['end']} of {len(lines)}", font=font, fill=dim, anchor="ra")
         y0 = 34 + pad // 2
         first, last = max(b["start"], top), min(b["end"], top + rows - 1)
@@ -359,12 +483,17 @@ def main() -> int:
     for pair in a.subst:
         key, _, value = pair.partition("=")
         text = text.replace(key, value)
+    included = {rel: source.parent / rel for rel in INCLUDE.findall(text)}
     with tempfile.TemporaryDirectory() as tmp:
         compiled = Path(tmp) / "agentic.rkt"
         compiled.write_text(text)
+        for rel, path in included.items():  # (include "FILE") is relative to the definition
+            if path.is_file():
+                (Path(tmp) / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, Path(tmp) / rel)
         ir = compile_ir(compiled)
     lines = text.splitlines()
-    blocks = split_blocks(lines)
+    blocks = with_included(split_blocks(lines), source.parent)
     name = a.name or ir["name"]
     try:
         label = str(source.resolve().relative_to(ROOT))
@@ -381,6 +510,11 @@ def main() -> int:
         for b in blocks:
             heading, body, bullets = explain(b, ir)
             print(f"\n{heading}  (lines {b['start']}–{b['end']})\n  " + "\n  ".join(textwrap.wrap(body.replace('`', ''), 100)))
+            for x in bullets:
+                print("    - " + x.replace("`", ""))
+        if not any(b["head"] == "agent" for b in blocks):
+            heading, body, bullets = models_text(ir)
+            print(f"\n{heading}  (not written down: the default)\n  " + "\n  ".join(textwrap.wrap(body.replace('`', ''), 100)))
             for x in bullets:
                 print("    - " + x.replace("`", ""))
     return 0

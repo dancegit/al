@@ -127,6 +127,17 @@ class Target:
                              + f"\nal improve bases its change on `{branch}`: commit (or stash) these first")
 
 
+def models_field(agent: dict) -> str:
+    """The agent's model tiers as one #:models field (IR from before tiers: modelBase / modelHeavy)."""
+    tiers = agent.get("models")
+    if not isinstance(tiers, list):
+        tiers = [{"tier": "base", "model": agent.get("modelBase", ""), "effort": "default"},
+                 {"tier": "heavy", "model": agent.get("modelHeavy", ""), "effort": "default"}]
+    items = [f"({t['tier']} {rkt(t['model'])}" + (f" #:effort {t['effort']}" if t.get("effort", "default") != "default" else "")
+             + ")" for t in tiers]
+    return "#:models (" + " ".join(items) + ")"
+
+
 def agent_clause(ir: dict, say) -> tuple[str, str]:
     """The layer's own agent (the first declared), as a DSL clause safe to run on the host."""
     agent = dict(ir["agents"][0])
@@ -138,7 +149,7 @@ def agent_clause(ir: dict, say) -> tuple[str, str]:
             say(f"agent `{aid}`: permission mode {mode} becomes acceptEdits here (the workflow runs on the host"
                 + (", where bypassPermissions is not allowed)" if mode == "bypassPermissions" else "; plan mode cannot edit)"))
             mode = "acceptEdits"
-        fields = [f"#:model-base {rkt(agent['modelBase'])}", f"#:model-heavy {rkt(agent['modelHeavy'])}",
+        fields = [models_field(agent),
                   f"#:permission-mode {mode}", f"#:safe-mode {'#t' if agent['safeMode'] else '#f'}",
                   "#:allowed-tools (" + " ".join(rkt(t) for t in agent["allowedTools"]) + ")",
                   f"#:max-turns {agent['maxTurns']}", f"#:timeout {agent['timeout']}"]
@@ -147,11 +158,9 @@ def agent_clause(ir: dict, say) -> tuple[str, str]:
         if sandbox == "danger-full-access":
             say(f"agent `{aid}`: sandbox danger-full-access becomes workspace-write here (the workflow runs on the host)")
             sandbox = "workspace-write"
-        fields = [f"#:model-base {rkt(agent['modelBase'])}", f"#:model-heavy {rkt(agent['modelHeavy'])}",
-                  f"#:sandbox {sandbox}", f"#:timeout {agent['timeout']}"]
+        fields = [models_field(agent), f"#:sandbox {sandbox}", f"#:timeout {agent['timeout']}"]
     elif kind == "custom":
-        fields = [f"#:command {rkt(agent['command'])}", f"#:model-base {rkt(agent['modelBase'])}",
-                  f"#:model-heavy {rkt(agent['modelHeavy'])}", f"#:timeout {agent['timeout']}"]
+        fields = [f"#:command {rkt(agent['command'])}", models_field(agent), f"#:timeout {agent['timeout']}"]
     else:  # mock
         fields = [f"#:timeout {max(int(agent.get('timeout') or 60), 60)}"]
     return f"(agent {kind} #:id {aid} " + " ".join(fields) + ")", aid
@@ -263,6 +272,10 @@ def improve(a: argparse.Namespace, al: Any) -> int:
     argv = ["uv", "run", "--quiet", str(self_dir / "adws" / "adw_improve.py"), a.request, "--adw-id", adw_id]
     if a.dry_run:
         argv.append("--dry-run")
+    # model and spending overrides for this run (AL_MODEL_SET / AL_MODELS / AL_MAX_COST pass through `env`)
+    argv += ["--model-set", a.model_set] if a.model_set else []
+    argv += [arg for item in a.model for arg in ("--model", item)]
+    argv += ["--max-cost", a.max_cost] if a.max_cost else []
     code = subprocess.call(argv, env=env)
     state_file = self_dir / "agents" / adw_id / "state.json"
     shutil.rmtree(self_dir / "agents" / adw_id / "app", ignore_errors=True)  # the pristine clone the checks used

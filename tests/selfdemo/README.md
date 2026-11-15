@@ -10,7 +10,7 @@ time its layer is **checked in with the code**: it lives in `agentic/` inside th
 (placement `in-repo`), so the team shares it and changes to it are reviewed like code.
 
 A real agent (Claude Opus 5.5, model `claude-opus-5-5`) does the work. A throwaway Forgejo server
-hosts the repository.
+hosts the repository. The recorded outputs in `docs/demo/selfdemo/` were produced with Claude Opus 5.5 on every step, before the default changed to Claude Opus 5.5 for routine steps and Claude Fable 5.2 (`claude-fable-5-2`) for planning, building and review.
 
 ## What happens
 

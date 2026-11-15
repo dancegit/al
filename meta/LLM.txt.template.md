@@ -86,6 +86,22 @@ CI config, release and publishing, security-sensitive code, migrations, generate
 
 - `<doc path>` — when <condition>
 
+## Existing agent setup
+
+<Agent material the repository already has, one row per item, as `al scout` lists it: rule files (CLAUDE.md, AGENTS.md,
+per-directory variants, GEMINI.md, .cursorrules, .cursor/rules, .github/copilot-instructions.md, .windsurfrules), prompt
+libraries (.claude/commands, .claude/agents, .claude/skills, .codex/prompts, prompts/), workflow code (adws/ scripts, CI
+workflows that run an agent, .claude/settings*.json, .mcp.json), plans and doc caches (specs/, ai_docs/, app_docs/,
+conditional_docs.md), and any existing al layer. `none` if there is nothing.>
+
+| path | kind | bytes | description | arguments | in use? |
+| --- | --- | --- | --- | --- | --- |
+| `<path>` | <rules / prompt / agent-definition / skill / workflow-script / ci-agent / agent-settings / mcp / plans / doc-cache / doc-index / al-layer> | <size> | <what it is for, one line> | <for prompts: `$ARGUMENTS`, `$1`…, the argument hint> | <yes — evidence / no — evidence / UNVERIFIED> |
+
+<After the table, one line per rule file with the rules an agent must not break (the authoring LLM carries them over),
+and one line per prompt or script that the team clearly still uses, with the evidence (referenced from CI, a Makefile,
+CONTRIBUTING, a recent commit).>
+
 ## Evidence
 
 <One line per command in `## Commands`, and per protected path and artefact glob: `claim — file:line` where the repository states it.>

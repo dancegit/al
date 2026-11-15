@@ -14,7 +14,7 @@
            #:protected ("e2e/capture.py" "requirements.txt" ".gitignore")))
 
   (forge forgejo #:host "@FORGE_HOST@" #:repo "adw/notes" #:token-env "AL_WEBDEMO_FORGEJO_TOKEN")
-  (agent claude-code #:id claude-sandboxed #:model-base "claude-opus-5-5" #:model-heavy "claude-opus-5-5"
+  (agent claude-code #:id claude-sandboxed
          #:permission-mode bypassPermissions #:max-turns 80)
   (prompt-input issue #:labels () #:classify #f)
   (trigger manual)

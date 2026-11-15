@@ -893,9 +893,10 @@ def build_graph(adw: dict[str, Any], layer_ir: dict[str, Any] | None = None) -> 
 
 def _node(step: dict[str, Any], role: str) -> dict[str, Any]:
     kind = str(step.get("kind", "run"))
-    types = {"run": "agent", "check": "check", "review": "review", "ship": "ship", "fan-out": "fan-out"}
-    sub = {"run": step.get("command", ""), "check": step.get("cmd", ""), "review": "review",
-           "ship": "gate + ship", "fan-out": f"pick {step.get('pick', 'best')}"}.get(kind, "")
+    types = {"run": "agent", "check": "check", "script": "script", "review": "review", "ship": "ship",
+             "fan-out": "fan-out"}
+    sub = {"run": step.get("command", ""), "check": step.get("cmd", ""), "script": f"$ {step.get('cmd', '')}",
+           "review": "review", "ship": "gate + ship", "fan-out": f"pick {step.get('pick', 'best')}"}.get(kind, "")
     if kind == "run" and step.get("agent"):
         sub = f"{sub} @{step['agent']}"
     return {"id": str(step.get("name", "")), "step": str(step.get("name", "")), "type": types.get(kind, kind),
@@ -920,6 +921,14 @@ class Layer:
     def limits(self) -> dict[str, int]:
         option = self.ir.get("concurrency") or {}
         return {pool: int(option.get(key, default) or default) for pool, (key, default) in POOL_DEFAULTS.items()}
+
+    def budget(self) -> dict[str, float | None] | None:
+        """The declared spending limits (budget limits …), or None."""
+        option = self.ir.get("budget")
+        if not isinstance(option, dict):
+            return None
+        return {name: (float(option[key]) if isinstance(option.get(key), (int, float)) else None)
+                for name, key in (("run", "runUsd"), ("step", "stepUsd"), ("day", "dayUsd"))}
 
     def explain_file(self) -> str | None:
         for name in EXPLAIN_FILES:
@@ -1114,6 +1123,30 @@ class Activity:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+def tier_fields(record: dict[str, Any]) -> dict[str, str]:
+    """The model tier of an agent call and why it was chosen (runs from before tiers: model_set only)."""
+    return {"tier": str(record.get("tier") or record.get("model_set") or ""),
+            "tier_from": str(record.get("tier_from") or ""), "model_from": str(record.get("model_from") or "")}
+
+
+def budget_view(state: dict[str, Any]) -> dict[str, Any] | None:
+    """Limits, what the run spent and whether a limit stopped it; None for a run without limits or cost."""
+    record = state.get("budget") if isinstance(state.get("budget"), dict) else {}
+    limits = record.get("limits") if isinstance(record.get("limits"), dict) else {}
+    cost = state.get("cost") if isinstance(state.get("cost"), dict) else {}
+    stopped = record.get("stopped") if isinstance(record.get("stopped"), dict) else None
+    if not any(limits.get(k) is not None for k in ("run", "step", "day")) and not stopped and not cost:
+        return None
+    return {"run": limits.get("run"), "step": limits.get("step"), "day": limits.get("day"),
+            "run_from": limits.get("run_from") or "", "spent": cost.get("total"),
+            "unreported": [str(x) for x in cost.get("unreported") or []],
+            "stopped": {k: stopped.get(k) for k in ("limit", "spent", "of", "step", "reason")} if stopped else None}
+
+
+def local_day(stamp: float | None) -> str:
+    return datetime.fromtimestamp(stamp).date().isoformat() if stamp else ""
+
+
 def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Exact spans from a run's events (see docs/DESIGN.md, "Run events"): agent calls, check
     attempts (with re-checks), gate / deploy commands, slot waits, the container, the check that is
@@ -1136,11 +1169,12 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
             agents[str(event.get("step") or "")] = {
                 "start": at, "end": None, "status": "running", "owner": str(event.get("owner") or ""),
                 "agent": str(event.get("agent") or ""), "agent_kind": str(event.get("agent_kind") or ""),
-                "model": str(event.get("model") or "")}
+                "model": str(event.get("model") or ""), **tier_fields(event)}
         elif kind == "agent.end":
             span = agents.setdefault(str(event.get("step") or ""), {
                 "start": at, "owner": str(event.get("owner") or ""), "agent": str(event.get("agent") or ""),
-                "agent_kind": str(event.get("agent_kind") or ""), "model": str(event.get("model") or "")})
+                "agent_kind": str(event.get("agent_kind") or ""), "model": str(event.get("model") or ""),
+                **tier_fields(event)})
             span.update(end=at, status="failed" if event.get("status") == "failed" else "passed",
                         cost=event.get("cost") if isinstance(event.get("cost"), (int, float)) else None,
                         turns=event.get("turns") if isinstance(event.get("turns"), int) else None,
@@ -1225,6 +1259,8 @@ class RunModel:
         step_names = [str(s.get("name")) for s in ir_steps]
         kinds = {str(s.get("name")): str(s.get("kind")) for s in ir_steps}
         records = {str(r.get("name")): r for r in (state or {}).get("steps") or [] if isinstance(r, dict)}
+        # the last agent call made from each agent directory (state.json `agent_calls`)
+        calls = {str(c.get("step")): c for c in (state or {}).get("agent_calls") or [] if isinstance(c, dict)}
         for name, record in records.items():
             kinds.setdefault(name, str(record.get("kind", "run")))
             if name not in step_names:
@@ -1272,6 +1308,10 @@ class RunModel:
                     "status": astatus, **agg.as_dict(), "agent_id": str(ident.get("agent") or ""),
                     "agent_kind": str(ident.get("agent_kind") or "")}
             info["model"] = str(ident.get("model") or "") or agg.model
+            call = calls.get(directory.name) or {}
+            info.update(tier_fields(span or call))
+            if not info["tier"] and call:
+                info.update(tier_fields(call))
             if info["cost"] is None and span and span.get("cost") is not None:
                 info["cost"] = span["cost"]
             agents.append(info)
@@ -1519,6 +1559,7 @@ class RunModel:
                if parent.get("run") else {}),
             "artefacts": len(state.get("artefacts") or []),
             "agents": len(agents),
+            "budget": budget_view(state),
             "timing": "events" if spans is not None else "files",
             "last_seen": data["last_seen"],
             "mtime": max([mtime(self.files.dir / "state.json") or 0, mtime(self.files.dir / "run.log") or 0]),
@@ -1704,11 +1745,15 @@ class RunModel:
             "state": {"branch": state.get("branch", ""), "plan": short(state.get("plan", "")),
                       "worktree": short(state.get("worktree", "")), "ports": state.get("ports") or [],
                       "model_set": state.get("model_set", ""), "class_fixed": state.get("class_fixed"),
+                      "overrides": state.get("overrides") or {},
                       "source": state.get("source", ""), "prompt": short(state.get("prompt", ""))},
             "review": {"mode": review.get("mode", ""), "success": (review.get("verdict") or {}).get("success"),
                        "summary": short((review.get("verdict") or {}).get("summary", "")), "rounds": rounds},
             "ship": {k: (short(v) if isinstance(v, str) else v) for k, v in ship.items() if k != "gate"},
             "gate": gate, "handoff": handoff, "fanout": fanout, "artefacts": artefacts,
+            "budget": budget_view(state),
+            "scripts": {name: {k: (short(v) if isinstance(v, str) else v) for k, v in rec.items()}
+                        for name, rec in (state.get("scripts") or {}).items() if isinstance(rec, dict)},
             "runlog": [short(line) for line in runlog_tail],
             "steps_detail": {name: {"detail": short(str(r.get("detail", ""))), "attempts": r.get("attempts"),
                                     "status": r.get("status"), "started": parse_time(r.get("started")),
@@ -2046,8 +2091,21 @@ class Model:
                             "description": str(layer.ir.get("description", "")),
                             "adws": [a.get("name") for a in layer.ir.get("adws") or [] if isinstance(a, dict)],
                             "runs": len(runs), "running": sum(1 for r in runs if r["status"] == "running"),
-                            "explain": layer.explain_file(), "limits": layer.limits()})
+                            "explain": layer.explain_file(), "limits": layer.limits(),
+                            "budget": self.layer_budget(layer, runs)})
             return out
+
+    @staticmethod
+    def layer_budget(layer: Layer, runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """The layer's limits and what its runs that started today (local date) cost so far."""
+        limits = layer.budget()
+        today = datetime.now().date().isoformat()
+        spent = sum(float(r["cost"]) for r in runs if isinstance(r.get("cost"), (int, float))
+                    and local_day(r.get("started")) == today)
+        stops = sum(1 for r in runs if (r.get("budget") or {}).get("stopped") and local_day(r.get("started")) == today)
+        if limits is None and not stops:
+            return None
+        return {**(limits or {"run": None, "step": None, "day": None}), "today": round(spent, 6), "stops_today": stops}
 
     # ---------------------------------------------------------------- polling
     def run_ids(self, layer: Layer) -> list[str]:

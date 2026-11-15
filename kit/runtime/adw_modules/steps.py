@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import time
@@ -11,8 +12,10 @@ from typing import Any
 
 from . import artefacts
 from . import events
+from . import models
 from . import slots
 from .agents import run_agent
+from .budget import BudgetExceeded
 from .errors import LayerError, StepFailed
 from .templates import render_step_arg
 
@@ -140,23 +143,37 @@ def run_logged(layer: Any, state: Any, env_stack: Any, command: dict[str, Any], 
     return code
 
 
+def step_tier(layer: Any, state: Any, step: dict[str, Any], command: dict[str, Any]) -> tuple[str, str]:
+    """(tier, why) a run step asks for: its own #:model-set, else the request's tier (a task tag or
+    issue keyword) when the step's agent declares it, else its command's. A run-wide override
+    (--model-set) is applied on top of this by models.choose."""
+    own = str(step.get("modelSet") or "inherit")
+    if own != "inherit":
+        return own, "step"
+    requested = str(state.model_set or "")
+    if requested:
+        agent = layer.option("agents", str(step.get("agent") or "") or layer.adw(state.adw)["agent"])
+        if models.has_tier(agent, requested):
+            return requested, "request"
+        print(f"[adw {state.adw_id}] step {step.get('name')}: the request asks for tier {requested}, which agent "
+              f"{agent.get('id')} does not declare; using its command's tier")
+    return str(command.get("modelSet") or "base"), "command"
+
+
 def run_run(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> None:
     name = str(step["name"])
     command_name = str(step["command"])
     command = layer.command(command_name)
-    model_set = str(step.get("modelSet", "inherit"))
-    if model_set == "inherit":
-        # A request-level model set (e.g. a tasklist `{heavy}` tag) beats the command's default.
-        model_set = state.model_set or str(command.get("modelSet", "base"))
-    if model_set not in {"base", "heavy"}:
-        raise LayerError(f"Unknown model set {model_set!r} for step {name}")
+    model_set, tier_from = step_tier(layer, state, step, command)
     args = [render_step_arg(str(value), step_variables(state), state.outputs) for value in step.get("args", [])]
     retries = max(0, int(step.get("retries", 0)))
     for attempt in range(retries + 1):
         try:
             output = run_agent(layer, state, name, command_name, args, model_set, env_stack,
-                               str(step.get("agent") or ""))
+                               str(step.get("agent") or ""), tier_from)
             break
+        except BudgetExceeded:
+            raise  # a spending limit is never retried
         except StepFailed as exc:
             if attempt == retries:
                 raise
@@ -192,10 +209,49 @@ def run_check_with_resolve(layer: Any, state: Any, step: dict[str, Any], env_sta
         state.outputs[f"{name}-resolve-{attempt + 1}"] = output
 
 
+SCRIPT_TAIL = 4000  # characters of a script's output kept as the step's output ($out.NAME)
+
+
+def run_script(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> None:
+    """(script NAME #:cmd C #:args (…)): run a declared codebase cmd with substituted, shell-quoted
+    arguments in the run's environment, with the run context in ADW_* variables. Its output is the
+    step's output; a non-zero exit fails the run. Not a check: no resolve loop, not gate evidence."""
+    name = str(step["name"])
+    if env_stack.read_only:
+        raise StepFailed(name, "script refused in read-only host environment")
+    command = layer.cmd(step["cmd"])
+    args = [render_step_arg(str(value), step_variables(state), state.outputs) for value in step.get("args", [])]
+    context = {"ADW_ID": state.adw_id, "ADW_PROMPT": state.prompt, "ADW_CLASS": state.klass,
+               "ADW_PLAN": state.plan, "ADW_BRANCH": state.branch, "ADW_WORKTREE": str(env_stack.cwd),
+               "ADW_LAYER_DIR": str(layer.layer_dir), "ADW_STEP": name}
+    # exported in the shell line itself, so they reach the command in a container too
+    exports = " ".join(f"{key}={shlex.quote(str(value))}" for key, value in context.items())
+    line = f"export {exports}; {command['run']}" + "".join(f" {shlex.quote(arg)}" for arg in args)
+    log_dir = Path(layer.layer_dir) / "agents" / state.adw_id / "scripts"
+    log_path = log_dir / f"{name}.{_log_number(log_dir, name) if log_dir.is_dir() else 1}.log"
+    relative = log_path.relative_to(layer.layer_dir).as_posix()
+    timeout = int(step.get("timeout") or 0) or int(command.get("timeout", 900))
+    span = {"step": name, "owner": running_step(state), "cmd": str(step["cmd"]), "log": relative}
+    with slots.slot(layer, "checks", f"adw {state.adw_id} script {name}"):
+        argv = env_stack.wrap(line)
+        events.emit("script.start", **span)
+        started = time.monotonic()
+        code, output = run_command(argv, env_stack.cwd, env_stack.process_env(), timeout, log_path=log_path)
+        events.emit("script.end", **span, exit=code, seconds=round(time.monotonic() - started, 3))
+    state.scripts[name] = {"cmd": str(command["run"]), "args": args, "exit": code, "log": relative}
+    state.outputs[name] = output[-SCRIPT_TAIL:]
+    state.save(layer.layer_dir)
+    if code != 0:
+        tail = "\n".join(output.rstrip().splitlines()[-5:])
+        raise StepFailed(name, f"script {step['cmd']} exited {code}; log {relative}" + (f"\n{tail}" if tail else ""))
+
+
 def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_stack: Any) -> None:
     kind = step.get("kind")
     if kind == "run":
         run_run(layer, state, step, env_stack)
+    elif kind == "script":
+        run_script(layer, state, step, env_stack)
     elif kind == "check":
         if env_stack.read_only:
             raise StepFailed(str(step["name"]), "check refused in read-only host environment")
@@ -262,6 +318,8 @@ def _pass_detail(state: Any, step: dict[str, Any]) -> str:
     name = str(step.get("name"))
     if step.get("kind") == "check" and name in state.checks:
         return f"exit {state.checks[name]['exit']}, log {state.checks[name]['log']}"
+    if step.get("kind") == "script" and name in state.scripts:
+        return f"exit {state.scripts[name]['exit']}, log {state.scripts[name]['log']}"
     output = state.outputs.get(name, "")
     first_line = output.strip().splitlines()[0] if output.strip() else "ok"
     return first_line[:160]

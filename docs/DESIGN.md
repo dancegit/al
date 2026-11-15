@@ -40,7 +40,7 @@ application repo ──al scout──▶ LLM.txt (draft) ──LLM + scout-codeb
 | Isolation via worktrees + ports; layer separate from app | `environment worktree` creates `trees/<adw-id>` under the layer; the app's working tree is never written |
 | `tasks.md` two-way task list polled by a cron trigger | `(prompt-input tasklist)` + `(trigger cron)` / `(trigger file-watch)` |
 | Agent experts: expertise file + self-improve | `(expert NAME #:domain … #:paths …)` |
-| Model sets base/heavy; KPIs | `#:model-set` on commands/steps; `track-kpis` template |
+| Model sets base/heavy; KPIs | named model tiers per agent (`base`, `heavy`, any others in `#:models`), picked with `#:model-set` on commands/hops/steps and overridable per run; `(budget limits …)`; `track-kpis` template |
 | Don't couple to one tool | `agent` family: claude-code, codex, custom CLI, mock |
 
 ## Why a DSL, and why Racket
@@ -148,6 +148,39 @@ against a pristine clone of the application; `al verify` when cmds or environmen
 commit → review → ship. It is an ordinary ADW with `#:changes layer`, which the compiler only accepts
 with a human or agent review: there is no zero-touch mode for changes to how agents work.
 
+## Codebases that already have an agent setup
+
+Many repositories already carry agent material: rule files (`CLAUDE.md`, `AGENTS.md`, per-directory
+variants, `.cursorrules`, …), prompt libraries (`.claude/commands/`), workflow scripts (`adws/`), CI
+jobs that run an agent, Claude Code settings. `al scout` finds and classifies it (tracked files only,
+nothing executed) into an `## Existing agent setup` table of the `LLM.txt` draft, and the meta
+commands make the authoring LLM build on it instead of beside it.
+
+`al adopt LAYER` brings it in deterministically and idempotently, never touching the application:
+
+| Material | What the layer gets |
+|---|---|
+| rule files | a `(conditional-doc FILE "Always: …")` per file (per-directory files: "When working under DIR/"), so every prompt tells the agent to read it; the files stay where they are. Agents run with `--safe-mode`, which does not load `CLAUDE.md` by itself, so this is what makes the rules reach them. Turning rules into `#:focus` lines is judgement, left to the authoring LLM, which gets `adopted/RULES.md`: every rule with its source line |
+| prompts | a `(command NAME #:template custom #:file "templates/custom/NAME.md")` per prompt, the text copied with a header naming its origin; `$ARGUMENTS` and `$1…$9` work as before; a name taken by a kit template or a layer command gets a `team-` prefix; `{{…}}` is kept literally through `{{open_braces}}`; what does not carry over (`!`cmd``, `@file`, `$10`, `model:` / `allowed-tools:` front matter) is reported |
+| workflow scripts | a `(cmd legacy-NAME "uv run adws/…")` and a PROPOSED one-step ADW `(steps (script run #:cmd legacy-NAME #:args ("$prompt")) (review) (ship))` with human review. A script cannot be converted, and is not pretended to be; a native equivalent is a change for `al improve` and a person |
+| CI agents, settings, MCP, skills, subagents, an existing al layer | reported, not adopted: a person decides |
+
+The declarations go to `adopted/codebase.rkt` and `adopted/layer.rkt`, which `agentic.rkt` includes with
+`(include "…")` inside `(codebase …)` and at the top level; `al adopt` adds those two lines once. An
+include rather than a marked region in `agentic.rkt`: `#lang al` resolves it at expansion time and
+reads the file as syntax, so every compiler error about an adopted clause points into the included
+file at that clause; the author's file is touched once and never rewritten; and the adopted files are
+al's own, regenerated whole and protected like generated files (`adopted/.al-adopt.json` records a
+sha256 per file; a hand edit makes the next `al adopt` refuse). The report (`adopted/REPORT.md`)
+lists what a person must decide, with both texts where a rule mechanically contradicts the layer
+(e.g. "never commit" against the kit's commit prompt). `al check` verifies the adopted files and the
+rule files they point at still exist, and says when an adopted original has changed.
+
+A `(script NAME #:cmd C #:args (…))` step runs a declared codebase cmd in the run's environment, with
+the arguments substituted and shell-quoted and the run context in `ADW_*` variables. Its output is the
+step's output, a non-zero exit fails the run (a shipping workflow hands its work to a person), and it
+is not a check: no resolve loop, and the gate never counts it as verification.
+
 ## Supporting the LLM: our own commands
 
 `meta/commands/` holds the prompts that drive an LLM through the pipeline: `scout-codebase`
@@ -166,7 +199,7 @@ of the output format.
 racket/al/         #lang al: meta.rkt (meta-DSL), vocab.rkt, compiler.rkt, schema.rkt, reference.rkt, tests/
 schemas/           agentic-layer-v1.schema.json      (generated)
 docs/              AL-DSL.llms.txt (generated), DESIGN.md
-tools/al           init | scout | compile | gen | check
+tools/al           init | scout | adopt | compile | gen | check | explain | eject | improve | dashboard | verify
 kit/templates/     command, HOP and expert templates   kit/schemas/  JSON output contracts
 kit/runtime/       adw_modules (generic IR interpreter), triggers, voice, dispatch
 meta/              LLM.txt template + the meta commands
@@ -236,6 +269,32 @@ the forge refused the merge — the run falls back to the human path: a PR (or `
 forge) with the reason recorded, the commits kept on the run's branch, and no deploy. A git
 integrity failure is never turned into a PR.
 
+## Model tiers and spending limits
+
+An agent declares named model tiers: `base` and `heavy` always exist (`#:model-base` / `#:model-heavy`
+are shorthand for them, with defaults), `#:models ((fast "…") (heavy "…" #:effort high))` adds or sets
+others, and both forms compile to one list in the IR (`agents[].models: [{tier, model, effort}]`).
+Commands, hops and run steps name a tier with `#:model-set`; the compiler rejects, at the ADW's
+clause, any tier a workflow can reach that the agent running it does not declare (run steps on their
+own or the ADW's agent, resolve/patch/implement on the ADW's agent, the review command on the review
+option's `#:agent`). At run time the tier of each agent call is, first match winning: `--model-set`
+(or `AL_MODEL_SET`), the run step's own `#:model-set`, the request's tier (a task tag or an issue
+keyword naming any declared tier), the command's; `--model TIER=ID` (or `AL_MODELS`) then remaps that
+tier's model id for the run. Every call is recorded with its tier, model and reason in `state.json`
+(`agent_calls`) and in its `agent.*` events. Effort goes to the CLI only where it has a way to take it:
+Claude Code `--effort`, codex `-c model_reasoning_effort=…`.
+
+`(budget limits #:run-usd #:step-usd #:day-usd)` and `--max-cost` / `AL_MAX_COST` (which replaces the
+run limit for one run) are checked around every agent call, with the cost each transcript reports
+(codex and custom agents report none and count as $0, which the summary states). Before a call:
+today's spending in the layer (local date, from every run's `state.json` cost, or its events for
+older runs) must be below the day limit. After a call: a call over the step limit, or a run over its
+limit, raises a budget stop (`budget:<limit>: spent $X of $Y`), which is never retried and goes
+through the ordinary handoff path, so the work is committed and a person is told. Claude Code also
+gets `--max-budget-usd` with what is left under the tightest limit, so a single call stops early; a
+call the CLI ends at that cap is reported as the limit that set it. A run does not start at all once
+the day limit is reached (exit code 3), and the cron trigger claims nothing while it is.
+
 ## Proof on the pull request
 
 With a Forgejo forge the run attaches its image artefacts, and the keyframes of any video, to a "Proof"
@@ -271,7 +330,7 @@ to its check, a re-check and the reviewers to the review step).
 
 | `type` | Fields |
 |---|---|
-| `run.start` | `adw`, `adw_id`, `klass`, `dry_run`, `resumed`, `pid`, `host`, `fanout_parent` (`{run, step, index}` or null) |
+| `run.start` | `adw`, `adw_id`, `klass`, `dry_run`, `resumed`, `pid`, `host`, `fanout_parent` (`{run, step, index}` or null), `overrides` (`{tier, models, max_cost, from}` or null), `limits` (`{run, step, day, run_from}` or null) |
 | `run.end` | `status` (passed / failed), `exit` |
 | `slot.wait` | `pool` (runs / agents / checks), `limit`, `who` |
 | `slot.acquire` | `pool`, `slot`, `waited` (seconds), `who` |
@@ -279,10 +338,12 @@ to its check, a re-check and the reviewers to the review step).
 | `env.container.start` / `env.container.stop` | `name` |
 | `step.start` | `step`, `kind`, `attempt` |
 | `step.end` | `step`, `kind`, `status` (passed / failed / skipped), `detail`, `seconds` |
-| `agent.start` | `step` (the agent's directory: `build`, `test-resolve-1`, `review-2-1`, `patch-1`, …), `owner`, `agent` (option id), `agent_kind` (claude-code / codex / custom / mock), `model`, `model_set`; emitted before the call waits for an `agents` slot (a `slot.wait` / `slot.acquire` with `who` = `adw <id> step <dir>` follows) |
+| `agent.start` | `step` (the agent's directory: `build`, `test-resolve-1`, `review-2-1`, `patch-1`, …), `owner`, `agent` (option id), `agent_kind` (claude-code / codex / custom / mock), `model`, `model_set` (= `tier`), `tier`, `tier_from` (override / request / step / command), `model_from` (agent / override), `effort`; emitted before the call waits for an `agents` slot (a `slot.wait` / `slot.acquire` with `who` = `adw <id> step <dir>` follows) |
 | `agent.end` | as `agent.start`, plus `status` (passed / failed), `seconds`, and when the transcript says so `cost` (USD), `turns`, `duration_ms`; `error` on failure |
 | `check.start` | `step` (check step, or `gate` / `deploy`), `owner`, `phase` (check / recheck / gate / deploy), `cmd` (codebase cmd name), `attempt`, `log` (layer-relative) |
 | `check.end` | as `check.start`, plus `exit`, `seconds` |
+| `script.start` / `script.end` | `step`, `owner`, `cmd` (codebase cmd name), `log` (layer-relative); `script.end` adds `exit`, `seconds` |
+| `budget.stop` | `step` (the agent call that crossed the limit, or the one refused), `limit` (run / step / day), `spent`, `of`, `reason` (`budget:<limit>: spent $X of $Y`) |
 | `review.round` | `step`, `round`, `success`, `reviewers`, `issues` (`{blocker, tech_debt, skippable}` counts), `summary` |
 | `gate.decision` | `action` (pr / merge / deploy / none), `ship`, `reasons` |
 | `ship.result` | `action`, `shipped`, `target`, `pr_url`, `reasons` |

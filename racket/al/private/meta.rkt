@@ -5,7 +5,7 @@
 ;;   (define-family NAME #:key "jsonKey" #:letter "Pi" #:default KIND-or-#f "doc")
 ;;   (define-kind FAMILY KIND [#:status stable|experimental|planned] "doc"
 ;;     [field type default "doc"] ...)
-;;   (define-record NAME "doc" [field type default "doc"] ...)
+;;   (define-record NAME [#:positional (FIELD …)] "doc" [field type default "doc"] ...)
 ;;
 ;; From these declarations three things are derived, so they cannot drift:
 ;;   1. the DSL forms the compiler accepts   (private/compiler.rkt)
@@ -14,21 +14,30 @@
 ;;
 ;; Field types:
 ;;   string | integer | boolean | symbol | (enum a b …) | (list-of T)
+;;   decimal           a number ≥ 0, integer or with a fraction (2, 2.5)
+;;   tier              the name of a model tier (base, heavy, fast, …); which tiers exist is a semantic rule
 ;;   (ref F)           id of a declared option in family F, or `command` / `cmd` / `adw` / `artefact`
 ;;   (optional-ref F)  same, or "" for none
-;; A default of #:required makes the field mandatory.
+;;   (record R)        one small record R written as a list: its #:positional fields first, in order,
+;;                     then #:keyword value pairs, e.g. (heavy "claude-fable-5-2" #:effort high).
+;;                     In a (list-of (record R)) the first positional field is the item's key: unique.
+;;   (shorthand F KEY) a string that is shorthand for the item KEY of the (list-of (record R)) field F
+;;                     of the same form; it is folded into F (giving KEY both ways is an error) and is
+;;                     not emitted itself.
+;; A default of #:required makes the field mandatory; #:none means "not set" (JSON null).
 
 (require racket/list racket/string)
 
 (provide define-family define-kind define-record
          (struct-out family) (struct-out kind) (struct-out field) (struct-out record)
          all-families all-records find-family find-kind find-record
-         field-required? kebab->camel field-json-key field-keyword)
+         field-required? field-none? field-shorthand? kebab->camel field-json-key field-keyword
+         emitted-fields)
 
 (struct field (name type default doc) #:transparent)
 (struct kind (name status doc fields) #:transparent)
 (struct family (name key letter default-kind doc [kinds #:mutable]) #:transparent)
-(struct record (name doc fields) #:transparent)
+(struct record (name doc fields positional) #:transparent)
 
 (define families '())
 (define records '())
@@ -47,6 +56,10 @@
   (set-family-kinds! f (append (family-kinds f) (list k))))
 
 (define (field-required? f) (eq? (field-default f) '#:required))
+(define (field-none? f) (eq? (field-default f) '#:none))
+(define (field-shorthand? f) (and (pair? (field-type f)) (eq? (car (field-type f)) 'shorthand)))
+;; The fields that appear in the IR (shorthands are folded into their target field).
+(define (emitted-fields fields) (filter (lambda (f) (not (field-shorthand? f))) fields))
 
 (define (kebab->camel sym)
   (define parts (string-split (symbol->string sym) "-"))
@@ -69,5 +82,9 @@
     [(_ fam name doc [fname ftype fdefault fdoc] ...)
      (define-kind fam name #:status stable doc [fname ftype fdefault fdoc] ...)]))
 
-(define-syntax-rule (define-record name doc [fname ftype fdefault fdoc] ...)
-  (register-record! (record 'name doc (list (field 'fname 'ftype 'fdefault fdoc) ...))))
+(define-syntax define-record
+  (syntax-rules ()
+    [(_ name #:positional (p ...) doc [fname ftype fdefault fdoc] ...)
+     (register-record! (record 'name doc (list (field 'fname 'ftype 'fdefault fdoc) ...) '(p ...)))]
+    [(_ name doc [fname ftype fdefault fdoc] ...)
+     (register-record! (record 'name doc (list (field 'fname 'ftype 'fdefault fdoc) ...) '()))]))

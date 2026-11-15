@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import envs, events, ir, state as state_module, steps
+from . import budget, envs, events, ir, models, state as state_module, steps
 from . import slots
 from .agents import CLASSES
 from .errors import LayerError, StepFailed
@@ -63,8 +63,32 @@ class _Tee:
         self.log.flush()
 
 
+OVERRIDES_HELP = """\
+models and spending, for this run only (the layer file is not changed):
+  --model-set TIER       every agent step of this run uses TIER (a tier the agents declare: base,
+                         heavy, or one from #:models). Environment: AL_MODEL_SET=TIER
+  --model TIER=MODEL_ID  this run uses MODEL_ID wherever tier TIER is asked for (repeatable).
+                         Environment: AL_MODELS="heavy=claude-fable-5-2,base=claude-opus-5-5"
+  --max-cost USD         stop the run (and hand it to a person) once its agent calls cost more than
+                         USD; replaces the layer's #:run-usd. Environment: AL_MAX_COST=USD
+  Flags win over the environment variables. Triggers and `al improve` pass the variables on.
+
+which tier an agent step runs on (first match wins):
+  1. --model-set / AL_MODEL_SET
+  2. a run step's own #:model-set
+  3. the request's tier: a task-file tag ({heavy}) or an issue keyword (adw: sdlc heavy)
+  4. the command's or hop's #:model-set
+  then --model / AL_MODELS may give that tier another model id for this run.
+  state.json (agent_calls) and the run's events record the tier, model and reason of every call.
+
+exit codes: 0 passed, 1 failed (handed to a person where the workflow ships),
+            2 usage error, 3 refused: the layer's day limit (#:day-usd) is reached
+"""
+
+
 def _parser(adw: str) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=f"adw_{adw}", description=f"Run the {adw} ADW.")
+    parser = argparse.ArgumentParser(prog=f"adw_{adw}", description=f"Run the {adw} ADW.", epilog=OVERRIDES_HELP,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("prompt", nargs="?", help="high-level prompt")
     parser.add_argument("--prompt-file", type=Path, help="read the prompt from a file")
     parser.add_argument("--source", help="KIND:REF prompt source, e.g. issue:42")
@@ -73,6 +97,10 @@ def _parser(adw: str) -> argparse.ArgumentParser:
     parser.add_argument("--resume", action="store_true", help="continue --adw-id, skipping passed steps")
     parser.add_argument("--dry-run", action="store_true", help="use the mock agent regardless of the ADW agent")
     parser.add_argument("--keep-worktree", action="store_true", help="never remove the worktree")
+    parser.add_argument("--model-set", metavar="TIER", help="every agent step of this run uses TIER (see below)")
+    parser.add_argument("--model", action="append", default=[], metavar="TIER=MODEL_ID",
+                        help="use MODEL_ID for tier TIER in this run (repeatable)")
+    parser.add_argument("--max-cost", metavar="USD", help="run spending limit in US dollars for this run")
     return parser
 
 
@@ -139,6 +167,7 @@ def _resumed_state(layer: Any, adw_name: str, args: argparse.Namespace) -> state
     state.dry_run = state.dry_run or args.dry_run
     if args.klass:
         state.klass, state.class_fixed = args.klass, True
+    state.budget.pop("stopped", None)  # the resumed run is judged afresh against its limits
     return state
 
 
@@ -158,11 +187,23 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"plan:      {state.plan or 'none'}",
         f"checks:    {checks}",
         f"review:    {review}",
+        f"cost:      {budget.summary(state)}",
+        *([f"models:    {_models_line(state)}"] if state.agent_calls else []),
         f"ship:      {ship}",
         *([handoff] if handoff else []),
         f"artefacts: {len(state.artefacts)}",
         f"state:     {state_module.run_dir(layer.layer_dir, state.adw_id) / 'state.json'}",
     ]
+
+
+def _models_line(state: state_module.ADWState) -> str:
+    """Which tier and model the run's agent calls used, e.g. `heavy=claude-fable-5-2 ×3 (command); …`."""
+    groups: dict[tuple[str, str, str], int] = {}
+    for call in state.agent_calls:
+        key = (str(call.get("tier", "")), str(call.get("model") or call.get("agent_kind") or ""),
+               str(call.get("tier_from", "")) + (", model overridden" if call.get("model_from") == "override" else ""))
+        groups[key] = groups.get(key, 0) + 1
+    return "; ".join(f"{tier}={model or '?'} x{count} ({why})" for (tier, model, why), count in groups.items())
 
 
 def _speak(layer: Any, line: str) -> None:
@@ -201,6 +242,17 @@ def _hand_off(layer: Any, state: state_module.ADWState, adw: dict[str, Any], sta
     state.save(layer.layer_dir)
 
 
+def _overrides_text(over: dict[str, Any]) -> str:
+    parts = []
+    if over.get("tier"):
+        parts.append(f"tier {over['tier']}")
+    if over.get("models"):
+        parts.append(",".join(f"{k}={v}" for k, v in over["models"].items()))
+    if over.get("max_cost"):
+        parts.append(f"max cost ${float(over['max_cost']):.2f}")
+    return "; ".join(parts)
+
+
 def _handoff_line(state: state_module.ADWState) -> str | None:
     ship = state.ship
     if ship.get("handoff_error"):
@@ -221,9 +273,11 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
     stack.keep_worktree = bool(args.keep_worktree)
     beat = state_module.Heartbeat(state, layer.layer_dir).start()
     state.save(layer.layer_dir)
-    events.say(f"[adw {state.adw_id}] {state.adw} start: class={state.klass} dry_run={state.dry_run}", "run.start",
+    events.say(f"[adw {state.adw_id}] {state.adw} start: class={state.klass} dry_run={state.dry_run}"
+               + (f" overrides={_overrides_text(state.overrides)}" if _overrides_text(state.overrides) else ""), "run.start",
                adw=state.adw, adw_id=state.adw_id, klass=state.klass, dry_run=state.dry_run,
-               resumed=bool(args.resume), pid=state.pid, host=state.host, fanout_parent=state.fanout_parent or None)
+               resumed=bool(args.resume), pid=state.pid, host=state.host, fanout_parent=state.fanout_parent or None,
+               overrides=state.overrides or None, limits=state.budget.get("limits") or None)
     try:
         if request is not None and request.hooks is not None:
             request.hooks.on_start(state)
@@ -271,8 +325,24 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None) -> int:
     try:
         layer = ir.load(Path(layer_dir))
         definition = layer.validate_adw(adw)
+        try:
+            over = models.overrides(args.model_set, args.model, args.max_cost)
+        except ValueError as exc:
+            raise UsageError(str(exc)) from exc
+        try:
+            models.check_overrides(layer, definition, over)
+        except LayerError as exc:
+            raise UsageError(str(exc)) from exc
         request = None if args.resume else resolve_request(layer, definition, args)
         state = _resumed_state(layer, adw, args) if args.resume else _new_state(adw, definition, args, request)
+        if not args.resume or args.model_set or args.model or args.max_cost or any(
+                os.environ.get(k) for k in (models.ENV_TIER, models.ENV_MODELS, models.ENV_MAX_COST)):
+            state.overrides = over
+        state.budget["limits"] = budget.limits(layer, state.overrides)
+        refused = budget.refuse_start(layer, state.budget["limits"], state.adw_id)
+        if refused:
+            print(f"adw_{adw}: refused: {refused}", file=sys.stderr)
+            return budget.EXIT_REFUSED
         state.save(layer.layer_dir)
     except UsageError as exc:
         parser.print_usage(sys.stderr)

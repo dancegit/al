@@ -36,11 +36,13 @@ def _run_reviewers(layer: Any, state: Any, option: dict[str, Any], round_number:
                    env_stack: Any) -> list[dict[str, Any]]:
     command = str(option["command"])
     manifest = str(artefacts.manifest_path(layer, state.adw_id))
+    # `#:agent` on the review option: the reviewers run on that agent (another vendor or model)
+    on = {"agent_id": str(option["agent"])} if option.get("agent") else {}
     verdicts = []
     for index in range(1, max(1, int(option.get("reviewers", 1))) + 1):
         name = f"review-{index}" if round_number == 1 else f"review-{round_number}-{index}"
         raw = agents.run_agent(layer, state, name, command, [state.plan or "", manifest],
-                               _model_set(layer, command), env_stack)
+                               _model_set(layer, command), env_stack, **on)
         verdict = agents.extract_json(raw, name)
         agents.validate_review_verdict(verdict, name)  # also enforced for non-`review` templates
         state.outputs[name] = raw

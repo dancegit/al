@@ -121,8 +121,22 @@
       steps.map((st) => h("i", { class: `s-${st.status}` })));
   }
 
+  /** A run a spending limit stopped: marked apart from other stops, with the limit that did it. */
+  function budgetBadge(run) {
+    const stop = run.budget && run.budget.stopped;
+    if (!stop) return null;
+    return h("span", { class: "badge budget", title: stop.reason || "", text: `budget stop: ${stop.limit}` });
+  }
+
+  /** "$1.20 of $5.00" against the run limit, else just the cost. */
+  function costOfLimit(run) {
+    const b = run.budget || {};
+    return b.run !== null && b.run !== undefined ? `${fmt.cost(run.cost)} of ${fmt.cost(b.run)}` : fmt.cost(run.cost);
+  }
+
   function outcomeBadge(run) {
     const o = run.outcome || {};
+    if (run.budget && run.budget.stopped) return budgetBadge(run);
     if (o.ship === "merge" && o.shipped) return h("span", { class: "badge good", text: "merged" });
     if (o.ship === "deploy" && o.shipped) return h("span", { class: "badge good", text: "deployed" });
     if (o.ship === "handoff") return h("span", { class: "badge warn", text: "needs human" });
@@ -330,6 +344,7 @@
     for (const node of graph.nodes) {
       const status = opts.static ? "pending" : (node.status || "pending");
       const classes = ["g-node", `st-${status}`];
+      if (node.type === "script") classes.push("t-script-node");
       if (opts.selected && opts.selected === node.step && node.type !== "candidate") classes.push("selected");
       if (node.picked) classes.push("picked");
       const meta = [];
@@ -342,7 +357,7 @@
       } else if (node.when && node.when !== "always") {
         meta.push(`when ${node.when.replace("class-", "")}`);
       }
-      const agentLine = node.agent ? `agent ${node.agent.id || "?"} · ${node.agent.kind}${node.agent.model ? ` · ${node.agent.model}` : ""}` : "";
+      const agentLine = node.agent ? `agent ${node.agent.id || "?"} · ${node.agent.kind}${node.agent.model ? ` · ${node.agent.model}` : ""}${node.agent.tier ? ` · tier ${node.agent.tier}${node.agent.tier_from ? ` (${node.agent.tier_from})` : ""}` : ""}` : "";
       const title = [`${node.label} (${node.type})`, node.sub, agentLine, status !== "pending" ? status : "", node.detail || ""].filter(Boolean).join("\n");
       const subText = node.agent && !opts.static ? `${node.sub ? `${String(node.sub).split(" @")[0]} · ` : ""}${shortModel(node.agent)}` : node.sub;
       const g = s("g", { class: classes.join(" "), tabindex: opts.onNode ? 0 : null, "data-step": node.step, "data-node": node.id,
@@ -375,7 +390,7 @@
   function graphLegend() {
     const item = (cls, label) => h("span", {}, h("i", { class: cls }), label);
     const legend = h("div", { class: "legend" });
-    const colours = { agent: "var(--agent)", check: "var(--check)", review: "var(--review)", ship: "var(--ship)", "fan-out": "var(--fan)" };
+    const colours = { agent: "var(--agent)", check: "var(--check)", script: "var(--script)", review: "var(--review)", ship: "var(--ship)", "fan-out": "var(--fan)" };
     for (const [name, colour] of Object.entries(colours)) {
       const i = h("i");
       i.style.background = colour;
@@ -746,6 +761,18 @@
       return h("div", { class: "stat" }, h("div", { class: "label", text: label }), h("div", { class: "value" }, value, small ? h("small", { text: ` ${small}` }) : null));
     }
 
+    /** A layer's spending limits and how much of today's limit its runs have used. */
+    function budgetStat(layer) {
+      const b = layer.budget;
+      const limits = [b.run !== null ? `${fmt.cost(b.run)}/run` : "", b.step !== null ? `${fmt.cost(b.step)}/call` : ""].filter(Boolean).join(" · ");
+      const value = b.day !== null ? `${fmt.cost(b.today)} of ${fmt.cost(b.day)}` : fmt.cost(b.today);
+      const el = stat(`budget today · ${layer.name}`, value, [limits, b.stops_today ? `${b.stops_today} budget stop${b.stops_today > 1 ? "s" : ""}` : ""].filter(Boolean).join(" · "));
+      el.classList.add("budget-stat");
+      el.dataset.layer = layer.key;
+      if (b.day !== null && b.today >= b.day) el.classList.add("over");
+      return el;
+    }
+
     function card(run) {
       const el = cards.get(run.key) || h("div", { class: "run-card", tabindex: 0, onclick: () => go(`#/run/${enc(run.layer)}/${enc(run.id)}`) });
       el.className = `run-card${run.waiting ? " waiting" : ""}${el.classList.contains("selected") ? " selected" : ""}`;
@@ -761,7 +788,7 @@
           h("span", { class: "action", text: run.waiting ? `waiting for a free ${run.waiting} slot` : (current.action || "working") })),
         h("div", { class: "facts" },
           h("span", {}, "elapsed ", h("b", { class: "num", "data-since": run.started || "", text: fmt.dur(now() - (run.started || now())) })),
-          h("span", {}, "cost so far ", h("b", { class: "num", text: fmt.cost(run.cost) }), run.cost_partial ? h("span", { class: "faint", text: " +running step" }) : null),
+          h("span", {}, "cost so far ", h("b", { class: "num", text: costOfLimit(run) }), run.cost_partial ? h("span", { class: "faint", text: " +running step" }) : null),
           current.since ? h("span", {}, "step ", h("b", { class: "num", "data-since": current.since, text: fmt.dur(now() - current.since) })) : null,
           run.waiting ? h("span", { class: "badge warn", text: `waiting: ${run.waiting} slot` }) : null,
           run.ports && run.ports.length ? h("span", { class: "mono faint", text: `ports ${run.ports.join(",")}` }) : null),
@@ -782,6 +809,7 @@
         stat("running", running.length, running.filter((r) => r.waiting).length ? `${running.filter((r) => r.waiting).length} waiting` : ""),
         stat("runs, 24 h", day.length, finishedDay.length ? `${fmt.pct(finishedDay.filter((r) => r.status === "passed").length / finishedDay.length)} passed` : ""),
         stat("cost, 24 h", fmt.cost(costDay)),
+        ...store.layers.filter((l) => l.budget).map((l) => budgetStat(l)),
         stat("layers watched", store.layers.length),
         stat("all runs", runs.length));
       const keep = new Set(running.map((r) => r.key));
@@ -1023,7 +1051,8 @@
           prompt,
           sm.problem ? h("div", { class: "badge warn", text: sm.problem }) : null),
         h("div", { class: "figures" }, fig("time", elapsed), fig("cost", h("b", { text: fmt.cost(sm.cost_children ? (sm.cost || 0) + sm.cost_children : sm.cost) },
-          sm.cost_children ? h("small", { text: ` incl. ${fmt.cost(sm.cost_children)} candidates` }) : null)),
+          sm.cost_children ? h("small", { text: ` incl. ${fmt.cost(sm.cost_children)} candidates` }) : null,
+          sm.budget && sm.budget.run !== null && sm.budget.run !== undefined ? h("small", { class: "budget-of", text: ` of ${fmt.cost(sm.budget.run)} run limit` }) : null)),
           fig("tokens out", h("b", { text: fmt.tokens(sm.tokens.out) })), fig("turns", h("b", { text: sm.turns || "—" }))));
     }
 
@@ -1086,7 +1115,8 @@
         bar.appendChild(fill);
         return h("tr", { onclick: () => go(link(["step", a.step || a.dir], { agent: a.dir })) },
           h("td", { text: a.step || "—" }), h("td", { class: "mono", text: a.dir }),
-          h("td", { class: "dim", title: a.agent_kind ? `agent ${a.agent_id || "?"} (${a.agent_kind})` : "", text: agentLabel(a) }),
+          h("td", { class: "dim", title: [a.agent_kind ? `agent ${a.agent_id || "?"} (${a.agent_kind})` : "", a.tier ? `tier ${a.tier}${a.tier_from ? `, chosen by: ${a.tier_from}` : ""}${a.model_from === "override" ? "; model overridden for this run" : ""}` : ""].filter(Boolean).join("\n"),
+            text: `${agentLabel(a)}${a.tier ? ` · ${a.tier}` : ""}` }),
           h("td", { class: "right num", text: a.turns ?? "—" }), h("td", { class: "right num", text: fmt.tokens(a.tokens.in) }),
           h("td", { class: "right num", text: fmt.tokens(a.tokens.out) }), h("td", { class: "right num dim", text: `${fmt.tokens(a.tokens.cache_read)} / ${fmt.tokens(a.tokens.cache_write)}` }),
           h("td", { class: "right num", text: a.start ? fmt.dur((a.end || now()) - a.start) : "—" }), h("td", { class: "right num", text: fmt.cost(a.cost) }), h("td", {}, bar));
@@ -1109,6 +1139,16 @@
         kv([["failed step", sm.failed_step], ["why", sm.error], ["branch", detail.state.branch ? h("span", { class: "mono", text: detail.state.branch }) : ""],
           ["plan", detail.state.plan ? h("span", { class: "mono", text: detail.state.plan }) : ""], ["source", detail.state.source],
           ["ports", (detail.state.ports || []).join(", ")]])));
+      if (detail.budget) {
+        const b = detail.budget, stop = b.stopped;
+        const limit = (v) => (v === null || v === undefined ? "none" : fmt.cost(v));
+        blocks.push(h("div", { class: "outcome-block budget-block" }, h("div", { class: "card-head" }, h("h3", { text: "Spending" }),
+          stop ? h("span", { class: "badge budget", text: `stopped by the ${stop.limit} limit` }) : null),
+          kv([["spent", `${fmt.cost(b.spent)}${b.run !== null && b.run !== undefined ? ` of ${fmt.cost(b.run)} run limit` : ""}${b.run_from && b.run_from !== "layer" ? ` (${b.run_from})` : ""}`],
+            ["limits", `run ${limit(b.run)} · per agent call ${limit(b.step)} · per day ${limit(b.day)}`],
+            ["why it stopped", stop ? stop.reason : ""],
+            ["no cost reported", (b.unreported || []).length ? `${b.unreported.join(", ")} (counted as $0)` : ""]])));
+      }
       if (detail.handoff) {
         const ho = detail.handoff;
         const target = ho.file ? h("a", { href: `/files/${enc(layerKey)}/agents/${enc(runId)}/PR.md`, text: "PR.md" })
@@ -1188,6 +1228,11 @@
           sources.push({ key: at.file, kind: "check", label: `${name} #${at.attempt}${at.phase ? " (re-check)" : ""}${at.running ? " (running)" : ""}`, status, start: at.start || at.end, attempt: at, check: name });
         }
       }
+      const script = type === "script" && detail.scripts ? detail.scripts[step] : null;
+      if (script) {
+        sources.push({ key: script.log, kind: "script", label: `${step} (exit ${script.exit})`, status: script.exit === 0 ? "passed" : "failed",
+          start: (detail.steps_detail[step] || {}).started, script });
+      }
       if (type === "ship") {
         for (const bar of detail.timeline.bars.filter((b) => b.kind === "gate")) {
           sources.push({ key: bar.ref, kind: "check", label: bar.label, status: bar.status, start: bar.start, attempt: { file: bar.ref, exit: bar.exit }, check: bar.check });
@@ -1254,6 +1299,16 @@
             else replace(block, h("pre", { text: data.output || "(no output yet)" }), data.stderr ? h("details", { class: "section" }, h("summary", { text: "stderr" }), h("pre", { text: data.stderr })) : null);
           });
         }
+      } else if (source.kind === "script") {
+        const sc = source.script;
+        content.appendChild(h("div", { class: "dim" }, "a script step: it runs the codebase's own command; nothing fixes it when it fails, and the gate does not count it as a check"));
+        content.appendChild(h("dl", { class: "kv" }, [h("dt", { text: "command" }), h("dd", { class: "mono", text: sc.cmd || "" }),
+          h("dt", { text: "arguments" }), h("dd", { class: "mono", text: (sc.args || []).join(" ") || "(none)" }),
+          h("dt", { text: "exit" }), h("dd", { class: "num", text: String(sc.exit) })]));
+        const block = h("div", { class: "textblock script-log" }, h("pre", { text: "loading…" }));
+        content.appendChild(block);
+        fetch(`/files/${enc(layerKey)}/${sc.log.split("/").map(enc).join("/")}`, { credentials: "same-origin" })
+          .then((r) => (r.ok ? r.text() : `(log not available: ${r.status})`)).then((text) => replace(block, h("pre", { text })));
       } else {
         const at = source.attempt || {};
         const cmd = detail.check_cmds[source.check] || "";

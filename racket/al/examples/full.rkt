@@ -1,7 +1,8 @@
 #lang al
 ;; A layer that uses most of the vocabulary: several prompt inputs and triggers,
 ;; a stacked environment, artefacts on S3, and a zero-touch (auto review → merge) ADW
-;; next to a human-reviewed one.
+;; next to a human-reviewed one, model tiers, a second vendor as reviewer, spending limits, and a
+;; script step that runs one of the team's own scripts.
 (agentic-layer #:name "webshop" #:description "Agentic layer for the webshop monorepo"
   (codebase #:root "../webshop" #:languages (typescript python) #:default-branch "main"
             #:description "Vue storefront + FastAPI backend" #:package-manager "bun add / uv add"
@@ -10,6 +11,7 @@
     (cmd test "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)")
     (cmd e2e "bun run e2e" #:timeout 1800 #:description "Playwright; writes e2e-results/")
     (cmd deploy "./scripts/deploy.sh staging")
+    (cmd changelog "./scripts/changelog.sh" #:description "the team's own script: appends the change to CHANGELOG.md")
     (paths #:source ("web/src" "api/app") #:tests ("web/tests" "api/tests") #:docs ("docs")
            #:protected (".github" "api/migrations" "scripts/deploy.sh"))
     (conditional-doc "docs/payments.md" "When touching anything under api/app/payments"))
@@ -18,7 +20,9 @@
   (forge forgejo #:host "https://forgejo.example.org" #:repo "acme/webshop")
   (storage s3 #:bucket "webshop-adw" #:endpoint "https://s3.example.org")
   (voice kokoro)
-  (agent claude-code)
+  (agent claude-code #:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:effort high)))
+  (agent codex #:id second-opinion)
+  (budget limits #:run-usd 5 #:step-usd 2 #:day-usd 50)
 
   (prompt-input issue #:labels ("adw"))
   (prompt-input tasklist)
@@ -40,12 +44,12 @@
   (review human)
   (concurrency slots #:max-runs 4 #:max-agents 2)
   (dashboard local #:port 8765 #:also ("../storefront.al") #:systemd #t)
-  (review auto #:id zero-touch #:artefacts (log junit screenshots recordings)
+  (review auto #:id zero-touch #:artefacts (log junit screenshots recordings) #:agent second-opinion
           #:ship deploy #:deploy-cmd deploy #:require-checks (lint test e2e)
           #:allowed-classes (chore bug) #:max-diff-lines 300)
 
   (command prime #:template prime)
-  (command classify #:template classify #:output json)
+  (command classify #:template classify #:model-set fast #:output json)
   (command chore #:template plan-chore #:model-set heavy #:output path #:validation (lint test))
   (command bug #:template plan-bug #:model-set heavy #:output path #:validation (lint test e2e))
   (command feature #:template plan-feature #:model-set heavy #:output path #:validation (lint test e2e)
@@ -55,7 +59,7 @@
   (command review #:template review #:model-set heavy #:output json #:fabric (review_code))
   (command patch #:template plan-patch #:model-set heavy #:output path)
   (command document #:template document)
-  (command commit #:template commit #:fabric (create_git_diff_commit))
+  (command commit #:template commit #:model-set fast #:fabric (create_git_diff_commit))
   (command pull-request #:template pull-request #:fabric (write_pull-request))
   (hop implement #:template run-plan #:takes plan)
   (hop new-command #:template meta-command #:produces command)
@@ -79,6 +83,7 @@
       (check lint #:cmd lint #:resolve resolve-test)
       (check test #:cmd test #:resolve resolve-test #:collect (junit))
       (run document #:command document #:args ("$plan"))
+      (script changelog #:cmd changelog #:args ("$prompt"))
       (run commit #:command commit)
       (review)
       (ship)))

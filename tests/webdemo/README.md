@@ -3,7 +3,7 @@
 This demo shows `al` doing what a small team would do with a web application. Two requests are
 filed as issues on a Forgejo server. A real agent (Claude Opus 5.5, model `claude-opus-5-5`)
 works on each one inside a container. It plans the change, writes it, runs the app's tests, opens
-the app in a real browser and records screenshots and a video. Then:
+the app in a real browser and records screenshots and a video. The recorded outputs in `docs/demo/webdemo/` were produced with Claude Opus 5.5 on every step, before the default changed to Claude Opus 5.5 for routine steps and Claude Fable 5.2 (`claude-fable-5-2`) for planning, building and review. Then:
 
 - **Scenario A: a visual change that a human reviews.** The request is *"Change the page background
   colour to dark slate (#1e293b) and make the text light so it stays readable."* The run opens a

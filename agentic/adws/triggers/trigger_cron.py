@@ -71,10 +71,26 @@ class Scheduler:
         self.inflight: set[str] = set()
         self.seq = 0
 
+    def day_limit_reached(self) -> str | None:
+        """The layer's day limit (#:day-usd) is reached: no run would start, so nothing is claimed."""
+        from adw_modules import budget, models
+        try:
+            limits = budget.limits(self.layer, models.overrides(None, None, None))
+        except (ValueError, AttributeError, TypeError):
+            return None
+        return budget.refuse_start(self.layer, limits)
+
     def poll_once(self) -> int:
         """Launch what fits; return the number of runs started."""
         self.reap()
         started = 0
+        refused = self.day_limit_reached()
+        if refused:
+            if refused != getattr(self, "_refused", None):
+                self.out(f"not starting runs: {refused}")
+            self._refused = refused
+            return 0
+        self._refused = None
         for cand in inputs.poll(self.layer, self.trigger_id, forge=self.forge, log=self.out):
             if len(self.running) >= self.max_concurrent:
                 self.out(f"at capacity ({self.max_concurrent}); remaining items wait for the next poll")

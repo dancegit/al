@@ -259,8 +259,18 @@
       "id": "claude-code",
       "kind": "claude-code",
       "maxTurns": 60,
-      "modelBase": "claude-opus-5-5",
-      "modelHeavy": "claude-opus-5-5",
+      "models": [
+        {
+          "effort": "default",
+          "model": "claude-opus-5-5",
+          "tier": "base"
+        },
+        {
+          "effort": "default",
+          "model": "claude-opus-5-5",
+          "tier": "heavy"
+        }
+      ],
       "permissionMode": "acceptEdits",
       "safeMode": true,
       "status": "stable",
@@ -275,6 +285,7 @@
       "tailLines": 200
     }
   ],
+  "budget": null,
   "codebase": {
     "commands": [
       {

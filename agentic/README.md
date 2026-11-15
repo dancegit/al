@@ -21,6 +21,28 @@ uv run agentic/adws/adw_plan-build.py "…" --dry-run                     # mock
 uv run agentic/adws/dispatch.py --source tasklist:<line>                             # from a prompt input
 ```
 
+## Models and spending
+
+- Agent `claude-code` (claude-code): `base` = `claude-opus-5-5`, `heavy` = `claude-opus-5-5`.
+
+Every command and hop runs on a tier (its `#:model-set`); a run step may name its own. For one run,
+without changing `agentic.rkt`:
+
+```bash
+uv run agentic/adws/adw_plan-build.py "…" --model-set heavy               # every agent step on one tier
+uv run agentic/adws/adw_plan-build.py "…" --model heavy=MODEL_ID          # another model for a tier (repeatable)
+uv run agentic/adws/adw_plan-build.py "…" --max-cost 3                    # hand over once the run costs more than $3
+```
+
+The same as environment variables, which the triggers and `al improve` pass on: `AL_MODEL_SET=TIER`,
+`AL_MODELS="heavy=…,base=…"`, `AL_MAX_COST=USD`. Flags win. A task-file tag (`{heavy}`) or an issue
+keyword (`adw: <workflow> heavy`) naming any declared tier selects it for the steps that do not set their
+own. Which tier wins: `--model-set`, then the step's own `#:model-set`, then the request's tier, then the
+command's; `--model` then picks that tier's model id. `state.json` (`agent_calls`) and the run's events
+record the tier, model and reason of every agent call; `--help` of any workflow script says the same.
+
+Spending limits: none declared (add `(budget limits #:run-usd … #:day-usd …)`); `--max-cost` still limits one run.
+
 ## Watch the work
 
 A live, read-only dashboard of every run of this layer:
@@ -50,6 +72,6 @@ An ordinary workflow that changes anything under `agentic/` in its worktree is s
 
 ## What is committed
 
-Committed: `agentic.rkt`, `LLM.txt`, `templates/`, `mock/`, expert `expertise.yaml` files and `conditional_docs.md` (source); `agentic-layer.json`, `commands/`, `hops/`, `experts/`, `adws/`, `env/`, `fabric/`, `forge/`, `AL-DSL.llms.txt`, this README, `.gitignore` and `.al-manifest.json` (generated; the manifest lets `al gen` notice hand edits).
+Committed: `agentic.rkt`, `LLM.txt`, `templates/`, `mock/`, `adopted/` (what `al adopt` wrote), expert `expertise.yaml` files and `conditional_docs.md` (source); `agentic-layer.json`, `commands/`, `hops/`, `experts/`, `adws/`, `env/`, `fabric/`, `forge/`, `AL-DSL.llms.txt`, this README, `.gitignore` and `.al-manifest.json` (generated; the manifest lets `al gen` notice hand edits).
 
 Not committed (`.gitignore`, written by `al gen`): run state (worktrees, run logs, artefacts, plans, run documents, the task list and spec inbox, `al improve` runs), files that name this machine's paths (`bin/al`, systemd units, the Home Manager module) and caches.

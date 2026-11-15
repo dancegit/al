@@ -1,5 +1,5 @@
 #lang racket/base
-(require rackunit racket/list racket/string racket/runtime-path json
+(require rackunit racket/list racket/string racket/runtime-path racket/file json
          "../private/compiler.rkt" "../private/schema.rkt" "../private/reference.rkt"
          "../private/meta.rkt" "../private/vocab.rkt" "../private/json-pretty.rkt")
 
@@ -290,3 +290,164 @@
   (check-rejects (layer plan simple-adw '(dashboard local #:port 70000)) #rx"#:port must be 1")
   (check-rejects (layer plan simple-adw '(dashboard local #:poll-ms 10)) #rx"#:poll-ms must be at least 100")
   (check-rejects (layer plan simple-adw '(dashboard local) '(dashboard none)) #rx"only one dashboard"))
+
+;; ---------------------------------------------------------------------------------------- model tiers
+
+(define (agent-of ir [id "claude-code"])
+  (findf (lambda (a) (equal? (hash-ref a 'id) id)) (hash-ref ir 'agents)))
+(define (tiers-of agent)
+  (for/list ([m (hash-ref agent 'models)]) (list (hash-ref m 'tier) (hash-ref m 'model) (hash-ref m 'effort))))
+
+(test-case "model tiers: claude-code defaults, shorthands and #:models compile to one list"
+  (define ir (compile-layer-datum (layer plan simple-adw)))
+  (check-equal? (tiers-of (agent-of ir))
+                '(("base" "claude-opus-5-5" "default") ("heavy" "claude-fable-5-2" "default")))
+  (check-false (hash-has-key? (agent-of ir) 'modelBase))
+  (check-false (hash-has-key? (agent-of ir) 'modelHeavy))
+  (define ir2 (compile-layer-datum
+               (layer plan simple-adw '(agent claude-code #:model-base "b-1"
+                                              #:models ((fast "claude-haiku-5-5") (heavy "h-2" #:effort high))))))
+  (check-equal? (tiers-of (agent-of ir2))
+                '(("base" "b-1" "default") ("fast" "claude-haiku-5-5" "default") ("heavy" "h-2" "high")))
+  (define codex (agent-of (compile-layer-datum (layer plan simple-adw '(agent codex))) "codex"))
+  (check-equal? (map car (tiers-of codex)) '("base" "heavy"))
+  (check-false (hash-has-key? (agent-of (compile-layer-datum (layer plan simple-adw '(agent mock))) "mock") 'models)))
+
+(test-case "model tiers: a tier defined twice, a bad name, inherit"
+  (check-rejects (layer plan simple-adw '(agent claude-code #:model-heavy "x" #:models ((heavy "y"))))
+                 #rx"tier `heavy` is given twice: by #:model-heavy and in #:models")
+  (check-rejects (layer plan simple-adw '(agent claude-code #:models ((fast "a") (fast "b"))))
+                 #rx"`fast` is given twice")
+  (check-rejects (layer plan simple-adw '(agent claude-code #:models ((Fast "a"))))
+                 #rx"expected a tier name")
+  (check-rejects (layer plan simple-adw '(agent claude-code #:models ((inherit "a"))))
+                 #rx"`inherit` is not a tier name")
+  (check-rejects (layer plan simple-adw '(agent claude-code #:models ((fast))))
+                 #rx"expected \\(TIER MODEL")
+  (check-rejects (layer '(command plan #:template plan-chore #:model-set inherit) simple-adw)
+                 #rx"inherit is only for run steps"))
+
+(test-case "model tiers: every tier a workflow uses is declared on the agent that runs it"
+  (define fast-plan '(command plan #:template plan-chore #:model-set fast))
+  (check-rejects (layer fast-plan simple-adw)
+                 #rx"\\(adw a\\): step `plan` \\(the #:model-set of command `plan`\\) uses model tier `fast`, but agent `claude-code` declares the tiers: base, heavy")
+  (check-not-exn (lambda () (compile-layer-datum (layer fast-plan simple-adw '(agent claude-code #:models ((fast "h")))))))
+  (check-not-exn (lambda () (compile-layer-datum (layer fast-plan simple-adw '(agent mock)))))
+  ;; a step's own tier on the step's own agent
+  (check-rejects (layer plan '(agent claude-code #:models ((fast "h"))) '(agent codex #:id other)
+                        '(adw a (steps (run plan #:command plan #:model-set fast #:agent other))))
+                 #rx"step `plan` \\(its #:model-set\\) uses model tier `fast`, but agent `other` declares the tiers: base, heavy")
+  ;; a resolve command runs on the ADW's agent
+  (check-rejects (layer plan '(command fix #:template resolve-test #:model-set deep)
+                        '(adw a (steps (run plan #:command plan) (check t #:cmd test #:resolve fix))))
+                 #rx"check `t` \\(the #:model-set of its resolve command `fix`\\) uses model tier `deep`")
+  ;; the review command runs on the review option's agent
+  (check-rejects (layer plan '(command review #:template review #:output json #:model-set fast)
+                        '(agent claude-code #:models ((fast "h"))) '(agent codex #:id second)
+                        '(review agent #:agent second)
+                        '(adw a (steps (run plan #:command plan) (review) (ship))))
+                 #rx"review `agent` \\(the #:model-set of review command `review`\\) uses model tier `fast`, but agent `second`"))
+
+(test-case "model tiers: #:effort only where the CLI can take it"
+  (check-equal? (third (cadr (tiers-of (agent-of (compile-layer-datum
+                                                    (layer plan simple-adw '(agent claude-code #:models ((heavy "h" #:effort max)))))))))
+                "max")
+  (check-rejects (layer plan simple-adw '(agent codex #:models ((heavy "h" #:effort max))))
+                 #rx"codex does not offer")
+  (check-not-exn (lambda () (compile-layer-datum (layer plan simple-adw '(agent codex #:models ((heavy "h" #:effort xhigh)))))))
+  (check-rejects (layer plan simple-adw '(agent custom #:command "x" #:models ((heavy "h" #:effort low))))
+                 #rx"a custom agent has no way to pass it")
+  (check-rejects (layer plan simple-adw '(agent claude-code #:models ((heavy "h" #:effort huge))))
+                 #rx"one of: default, low, medium, high, xhigh, max"))
+
+(test-case "review #:agent: names a declared agent, which obeys the sandbox rule"
+  (define ir (compile-layer-datum (layer plan review-cmd '(agent claude-code) '(agent codex #:id second)
+                                         '(review agent #:agent second)
+                                         '(adw a (steps (run plan #:command plan) (review) (ship))))))
+  (check-equal? (hash-ref (car (hash-ref ir 'reviews)) 'agent) "second")
+  (check-equal? (hash-ref (car (hash-ref (compile-layer-datum (layer plan simple-adw '(review agent #:command plan))) 'reviews)) 'agent) "")
+  (check-rejects (layer plan review-cmd '(review agent #:agent nobody) simple-adw) #rx"`nobody` is not a declared agent")
+  (check-rejects (layer plan review-cmd '(agent claude-code) '(agent claude-code #:id wild #:permission-mode bypassPermissions)
+                        '(review agent #:agent wild)
+                        '(adw a (steps (run plan #:command plan) (review) (ship))))
+                 #rx"agent `wild` uses bypassPermissions"))
+
+;; ---------------------------------------------------------------------------------------- budget
+
+(test-case "budget: absent = null; limits are numbers > 0"
+  (check-equal? (hash-ref (compile-layer-datum (layer plan simple-adw)) 'budget) 'null)
+  (define b (hash-ref (compile-layer-datum (layer plan simple-adw '(budget limits #:run-usd 5 #:step-usd 2.5))) 'budget))
+  (check-equal? (hash-ref b 'runUsd) 5)
+  (check-equal? (hash-ref b 'stepUsd) 2.5)
+  (check-equal? (hash-ref b 'dayUsd) 'null)
+  (check-true (string? (json-pretty b)))
+  (check-rejects (layer plan simple-adw '(budget limits #:run-usd 0)) #rx"#:run-usd must be greater than 0")
+  (check-rejects (layer plan simple-adw '(budget limits #:day-usd "50")) #rx"expected a number ≥ 0")
+  (check-rejects (layer plan simple-adw '(budget limits #:step-usd -1)) #rx"expected a number ≥ 0")
+  (check-rejects (layer plan simple-adw '(budget limits) '(budget limits #:id two)) #rx"only one budget"))
+
+;; ---------------------------------------------------------------------------------------- script step
+
+(test-case "script step: runs a declared cmd, needs a worktree, is not a check"
+  (define ir (compile-layer-datum (layer plan '(adw a (steps (script legacy #:cmd lint #:args ("$prompt")))))))
+  (check-equal? (car (hash-ref (car (hash-ref ir 'adws)) 'steps))
+                (hasheq 'kind "script" 'name "legacy" 'cmd "lint" 'args '("$prompt") 'timeout 0))
+  (check-rejects (layer plan '(adw a (steps (script legacy #:cmd nothing)))) #rx"`nothing` is not a declared codebase cmd")
+  (check-rejects (layer plan '(adw a (steps (script #:cmd lint)))) #rx"needs a step name")
+  (check-rejects (layer plan '(environment host) '(adw a (steps (script legacy #:cmd lint))))
+                 #rx"check, script and ship steps need a `worktree` environment")
+  ;; a script step is no check: zero-touch still needs one
+  (check-rejects (layer plan review-cmd '(environment worktree) '(environment podman) '(review auto #:require-checks (test))
+                        '(adw a #:environment (worktree podman) (steps (run plan #:command plan) (script s #:cmd test) (review) (ship))))
+                 #rx"needs a \\(check …\\) step before its \\(review\\) step"))
+
+;; ---------------------------------------------------------------------------------------- include
+
+(test-case "include: clauses from other files, at the top level and inside (codebase …)"
+  (define spec (dynamic-require (build-path fixtures "include-main.rkt") 'layer-spec))
+  (check-equal? (map (lambda (c) (hash-ref c 'name)) (hash-ref (hash-ref spec 'codebase) 'commands)) '("test" "lint"))
+  (check-equal? (hash-ref (car (hash-ref (hash-ref spec 'codebase) 'conditionalDocs)) 'path) "AGENTS.md")
+  (check-equal? (map (lambda (s) (hash-ref s 'name)) (hash-ref (car (hash-ref spec 'adws)) 'steps)) '("plan" "lint"))
+  (check-rejects (layer plan simple-adw '(include "x.rkt")) #rx"resolved by `#lang al`"))
+
+(define (load-error file)
+  (with-handlers ([exn:fail:syntax? exn-message])
+    (dynamic-require (build-path fixtures file) #f)
+    "no error"))
+
+(test-case "include: errors point into the included file"
+  (define msg (load-error "include-bad-main.rkt"))
+  (check-regexp-match #rx"include-bad-adw.rkt:3:0" msg)
+  (check-regexp-match #rx"uses model tier `fast`" msg)
+  (define msg2 (load-error "include-bad-cmd-main.rkt"))
+  (check-regexp-match #rx"include-bad-cmd.rkt:3:0" msg2)
+  (check-regexp-match #rx"\\(cmd typecheck\\) #:timeout: expected an integer" msg2))
+
+(test-case "codebase sub-clause errors point at the sub-clause; include does not nest"
+  (define dir (make-temporary-file "al-inc-~a" 'directory))
+  (define (write-file name text) (call-with-output-file (build-path dir name) (lambda (o) (write-string text o))))
+  (write-file "agentic.rkt" "#lang al\n(agentic-layer #:name \"x\"\n  (codebase #:root \".\" #:languages (c)\n    (cmd test \"make\")\n    (cmd test \"make check\"))\n  (command plan #:template plan-chore)\n  (adw a (steps (run plan #:command plan))))\n")
+  (write-file "nested.rkt" "#lang al\n(agentic-layer #:name \"y\"\n  (codebase #:root \".\" #:languages (c) (cmd test \"make\"))\n  (include \"one.rkt\"))\n")
+  (write-file "one.rkt" "(include \"two.rkt\")\n")
+  (write-file "missing.rkt" "#lang al\n(agentic-layer #:name \"z\"\n  (codebase #:root \".\" #:languages (c) (cmd test \"make\"))\n  (include \"nope.rkt\"))\n")
+  (define (err f) (with-handlers ([exn:fail:syntax? exn-message]) (dynamic-require (build-path dir f) #f) "no error"))
+  (check-regexp-match #rx"agentic.rkt:5:4.*\\(cmd test\\): declared twice" (err "agentic.rkt"))
+  (check-regexp-match #rx"one.rkt:1:0.*cannot include another file" (err "nested.rkt"))
+  (check-regexp-match #rx"no such file" (err "missing.rkt"))
+  (delete-directory/files dir))
+
+(test-case "schema and reference: tiers, budget, script, include"
+  (define schema (layer-schema))
+  (define agent-alts (hash-ref (hash-ref (hash-ref (hash-ref schema 'properties) 'agents) 'items) 'oneOf))
+  (define cc (findf (lambda (s) (equal? (hash-ref (hash-ref (hash-ref s 'properties) 'kind) 'const) "claude-code")) agent-alts))
+  (check-true (hash-has-key? (hash-ref cc 'properties) 'models))
+  (check-false (hash-has-key? (hash-ref cc 'properties) 'modelBase))
+  (check-equal? (hash-ref (hash-ref (hash-ref (hash-ref (hash-ref cc 'properties) 'models) 'items) 'properties) 'tier)
+                (hasheq 'type "string" 'pattern "^[a-z][a-z0-9-]*$" 'description "Tier name: lowercase letters, digits and dashes (not `inherit`)."))
+  (define budget (hash-ref (hash-ref schema 'properties) 'budget))
+  (check-equal? (hash-ref (car (hash-ref budget 'oneOf)) 'type) "null")
+  (check-equal? (hash-ref (hash-ref (hash-ref (cadr (hash-ref budget 'oneOf)) 'properties) 'runUsd) 'type) '("number" "null"))
+  (define ref (reference-text))
+  (for ([needle '("### `model-tier`" "### `step-script`" "(budget limits …)" "shorthand for the `heavy` entry of #:models"
+                  "(include \"FILE\")" "claude-fable-5-2")])
+    (check-true (string-contains? ref needle) needle)))

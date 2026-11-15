@@ -36,13 +36,15 @@ TEMPLATE: meta/LLM.txt.template.md
 8. Protected paths: CI configuration, release and publishing scripts, security-sensitive code (authentication, cryptography, secrets handling), migrations, generated files, vendored code. Give the reason for each.
 9. Conventions: the rules stated in CONTRIBUTING, linter and formatter configuration, commit and pull request templates, and those visible in every recent commit. One line each, checkable.
 10. Forge and conditional docs: forge, repository and CI system from the remote and CI files; documents that matter only in specific situations, each with its condition.
-11. Write the final file to DRAFT. Then check it against the Validation list below and fix every miss.
+11. Existing agent setup: the draft's table lists what `al scout` found (rule files, prompt libraries, workflow scripts, agent CI, settings, plans, doc caches, an existing al layer). Read each item. Complete its description (what it is for, in one line) and its arguments, and fill `in use?` with `yes` or `no` and the evidence: a reference from CI, a Makefile or task runner, CONTRIBUTING or the README, a recent commit that touched or used it (`git -C APP_DIR log -3 --format='%h %ad %s' --date=short -- <path>`). With no evidence either way the cell stays `UNVERIFIED`: never guess that something is used. Under the table, list the rules of every rule file that an agent must not break (one line each, with `file:line`), and add any item the scout missed. Do not run any script or workflow you find.
+12. Write the final file to DRAFT. Then check it against the Validation list below and fix every miss.
 
 ## Validation
 
 - Every row of `## Commands` has a line in `## Evidence` with a `file:line` that exists in APP_DIR.
 - Every path in Layout, Protected paths and Conditional docs exists in `git ls-files` output (or is a directory prefix of entries in it).
 - Every artefact glob is produced by a command listed in `## Commands`.
+- Every row of `## Existing agent setup` names a path that exists in `git ls-files` output, and every `in use?` cell is `yes` or `no` with evidence, or `UNVERIFIED`.
 - Section headings match TEMPLATE exactly and no guidance text remains.
 - `git -C APP_DIR status --short` is unchanged from before you started.
 

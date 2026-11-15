@@ -35,6 +35,7 @@ DSL_REFERENCE: docs/AL-DSL.llms.txt
 9. Forge and inputs: the forge, repo and prompt inputs match LLM_TXT's Forge section; issue inputs or webhook triggers with forge `none` in LLM_TXT are a blocker.
 10. Environment: nix packages equal LLM_TXT's Toolchain attributes; a check that needs the network does not run in an environment with `#:network none`. Mismatch is a warning.
 11. Conditional docs: each LLM_TXT line has a `(conditional-doc …)`. Missing is a note.
+12. Existing agent setup: every rule file in LLM_TXT's `## Existing agent setup` reaches the agents (a `(conditional-doc …)`, usually from `adopted/codebase.rkt`); a missing one is a warning. A step, `#:focus` line or command that contradicts a rule of that setup (or of `adopted/RULES.md`) is a blocker, with both texts quoted. A prompt the team uses (`in use? yes`) that the layer replaces with a kit command for the same job, without saying why, is a warning. A CI workflow that already runs an agent on the same events as one of the layer's triggers is a warning. An existing al layer elsewhere in the repository is a note.
 
 ## Severities
 

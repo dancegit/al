@@ -61,7 +61,12 @@ class Task:
 
     @property
     def model_set(self) -> str | None:
-        return next((t for t in self.tags if t in MODEL_SETS), None)
+        return self.tier(MODEL_SETS)
+
+    def tier(self, tiers: Iterable[str]) -> str | None:
+        """The first tag that names one of `tiers` (the model tiers the layer's agents declare)."""
+        known = set(tiers)
+        return next((t for t in self.tags if t in known), None)
 
     @property
     def klass(self) -> str | None:

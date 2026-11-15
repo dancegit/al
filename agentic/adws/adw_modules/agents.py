@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from . import events, gitsafe, slots, storage
+from . import budget, events, gitsafe, models, slots, storage
 from .errors import LayerError, StepFailed
 from .templates import render
 
@@ -19,7 +19,7 @@ CLASSES = ("chore", "bug", "feature", "patch")
 SEVERITIES = ("blocker", "tech_debt", "skippable")
 GIT_TIMEOUT = 120
 _STRIPPED_ENV = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
-_MOCK_KEYS = {"output", "files", "raw_files", "layer_files", "delete", "commit"}
+_MOCK_KEYS = {"output", "files", "raw_files", "layer_files", "delete", "commit", "cost", "fail"}
 _FENCED_JSON = re.compile(r"```json\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 
 
@@ -113,40 +113,57 @@ def _claude_env(env_stack: Any) -> dict[str, str]:
     return env
 
 
-def _model(agent: dict[str, Any], model_set: str) -> str:
-    return str(agent.get("modelHeavy" if model_set == "heavy" else "modelBase") or "")
-
-
-def _run_claude(layer: Any, agent: dict[str, Any], prompt: str, model_set: str, cwd: Path,
-                env_stack: Any, step: str, raw_path: Path) -> str:
-    # The prompt goes in on stdin: templates start with `---` front matter, which the CLI would
-    # parse as an option, and long prompts would hit the argv size limit.
-    argv = ["claude", "-p", "--output-format", "stream-json", "--verbose",
-            "--model", _model(agent, model_set), "--permission-mode", str(agent["permissionMode"]),
-            "--max-turns", str(agent["maxTurns"]), "--add-dir", str(layer.layer_dir)]
+def claude_argv(layer: Any, agent: dict[str, Any], choice: models.Choice, cap: float | None) -> list[str]:
+    """The `claude -p` command line. --effort and --max-budget-usd are the CLI's own flags."""
+    argv = ["claude", "-p", "--output-format", "stream-json", "--verbose"]
+    if choice.model:
+        argv += ["--model", choice.model]
+    if choice.effort and choice.effort != "default":
+        argv += ["--effort", choice.effort]
+    if cap is not None:
+        argv += ["--max-budget-usd", f"{max(cap, 0.0001):.4f}"]
+    argv += ["--permission-mode", str(agent["permissionMode"]),
+             "--max-turns", str(agent["maxTurns"]), "--add-dir", str(layer.layer_dir)]
     if agent.get("allowedTools"):
         argv += ["--allowedTools", ",".join(agent["allowedTools"])]
     if agent.get("safeMode"):
         argv.append("--safe-mode")
+    return argv
+
+
+def _run_claude(layer: Any, agent: dict[str, Any], prompt: str, choice: models.Choice, cwd: Path,
+                env_stack: Any, step: str, raw_path: Path, cap: float | None = None) -> str:
+    # The prompt goes in on stdin: templates start with `---` front matter, which the CLI would
+    # parse as an option, and long prompts would hit the argv size limit.
+    argv = claude_argv(layer, agent, choice, cap)
     stdout = _run_process(env_stack.wrap_agent(argv), cwd=cwd, env=_claude_env(env_stack), stdin_text=prompt,
                           timeout=int(agent["timeout"]), step=step, raw_path=raw_path)
     return parse_stream_json_result(stdout, step)
 
 
-def _run_codex(agent: dict[str, Any], prompt: str, model_set: str, cwd: Path, env_stack: Any,
+def codex_argv(agent: dict[str, Any], choice: models.Choice, cwd: Path) -> list[str]:
+    """`codex exec`: it has no flag for reasoning effort, so effort goes through its config
+    override `-c model_reasoning_effort=…`; it has no budget cap and reports no cost."""
+    argv = ["codex", "exec"]
+    if choice.model:
+        argv += ["--model", choice.model]
+    if choice.effort and choice.effort != "default":
+        argv += ["-c", f"model_reasoning_effort={choice.effort}"]
+    return argv + ["--sandbox", str(agent["sandbox"]), "--cd", str(cwd), "-"]
+
+
+def _run_codex(agent: dict[str, Any], prompt: str, choice: models.Choice, cwd: Path, env_stack: Any,
                step: str, raw_path: Path) -> str:
-    argv = ["codex", "exec", "--model", _model(agent, model_set), "--sandbox", str(agent["sandbox"]),
-            "--cd", str(cwd), "-"]
-    return _run_process(env_stack.wrap_agent(argv), cwd=cwd, env=env_stack.process_env(), stdin_text=prompt,
-                        timeout=int(agent["timeout"]), step=step, raw_path=raw_path)
+    return _run_process(env_stack.wrap_agent(codex_argv(agent, choice, cwd)), cwd=cwd, env=env_stack.process_env(),
+                        stdin_text=prompt, timeout=int(agent["timeout"]), step=step, raw_path=raw_path)
 
 
-def _run_custom(agent: dict[str, Any], prompt: str, model_set: str, cwd: Path, env_stack: Any,
+def _run_custom(agent: dict[str, Any], prompt: str, choice: models.Choice, cwd: Path, env_stack: Any,
                 step: str, raw_path: Path) -> str:
     template = str(agent.get("command") or "")
     if not template:
         raise LayerError(f"custom agent {agent.get('id')!r} has an empty command")
-    shell_command = template.replace("{model}", _model(agent, model_set)).replace("{cwd}", str(cwd))
+    shell_command = template.replace("{model}", choice.model).replace("{cwd}", str(cwd))
     return _run_process(env_stack.wrap_agent(["bash", "-c", shell_command]), cwd=cwd,
                         env=env_stack.process_env(), stdin_text=prompt, timeout=int(agent["timeout"]),
                         step=step, raw_path=raw_path)
@@ -183,6 +200,11 @@ def _load_mock_script(script: Path, step: str) -> dict[str, Any]:
         raise StepFailed(step, "mock delete must be a list of relative paths")
     if not isinstance(data.get("commit", False), bool):
         raise StepFailed(step, "mock commit must be a boolean")
+    cost = data.get("cost")
+    if cost is not None and (isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0):
+        raise StepFailed(step, "mock cost must be a number of US dollars >= 0")
+    if not isinstance(data.get("fail", ""), str):
+        raise StepFailed(step, "mock fail must be a string (the failure reason)")
     return data
 
 
@@ -269,7 +291,12 @@ def _run_mock(layer: Any, state: Any, agent: dict[str, Any], step: str, command:
         raw_path.write_text(json.dumps({"synthesised": True, "output": output}) + "\n", encoding="utf-8")
         return output
     data = _load_mock_script(script, step)
-    raw_path.write_text(json.dumps({"script": str(script), **data}) + "\n", encoding="utf-8")
+    lines = [json.dumps({"script": str(script), **data})]
+    if data.get("cost") is not None:
+        # a scripted cost is reported the way Claude Code reports it: in a final `result` event
+        lines.append(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                                 "total_cost_usd": data["cost"], "num_turns": 1, "result": data.get("output", "")}))
+    raw_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     variables = template_variables(layer, state)
     worktree = work_dir(layer, state)
     _write_files(worktree, data.get("files", {}), variables, args, step)
@@ -278,6 +305,8 @@ def _run_mock(layer: Any, state: Any, agent: dict[str, Any], step: str, command:
     _delete_paths(worktree, data.get("delete", []), step)
     if data.get("commit"):
         _commit_all(worktree, step, env_stack)
+    if data.get("fail"):
+        raise StepFailed(step, str(data["fail"]))
     return render(data.get("output", f"mock: {step} ok"), variables, args)
 
 
@@ -357,8 +386,12 @@ def _render_prompt(layer: Any, state: Any, command_name: str, command: dict[str,
 
 
 def run_agent(layer: Any, state: Any, step_name: str, command_name: str, args: list[str],
-              model_set: str, env_stack: Any, agent_id: str = "") -> str:
-    """Render the command/hop, run it on the ADW's agent (mock when dry-run) and return the processed output."""
+              model_set: str, env_stack: Any, agent_id: str = "", tier_from: str = "command") -> str:
+    """Render the command/hop, run it on the ADW's agent (mock when dry-run) and return the processed output.
+
+    `model_set` is the tier the call asks for and `tier_from` why (step / request / command); the
+    run's overrides may replace both (see models.py). Spending limits are checked before and after
+    the call (see budget.py)."""
     command = layer.command(command_name)
     prompt = _render_prompt(layer, state, command_name, command, args)
     directory = step_dir(layer, state, step_name)
@@ -368,23 +401,47 @@ def run_agent(layer: Any, state: Any, step_name: str, command_name: str, args: l
     # different vendor for an independent look; otherwise the ADW's agent runs it.
     agent = layer.option("agents", agent_id or layer.adw(state.adw)["agent"])
     kind = "mock" if state.dry_run else agent["kind"]
-    used = {"agent": str(agent["id"]), "agent_kind": kind, "model": "" if state.dry_run else _model(agent, model_set)}
+    choice = models.choose(agent, model_set, tier_from, state.overrides)
+    used = {"agent": str(agent["id"]), "agent_kind": kind, "model": "" if state.dry_run else choice.model}
+    why = {"tier": choice.tier, "tier_from": choice.tier_from, "model_from": choice.model_from,
+           "effort": choice.effort}
     owner = next((r for r in reversed(state.steps) if r.get("status") == "running"), None)
     if owner is not None:
-        owner.update(used)  # the step record names the agent, its kind and the model actually used
-    span = {"step": step_name, "owner": str(owner.get("name")) if owner else "", **used, "model_set": model_set}
+        owner.update(used, **why)  # the step record names the agent, the tier and the model actually used
+    span = {"step": step_name, "owner": str(owner.get("name")) if owner else "", **used, "model_set": choice.tier, **why}
+    cap = budget.before_call(layer, state, step_name)  # raises when today's limit is reached: no call starts
+    state.budget["cap_from"] = budget.cap_source(state, layer) if cap is not None else ""
+    call = {"step": step_name, "owner": span["owner"], **used, **why, "status": "running", "cost": None}
+    state.agent_calls.append(call)
     events.emit("agent.start", **span)
     started = time.monotonic()
     try:
-        result = _call_agent(layer, state, agent, kind, step_name, command, prompt, args, model_set, env_stack,
-                             raw_path, directory)
+        result = _call_agent(layer, state, agent, kind, step_name, command, prompt, args, choice, env_stack,
+                             raw_path, directory, cap)
     except BaseException as exc:
+        totals = transcript_totals(raw_path)
+        call.update(status="failed", cost=totals.get("cost"))
         events.emit("agent.end", **span, status="failed", seconds=round(time.monotonic() - started, 3),
-                    error=str(exc)[:500], **transcript_totals(raw_path))
+                    error=str(exc)[:500], **totals)
+        if isinstance(exc, (StepFailed, LayerError)):
+            # a call stopped by the CLI's own budget cap, or one that went over a limit and then
+            # failed, is a budget stop: that is the reason a person needs to see
+            budget.after_call(state, step_name, agent, totals.get("cost"), failed=True,
+                              native_stop=_stopped_by_cap(raw_path, cap))
         raise
-    events.emit("agent.end", **span, status="passed", seconds=round(time.monotonic() - started, 3),
-                **transcript_totals(raw_path))
+    totals = transcript_totals(raw_path)
+    call.update(status="passed", cost=totals.get("cost"))
+    events.emit("agent.end", **span, status="passed", seconds=round(time.monotonic() - started, 3), **totals)
+    budget.after_call(state, step_name, agent, totals.get("cost"))
     return result
+
+
+def _stopped_by_cap(raw_path: Path, cap: float | None) -> bool:
+    """True when the agent's final result event says the CLI's own budget cap ended the call."""
+    if cap is None:
+        return False
+    subtype = str(transcript_totals(raw_path).get("subtype") or "")
+    return "budget" in subtype.lower()
 
 
 def transcript_totals(raw_path: Path) -> dict[str, Any]:
@@ -408,24 +465,27 @@ def transcript_totals(raw_path: Path) -> dict[str, Any]:
             for key, name in (("total_cost_usd", "cost"), ("num_turns", "turns"), ("duration_ms", "duration_ms")):
                 if isinstance(event.get(key), (int, float)) and not isinstance(event.get(key), bool):
                     totals[name] = event[key]
+            if isinstance(event.get("subtype"), str) and event.get("subtype") != "success":
+                totals["subtype"] = event["subtype"]
             break
     return totals
 
 
 def _call_agent(layer: Any, state: Any, agent: dict[str, Any], kind: str, step_name: str, command: dict[str, Any],
-                prompt: str, args: list[str], model_set: str, env_stack: Any, raw_path: Path, directory: Path) -> str:
+                prompt: str, args: list[str], choice: models.Choice, env_stack: Any, raw_path: Path, directory: Path,
+                cap: float | None = None) -> str:
     cwd = work_dir(layer, state)
     if kind == "mock":
         output = _run_mock(layer, state, agent, step_name, command, args, raw_path, env_stack)
     elif kind == "claude-code":
         with slots.slot(layer, "agents", f"adw {state.adw_id} step {step_name}"), _host_agent_guard(env_stack):
-            output = _run_claude(layer, agent, prompt, model_set, cwd, env_stack, step_name, raw_path)
+            output = _run_claude(layer, agent, prompt, choice, cwd, env_stack, step_name, raw_path, cap)
     elif kind == "codex":
         with slots.slot(layer, "agents", f"adw {state.adw_id} step {step_name}"), _host_agent_guard(env_stack):
-            output = _run_codex(agent, prompt, model_set, cwd, env_stack, step_name, raw_path)
+            output = _run_codex(agent, prompt, choice, cwd, env_stack, step_name, raw_path)
     elif kind == "custom":
         with slots.slot(layer, "agents", f"adw {state.adw_id} step {step_name}"), _host_agent_guard(env_stack):
-            output = _run_custom(agent, prompt, model_set, cwd, env_stack, step_name, raw_path)
+            output = _run_custom(agent, prompt, choice, cwd, env_stack, step_name, raw_path)
     else:
         raise LayerError(f"Unknown agent kind: {kind!r}")
     result = process_output(layer, state, command, output, step_name)

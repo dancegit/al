@@ -32,6 +32,8 @@ TYPES = (
     "step.start", "step.end",
     "agent.start", "agent.end",
     "check.start", "check.end",
+    "script.start", "script.end",
+    "budget.stop",
     "review.round", "gate.decision", "ship.result", "handoff",
     "fanout.candidate",
 )

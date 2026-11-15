@@ -127,14 +127,27 @@ def summarise(state: Any) -> str:
     return ", ".join(parts)
 
 
-def keyword_selection(text: str, keyword: str) -> tuple[str | None, str | None]:
-    """Find `<keyword>: <workflow> [heavy|base]` at the start of a line."""
-    rx = re.compile(r"^[ \t]*" + re.escape(keyword) + r"[ \t]*:[ \t]*([\w.\-]+)(?:[ \t]+(heavy|base))?[ \t]*$",
+def keyword_selection(text: str, keyword: str,
+                      tiers: Iterable[str] = ("base", "heavy")) -> tuple[str | None, str | None]:
+    """Find `<keyword>: <workflow> [TIER]` at the start of a line; TIER is one of `tiers` (the
+    model tiers the layer's agents declare), anything else is ignored."""
+    rx = re.compile(r"^[ \t]*" + re.escape(keyword) + r"[ \t]*:[ \t]*([\w.\-]+)(?:[ \t]+([A-Za-z][\w\-]*))?[ \t]*$",
                     re.IGNORECASE | re.MULTILINE)
     m = rx.search(text or "")
     if not m:
         return None, None
-    return m.group(1), (m.group(2) or "").lower() or None
+    tier = (m.group(2) or "").lower()
+    return m.group(1), tier if tier in set(tiers) else None
+
+
+def layer_tiers(lay: Any) -> list[str]:
+    """Every model tier an agent of the layer declares (base and heavy at least)."""
+    from . import models  # the layer object may be a plain test double without agents
+
+    try:
+        return models.declared_tiers(lay)
+    except (AttributeError, TypeError):
+        return ["base", "heavy"]
 
 
 def dotted(data: Any, path: str) -> Any:
@@ -233,7 +246,7 @@ def _resolve_tasklist(lay, option, ref, env, base) -> Request:
         else:
             tl.fail(path, adw_id, _attr(state, "error") or f"adw {_attr(state, 'status', 'failed')}", option)
 
-    return Request(prompt=task.text, klass=task.klass, model_set=task.model_set,
+    return Request(prompt=task.text, klass=task.klass, model_set=task.tier(layer_tiers(lay)),
                    workflow=task.workflow(adw_names), start_hook=start, finish_hook=finish, **base)
 
 
@@ -248,10 +261,10 @@ def _resolve_issue(lay, option, ref, env, base, forge) -> Request:
     for c in reversed(client.list_comments(n)):
         if client.is_bot(c.get("body")):
             continue
-        workflow, model_set = keyword_selection(c.get("body", ""), keyword)
+        workflow, model_set = keyword_selection(c.get("body", ""), keyword, layer_tiers(lay))
         break  # only the latest non-bot comment counts
     if workflow is None:
-        workflow, model_set = keyword_selection(issue.get("body", ""), keyword)
+        workflow, model_set = keyword_selection(issue.get("body", ""), keyword, layer_tiers(lay))
     klass = next((lbl for lbl in issue.get("labels") or [] if lbl in tl.CLASSES), None)
 
     def start(state):
