@@ -165,7 +165,7 @@
 (define-kind prompt-input issue
   "A forge issue (title + body). Requires a forge."
   [labels (list-of string) () "Only issues carrying all of these labels are picked up; empty = any."]
-  [keyword string "adw" "Body/comment keyword prefix that selects a workflow, e.g. `adw: sdlc`."]
+  [keyword string "adw" "Body/comment keyword prefix that selects a workflow and optionally a model tier, e.g. `adw: sdlc` or `adw: sdlc heavy` (any tier an agent of the layer declares)."]
   [classify boolean #t "Run the classify command to map the issue to chore/bug/feature."])
 (define-kind prompt-input tasklist
   "A plain-text task list (tasks.md) in the layer: one heading per worktree, one checkbox line per task."
@@ -175,7 +175,7 @@
   [done-marker string "[x]" "Marker written on success (followed by adw id and commit hash)."]
   [failed-marker string "[!]" "Marker written on failure (followed by adw id and reason)."]
   [blocked-marker string "[>]" "Marker of a task that waits for the tasks above it in the same section."]
-  [tag-syntax (enum braces hash) braces "Tags select workflow/model: `{sdlc, heavy}` or `#sdlc #heavy`."])
+  [tag-syntax (enum braces hash) braces "Tags select the workflow, the model tier (any tier an agent of the layer declares) and the class: `{sdlc, heavy}` or `#sdlc #heavy`."])
 (define-kind prompt-input spec-file
   "A hand-written spec/plan file dropped into a directory of the layer; planning is skipped."
   [dir string "specs/inbox" "Directory relative to the layer that is watched for new specs."]

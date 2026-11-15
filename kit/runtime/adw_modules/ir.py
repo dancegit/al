@@ -114,8 +114,11 @@ class Layer:
         for step in adw.get("steps", []):
             if step.get("kind") == "run":
                 self.command(step["command"])
-            elif step.get("kind") == "check":
+            elif step.get("kind") in ("check", "script"):
                 self.cmd(step["cmd"])
+        review = self.option("reviews", adw["review"])
+        if review.get("agent"):
+            self.option("agents", review["agent"])
         return adw
 
 

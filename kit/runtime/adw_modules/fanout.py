@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import IO, Any, Callable
 
-from . import envs, events, gitsafe, slots
+from . import envs, events, gitsafe, models, slots
 from . import state as state_module
 from .errors import LayerError, StepFailed
 
@@ -119,7 +119,9 @@ def _launch_all(layer: Any, state: Any, name: str, child: str, candidates: list[
             while pending and len(running) < parallel:
                 candidate = pending.pop(0)
                 log = (log_dir / f"{candidate['id']}.log").open("w", encoding="utf-8")
-                env = {**os.environ, "ADW_FANOUT_PARENT": state.adw_id, "ADW_FANOUT_STEP": name,
+                # the parent's model overrides and run limit apply to every candidate too
+                env = {**os.environ, **models.environment(state.overrides),
+                       "ADW_FANOUT_PARENT": state.adw_id, "ADW_FANOUT_STEP": name,
                        "ADW_FANOUT_INDEX": str(candidate["index"])}
                 try:
                     process = launcher(layer, child, _child_args(state, candidate["id"]), env, log)

@@ -39,6 +39,7 @@ class ADWState:
     outputs: dict[str, str] = field(default_factory=dict)
     steps: list[dict[str, Any]] = field(default_factory=list)
     checks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    scripts: dict[str, dict[str, Any]] = field(default_factory=dict)  # (script …) steps: {cmd, args, exit, log}
     artefacts: list[dict[str, Any]] = field(default_factory=list)
     review: dict[str, Any] = field(default_factory=dict)
     ship: dict[str, Any] = field(default_factory=dict)
@@ -51,6 +52,14 @@ class ADWState:
     host: str = ""
     heartbeat: str = ""
     fanout_parent: dict[str, Any] = field(default_factory=dict)  # {run, step, index} of a fan-out candidate
+    # --model-set / --model / --max-cost and their environment variables: {tier, models, max_cost, from}
+    overrides: dict[str, Any] = field(default_factory=dict)
+    # every agent call: {step, owner, agent, agent_kind, tier, tier_from, model, model_from, effort, status, cost}
+    agent_calls: list[dict[str, Any]] = field(default_factory=list)
+    # what the agent calls cost: {total, calls, unreported: ["id (kind)" of agents that report no cost]}
+    cost: dict[str, Any] = field(default_factory=dict)
+    # spending limits of this run: {limits: {run, step, day, run_from}, stopped: {limit, spent, of, step, reason}}
+    budget: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):

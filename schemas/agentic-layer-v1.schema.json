@@ -2058,7 +2058,7 @@
                 "type": "string"
               },
               "keyword": {
-                "description": "Body/comment keyword prefix that selects a workflow, e.g. `adw: sdlc`.",
+                "description": "Body/comment keyword prefix that selects a workflow and optionally a model tier, e.g. `adw: sdlc` or `adw: sdlc heavy` (any tier an agent of the layer declares).",
                 "type": "string"
               },
               "kind": {
@@ -2123,7 +2123,7 @@
                 "const": "stable"
               },
               "tagSyntax": {
-                "description": "Tags select workflow/model: `{sdlc, heavy}` or `#sdlc #heavy`.",
+                "description": "Tags select the workflow, the model tier (any tier an agent of the layer declares) and the class: `{sdlc, heavy}` or `#sdlc #heavy`.",
                 "enum": [
                   "braces",
                   "hash"
