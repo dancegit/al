@@ -9,6 +9,8 @@
 /trees/
 # work queues of whoever runs the layer
 /tasks.md
+# private values of whoever runs the layer (addresses, servers, passwords): never committed
+/local.env
 # generated with this machine's paths; `al gen` writes them on every machine
 /bin/al
 /.al-manifest.local.json

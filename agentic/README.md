@@ -12,6 +12,7 @@ git worktrees under `trees/`, plans land in `specs/`, run state and logs in `age
 |---|---|---|---|---|---|---|---|
 | `plan-build` | cli, tasklist | manual, cron | worktree | your machine | your machine | human | classify → plan-chore → plan-bug → plan-feature → build |
 | `sdlc` | cli, tasklist | manual, cron | worktree | your machine | your machine | human | classify → plan-chore → plan-bug → plan-feature → build → test-compiler → test-runtime → test-tools → test-dashboard → test-integration → document → commit → review → ship |
+| `reviewed` | cli, tasklist | manual, cron | worktree | your machine | your machine | auto → pr | classify → plan-chore → plan-bug → plan-feature → build → test-compiler → test-runtime → test-tools → test-dashboard → test-integration → document → commit → review → ship |
 
 ## Run
 
@@ -74,4 +75,4 @@ An ordinary workflow that changes anything under `agentic/` in its worktree is s
 
 Committed: `agentic.rkt`, `LLM.txt`, `templates/`, `mock/`, `adopted/` (what `al adopt` wrote), and expert `expertise.yaml` files (source); `agentic-layer.json`, `conditional_docs.md`, `commands/`, `hops/`, `experts/`, `adws/`, `env/`, `fabric/`, `forge/`, `AL-DSL.llms.txt`, this README, `.gitignore` and `.al-manifest.json` (generated; the manifest lets `al gen` notice hand edits).
 
-Not committed (`.gitignore`, written by `al gen`): run state (worktrees, run logs, artefacts, plans, run documents, the task list and spec inbox, `al improve` runs), files that name this machine's paths (`bin/al`, systemd units, the Home Manager module) and caches.
+Not committed (`.gitignore`, written by `al gen`): run state (worktrees, run logs, artefacts, plans, run documents, the task list and spec inbox, `al improve` runs), files that name this machine's paths (`bin/al`, systemd units, the Home Manager module), private values (`local.env`) and caches.

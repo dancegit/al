@@ -3,14 +3,15 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""al work dashboard: a live, read-only view of what the agents of one or more layers are doing.
+"""al work dashboard: a live view of what the agents of one or more layers are doing.
 
   dashboard.py --layer path/to/app.al [--layer …] [--scan DIR …] [--port 8765] [--bind 127.0.0.1]
-               [--token T] [--open]
+               [--token T] [--open] [--read-only]
 
 It watches each layer's `agents/` (run state, run.log, step transcripts, check logs, slot locks,
 port leases) and `artefacts/` by polling mtimes and sizes, and serves one page that updates over
-Server-Sent Events. Standard library only; nothing is ever written to a layer.
+Server-Sent Events. Standard library only. It writes one thing: a layer's local model setting
+(agents/settings/models.json), from the Models panel; --read-only turns that off.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import base64
 import difflib
 import hmac
 import http.client
+import io
 import ipaddress
 import json
 import math
@@ -33,10 +35,12 @@ import socket
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
 import webbrowser
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -56,6 +60,11 @@ PRUNE_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "target", 
 EXPLAIN_FILES = ("EXPLAIN.md", "explain.md", "docs/EXPLAIN.md", "docs/explain.md", "docs/explain.txt")
 DEFINITION_FILES = (LAYER_FILE, "agentic.rkt")
 SERVED_TREES = ("agents", "artefacts", "specs")
+DOC_SUFFIXES = (".md", ".txt", ".json", ".log")   # what counts as a run's document (viewable as text)
+DOC_VIEW_CAP = 1_000_000    # bytes shown inline; larger documents are download only
+DOC_ZIP_CAP = 50_000_000    # bytes put into one "download all" zip
+DOC_TYPES = {".md": "text/markdown; charset=utf-8", ".txt": "text/plain; charset=utf-8",
+             ".log": "text/plain; charset=utf-8", ".json": "application/json"}
 PREVIEW_CHARS = 1600
 TRANSCRIPT_SETTLE = 20.0   # a JSON line without its newline is held this long before it counts as truncated
 TEXT_CAP = 400_000
@@ -63,6 +72,16 @@ POOLS = ("runs", "agents", "checks")
 POOL_DEFAULTS = {"runs": ("maxRuns", 4), "agents": ("maxAgents", 2), "checks": ("maxChecks", 2)}
 EVENTS_FILE = "events.jsonl"
 USAGE_FILE = "subscription-usage.json"   # agents/subscription-usage.json: what the agent CLI last reported
+# mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal
+SETTINGS_FILE = "agents/settings/models.json"   # the layer's local model setting, never committed
+KNOWN_MODELS = ("claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5", "gpt-5.4",
+                "gpt-5.4-mini")
+BUILTIN_TIERS = {"claude-code": {"base": "claude-opus-5-5", "heavy": "claude-opus-5-5"},
+                 "codex": {"base": "gpt-5.4-mini", "heavy": "gpt-5.4"}}
+TIER_RX = re.compile(r"^[a-z][a-z0-9-]*$")
+MODEL_ID_RX = re.compile(r"^[^\s\x00-\x1f\x7f]{1,200}$")   # non-empty, no whitespace, no control characters
+WRITE_HEADER = "X-AL-Dashboard"   # a plain HTML form cannot send it: POST /api/models requires it
+MAX_WRITE_BODY = 4096
 WINDOW_LABELS = {"five_hour": "5-hour", "seven_day": "weekly"}
 WINDOW_ORDER = ("five_hour", "seven_day")
 API_KEY_SOURCES = ("ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key")
@@ -1032,6 +1051,34 @@ class Layer:
                 return name
         return None
 
+    def models_view(self, read_only: bool) -> dict[str, Any]:
+        """Which model each declared tier means and why, without a run's flags or environment:
+        the local setting, else the first non-mock agent that declares the tier."""
+        error = ""
+        try:
+            local = read_settings(self.path)
+        except ValueError as exc:
+            local, error = {}, str(exc)
+        agents = [a for a in self.ir.get("agents") or [] if isinstance(a, dict) and a.get("kind") != "mock"]
+        tiers = []
+        for tier in declared_tiers(self.ir):
+            declaring = [a for a in agents if tier in (agent_tiers(a) or {})]
+            if tier in local:
+                model, source = local[tier], "local setting"
+            elif declaring:
+                agent = declaring[0]
+                model = (agent_tiers(agent) or {})[tier]["model"]
+                default = BUILTIN_TIERS.get(str(agent.get("kind") or ""), {}).get(tier)
+                source = "built-in default" if model == default else "layer"
+            else:   # no agent states a model: the built-in default of the first agent's kind, if any
+                model = next((BUILTIN_TIERS[str(a.get("kind"))][tier] for a in agents
+                              if tier in BUILTIN_TIERS.get(str(a.get("kind") or ""), {})), "")
+                source = "built-in default" if model else ""
+            tiers.append({"tier": tier, "model": model, "source": source, "local": local.get(tier),
+                          "agents": [str(a.get("id") or "") for a in declaring]})
+        writable, why = settings_writable(self, read_only)
+        return {"tiers": tiers, "known": list(KNOWN_MODELS), "writable": writable, "why": why, "error": error}
+
 
 def find_layers(roots: Iterable[Path], depth: int = 4) -> list[Path]:
     """Directories containing agentic-layer.json below each root (the root itself included)."""
@@ -1072,6 +1119,119 @@ def load_layer(path: Path, taken: set[str]) -> Layer | None:
     while key in taken:
         key, suffix = f"{base}-{suffix}", suffix + 1
     return Layer(key=key, path=path, ir=ir, sig=stat_sig(path / LAYER_FILE))
+
+
+# ============================================================================ local model setting
+
+def check_model_id(model: Any) -> str | None:
+    """mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal"""
+    if not isinstance(model, str) or not MODEL_ID_RX.fullmatch(model):
+        raise ValueError(f"model id must be a non-empty string without whitespace, got {model!r}")
+    if model not in KNOWN_MODELS:
+        return f"{model} is not a known model id (known: {', '.join(KNOWN_MODELS)}); it is passed to the agent as is"
+    return None
+
+
+def check_setting(tier: Any, model: Any, known_tiers: list[str]) -> str | None:
+    """mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal"""
+    if not isinstance(tier, str) or not TIER_RX.fullmatch(tier) or tier not in known_tiers:
+        raise ValueError(f"no agent of this layer has a tier `{tier}`; declared: {', '.join(known_tiers)}")
+    return check_model_id(model)
+
+
+def agent_tiers(agent: Any) -> dict[str, dict[str, str]] | None:
+    """mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal"""
+    if not isinstance(agent, dict):
+        return None
+    models = agent.get("models")
+    if isinstance(models, list):
+        return {str(m.get("tier")): {"model": str(m.get("model") or ""), "effort": str(m.get("effort") or "default")}
+                for m in models if isinstance(m, dict) and m.get("tier")}
+    if "modelBase" in agent or "modelHeavy" in agent:
+        return {"base": {"model": str(agent.get("modelBase") or ""), "effort": "default"},
+                "heavy": {"model": str(agent.get("modelHeavy") or ""), "effort": "default"}}
+    return None
+
+
+def declared_tiers(ir: dict[str, Any]) -> list[str]:
+    """mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal"""
+    seen: list[str] = []
+    for agent in ir.get("agents") or []:
+        for tier in (agent_tiers(agent) or {"base": {}, "heavy": {}}):
+            if tier not in seen:
+                seen.append(tier)
+    return seen or ["base", "heavy"]
+
+
+def render_settings(mapping: dict[str, str]) -> str:
+    """mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal"""
+    return json.dumps({"version": 1, "models": dict(sorted(mapping.items()))}, indent=2, sort_keys=True) + "\n"
+
+
+def read_settings(layer_dir: Path) -> dict[str, str]:
+    """mirror of kit/runtime/adw_modules/models.py (ValueError instead of LayerError)"""
+    path = Path(layer_dir) / SETTINGS_FILE
+    hint = "fix or remove it (al models LAYER --reset)"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ValueError(f"{SETTINGS_FILE}: cannot read it ({exc.strerror}); {hint}") from exc
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"{SETTINGS_FILE}: not JSON; {hint}") from exc
+    mapping = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(mapping, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()):
+        raise ValueError(f'{SETTINGS_FILE}: expected {{"version": 1, "models": {{TIER: MODEL_ID}}}}; {hint}')
+    for tier, model in mapping.items():
+        if not TIER_RX.fullmatch(tier):
+            raise ValueError(f"{SETTINGS_FILE}: {tier!r} is not a tier name; {hint}")
+        try:
+            check_model_id(model)
+        except ValueError as exc:
+            raise ValueError(f"{SETTINGS_FILE}: {exc}; {hint}") from exc
+    return dict(mapping)
+
+
+def write_settings(layer_dir: Path, mapping: dict[str, str]) -> Path:
+    """mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal"""
+    path = Path(layer_dir) / SETTINGS_FILE
+    if not mapping:
+        path.unlink(missing_ok=True)
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False,
+                                         prefix=".models.", suffix=".tmp")
+    try:
+        with handle:
+            handle.write(render_settings(mapping))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(handle.name, path)
+    except BaseException:
+        Path(handle.name).unlink(missing_ok=True)
+        raise
+    return path
+
+
+def settings_writable(layer: "Layer", read_only: bool) -> tuple[bool, str]:
+    """Can the Models panel write this layer's local setting? → (writable, why not)."""
+    if read_only:
+        return False, "the dashboard was started with --read-only"
+    why = ("agents/settings is not writable here (in the podman dashboard only layers given directly are "
+           "mounted writable); use `al models LAYER --set TIER=ID` on the host")
+    root = Path(os.path.realpath(layer.path))
+    target = layer.path / SETTINGS_FILE
+    for directory in (target.parent, target.parent.parent):   # agents/settings, agents/
+        real = Path(os.path.realpath(directory))
+        if real != root and root not in real.parents:
+            return False, why   # a symlink that leaves the layer
+    for directory in (target.parent, target.parent.parent, layer.path):
+        if directory.exists():
+            return (True, "") if directory.is_dir() and os.access(directory, os.W_OK | os.X_OK) else (False, why)
+    return False, why
 
 
 # ============================================================================ runs
@@ -1681,6 +1841,7 @@ class RunModel:
                 "fanout": {"run": str(parent["run"]), "step": str(parent.get("step") or ""), "index": parent.get("index")}}
                if parent.get("run") else {}),
             "artefacts": len(state.get("artefacts") or []),
+            "documents": len(run_documents(self.layer, self.id, data["state"])),
             "agents": len(agents),
             "budget": budget_view(state),
             "billing": str(cost_record.get("billing") or "") or collapse_billing(a["billing"] for a in agents),
@@ -1888,12 +2049,13 @@ class RunModel:
             "state": {"branch": state.get("branch", ""), "plan": short(state.get("plan", "")),
                       "worktree": short(state.get("worktree", "")), "ports": state.get("ports") or [],
                       "model_set": state.get("model_set", ""), "class_fixed": state.get("class_fixed"),
-                      "overrides": state.get("overrides") or {},
+                      "overrides": state.get("overrides") or {}, "models": state.get("models") or {},
                       "source": state.get("source", ""), "prompt": short(state.get("prompt", ""))},
             "review": {"mode": review.get("mode", ""), "success": (review.get("verdict") or {}).get("success"),
                        "summary": short((review.get("verdict") or {}).get("summary", "")), "rounds": rounds},
             "ship": {k: (short(v) if isinstance(v, str) else v) for k, v in ship.items() if k != "gate"},
             "gate": gate, "handoff": handoff, "fanout": fanout, "artefacts": artefacts,
+            "documents": run_documents(self.layer, self.id, state),
             "budget": budget_view(state),
             "usage": usage_view(state),
             "scripts": {name: {k: (short(v) if isinstance(v, str) else v) for k, v in rec.items()}
@@ -2154,7 +2316,7 @@ def sse_frame(kind: str, payload: bytes | str, event_id: str | int | None = None
 
 class Model:
     def __init__(self, layer_dirs: list[Path], scan_dirs: list[Path], *, poll: float = 0.75, scan_depth: int = 4,
-                 probe: ContainerProbe | None = None, in_container: bool = False) -> None:
+                 probe: ContainerProbe | None = None, in_container: bool = False, read_only: bool = False) -> None:
         self.layer_dirs = [Path(p) for p in layer_dirs]
         self.scan_dirs = [Path(p) for p in scan_dirs]
         self.poll = poll
@@ -2177,6 +2339,8 @@ class Model:
         self._parents_size, self._parents_dirty = -1, True
         self.liveness_checked: dict[str, float] = {}
         self.usage_sigs: dict[str, tuple | None] = {}
+        self.settings_sigs: dict[str, tuple | None] = {}
+        self.read_only = read_only
 
     # ---------------------------------------------------------------- discovery
     def discover(self) -> bool:
@@ -2238,7 +2402,8 @@ class Model:
                             "runs": len(runs), "running": sum(1 for r in runs if r["status"] == "running"),
                             "explain": layer.explain_file(), "limits": layer.limits(),
                             "budget": self.layer_budget(layer, runs),
-                            "usage": self.layer_usage(layer, time.time())})
+                            "usage": self.layer_usage(layer, time.time()),
+                            "models": layer.models_view(self.read_only)})
             return out
 
     @staticmethod
@@ -2307,6 +2472,12 @@ class Model:
             elif self.usage_sigs[layer.key] != sig:
                 self.usage_sigs[layer.key] = sig
                 usage_changed = True
+            sig = stat_sig(layer.path / SETTINGS_FILE)   # the local model setting: the same
+            if layer.key not in self.settings_sigs:
+                self.settings_sigs[layer.key] = sig
+            elif self.settings_sigs[layer.key] != sig:
+                self.settings_sigs[layer.key] = sig
+                usage_changed = True
         if usage_changed:
             self.hub.publish("layers", self.layer_list())
         any_running = False
@@ -2341,7 +2512,7 @@ class Model:
                              "problem": f"{type(exc).__name__}: {exc}"[:300], "steps": [], "title": "", "prompt": "",
                              "started": None, "ended": None, "duration": None, "cost": None, "tokens": {},
                              "turns": 0, "current": None, "waiting": "", "container": None, "ports": [],
-                             "outcome": {}, "error": "", "fanout_children": [], "artefacts": 0, "mtime": now,
+                             "outcome": {}, "error": "", "fanout_children": [], "artefacts": 0, "documents": 0, "mtime": now,
                              "klass": "", "dry_run": False, "source": "", "agents": 0, "cost_partial": False,
                              "failed_step": ""}
                 if fresh["status"] == "running":
@@ -2514,6 +2685,123 @@ def safe_layer_file(layer: Layer, relative: str) -> Path:
     return target
 
 
+_PATCH_STEP = re.compile(r"^patch-\d+$")
+_VERDICT_DIR = re.compile(r"^review-\d+(-\d+)?$")
+
+
+def document_path(layer: Layer, recorded: Any) -> str | None:
+    """A path the runtime recorded (absolute on the host, possibly under another mount such as a
+    container's, or already layer-relative) → the layer-relative POSIX path, or None when it is
+    not one of the layer's served trees."""
+    if not isinstance(recorded, str) or not recorded or len(recorded) > 1024:
+        return None
+    if any(c in recorded for c in "\n\r\x00"):
+        return None
+    text = recorded.strip()
+    if not text or "\\" in text:
+        return None
+    relative: str | None = None
+    if not text.startswith("/"):
+        relative = text
+    else:
+        for root in (os.path.realpath(layer.path), str(layer.path)):
+            if text.startswith(root + os.sep):
+                relative = text[len(root) + 1:]
+                break
+        if relative is None:
+            parts = text.split("/")
+            index = next((i for i in range(len(parts) - 1, 0, -1)
+                          if parts[i] in SERVED_TREES and parts[i - 1] == layer.path.name), None)
+            if index is None:
+                return None
+            relative = "/".join(parts[index:])
+    parts = relative.split("/")
+    if any(part in {"", ".", ".."} for part in parts) or parts[0] not in SERVED_TREES or len(parts) < 2:
+        return None
+    return relative
+
+
+def _doc_type(suffix: str) -> str:
+    return {".md": "markdown", ".json": "json"}.get(suffix, "text")
+
+
+def run_documents(layer: Layer, run_id: str, state: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Every document a run has produced so far, in a stable order and without duplicates: its plan,
+    the text outputs its steps recorded, review patch plans, PR.md and other text in agents/<id>/,
+    reviewer verdicts and text artefacts. Each must be a regular file inside specs/ or this run's own
+    agents/<id>/ or artefacts/<id>/ (symlinks out of the layer are not listed)."""
+    state = state if isinstance(state, dict) else {}
+    outputs = state.get("outputs") if isinstance(state.get("outputs"), dict) else {}
+    candidates: list[tuple[Any, str, str, str, str]] = []   # (recorded, step, kind, name, filename)
+    plan = state.get("plan")
+    if isinstance(plan, str) and plan.strip():
+        step = next((str(k) for k, v in outputs.items() if isinstance(v, str) and v.strip() == plan.strip()), "plan")
+        candidates.append((plan, step, "plan", "", ""))
+    for step, value in outputs.items():
+        relative = document_path(layer, value)
+        if relative and relative.endswith(DOC_SUFFIXES):
+            candidates.append((relative, str(step), "patch" if _PATCH_STEP.match(str(step)) else "output", "", ""))
+    review = state.get("review") if isinstance(state.get("review"), dict) else {}
+    for item in review.get("rounds") or []:
+        patch = item.get("patch") if isinstance(item, dict) else None
+        if isinstance(patch, dict) and patch.get("patch_plan"):
+            candidates.append((patch["patch_plan"], "review", "patch", "", ""))
+    ship = state.get("ship") if isinstance(state.get("ship"), dict) else {}
+    candidates.append((f"agents/{run_id}/PR.md", str(ship.get("stopped_at") or "ship"), "pr", "", ""))
+    run_dir = layer.path / "agents" / run_id
+    try:
+        entries = sorted(os.scandir(run_dir), key=lambda e: e.name)
+    except OSError:
+        entries = []
+    for entry in entries:
+        if entry.name in {"state.json", "run.log"} or not entry.name.endswith(DOC_SUFFIXES):
+            continue
+        if entry.is_file(follow_symlinks=False):
+            candidates.append((f"agents/{run_id}/{entry.name}", "", "run", "", ""))
+    for entry in entries:
+        if _VERDICT_DIR.match(entry.name) and entry.is_dir(follow_symlinks=False):
+            candidates.append((f"agents/{run_id}/{entry.name}/output.txt", "review", "verdict",
+                               f"{entry.name} verdict", f"{entry.name}-output.txt"))
+    for item in state.get("artefacts") or []:
+        if isinstance(item, dict) and isinstance(item.get("path"), str) and item["path"].endswith(DOC_SUFFIXES):
+            candidates.append((item["path"], str(item.get("step") or ""), "artefact", "", ""))
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for recorded, step, kind, name, filename in candidates:
+        relative = document_path(layer, recorded)
+        if relative is None or relative in seen:
+            continue
+        parts = relative.split("/")
+        if parts[0] != "specs" and parts[1] != run_id:
+            continue
+        try:
+            target = safe_layer_file(layer, relative)
+            st = target.stat()
+        except (Refused, OSError):
+            continue
+        seen.add(relative)
+        suffix = os.path.splitext(relative)[1].lower()
+        out.append({"path": relative, "name": name or parts[-1], "filename": filename or parts[-1], "step": step,
+                    "kind": kind, "bytes": st.st_size, "mtime": st.st_mtime,
+                    "viewable": suffix in DOC_SUFFIXES and st.st_size <= DOC_VIEW_CAP, "type": _doc_type(suffix)})
+    return out
+
+
+def run_document(layer: Layer, run_id: str, relative: str) -> tuple[dict[str, Any], Path] | None:
+    """The listed document `relative` of a run and its file, or None when the run does not list it."""
+    if not RUN_ID.match(run_id or "") or not isinstance(relative, str):
+        return None
+    state = read_json(layer.path / "agents" / run_id / "state.json")
+    entry = next((e for e in run_documents(layer, run_id, state if isinstance(state, dict) else None)
+                  if e["path"] == relative), None)
+    if entry is None:
+        return None
+    try:
+        return entry, safe_layer_file(layer, relative)
+    except Refused:
+        return None
+
+
 INLINE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
                 ".webp": "image/webp", ".webm": "video/webm", ".mp4": "video/mp4", ".ogg": "video/ogg",
                 ".wav": "audio/wav", ".mp3": "audio/mpeg", ".json": "application/json; charset=utf-8",
@@ -2528,9 +2816,11 @@ class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], model: Model, token: str | None, static_dir: Path) -> None:
+    def __init__(self, address: tuple[str, int], model: Model, token: str | None, static_dir: Path,
+                 read_only: bool = False) -> None:
         self.model = model
         self.token = token
+        self.read_only = read_only
         self.static_dir = static_dir
         self.shutting_down = threading.Event()
         family = socket.AF_INET6 if ":" in address[0] else socket.AF_INET
@@ -2600,10 +2890,106 @@ class Handler(BaseHTTPRequestHandler):
         name = host.rsplit(":", 1)[0] if not host.startswith("[") else host[1:host.index("]")]
         return is_loopback(name)
 
-    def do_POST(self) -> None:  # noqa: N802 — nothing may change anything
+    def _origin_ok(self) -> bool:
+        """The request comes from this dashboard's own page: Origin is present and names the Host."""
+        origin, host = self.headers.get("Origin"), (self.headers.get("Host") or "").strip()
+        return bool(origin and host) and origin == f"http://{host}"
+
+    def do_POST(self) -> None:  # noqa: N802 — the one write is the local model setting
+        if urllib.parse.urlsplit(self.path).path == "/api/models":
+            try:
+                return self._set_models()
+            except (BrokenPipeError, ConnectionResetError):
+                return None
+        self._refuse()
+
+    def _refuse(self) -> None:
+        self._drain()
         self._error(405, "read-only")
 
-    do_PUT = do_DELETE = do_PATCH = do_POST  # noqa: N815
+    do_PUT = do_DELETE = do_PATCH = _refuse  # noqa: N815
+
+    def _drain(self) -> bytes | None:
+        """Read the request body (so the connection stays usable); None when it is over
+        MAX_WRITE_BODY, which closes the connection once anything large is left unread."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.close_connection = True
+            return None
+        if length < 0:
+            self.close_connection = True
+            return None
+        if length > 64 * 1024:
+            self.close_connection = True
+            return None
+        data = self.rfile.read(length) if length else b""
+        return data if length <= MAX_WRITE_BODY else None
+
+    def _set_models(self) -> None:
+        """POST /api/models {"layer", "tier", "model"} or {"layer", "tier"|null, "reset": true}."""
+        body = self._drain()
+        if not self._host_ok():
+            return self._error(403, "bad host")
+        if not self._authorised({})[0]:   # header or cookie: a token in the URL is not accepted for a write
+            return self._error(401, "token required")
+        if not self._origin_ok():
+            return self._error(403, "cross-origin request refused")
+        if self.headers.get(WRITE_HEADER) != "1":
+            return self._error(403, f"missing {WRITE_HEADER} header")
+        if not (self.headers.get("Content-Type") or "").startswith("application/json"):
+            return self._error(415, "application/json only")
+        if body is None:
+            return self._error(413, f"request body over {MAX_WRITE_BODY} bytes")
+        if self.server.read_only:
+            return self._error(403, "the dashboard was started with --read-only")
+        try:
+            request = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        if not isinstance(request, dict) or not isinstance(request.get("layer"), str):
+            return self._error(400, 'expected {"layer", "tier", "model"} or {"layer", "tier", "reset": true}')
+        reset = request.get("reset") is True
+        tier, model = request.get("tier"), request.get("model")
+        if reset and not (tier is None or isinstance(tier, str)) or not reset and not (
+                isinstance(tier, str) and isinstance(model, str)):
+            return self._error(400, 'expected {"layer", "tier", "model"} or {"layer", "tier", "reset": true}')
+        model_ = self.server.model
+        with model_.lock:
+            layer = model_.layers.get(request["layer"])
+        if layer is None:
+            return self._error(404, "unknown layer")
+        note = None
+        try:
+            if reset:
+                if tier is not None:
+                    check_setting(tier, "x", declared_tiers(layer.ir))
+            else:
+                note = check_setting(tier, model, declared_tiers(layer.ir))
+        except ValueError as exc:
+            return self._error(400, str(exc))
+        writable, why = settings_writable(layer, self.server.read_only)
+        if not writable:
+            return self._error(409, why)
+        try:
+            current = read_settings(layer.path)
+        except ValueError as exc:
+            return self._error(409, str(exc))
+        if reset and tier is None:
+            current = {}
+        elif reset:
+            current.pop(tier, None)
+        else:
+            current[tier] = model
+        try:
+            write_settings(layer.path, current)
+        except OSError as exc:
+            return self._error(409, f"cannot write {SETTINGS_FILE}: {exc.strerror or exc}")
+        view = layer.models_view(self.server.read_only)
+        with model_.lock:
+            model_.settings_sigs[layer.key] = stat_sig(layer.path / SETTINGS_FILE)
+        model_.hub.publish("layers", model_.layer_list())
+        return self._json({"ok": True, "note": note, "models": view})
 
     def do_HEAD(self) -> None:  # noqa: N802
         self.do_GET()
@@ -2636,6 +3022,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._tail(query)
             if path == "/api/layer":
                 return self._layer(query)
+            if path == "/api/doc":
+                return self._doc(query)
+            if path == "/api/doc/download":
+                return self._doc_download(query)
+            if path == "/api/doc/zip":
+                return self._doc_zip(query)
             if path.startswith("/files/"):
                 return self._file(path[len("/files/"):])
             if path == "/healthz":
@@ -2741,6 +3133,81 @@ class Handler(BaseHTTPRequestHandler):
         if detail is None:
             return self._error(404, "no such layer")
         self._json(detail)
+
+    def _doc_target(self, query: dict[str, list[str]]) -> tuple[Layer, RunFiles, dict[str, Any], Path] | None:
+        """A document the run lists, or a 404 (never 403: what is not listed does not exist here)."""
+        resolved = self._resolve_run(query)
+        if not resolved:
+            return None
+        layer, run = resolved
+        relative = self._q(query, "path")
+        found = None
+        if relative and "\x00" not in relative and "\\" not in relative and not relative.startswith("/"):
+            found = run_document(layer, run.id, relative)
+        if found is None:
+            self._error(404, "no such document")
+            return None
+        entry, target = found
+        return layer, run, entry, target
+
+    def _doc(self, query: dict[str, list[str]]) -> None:
+        resolved = self._doc_target(query)
+        if not resolved:
+            return
+        _layer, _run, entry, target = resolved
+        text = ""
+        try:
+            if entry["viewable"]:
+                text = target.read_bytes()[:DOC_VIEW_CAP].decode("utf-8", errors="replace")
+        except OSError:
+            return self._error(404, "no such document")
+        self._json({**entry, "text": text, "too_large": entry["bytes"] > DOC_VIEW_CAP,
+                    "viewable": bool(entry["viewable"])})
+
+    def _doc_download(self, query: dict[str, list[str]]) -> None:
+        resolved = self._doc_target(query)
+        if not resolved:
+            return
+        _layer, _run, entry, target = resolved
+        try:
+            body = target.read_bytes()
+        except OSError:
+            return self._error(404, "no such document")
+        filename = re.sub(r"[^A-Za-z0-9._-]", "_", entry["filename"])
+        self._send(200, body, DOC_TYPES.get(target.suffix.lower(), "application/octet-stream"),
+                   {"Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Security-Policy": "sandbox; default-src 'none'"})
+
+    def _doc_zip(self, query: dict[str, list[str]]) -> None:
+        resolved = self._resolve_run(query)
+        if not resolved:
+            return
+        layer, run = resolved
+        state = read_json(run.dir / "state.json")
+        docs = run_documents(layer, run.id, state if isinstance(state, dict) else None)
+        if not docs:
+            return self._error(404, "no documents")
+        buffer = io.BytesIO()
+        total, skipped = 0, []
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for doc in docs:
+                try:
+                    target = safe_layer_file(layer, doc["path"])
+                    if total + target.stat().st_size > DOC_ZIP_CAP:
+                        skipped.append(doc["path"])
+                        continue
+                    data = target.read_bytes()
+                except (Refused, OSError):
+                    continue
+                total += len(data)
+                archive.writestr(doc["path"], data)
+            if skipped:
+                archive.writestr("SKIPPED.txt", "Not included (the zip is limited to "
+                                 f"{DOC_ZIP_CAP} bytes); download them one by one:\n" + "\n".join(skipped) + "\n")
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", f"{layer.key}-{run.id}-documents.zip")
+        self._send(200, buffer.getvalue(), "application/zip",
+                   {"Content-Disposition": f'attachment; filename="{name}"',
+                    "Content-Security-Policy": "sandbox; default-src 'none'"})
 
     def _file(self, rest: str) -> None:
         rest = urllib.parse.unquote(rest)
@@ -2926,7 +3393,8 @@ class Handler(BaseHTTPRequestHandler):
 # ============================================================================ entry point
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="dashboard.py", description="Live read-only work dashboard for al layers.")
+    parser = argparse.ArgumentParser(prog="dashboard.py", description="Live work dashboard for al layers "
+                                     "(read-only except the Models panel).")
     parser.add_argument("--layer", action="append", default=[], type=Path, metavar="DIR",
                         help="a layer directory (contains agentic-layer.json); repeatable")
     parser.add_argument("--scan", action="append", default=[], type=Path, metavar="DIR",
@@ -2944,6 +3412,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="opt-in: read container status from this podman API socket (when no podman CLI)")
     parser.add_argument("--in-container", action="store_true",
                         help="running in a container: pids and locks of the host are not visible")
+    parser.add_argument("--read-only", action="store_true",
+                        help="refuse every change, including the Models panel")
     args = parser.parse_args(argv)
     if not args.layer and not args.scan:
         parser.error("give at least one --layer DIR or --scan DIR")
@@ -2955,11 +3425,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def make_server(args: argparse.Namespace, static_dir: Path = STATIC_DIR) -> DashboardServer:
     probe = ContainerProbe(args.podman_socket, enabled=not args.no_podman)
     model = Model(args.layer, args.scan, poll=args.poll, scan_depth=args.scan_depth, probe=probe,
-                  in_container=args.in_container)
+                  in_container=args.in_container, read_only=args.read_only)
     model.discover()
     probe.poll(want_stats=True)   # so the first snapshot already knows the containers
     model.tick()
-    return DashboardServer((args.bind, args.port), model, args.token, static_dir)
+    return DashboardServer((args.bind, args.port), model, args.token, static_dir, read_only=args.read_only)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2985,7 +3455,9 @@ def main(argv: list[str] | None = None) -> int:
         url += f"?token={urllib.parse.quote(args.token)}"
     layers = ", ".join(f"{l['key']} ({l['runs']} runs)" for l in server.model.layer_list()) or "none yet"
     where = f"listening inside the container on port {server.server_address[1]}" if args.in_container else f"on {url}"
-    print(f"al dashboard {where}\n  watching: {layers}\n  containers: {server.model.probe.info()['note']}", flush=True)
+    print(f"al dashboard {where}\n  watching: {layers}\n"
+          f"  models: {'read-only' if args.read_only else 'switchable from the Now view'}\n"
+          f"  containers: {server.model.probe.info()['note']}", flush=True)
     if args.open:
         webbrowser.open(url)
     try:

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import budget, envs, events, ir, models, state as state_module, steps
+from . import budget, envs, events, ir, models, notify, state as state_module, steps
 from . import slots
 from .agents import CLASSES
 from .errors import LayerError, StepFailed
@@ -78,8 +78,18 @@ which tier an agent step runs on (first match wins):
   2. a run step's own #:model-set
   3. the request's tier: a task-file tag ({heavy}) or an issue keyword (adw: sdlc heavy)
   4. the command's or hop's #:model-set
-  then --model / AL_MODELS may give that tier another model id for this run.
+
+which model a tier means (first match wins):
+  1. --model TIER=MODEL_ID
+  2. AL_MODELS
+  3. the layer's local setting (agents/settings/models.json, never committed)
+  4. the layer definition (#:models / #:model-heavy)
+  5. the built-in default
+  A local setting is changed with `al models LAYER --set TIER=ID` or the dashboard; it applies to
+  runs started afterwards. Runs in flight (and resumed runs) keep the models they started with.
   state.json (agent_calls) and the run's events record the tier, model and reason of every call.
+
+notifications: a --dry-run sends none of the layer's (notify …) messages unless --notify is given.
 
 exit codes: 0 passed, 1 failed (handed to a person where the workflow ships),
             2 usage error, 3 refused: the layer's day limit (#:day-usd) or its subscription usage threshold (#:limit-stop-percent) is reached
@@ -101,6 +111,7 @@ def _parser(adw: str) -> argparse.ArgumentParser:
     parser.add_argument("--model", action="append", default=[], metavar="TIER=MODEL_ID",
                         help="use MODEL_ID for tier TIER in this run (repeatable)")
     parser.add_argument("--max-cost", metavar="USD", help="run spending limit in US dollars for this run")
+    parser.add_argument("--notify", action="store_true", help="send the layer's notifications even in a --dry-run")
     return parser
 
 
@@ -185,6 +196,7 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"adw:       {state.adw} {state.adw_id}",
         f"status:    {state.status}",
         f"branch:    {state.branch or 'none'}",
+        *([f"tiers:     {_tiers_line(state)}"] if state.models else []),
         f"plan:      {state.plan or 'none'}",
         f"checks:    {checks}",
         f"review:    {review}",
@@ -195,6 +207,12 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"artefacts: {len(state.artefacts)}",
         f"state:     {state_module.run_dir(layer.layer_dir, state.adw_id) / 'state.json'}",
     ]
+
+
+def _tiers_line(state: state_module.ADWState) -> str:
+    """Which model each tier of the ADW's agent meant and why, e.g. `heavy=claude-fable-5-2 (local setting)`."""
+    return "; ".join(f"{tier}={spec.get('model') or '?'} ({spec.get('source', '?')})"
+                     for tier, spec in sorted(state.models.items()))
 
 
 def _models_line(state: state_module.ADWState) -> str:
@@ -254,6 +272,10 @@ def _overrides_text(over: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
+def _tiers_text(tiers: dict[str, Any]) -> str:
+    return ", ".join(f"{tier}={spec.get('model') or '?'} ({spec.get('source', '?')})" for tier, spec in tiers.items())
+
+
 def _handoff_line(state: state_module.ADWState) -> str | None:
     ship = state.ship
     if ship.get("handoff_error"):
@@ -275,10 +297,12 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
     beat = state_module.Heartbeat(state, layer.layer_dir).start()
     state.save(layer.layer_dir)
     events.say(f"[adw {state.adw_id}] {state.adw} start: class={state.klass} dry_run={state.dry_run}"
-               + (f" overrides={_overrides_text(state.overrides)}" if _overrides_text(state.overrides) else ""), "run.start",
+               + (f" overrides={_overrides_text(state.overrides)}" if _overrides_text(state.overrides) else "")
+               + (f" models={_tiers_text(state.models)}" if state.models else ""), "run.start",
                adw=state.adw, adw_id=state.adw_id, klass=state.klass, dry_run=state.dry_run,
                resumed=bool(args.resume), pid=state.pid, host=state.host, fanout_parent=state.fanout_parent or None,
-               overrides=state.overrides or None, limits=state.budget.get("limits") or None)
+               overrides=state.overrides or None, models=state.models or None,
+               limits=state.budget.get("limits") or None)
     try:
         if request is not None and request.hooks is not None:
             request.hooks.on_start(state)
@@ -292,11 +316,15 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
         state.status = "failed"
         print(f"[adw {state.adw_id}] run failed: {exc}")
         _hand_off(layer, state, adw, stack, exc)
+        if notify.report(layer, state, force=bool(getattr(args, "notify", False)), at="handover"):
+            state.save(layer.layer_dir)
     except Exception as exc:  # last-resort boundary: record the crash in state instead of leaving it "running"
         state.status = "failed"
         print(f"[adw {state.adw_id}] run crashed: {type(exc).__name__}: {exc}")
         traceback.print_exc()
         _hand_off(layer, state, adw, stack, exc)
+        if notify.report(layer, state, force=bool(getattr(args, "notify", False)), at="handover"):
+            state.save(layer.layer_dir)
     finally:
         try:
             stack.teardown(state.status == "passed")
@@ -312,6 +340,8 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
         beat.stop()
         state.ended = state_module.now()
         state.save(layer.layer_dir)
+        if notify.report(layer, state, force=bool(getattr(args, "notify", False))):
+            state.save(layer.layer_dir)
         events.emit("run.end", status=state.status, exit=exit_code)
     return exit_code
 
@@ -326,8 +356,18 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None) -> int:
     try:
         layer = ir.load(Path(layer_dir))
         definition = layer.validate_adw(adw)
+        recompute = not args.resume or bool(args.model_set or args.model or args.max_cost or any(
+            os.environ.get(k) for k in (models.ENV_TIER, models.ENV_MODELS, models.ENV_MAX_COST)))
+        settings: dict[str, str] = {}
+        if recompute:  # a plain resume keeps the models its run started with
+            try:
+                settings, notes = models.local_settings(layer)
+            except LayerError as exc:
+                raise UsageError(str(exc)) from exc
+            for note in notes:
+                print(f"adw_{adw}: note: {note}", file=sys.stderr)
         try:
-            over = models.overrides(args.model_set, args.model, args.max_cost)
+            over = models.overrides(args.model_set, args.model, args.max_cost, settings=settings)
         except ValueError as exc:
             raise UsageError(str(exc)) from exc
         try:
@@ -336,9 +376,9 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None) -> int:
             raise UsageError(str(exc)) from exc
         request = None if args.resume else resolve_request(layer, definition, args)
         state = _resumed_state(layer, adw, args) if args.resume else _new_state(adw, definition, args, request)
-        if not args.resume or args.model_set or args.model or args.max_cost or any(
-                os.environ.get(k) for k in (models.ENV_TIER, models.ENV_MODELS, models.ENV_MAX_COST)):
+        if recompute:
             state.overrides = over
+            state.models = models.resolve_tiers(layer, str(definition.get("agent") or ""), over)
         state.budget["limits"] = budget.limits(layer, state.overrides)
         refused = budget.refuse_start(layer, state.budget["limits"], state.adw_id)
         if refused:
