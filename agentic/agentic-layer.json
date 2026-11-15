@@ -438,7 +438,7 @@
       "permissionMode": "acceptEdits",
       "safeMode": true,
       "status": "stable",
-      "timeout": 3600
+      "timeout": 9000
     }
   ],
   "artefacts": [
