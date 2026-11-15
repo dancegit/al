@@ -14,8 +14,11 @@
   al check   LAYER                 verify a generated layer and that the application tree is untouched
   al eject   LAYER (command|hop|expert) NAME [--force] | --list
                                    copy a kit template into LAYER/templates/ so your edits to it survive `al gen`
-  al improve LAYER "request" [--dry-run] [--review human|agent]
+  al improve LAYER "request" [--dry-run] [--review human|agent] [--model-set T] [--model T=ID] [--max-cost USD]
                                    change the layer through al's own reviewed workflow: ends in a pull request
+  al adopt   LAYER [--app APP] [--dry-run] [--only rules|prompts|workflows …]
+                                   bring a codebase's existing agent setup (rule files, prompts, workflow
+                                   scripts) into the layer, deterministically; reports what a person must decide
   al dashboard [LAYER_OR_DIR …] [--port N] [--open] [--podman]
                                    watch the runs of any layers (or every layer below a directory) live, read-only
   al verify  LAYER [--cmd NAME …] [--timeout S] [--json]
@@ -932,6 +935,46 @@ RestartSec=5
 WantedBy=default.target
 """, local=True)
 
+    def models_section(self, run_prefix: str) -> str:
+        """Model tiers, how to override them for one run, and the spending limits."""
+        lines = ["## Models and spending", ""]
+        for agent in self.ir["agents"]:
+            tiers = agent.get("models")
+            if tiers is None:
+                lines.append(f"- Agent `{agent['id']}` ({agent['kind']}): takes any tier, runs no model.")
+                continue
+            shown = ", ".join(f"`{t['tier']}` = `{t['model'] or '(the CLI default)'}`"
+                              + (f" (effort {t['effort']})" if t.get("effort", "default") != "default" else "")
+                              for t in tiers)
+            lines.append(f"- Agent `{agent['id']}` ({agent['kind']}): {shown}.")
+        adw = self.ir["adws"][0]["name"]
+        lines += ["",
+                  "Every command and hop runs on a tier (its `#:model-set`); a run step may name its own. For one run,",
+                  "without changing `agentic.rkt`:", "",
+                  "```bash",
+                  f"uv run {run_prefix}adws/adw_{adw}.py \"…\" --model-set heavy               # every agent step on one tier",
+                  f"uv run {run_prefix}adws/adw_{adw}.py \"…\" --model heavy=MODEL_ID          # another model for a tier (repeatable)",
+                  f"uv run {run_prefix}adws/adw_{adw}.py \"…\" --max-cost 3                    # hand over once the run costs more than $3",
+                  "```", "",
+                  "The same as environment variables, which the triggers and `al improve` pass on: `AL_MODEL_SET=TIER`,",
+                  "`AL_MODELS=\"heavy=…,base=…\"`, `AL_MAX_COST=USD`. Flags win. A task-file tag (`{heavy}`) or an issue",
+                  "keyword (`adw: <workflow> heavy`) naming any declared tier selects it for the steps that do not set their",
+                  "own. Which tier wins: `--model-set`, then the step's own `#:model-set`, then the request's tier, then the",
+                  "command's; `--model` then picks that tier's model id. `state.json` (`agent_calls`) and the run's events",
+                  "record the tier, model and reason of every agent call; `--help` of any workflow script says the same.", ""]
+        b = self.ir.get("budget")
+        if isinstance(b, dict):
+            parts = [f"{label} ${b[key]:g}" for key, label in (("runUsd", "per run"), ("stepUsd", "per agent call"),
+                                                                ("dayUsd", "per day in this layer")) if b.get(key) is not None]
+            lines.append("Spending limits (`budget limits`): " + (", ".join(parts) or "none") + ". A run that goes over is "
+                         "stopped after the agent call that crossed the limit and handed to a person (`budget:<limit>` "
+                         "is the reason); once the day's limit is reached no run or agent step starts (exit code 3). "
+                         "Costs are what the agents report; codex and custom agents report none and count as $0.")
+        else:
+            lines.append("Spending limits: none declared (add `(budget limits #:run-usd … #:day-usd …)`); `--max-cost` "
+                         "still limits one run.")
+        return "\n".join(lines) + "\n"
+
     def watch_section(self) -> str:
         d = self.dash
         if d["kind"] == "none":
@@ -1010,6 +1053,7 @@ uv run {run_prefix}adws/adw_{ir['adws'][0]['name']}.py "…" --dry-run          
 uv run {run_prefix}adws/dispatch.py --source tasklist:<line>                             # from a prompt input
 ```
 
+{self.models_section(run_prefix)}
 {self.watch_section()}
 ## Change the layer
 
@@ -1037,7 +1081,7 @@ Not committed (`.gitignore`, written by `al gen`): {ignored}.
         ignored = ("run state (worktrees, run logs, artefacts, plans, run documents, the task list and spec inbox, "
                    "`al improve` runs), files that name this machine's paths (`bin/al`, systemd units, the Home Manager "
                    "module" + ("" if self.in_repo else ", the forge workflow") + ") and caches")
-        committed = ("`agentic.rkt`, `LLM.txt`, `templates/`, `mock/`, expert `expertise.yaml` files and "
+        committed = ("`agentic.rkt`, `LLM.txt`, `templates/`, `mock/`, `adopted/` (what `al adopt` wrote), expert `expertise.yaml` files and "
                      "`conditional_docs.md` (source); `agentic-layer.json`, `commands/`, `hops/`, `experts/`, `adws/`, "
                      "`env/`, `fabric/`, " + ("`forge/`, " if self.in_repo else "") +
                      "`AL-DSL.llms.txt`, this README, `.gitignore` and `.al-manifest.json` (generated; the manifest "
@@ -1193,11 +1237,13 @@ Not committed (`.gitignore`, written by `al gen`): {ignored}.
 # ------------------------------------------------------------------------------------------
 
 SOURCE_FILES = ("agentic.rkt", "LLM.txt", "conditional_docs.md", "templates/README.md", ".gitignore")
+ADOPTED_DIR = "adopted"   # what `al adopt` wrote: included by agentic.rkt, regenerated by `al adopt`
 
 
 def is_layer_file(rel: str, manifest: dict[str, str | None]) -> bool:
     """A file that belongs in a committed layer: source, scaffolding or generated."""
-    return (rel in manifest or rel in SOURCE_FILES or rel in (MANIFEST,) or rel.startswith(("templates/", "mock/"))
+    return (rel in manifest or rel in SOURCE_FILES or rel in (MANIFEST,)
+            or rel.startswith(("templates/", "mock/", ADOPTED_DIR + "/"))
             or bool(re.fullmatch(r"experts/[^/]+/expertise\.yaml", rel)))
 
 
@@ -1616,6 +1662,10 @@ def improve_parsers(sub) -> None:
                    help="human (default): a person reviews the pull request; agent: an agent reviews first, a person merges")
     p.add_argument("--mock-scripts", type=Path, metavar="DIR",
                    help="scripted mock responses (<step>.json) for --dry-run, copied into the workflow's mock/improve/")
+    p.add_argument("--model-set", metavar="TIER", help="every agent step of the change uses TIER (also AL_MODEL_SET)")
+    p.add_argument("--model", action="append", default=[], metavar="TIER=MODEL_ID",
+                   help="use MODEL_ID for tier TIER in this change (repeatable; also AL_MODELS)")
+    p.add_argument("--max-cost", metavar="USD", help="stop the change once its agent calls cost more (also AL_MAX_COST)")
     p.add_argument("--adw-id", help=argparse.SUPPRESS)
     p = sub.add_parser("improve-check", help="one check of the layer-change workflow (run by `al improve`, in its worktree)")
     p.add_argument("what", choices=("definition", "regenerate", "scope", "check", "dry-runs", "verify", "report"))
