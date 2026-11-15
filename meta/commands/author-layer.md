@@ -29,6 +29,7 @@ COMPILE: tools/al compile $2 >/dev/null
 - `#:focus` lines come from LLM_TXT Conventions and Work classes, placed on the command they govern (test placement on the planners, commit format on `commit`, proof requirements on `review`). Each is specific and checkable. Never write a generic line such as "follow best practices"; no focus line is better than a generic one.
 - Declare one `(expert …)` per subsystem that LLM_TXT's Layout shows as a distinct, recurring area; none for a small codebase.
 - ADWs: `plan-build` (classify, plan by class with `#:when`, build with the plan) and `sdlc` (compose `plan-build`, one check per validation cmd with `resolve-test` and collected artefacts, document, commit, review, ship). Add `zte` only when LLM_TXT's Work classes names classes safe for zero-touch, says the checks are fast and deterministic, and Artefacts is not `none`; restrict it to those classes.
+- Existing agent setup: when LLM_TXT's `## Existing agent setup` lists anything, the layer builds on it and never silently contradicts it. If OUTPUT's directory has an `adopted/` folder (written by `al adopt`), put `(include "adopted/codebase.rkt")` inside `(codebase …)` and `(include "adopted/layer.rkt")` at the top level, and read `adopted/RULES.md` and `adopted/REPORT.md`. Otherwise tell the user in your report to run `tools/al adopt <layer>` and do it then. Carry rules over: each rule that governs one kind of work becomes a `#:focus` line on the command it governs, in the rule's own words. Reuse prompts the team already trusts (the adopted commands, `#:template custom`) in the ADWs instead of a kit command for the same job, unless a rule or the user says otherwise. Where a kit command would do something a rule forbids (the report's "For a person to decide" section lists such pairs), do not declare that step; leave it out and name the rule in your report. Proposed `legacy-…` ADWs stay as proposals: do not make them zero-touch.
 - Run COMPILE. On an error, fix exactly the clause it names, choosing from the alternatives it lists; never delete a clause to silence it. Repeat until it exits 0.
 
 ## Decision Table
@@ -55,12 +56,13 @@ COMPILE: tools/al compile $2 >/dev/null
 - `tools/al compile $2 >/dev/null` exits 0.
 - Every cmd name and shell string in OUTPUT appears in LLM_TXT's Commands table; every protected path of LLM_TXT appears in `#:protected`.
 - No auto review exists without `#:require-checks` and a `(check …)` before `(review)` in its adw.
+- When `adopted/` exists, both include lines are present, and no step of the layer contradicts a rule in `adopted/RULES.md`.
 
 ## Report
 
 - The path of OUTPUT and the final compile result, with the number of repair rounds.
 - The decisions taken, as "fact, then choice" bullets, including every default you relied on (`#:root` above all).
-- What was left out and why: `UNVERIFIED` items, preferences the language cannot express.
+- What was left out and why: `UNVERIFIED` items, preferences the language cannot express, kit steps left out because a team rule forbids them (rule and source line).
 
 ## Fabric patterns
 

@@ -148,6 +148,39 @@ against a pristine clone of the application; `al verify` when cmds or environmen
 commit → review → ship. It is an ordinary ADW with `#:changes layer`, which the compiler only accepts
 with a human or agent review: there is no zero-touch mode for changes to how agents work.
 
+## Codebases that already have an agent setup
+
+Many repositories already carry agent material: rule files (`CLAUDE.md`, `AGENTS.md`, per-directory
+variants, `.cursorrules`, …), prompt libraries (`.claude/commands/`), workflow scripts (`adws/`), CI
+jobs that run an agent, Claude Code settings. `al scout` finds and classifies it (tracked files only,
+nothing executed) into an `## Existing agent setup` table of the `LLM.txt` draft, and the meta
+commands make the authoring LLM build on it instead of beside it.
+
+`al adopt LAYER` brings it in deterministically and idempotently, never touching the application:
+
+| Material | What the layer gets |
+|---|---|
+| rule files | a `(conditional-doc FILE "Always: …")` per file (per-directory files: "When working under DIR/"), so every prompt tells the agent to read it; the files stay where they are. Agents run with `--safe-mode`, which does not load `CLAUDE.md` by itself, so this is what makes the rules reach them. Turning rules into `#:focus` lines is judgement, left to the authoring LLM, which gets `adopted/RULES.md`: every rule with its source line |
+| prompts | a `(command NAME #:template custom #:file "templates/custom/NAME.md")` per prompt, the text copied with a header naming its origin; `$ARGUMENTS` and `$1…$9` work as before; a name taken by a kit template or a layer command gets a `team-` prefix; `{{…}}` is kept literally through `{{open_braces}}`; what does not carry over (`!`cmd``, `@file`, `$10`, `model:` / `allowed-tools:` front matter) is reported |
+| workflow scripts | a `(cmd legacy-NAME "uv run adws/…")` and a PROPOSED one-step ADW `(steps (script run #:cmd legacy-NAME #:args ("$prompt")) (review) (ship))` with human review. A script cannot be converted, and is not pretended to be; a native equivalent is a change for `al improve` and a person |
+| CI agents, settings, MCP, skills, subagents, an existing al layer | reported, not adopted: a person decides |
+
+The declarations go to `adopted/codebase.rkt` and `adopted/layer.rkt`, which `agentic.rkt` includes with
+`(include "…")` inside `(codebase …)` and at the top level; `al adopt` adds those two lines once. An
+include rather than a marked region in `agentic.rkt`: `#lang al` resolves it at expansion time and
+reads the file as syntax, so every compiler error about an adopted clause points into the included
+file at that clause; the author's file is touched once and never rewritten; and the adopted files are
+al's own, regenerated whole and protected like generated files (`adopted/.al-adopt.json` records a
+sha256 per file; a hand edit makes the next `al adopt` refuse). The report (`adopted/REPORT.md`)
+lists what a person must decide, with both texts where a rule mechanically contradicts the layer
+(e.g. "never commit" against the kit's commit prompt). `al check` verifies the adopted files and the
+rule files they point at still exist, and says when an adopted original has changed.
+
+A `(script NAME #:cmd C #:args (…))` step runs a declared codebase cmd in the run's environment, with
+the arguments substituted and shell-quoted and the run context in `ADW_*` variables. Its output is the
+step's output, a non-zero exit fails the run (a shipping workflow hands its work to a person), and it
+is not a check: no resolve loop, and the gate never counts it as verification.
+
 ## Supporting the LLM: our own commands
 
 `meta/commands/` holds the prompts that drive an LLM through the pipeline: `scout-codebase`
@@ -166,7 +199,7 @@ of the output format.
 racket/al/         #lang al: meta.rkt (meta-DSL), vocab.rkt, compiler.rkt, schema.rkt, reference.rkt, tests/
 schemas/           agentic-layer-v1.schema.json      (generated)
 docs/              AL-DSL.llms.txt (generated), DESIGN.md
-tools/al           init | scout | compile | gen | check
+tools/al           init | scout | adopt | compile | gen | check | explain | eject | improve | dashboard | verify
 kit/templates/     command, HOP and expert templates   kit/schemas/  JSON output contracts
 kit/runtime/       adw_modules (generic IR interpreter), triggers, voice, dispatch
 meta/              LLM.txt template + the meta commands
