@@ -163,6 +163,46 @@ steps = [
 ]
 
 [[scene]]
+id = "05d-rota-feature"
+title = "Healthcare staffing: a safety rule, shipped on proof"
+subtitle = "Rota, a shift-scheduling app with two separate customer organisations. Request: enforce 11 hours of rest between shifts"
+gap = 0.4
+explain = [
+  "Rota is a small staffing app for hospital wards: shifts, workers, registrations. All data is synthetic",
+  "The issue states the problem and a list of acceptance criteria, the way an engineering lead would write it",
+  "The rule must hold in three places: the business logic, the API and the screen. Tests cover all three",
+  "A separate test proves one organisation can never see another's data, including on routes the agent adds",
+  "Two reviewer agents check the video against the acceptance criteria before anything merges",
+]
+steps = [
+  { image = "docs/demo/rotademo/before.png", label = "the shifts board before the change", seconds = 6, caption = "The app before the change: a ward manager's shifts board. Open shifts get a worker from a dropdown." },
+  { run = "while IFS= read -r l; do printf '%s\\n' \"$l\" | cut -c1-108; sleep 0.22; done < docs/demo/rotademo/a-run.log", show = "uv run rota.al/adws/dispatch.py --source issue:1 --class feature", note = "REPLAY of the saved log of a real run (docs/demo/rotademo/a-run.log): 405 seconds, $2.34", caption = "Replay of the real run. Three checks must pass: the test suite, the customer-data isolation test, and a recorded browser session." },
+  { video = "docs/demo/rotademo/a-rest-rule.mp4", label = "the video the run recorded as proof", speed = 1.5, hold = 2, caption = "The proof: workers who would get less than 11 hours of rest are shown as unavailable, with the reason, and cannot be chosen." },
+  { run = "python3 tools/demo/show_verdicts.py docs/demo/rotademo/a-verdicts.json", show = "show_verdicts.py a-verdicts.json", caption = "Both reviewers approved after examining 19 artefacts each. Then the gate: checks green again, change small, nothing protected touched." },
+  { image = "docs/demo/rotademo/a-pr-merged.png", label = "merged on Forgejo, with the reasoning on the record", seconds = 7, caption = "Merged without a human. The pull request keeps the plan, the check results, both verdicts and the proof for audit." },
+]
+
+[[scene]]
+id = "05e-rota-defect"
+title = "Healthcare staffing: the review catches a defect"
+subtitle = "We plant a flawed change that passes every automated test. Do the reviewer agents notice?"
+gap = 0.4
+explain = [
+  "Approving good work proves little. The real question is whether review rejects bad work",
+  "So we plant a defect on purpose: the change adds an 'Expired' badge but leaves expired workers selectable",
+  "Every test passes. The flaw is only visible by comparing the result with the acceptance criteria",
+  "Everything after the planted step is real: real checks, real reviewers, real fix",
+]
+steps = [
+  { run = "while IFS= read -r l; do printf '%s\\n' \"$l\" | cut -c1-108; sleep 0.22; done < docs/demo/rotademo/c-run.log", show = "uv run rota.al/adws/adw_planted.py --source issue:1 --class feature", note = "REPLAY of the saved log of a real run (docs/demo/rotademo/c-run.log): 547 seconds, $2.96. The build step is the PLANTED change", caption = "Replay of the real run. The planted change passes all three checks. Then the review step runs, twice." },
+  { image = "docs/demo/rotademo/c-before-fix.png", label = "the planted defect: an expired worker (Chloe Martin) can still be chosen", seconds = 7, caption = "The defect. The issue said an expired worker must not be selectable. Here she still is, and no test notices." },
+  { run = "python3 tools/demo/show_verdicts.py docs/demo/rotademo/c-round1-verdicts.json", show = "show_verdicts.py c-round1-verdicts.json   # review round 1", caption = "Round 1: both reviewers reject it, independently, naming the unmet acceptance criteria, the template line and the browser log." },
+  { image = "docs/demo/rotademo/c-after-fix.png", label = "after the patch loop: greyed out and labelled (Expired)", seconds = 7, caption = "The reviewers' findings go to an agent that plans and makes a fix. The checks run again on the fixed code." },
+  { run = "python3 tools/demo/show_verdicts.py docs/demo/rotademo/c-verdicts.json", show = "show_verdicts.py c-verdicts.json   # review round 2", caption = "Round 2: both approve the fixed change, the gate passes, and only now is it merged." },
+  { image = "docs/demo/rotademo/c-pr-final.png", label = "the pull request on Forgejo after the second round", seconds = 7, caption = "On the record: the rejection, the fix and the approval. In a first attempt the second round also failed, and it went to a human instead." },
+]
+
+[[scene]]
 id = "06-scaling"
 title = "Isolation per run: worktree, container, network, database"
 subtitle = "Three runs at once (max-runs 2): each has its own app on :8000 and its own Postgres; nothing is shared"

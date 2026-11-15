@@ -1,0 +1,68 @@
+$ uv run rota.al/adws/adw_planted.py --source issue:1 --class feature
+dispatch: planted <- issue:1
+[adw 8d4e8d6a] planted start: class=feature dry_run=False
+[adw 8d4e8d6a] step plan (run) start
+[adw 8d4e8d6a] container started: al-rota-demo-8d4e8d6a
+[adw 8d4e8d6a] step plan (run) passed: <tmp>/rota-c.al/specs/feature-8d4e8d6a-mark-expired-registration-work
+[adw 8d4e8d6a] step build (run) start
+[adw 8d4e8d6a] step build (run) passed: - Workers page: an Expired badge next to each worker whose registrat
+[adw 8d4e8d6a] step test (check) start
+[adw 8d4e8d6a] step test (check) passed: exit 0, log agents/8d4e8d6a/checks/test.1.log
+[adw 8d4e8d6a] step isolation (check) start
+[adw 8d4e8d6a] step isolation (check) passed: exit 0, log agents/8d4e8d6a/checks/isolation.1.log
+[adw 8d4e8d6a] step e2e (check) start
+[adw 8d4e8d6a] step e2e (check) passed: exit 0, log agents/8d4e8d6a/checks/e2e.1.log
+[adw 8d4e8d6a] step commit (run) start
+[adw 8d4e8d6a] step commit (run) passed: I made no commit because there was nothing to commit. The working t
+[adw 8d4e8d6a] step review (review) start
+[adw 8d4e8d6a] review round 1: re-running check test
+[adw 8d4e8d6a] review round 1: re-running check isolation
+[adw 8d4e8d6a] review round 1: re-running check e2e
+[adw 8d4e8d6a] review verdict: pass after 2 round(s): The change marks workers whose registration has expire
+[adw 8d4e8d6a] step review (review) passed: ok
+[adw 8d4e8d6a] step ship (ship) start
+[adw 8d4e8d6a] gate: test exit 0
+[adw 8d4e8d6a] gate: isolation exit 0
+[adw 8d4e8d6a] gate: e2e exit 0
+[adw 8d4e8d6a] gate: action merge
+[adw 8d4e8d6a] ship: PR #2 http://127.0.0.1:41147/adw/rota-c/pulls/2
+[adw 8d4e8d6a] ship: proof comment on PR #2 (9 file(s) attached)
+[adw 8d4e8d6a] step ship (ship) passed: ok
+[adw 8d4e8d6a] container removed: al-rota-demo-8d4e8d6a
+[adw 8d4e8d6a] worktree removed: <tmp>/rota-c.al/trees/8d4e8d6a
+=== ADW summary ===
+adw:       planted 8d4e8d6a
+status:    passed
+branch:    feature/8d4e8d6a-mark-workers-whose-registration-has-expired
+plan:      <tmp>/rota-c.al/specs/feature-8d4e8d6a-mark-expired-registration-workers.md
+checks:    test=0, isolation=0, e2e=0
+review:    pass (auto)
+ship:      merge -> main via PR #2 (shipped=True)
+artefacts: 14
+state:     <tmp>/rota-c.al/agents/8d4e8d6a/state.json
+$ 
+
+$ show_verdicts.py c-round1-verdicts.json   # review round 1
+reviewer 1: REJECTED   blockers: 3   artefacts examined: 18
+   | Acceptance criterion 2 is not met. In the assign dropdown on the shifts board, an expired worker has
+   | no "Expired" label. templates/shifts.html:26 still renders `<option value="{{ worker.id }}">{{
+   | worker.name }}</option>` for every candidate, and assignments.candidates (assignments.py:36-38)
+   | Acceptance criterion 3 is not met. An expired worker can still be selected in the assign dropdown:
+   | no `disabled` attribute is rendered (templates/shifts.html:26). The e2e run proves this. Step 5 "try
+   | Chloe Martin" selects her, and step 6 is refused by the server only after submission, which is
+reviewer 2: REJECTED   blockers: 3   artefacts examined: 18
+   | Criterion 2 is not met: the assign dropdown does not label an expired worker "Expired".
+   | templates/shifts.html:26 still renders `<option value="{{ worker.id }}">{{ worker.name }}</option>`
+   | for every candidate. assignments.py:36-38 `candidates(scope, shift)` is unchanged and marks nothing.
+   | Criterion 3 is not met: an expired worker can still be selected in the assign dropdown.
+   | templates/shifts.html:26 has no `disabled` attribute. The e2e log (artefacts/8d4e8d6a/log/e2e.1.log,
+   | steps 5-6) shows Chloe Martin selected in #assign-8 and submitted, and the 04-expired-refused.png
+$ 
+
+$ show_verdicts.py c-verdicts.json   # review round 2
+reviewer 1: APPROVED   blockers: 0   artefacts examined: 22
+reviewer 2: APPROVED   blockers: 0   artefacts examined: 22
+gate: merge   changed lines: 88   reasons against: none
+shipped to: main via PR #2
+$ 
+

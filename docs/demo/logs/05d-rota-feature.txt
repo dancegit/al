@@ -1,0 +1,50 @@
+$ 
+
+$ uv run rota.al/adws/dispatch.py --source issue:1 --class feature
+dispatch: feature <- issue:1
+[adw 6df9df52] feature start: class=feature dry_run=False
+[adw 6df9df52] step plan (run) start
+[adw 6df9df52] container started: al-rota-demo-6df9df52
+[adw 6df9df52] step plan (run) passed: <tmp>/rota.al/specs/feature-6df9df52-eleven-hours-rest-between-shifts
+[adw 6df9df52] step build (run) start
+[adw 6df9df52] step build (run) passed: The 11-hour rest rule is in place and every validation command passe
+[adw 6df9df52] step test (check) start
+[adw 6df9df52] step test (check) passed: exit 0, log agents/6df9df52/checks/test.1.log
+[adw 6df9df52] step isolation (check) start
+[adw 6df9df52] step isolation (check) passed: exit 0, log agents/6df9df52/checks/isolation.1.log
+[adw 6df9df52] step e2e (check) start
+[adw 6df9df52] step e2e (check) passed: exit 0, log agents/6df9df52/checks/e2e.1.log
+[adw 6df9df52] step commit (run) start
+[adw 6df9df52] step commit (run) passed: I made one commit, but it sits on a detached HEAD. The branch `feat
+[adw 6df9df52] step review (review) start
+[adw 6df9df52] review verdict: pass after 1 round(s): The change adds an 11-hour rest rule to rules.py (MIN_
+[adw 6df9df52] step review (review) passed: ok
+[adw 6df9df52] step ship (ship) start
+[adw 6df9df52] gate: test exit 0
+[adw 6df9df52] gate: isolation exit 0
+[adw 6df9df52] gate: e2e exit 0
+[adw 6df9df52] gate: action merge
+[adw 6df9df52] ship: PR #2 http://127.0.0.1:57593/adw/rota/pulls/2
+[adw 6df9df52] ship: proof comment on PR #2 (9 file(s) attached)
+[adw 6df9df52] step ship (ship) passed: ok
+[adw 6df9df52] container removed: al-rota-demo-6df9df52
+[adw 6df9df52] worktree removed: <tmp>/rota.al/trees/6df9df52
+=== ADW summary ===
+adw:       feature 6df9df52
+status:    passed
+branch:    feature/6df9df52-enforce-11-hours-of-rest-between
+plan:      <tmp>/rota.al/specs/feature-6df9df52-eleven-hours-rest-between-shifts.md
+checks:    test=0, isolation=0, e2e=0
+review:    pass (auto)
+ship:      merge -> main via PR #2 (shipped=True)
+artefacts: 11
+state:     <tmp>/rota.al/agents/6df9df52/state.json
+$ 
+
+$ show_verdicts.py a-verdicts.json
+reviewer 1: APPROVED   blockers: 0   artefacts examined: 19
+reviewer 2: APPROVED   blockers: 0   artefacts examined: 19
+gate: merge   changed lines: 138   reasons against: none
+shipped to: main via PR #2
+$ 
+
