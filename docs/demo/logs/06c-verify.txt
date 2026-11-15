@@ -1,0 +1,8 @@
+$ ss -ltn | grep 8443
+port 8443 on this host: in use
+$ al verify gin.al --cmd test    # make test, inside a per-run container
+verify: 1 cmd(s) of `gin` in the environment of ADW `sdlc` (worktree → podman), worktree gin.al/trees/verify
+  ok    test  exit 0  91.6s
+[adw verify-feb53c93] container removed: al-gin-verify-feb53c93
+[adw verify-feb53c93] worktree removed: gin.al/trees/verify-feb53c93
+verify: 1/1 ok; report gin.al/agents/verify/report.json

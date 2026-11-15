@@ -36,7 +36,7 @@ orking with the build tags jsoniter, go_json, sonic, nomsgpack")
     (conditional-doc "CONTRIBUTING.md" "When preparing a pull request")
     (conditional-doc ".github/PULL_REQUEST_TEMPLATE.md" "When writing a pull request description")
 $ al gen gin.al && ls gin.al gin.al/commands gin.al/adws
-generated 45 files in /tmp/al-demo/gin.al
+generated 47 files in /tmp/al-demo/gin.al
 /tmp/al-demo/gin.al:
 adws
 agentic-layer.json
@@ -46,6 +46,7 @@ bin
 commands
 conditional_docs.md
 docs
+env
 experts
 forge
 hops

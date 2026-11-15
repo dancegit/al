@@ -12,4 +12,4 @@ al: agentic.rkt does not compile:
 /tmp/al-demo/unsafe.rkt:111:2: al: (adw zte): review `zero-touch` ships without a human, so the ADW's #:enviro
 nment must include a podman option (declare (environment podman …) and list its id)
 $ raco test racket/al/tests
-11 tests passed
+14 tests passed

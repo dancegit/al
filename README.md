@@ -10,7 +10,7 @@ The whole language: [`docs/AL-DSL.llms.txt`](docs/AL-DSL.llms.txt) (generated).
 
 ## Demo
 
-**[Watch the 3½-minute tour (MP4, 3 MB)](docs/demo/tour.mp4)** — every scene runs real commands; waits are compressed.
+**[Watch the 4-minute tour (MP4, 3 MB)](docs/demo/tour.mp4)** — every scene runs real commands; waits are compressed.
 Re-record with `tools/demo/record.py tools/demo/scenes.toml` (captured output is in `docs/demo/logs/`).
 
 From a codebase to its agentic layer (gin, Go):
@@ -21,14 +21,18 @@ The compiler is the feedback loop:
 
 ![source-located errors with alternatives](docs/demo/02-compiler.gif)
 
-Zero-touch on flask with Claude Opus 5.5 — replay of a real run (3 min 17 s, $0.71, one attempt): plan, build,
-flask's own lint/mypy/test suite in a container, review, gate, ship:
+Zero-touch on flask with Claude Opus 5.5 — replay of a real run (2 min 14 s, $0.69, one attempt) in which the
+agent itself ran inside the container: plan, build, flask's own lint/mypy/test suite, review, gate, ship:
 
 ![zero-touch run](docs/demo/05-zero-touch-opus.gif)
 
+Isolation per run — three runs at once, each with its own worktree, container, network namespace and Postgres:
+
+![per-run isolation](docs/demo/06-scaling.gif)
+
 More: [five codebases](docs/demo/03-five-codebases.gif) · [tasklist + cron](docs/demo/04-tasklist.gif) ·
-[scaling: worktree + container per run](docs/demo/06-scaling.gif) · [live Forgejo](docs/demo/07-forgejo.gif) ·
-[local voice](docs/demo/08-voice.gif) · [tests](docs/demo/09-tests.gif)
+[fan-out: race one task across agents](docs/demo/06b-fan-out.gif) · [`al verify` on gin](docs/demo/06c-verify.gif) ·
+[live Forgejo](docs/demo/07-forgejo.gif) · [local voice](docs/demo/08-voice.gif) · [tests](docs/demo/09-tests.gif)
 
 ## Use it on a codebase
 

@@ -1,22 +1,27 @@
-$ grep -E 'concurrency|podman|agent' scale.al/agentic.rkt
+$ grep -E 'concurrency|service|podman' scale.al/agentic.rkt
   (concurrency slots #:max-runs 2)
-  (agent custom #:command "cat >/dev/null; test -f /run/.containerenv && echo agent-inside-container || echo
-  (environment podman #:base-image "docker.io/library/python:3.12-slim" #:network none #:agent-inside #t)
+  (service container #:id db #:image "docker.io/library/postgres:16-alpine" #:env ("POSTGRES_PASSWORD=demo")
+  (environment podman #:base-image "docker.io/library/python:3.12-slim" #:agent-inside #t #:publish (8000) #
   (adw sandboxed #:environment (worktree podman)
-$ for i in 1 2 3; do uv run scale.al/adws/adw_sandboxed.py "run $i" & done; wait
-run 3 | [adw 48e48e1e] container started: al-scale-demo-48e48e1e
-run 3 | [adw 48e48e1e] step agent (run) passed: agent-inside-container
-run 3 | [adw 48e48e1e] step proof (check) passed: exit 0, log agents/48e48e1e/checks/proof.1.log
-run 3 | status:    passed
-run 2 | [adw 7ee2d75e] container started: al-scale-demo-7ee2d75e
-run 2 | [adw 7ee2d75e] step agent (run) passed: agent-inside-container
-run 2 | [adw 7ee2d75e] step proof (check) passed: exit 0, log agents/7ee2d75e/checks/proof.1.log
+$ for i in 1 2 3; do uv run scale.al/adws/adw_sandboxed.py "run $i" & done; probe host ports; wait
+host -> 127.0.0.1:8000: closed (not published)
+host -> 127.0.0.1:5432: closed (databases are private)
+run 2 | [adw 71e710d2] sidecar ready: al-scale-demo-71e710d2-db
+run 2 | [adw 71e710d2] step agent (run) passed: agent-inside-container
+run 2 | [adw 71e710d2] step serve (check) passed: exit 0, log agents/71e710d2/checks/serve.1.log
 run 2 | status:    passed
-run 1 | [slots] adw af051b57: waiting for a free runs slot (2 in use)
-run 1 | [adw af051b57] container started: al-scale-demo-af051b57
-run 1 | [adw af051b57] step agent (run) passed: agent-inside-container
-run 1 | [adw af051b57] step proof (check) passed: exit 0, log agents/af051b57/checks/proof.1.log
+run 1 | [adw 8e9be9d5] sidecar ready: al-scale-demo-8e9be9d5-db
+run 1 | [adw 8e9be9d5] step agent (run) passed: agent-inside-container
+run 1 | [adw 8e9be9d5] step serve (check) passed: exit 0, log agents/8e9be9d5/checks/serve.1.log
 run 1 | status:    passed
-$ podman ps -a | grep -c al-scale-demo; git -C testbeds/flask status --short | wc -l
-0
-0
+run 3 | [slots] adw a04608fd: waiting for a free runs slot (2 in use)
+run 3 | [adw a04608fd] sidecar ready: al-scale-demo-a04608fd-db
+run 3 | [adw a04608fd] step agent (run) passed: agent-inside-container
+run 3 | [adw a04608fd] step serve (check) passed: exit 0, log agents/a04608fd/checks/serve.1.log
+run 3 | status:    passed
+$ cat scale.al/agents/*/checks/serve.1.log
+own database reachable on localhost:5432; app on :8000 -> made-by-run-al-scale-demo-71e710d2
+own database reachable on localhost:5432; app on :8000 -> made-by-run-al-scale-demo-8e9be9d5
+own database reachable on localhost:5432; app on :8000 -> made-by-run-al-scale-demo-a04608fd
+$ podman pod ps | grep -c al-scale-demo; git -C testbeds/flask status --short | wc -l
+pods=0 containers=0 app-changes=0

@@ -1,0 +1,18 @@
+$ grep -E 'adw |fan-out' fanout.al/agentic.rkt
+  (adw candidate #:description "One attempt at the task, committed on its own branch"
+  (adw race #:description "Three candidates race; the best one continues"
+    (steps (fan-out race #:adw candidate #:count 3 #:pick best) (check present #:cmd present))))
+$ uv run fanout.al/adws/adw_race.py 'Write the attempt file'
+[adw 337837b6] step race (fan-out) start
+[adw 337837b6] fan-out race: launched 7e02a721 (1/3)
+[adw 337837b6] fan-out race: launched 35becf17 (2/3)
+[adw 337837b6] fan-out race: launched f001a946 (3/3)
+[adw 337837b6] fan-out race: candidate 7e02a721 (1/3) passed in 0.4s: branch chore/7e02a721-write-the-attemp
+[adw 337837b6] fan-out race: candidate 35becf17 (2/3) passed in 0.4s: branch chore/35becf17-write-the-attemp
+[adw 337837b6] fan-out race: candidate f001a946 (3/3) passed in 0.4s: branch chore/f001a946-write-the-attemp
+[adw 337837b6] fan-out race: pick best -> 7e02a721 (merged into chore/337837b6-write-the-attempt-file, now 0
+[adw 337837b6] step race (fan-out) passed: 7e02a721
+[adw 337837b6] step present (check) start
+[adw 337837b6] step present (check) passed: exit 0
+status:    passed
+checks:    present=0
