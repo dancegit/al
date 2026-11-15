@@ -1,10 +1,46 @@
 {
-  "date": "2026-11-15T11:51:48Z",
+  "date": "2026-11-15T12:17:00Z",
   "model": "claude-opus-5-5",
   "forgejo": "11.0.16+gitea-1.22.0",
   "data": "synthetic (tests/rotademo/app/seed.py)",
-  "total_agent_cost_usd": 6.5322,
-  "total_wall_clock_seconds": 1207,
+  "scenario_b": {
+    "prompt": {
+      "issue_title": "Record each worker's pay band and show it on the workers page",
+      "issue_body": "Payroll needs each worker's pay band (for example \"Band 5\") next to their registration details. The rota does not store it yet.\n\n## Acceptance criteria\n\n- Each worker has a pay band stored in the database. This is a schema change: add it as a new numbered migration file in migrations/; an applied migration is never edited.\n- The synthetic seed data gives every seeded worker a pay band (healthcare assistants Band 3, registered nurses Band 5 or Band 6).\n- The workers page shows a \"Pay band\" column.\n- `GET /api/workers` includes each worker's `pay_band`.\n- Managers still see only their own organisation's workers.\n- Tests cover the API field and the page column; the e2e scenario shows the column on the workers page."
+    },
+    "adw": "feature",
+    "class": "feature",
+    "repository": "adw/rota",
+    "started_from": "pristine app",
+    "run_id": "17ac7cc3",
+    "wall_clock_seconds": 192,
+    "agent_cost_usd": 1.2359,
+    "agent_steps": 4,
+    "review_rounds": 0,
+    "gate": {
+      "action": "none: the run stopped at test, before review and the gate",
+      "reasons": [
+        "run-stopped:test: check test exited 2 after 3 attempt(s); log agents/17ac7cc3/checks/test.3.log"
+      ]
+    },
+    "pull_request": 2,
+    "pull_request_final_state": "merged by a human (after adding the migration the agent asked for)",
+    "shipped_commit": "ae06b927a411c01a0b4d1120f1c616db9562c0e9",
+    "main_after": "823ec540665f07cef9cb76254006d336db1b42cf",
+    "outcome": "the run stopped at test and handed its work over: PR #2 [needs human] with the agent's REQUIRES HUMAN request (migrations/003_worker_pay_band.sql + SQL); a human added exactly that file; test, isolation and e2e passed; the human merged",
+    "assertions": {
+      "passed": 19,
+      "failed": 0
+    },
+    "handoff": {
+      "stopped_at": "test",
+      "pr_title": "WIP: [needs human] feature: Record each worker's pay band and show it on the workers page",
+      "requested_file": "migrations/003_worker_pay_band.sql",
+      "requested_sql": "-- 003: each worker's pay band (e.g. 'Band 5'), shown to payroll next to their registration.\nALTER TABLE workers ADD COLUMN pay_band TEXT;   -- NULL = not recorded yet\n",
+      "human_added_exactly_the_requested_sql": true,
+      "checks_on_pr_branch_after_human_step": "test, isolation, e2e passed"
+    }
+  },
   "scenario_a": {
     "prompt": {
       "issue_title": "Enforce 11 hours of rest between a worker's shifts",
@@ -33,35 +69,6 @@
       "failed": 1
     },
     "note": "attempt 1 of the full run; a-rest-rule.gif re-encoded from the same video (see attempts)"
-  },
-  "scenario_b": {
-    "prompt": {
-      "issue_title": "Record each worker's pay band and show it on the workers page",
-      "issue_body": "Payroll needs each worker's pay band (for example \"Band 5\") next to their registration details. The rota does not store it yet.\n\n## Acceptance criteria\n\n- Each worker has a pay band stored in the database. This is a schema change: add it as a new numbered migration file in migrations/; an applied migration is never edited.\n- The synthetic seed data gives every seeded worker a pay band (healthcare assistants Band 3, registered nurses Band 5 or Band 6).\n- The workers page shows a \"Pay band\" column.\n- `GET /api/workers` includes each worker's `pay_band`.\n- Managers still see only their own organisation's workers.\n- Tests cover the API field and the page column; the e2e scenario shows the column on the workers page."
-    },
-    "adw": "feature",
-    "class": "feature",
-    "repository": "adw/rota",
-    "started_from": "pristine app",
-    "run_id": "7a1214b5",
-    "wall_clock_seconds": 255,
-    "agent_cost_usd": 1.2242,
-    "agent_steps": 4,
-    "review_rounds": 0,
-    "gate": {
-      "action": "",
-      "reasons": []
-    },
-    "pull_request": null,
-    "pull_request_final_state": "no pull request",
-    "shipped_commit": "",
-    "main_after": "9bdcf66ab3c8e1fbe88f7bdcc32315e057102e79",
-    "outcome": "no migration reached the gate: status failed, gate none ",
-    "assertions": {
-      "passed": 3,
-      "failed": 0
-    },
-    "note": "run with AL_ROTADEMO_ONLY=bc, so B started from the pristine app; attempt 1 (after A) behaved the same"
   },
   "scenario_c": {
     "prompt": {
@@ -93,7 +100,7 @@
   },
   "attempts": {
     "budget_usd": 20,
-    "total_spent_usd_all_attempts": 10.7682,
+    "total_spent_usd_all_attempts": 12.0041,
     "note": "Before any paid run: two free dry runs (AL_ROTADEMO_DRY=1, scripted mock agents) to shake out the script; they found two script bugs (stale local branch used by git archive; Forgejo squash-merges, so the planted commit is on the PR head, not on main).",
     "scenario_a": [
       {
@@ -121,6 +128,14 @@
         "started_from": "pristine app",
         "outcome": "the same as attempt 1 (stable behaviour); this is the recorded run (b-*)",
         "reason_for_retry": "the brief asks for up to two runs when the agent declines to touch migrations/, to see whether the behaviour is stable"
+      },
+      {
+        "attempt": 3,
+        "run_id": "17ac7cc3",
+        "cost_usd": 1.2359,
+        "started_from": "pristine app",
+        "outcome": "same agent behaviour as attempts 1 and 2 (the agent would not write migrations/003, stated REQUIRES HUMAN with the exact SQL; check test failed after 2 resolve attempts), but the runtime now hands a stopped run over: draft PR #2 \"[needs human] ...\" with Why this stopped / What the agent asks a human to do, bot comment on the issue, main unchanged, run exit 1. HUMAN STEP: the SQL from the PR body committed as migrations/003_worker_pay_band.sql; test (50), isolation (16), e2e (9 steps) passed on the PR branch; the human merged; the pay-band probe passed on main. This is the recorded run (b-*).",
+        "reason_for_retry": "re-run after the runtime gained handoff on a stopped run (kit/runtime/adw_modules/ship.py handoff); preceded by one free shake-out with a scripted mock agent against the same throwaway Forgejo"
       }
     ],
     "scenario_c": [
@@ -140,5 +155,7 @@
         "reason_for_retry": "to see whether attempt 1's round-2 severity escalation was stable; no layer, prompt or review guidance was changed"
       }
     ]
-  }
+  },
+  "total_agent_cost_usd": 6.5439,
+  "total_wall_clock_seconds": 1144
 }

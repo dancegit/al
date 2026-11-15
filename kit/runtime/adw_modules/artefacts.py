@@ -139,11 +139,28 @@ def write_manifest(layer: Any, state: Any) -> Path:
     return target
 
 
+def _clear(run_root: Path, artefact_id: str) -> None:
+    """Remove the files of an earlier collection of `artefact_id` (keyframes included)."""
+    directory = (run_root / artefact_id).resolve()
+    if directory.parent != run_root.resolve():
+        raise LayerError(f"artefact id {artefact_id!r} is not a plain name")
+    if directory.is_dir() and not directory.is_symlink():
+        shutil.rmtree(directory)
+
+
 def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str) -> list[dict[str, Any]]:
-    """Copy each artefact option's matches into artefacts/<adw_id>/<id>/, store them, update the manifest."""
+    """Copy each artefact option's matches into artefacts/<adw_id>/<id>/, store them, update the manifest.
+
+    A collection REPLACES the previous one of the same id: its manifest entries and copied files
+    (keyframes too) go, so a screenshot a later e2e run no longer produces is not shown to a
+    reviewer again. Logs lose nothing by this: every attempt's log stays in agents/<id>/checks/
+    and each log collection takes all of them. Remote copies of dropped files are left alone,
+    just no longer referenced."""
     worktree = Path(state.worktree).resolve() if state.worktree else None
     store = storage.get_storage(layer)
+    run_root = storage.artefacts_root(layer) / state.adw_id
     collected: list[dict[str, Any]] = []
+    replaced: set[str] = set()
     for artefact_id in artefact_ids:
         option = layer.option("artefacts", artefact_id)
         kind = option["kind"]
@@ -155,8 +172,9 @@ def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str
             matches = _glob_matches(worktree, option)
         else:
             raise LayerError(f"Unknown artefact kind: {kind}")
+        _clear(run_root, str(option["id"]))
+        replaced.add(str(option["id"]))
         collected.extend(_record(layer, state, store, option, producing_step, rel, src) for rel, src in matches)
-    replaced = {record["path"] for record in collected}
-    state.artefacts[:] = [item for item in state.artefacts if item.get("path") not in replaced] + collected
+    state.artefacts[:] = [item for item in state.artefacts if item.get("id") not in replaced] + collected
     write_manifest(layer, state)
     return collected

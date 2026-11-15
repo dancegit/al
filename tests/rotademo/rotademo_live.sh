@@ -6,8 +6,10 @@
 #               al-rota-demo:latest built if missing, the planted change rendered and checked,
 #               `al verify` of test/isolation/e2e, BEFORE screenshot
 #   SCENARIO A  a domain rule (11 hours rest) -> feature ADW, zero-touch: two reviewers -> gate -> merge
-#   SCENARIO B  a schema change (pay band) through the SAME ADW -> the gate stops at a protected path
-#               (migrations/) -> PR left open for a human -> HUMAN STEP merges it
+#   SCENARIO B  a schema change (pay band) through the SAME ADW. The migration is a protected path, so
+#               either the run stops (agent: REQUIRES HUMAN) and hands its work over as an open
+#               "[needs human]" PR, or the gate stops at protected-path:migrations/ -> HUMAN STEP (labelled):
+#               a person adds the migration the PR asks for, runs test/isolation/e2e, merges
 #   SCENARIO C  a PLANTED DEFECT (scripted build step that passes every check but misses an acceptance
 #               criterion) -> real reviewers -> patch loop -> re-review -> merge
 #   OUTPUTS     docs/demo/rotademo/ (per scenario, only for scenarios whose checks all passed)
@@ -223,7 +225,7 @@ if [[ "$ONLY" == *c* ]]; then
     || bad "planted defect not as designed" "$(cat "$TMP/planted-probe.json")"
 fi
 
-declare -A SECONDS_OF COST_OF STEPS_OF PR_OF COMMIT_OF MAIN_OF ID_OF ROUNDS_OF GATE_OF REASONS_OF PRSTATE_OF OUTCOME_OF NOTE_OF
+declare -A SECONDS_OF COST_OF STEPS_OF PR_OF COMMIT_OF MAIN_OF ID_OF ROUNDS_OF GATE_OF REASONS_OF PRSTATE_OF OUTCOME_OF NOTE_OF EXTRA_OF
 
 if [[ "$ONLY" == *a* ]]; then
 CUR=a
@@ -313,19 +315,93 @@ if jq -e '.ship.gate.reasons // [] | any(startswith("protected-path:migrations/"
     box "$TMP/main-b" python /helpers/probe_rest_rule.py > "$TMP/b-probe-a.log" 2>&1 && ok "scenario A's rule is still on main" || bad "scenario A's rule lost on main"
   fi
   PRSTATE_OF[b]="merged by a human (after the gate stopped)"
+elif jq -e '.ship.action == "handoff"' "$STATE" >/dev/null 2>&1; then
+  # The run stopped before the gate (in earlier attempts: the agent refused to write the migration
+  # under the protected path, so `test` could not pass) and HANDED ITS WORK OVER: a pull request
+  # marked [needs human] that says why it stopped and what the agent asks a person to do.
+  STEP="$(jq -r '.ship.stopped_at // "?"' "$STATE")"
+  GATE_OF[b]="none: the run stopped at $STEP, before review and the gate"; REASONS_OF[b]="$(jq -c '.ship.reasons // []' "$STATE")"
+  [ "$RUN_RC" != 0 ] && jq -e '.status == "failed"' "$STATE" >/dev/null 2>&1 \
+    && ok "ADW run $B stopped at step '$STEP' after ${RUN_SECONDS}s and ended failed (exit $RUN_RC): a stopped run is not a success" \
+    || bad "a stopped run must end failed with a non-zero exit (exit $RUN_RC, status $(jq -r .status "$STATE" 2>/dev/null))"
+  jq -e '.ship.shipped == false and (.ship.reasons | length == 1) and (.ship.reasons[0] | startswith("run-stopped:")) and (.ship | has("handoff_error") | not)' "$STATE" >/dev/null 2>&1 \
+    && ok "state.ship records the handoff: $(jq -r '.ship.reasons[0][0:140]' "$STATE")" || bad "state.ship" "$(jq -c '.ship' "$STATE" 2>/dev/null)"
+  sed -n '/=== ADW summary ===/,$p' "$TMP/b-run.log" | grep -q "the work needs a human: .*/pulls/${PR:-none}" \
+    && ok "the run's summary points the human at PR #$PR" || bad "the run's summary does not name the handoff PR"
+  PRJ="$TMP/b-pr.json"; api GET "/repos/adw/rota/pulls/${PR:-0}" > "$PRJ"
+  jq -e '.state == "open" and .merged == false and .base.ref == "main"' "$PRJ" >/dev/null 2>&1 \
+    && ok "PR #$PR is OPEN and not merged" || bad "PR #${PR:-?} is not an open, unmerged PR"
+  jq -e '.title | test("^(WIP: )?\\[needs human\\] ")' "$PRJ" >/dev/null 2>&1 \
+    && ok "PR title marks it: $(jq -r .title "$PRJ")" || bad "PR title" "$(jq -r .title "$PRJ" 2>/dev/null)"
+  BODY="$TMP/b-pr-body.md"; jq -r '.body // ""' "$PRJ" > "$BODY"
+  WHY="$(grep -n -m1 '^## Why this stopped$' "$BODY" | cut -d: -f1)"; ASKS="$(grep -n -m1 '^## What the agent asks a human to do$' "$BODY" | cut -d: -f1)"
+  SUMMARY_AT="$(grep -n -m1 '^## Summary$' "$BODY" | cut -d: -f1)"
+  [ -n "$WHY" ] && [ -n "$ASKS" ] && [ -n "$SUMMARY_AT" ] && [ "$WHY" -lt "$ASKS" ] && [ "$ASKS" -lt "$SUMMARY_AT" ] \
+    && ok "PR body: 'Why this stopped', then 'What the agent asks a human to do', then the usual sections" || bad "PR body sections missing or out of order"
+  sed -n "${WHY:-1},$(( ${ASKS:-2} - 1 ))p" "$BODY" | grep -q "stopped at step \`$STEP\`" \
+    && ok "'Why this stopped' names the failing step: $(sed -n "${WHY:-1},$(( ${ASKS:-2} - 1 ))p" "$BODY" | grep -m1 'stopped at step' | cut -c1-150)" \
+    || bad "'Why this stopped' does not name step $STEP"
+  sed -n "${ASKS:-1},$(( ${SUMMARY_AT:-2} - 1 ))p" "$BODY" > "$TMP/b-asks.md"
+  MIGRATION="$(grep -Eo 'migrations/[0-9]{3}_[A-Za-z0-9_]+\.sql' "$TMP/b-asks.md" | head -1)"
+  # the SQL the agent proposed: the first ```sql block of the request section, de-indented
+  python3 - "$TMP/b-asks.md" > "$TMP/b-migration.sql" <<'PY'
+import re, sys, textwrap
+text = open(sys.argv[1], encoding="utf-8").read()
+match = re.search(r"^([ \t]*)(`{3,})sql[ \t]*\n(.*?)^[ \t]*\2[ \t]*$", text, re.M | re.S)
+sys.stdout.write(textwrap.dedent(match.group(3)) if match else "")
+PY
+  grep -qi 'ALTER TABLE' "$TMP/b-migration.sql" && [ -n "$MIGRATION" ] \
+    && ok "'What the agent asks a human to do' names $MIGRATION and gives the SQL: $(grep -i -m1 'ALTER TABLE' "$TMP/b-migration.sql" | sed 's/^ *//' | cut -c1-90)" \
+    || bad "no migration file name and ALTER TABLE SQL in the request section" "$(head -20 "$TMP/b-asks.md")"
+  scrub < "$TMP/b-asks.md" > "$OUT/b-requires-human.txt"
+  api GET "/repos/adw/rota/issues/$N/comments" | jq -e --arg pr "/pulls/$PR" \
+    '[.[] | select((.body | startswith("[ADW-BOT]")) and (.body | contains($pr)) and (.body | contains("needs a human")))] | length >= 1' >/dev/null 2>&1 \
+    && ok "issue #$N has the bot's comment pointing at PR #$PR" || bad "no bot comment on issue #$N linking PR #$PR"
+  pr_has_proof adw/rota "${PR:-0}" && info "PR #$PR carries a Proof comment" || info "no Proof comment (the run stopped before any screenshot was collected)"
+  page_shot "$BASE/adw/rota/pulls/$PR" "$OUT/b-pr-page.png" && ok "b-pr-page.png: the open [needs human] PR in real Chrome (before the human step)" || bad "PR page screenshot"
+  pr_crop "$BASE/adw/rota/pulls/$PR" "$OUT/b-pr-why-human.png" header "Why this stopped..Summary" \
+    && ok "b-pr-why-human.png: title + Open state + 'Why this stopped' + 'What the agent asks a human to do'" || bad "b-pr-why-human.png" "$(cat "$TMP/crops/log" 2>/dev/null)"
+
+  echo "  HUMAN STEP (labelled): a person adds the migration the agent described, runs the checks, marks the PR ready, merges"
+  HEAD_BRANCH="$(jq -r .head.ref "$PRJ")"; HUMAN="$TMP/human-clone"
+  git clone -q "http://adw:$TOKEN@127.0.0.1:$PORT/adw/rota.git" "$HUMAN" 2>/dev/null && git -C "$HUMAN" checkout -q "$HEAD_BRANCH" \
+    && [ -n "$MIGRATION" ] && [ ! -e "$HUMAN/$MIGRATION" ] && [ -s "$TMP/b-migration.sql" ] \
+    && cp "$TMP/b-migration.sql" "$HUMAN/$MIGRATION" && git -C "$HUMAN" add "$MIGRATION" \
+    && git -C "$HUMAN" -c user.name="A. Human (ward systems lead)" -c user.email=human@example.org \
+         commit -qm "Add $MIGRATION exactly as the agent proposed in the PR (human contribution)" \
+    && git -C "$HUMAN" push -q origin "$HEAD_BRANCH" 2>/dev/null \
+    && [ "$(git -C "$HUMAN" show --name-only --format= HEAD)" = "$MIGRATION" ] \
+    && ok "HUMAN: committed exactly the SQL from the PR body as $MIGRATION to $HEAD_BRANCH ($(git -C "$HUMAN" rev-parse --short HEAD), one file)" \
+    || bad "HUMAN: could not add the migration to $HEAD_BRANCH" "$(cat "$TMP/b-migration.sql" 2>/dev/null)"
+  export_ref adw/rota "$HEAD_BRANCH" "$TMP/b-human"
+  HUMAN_CHECKS=1
+  for pair in "test:python -m pytest -q tests" "isolation:python -m pytest -q tests/test_isolation.py" "e2e:python e2e/capture.py"; do
+    name="${pair%%:*}"; cmd="${pair#*:}"
+    if box "$TMP/b-human" bash -c "$cmd" > "$TMP/b-human-$name.log" 2>&1; then
+      detail="$(grep -Eo '[0-9]+ passed' "$TMP/b-human-$name.log" | tail -1)"; [ -n "$detail" ] || detail="$(grep -c '^ok' "$TMP/b-human-$name.log") e2e steps ok"
+      ok "HUMAN: check $name passes on the PR branch with the migration ($detail)"
+    else HUMAN_CHECKS=0; bad "HUMAN: check $name fails on the PR branch with the migration" "$(tail -8 "$TMP/b-human-$name.log")"; fi
+  done
+  if [ "$HUMAN_CHECKS" = 1 ]; then
+    TITLE="$(jq -r .title "$PRJ")"
+    [ "${TITLE#WIP: }" != "$TITLE" ] && api PATCH "/repos/adw/rota/pulls/$PR" -d "$(jq -n --arg t "${TITLE#WIP: }" '{title: $t}')" >/dev/null \
+      && info "HUMAN: marked the PR ready (Forgejo's draft convention: removed the 'WIP: ' prefix)"
+    api POST "/repos/adw/rota/pulls/$PR/merge" -d '{"Do":"merge","MergeMessageField":"Pay band: agent change plus the migration a human added and checked"}' >/dev/null
+    api GET "/repos/adw/rota/pulls/$PR" | jq -e '.merged == true' >/dev/null && ok "HUMAN: PR #$PR merged after test, isolation and e2e passed" || bad "human merge of PR #$PR"
+    export_ref adw/rota main "$TMP/main-b"
+    box "$TMP/main-b" python /helpers/probe_pay_band.py > "$TMP/b-probe.log" 2>&1 \
+      && ok "main on the forge records and shows the pay band (independent probe)" || bad "pay band not (fully) on main" "$(grep -v '^{' "$TMP/b-probe.log")"
+    PRSTATE_OF[b]="merged by a human (after adding the migration the agent asked for)"
+  else PRSTATE_OF[b]="open (the human's checks failed)"; fi
+  OUTCOME_OF[b]="the run stopped at $STEP and handed its work over: PR #$PR [needs human] with the agent's REQUIRES HUMAN request ($MIGRATION + SQL); a human added exactly that file; test, isolation and e2e $([ "$HUMAN_CHECKS" = 1 ] && echo "passed; the human merged" || echo "did not all pass; not merged")"
+  EXTRA_OF[b]="$(jq -n --arg step "$STEP" --arg migration "$MIGRATION" --rawfile sql "$TMP/b-migration.sql" --arg title "$(jq -r .title "$PRJ")" \
+    --argjson checks "$HUMAN_CHECKS" '{handoff: {stopped_at: $step, pr_title: $title, requested_file: $migration, requested_sql: $sql,
+      human_added_exactly_the_requested_sql: true, checks_on_pr_branch_after_human_step: (if $checks == 1 then "test, isolation, e2e passed" else "failed" end)}}')"
 else
-  # The agent did not produce a change with a migration: record and assert exactly what happened.
-  OUTCOME_OF[b]="no migration reached the gate: $(jq -r '"status " + (.status // "?") + ", gate " + (.ship.gate.action // "none") + " " + ((.ship.gate.reasons // []) | join(","))' "$STATE" 2>/dev/null)"
-  info "ALTERNATIVE OUTCOME: ${OUTCOME_OF[b]}"
-  grep -rhos 'REQUIRES HUMAN[^"]\{0,300\}' "$LAYER/agents/$B" "$LAYER/specs" | sort -u | scrub > "$OUT/b-requires-human.txt"
-  [ -s "$OUT/b-requires-human.txt" ] && ok "the agent flagged REQUIRES HUMAN ($(wc -l < "$OUT/b-requires-human.txt") line(s), saved to b-requires-human.txt)" \
-    || info "no REQUIRES HUMAN line found in the run's records"
-  if [ -n "$PR" ]; then
-    api GET "/repos/adw/rota/pulls/$PR" | jq -e '.merged == false' >/dev/null && ok "PR #$PR is not merged" || bad "PR #$PR merged without a human"
-    page_shot "$BASE/adw/rota/pulls/$PR" "$OUT/b-pr-page.png" && ok "b-pr-page.png" || bad "PR page screenshot"
-    pr_crop "$BASE/adw/rota/pulls/$PR" "$OUT/b-pr-why-human.png" header "Review verdict..Artefacts" && ok "b-pr-why-human.png" || bad "b-pr-why-human.png"
-    PRSTATE_OF[b]="$(api GET "/repos/adw/rota/pulls/$PR" | jq -r 'if .merged then "merged" else .state end')"
-  else PRSTATE_OF[b]="no pull request"; fi
+  # Neither a gate stop nor a handoff: record exactly what happened, and fail (a stopped run must hand over).
+  OUTCOME_OF[b]="neither a gate stop nor a handoff: $(jq -r '"status " + (.status // "?") + ", ship " + (.ship | tostring)' "$STATE" 2>/dev/null | cut -c1-300)"
+  bad "unexpected outcome" "${OUTCOME_OF[b]}"
+  PRSTATE_OF[b]="${PR:+$(api GET "/repos/adw/rota/pulls/$PR" | jq -r 'if .merged then "merged" else .state end')}"
 fi
 verdicts_json "$STATE" > "$OUT/b-verdicts.json"
 [ "$before" = "$(fingerprint "$APP")" ] && ok "local app clone untouched (HEAD, branch, status)" || bad "local app clone changed"
@@ -435,12 +511,12 @@ scenario_json() { local l="$1" title="$2" body="$3" adw="$4" repo="$5" base="$6"
     --argjson steps "${STEPS_OF[$l]:-0}" --argjson rounds "${ROUNDS_OF[$l]:-0}" --arg gate "${GATE_OF[$l]:-}" \
     --argjson reasons "${REASONS_OF[$l]:-[]}" --arg pr "${PR_OF[$l]:-}" --arg prstate "${PRSTATE_OF[$l]:-}" \
     --arg commit "${COMMIT_OF[$l]:-}" --arg main "${MAIN_OF[$l]:-}" --arg outcome "${OUTCOME_OF[$l]:-}" \
-    --argjson passed "${PASS_OF[$l]:-0}" --argjson failed "${FAIL_OF[$l]:-0}" \
+    --argjson passed "${PASS_OF[$l]:-0}" --argjson failed "${FAIL_OF[$l]:-0}" --argjson extra "${EXTRA_OF[$l]:-{\}}" \
     '{prompt: {issue_title: $title, issue_body: $body}, adw: $adw, class: "feature", repository: $repo, started_from: $base,
       run_id: $id, wall_clock_seconds: $seconds, agent_cost_usd: ($cost * 10000 | round / 10000), agent_steps: $steps,
       review_rounds: $rounds, gate: {action: $gate, reasons: $reasons}, pull_request: ($pr | tonumber? // null),
       pull_request_final_state: $prstate, shipped_commit: $commit, main_after: $main, outcome: $outcome,
-      assertions: {passed: $passed, failed: $failed}}'; }
+      assertions: {passed: $passed, failed: $failed}} + $extra'; }
 ran=(); for l in a b c; do [[ "$ONLY" == *$l* ]] && ran+=("$l"); done
 {
   echo '{}'

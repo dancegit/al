@@ -1,22 +1,46 @@
-REQUIRES HUMAN and gives the exact contents:
-REQUIRES HUMAN and gives the exact contents:\n  ```sql\n  -- 003: each worker's pay band (e.g. 'Band 5'), shown to managers on the workers page and in the API for payroll.\n  ALTER TABLE workers ADD COLUMN pay_band TEXT;   -- e.g. 'Band 3'; NULL for rows created before this migration\n  ```\n  Leave `001` and `00
-REQUIRES HUMAN lines; deliberate omissions and follow-ups>
-REQUIRES HUMAN)
-REQUIRES HUMAN)\n- Create `migrations/003_worker_pay_band.sql` with exactly the contents given in Notes. `migrations/` is protected, so a human must add or approve this file. Do not edit `001_initial.sql` or `002_shift_lookup_indexes.sql`.\n\n### Write the tests first\n- `tests/test_api.py`: add `test_manager_lis
-REQUIRES HUMAN**, `migrations/` is protected; exact contents are in Notes), read by `data.py` `_WORKER_COLUMNS`. `001_initial.sql` and `002_shift_lookup_indexes.sql` stay untouched; `db.migrate` refuses to start if an applied file changes.
-REQUIRES HUMAN**, `migrations/` is protected; exact contents are in Notes), read by `data.py` `_WORKER_COLUMNS`. `001_initial.sql` and `002_shift_lookup_indexes.sql` stay untouched; `db.migrate` refuses to start if an applied file changes.\n  - Test: `tests/test_api.py::test_manager_lists_workers_with_pay_band`, 
-REQUIRES HUMAN**: `migrations/` is a protected path. Exact contents are in Notes.
-REQUIRES HUMAN**: `migrations/` is a protected path. Exact contents are in Notes.\n\n## Implementation Plan\n### Phase 1: Foundation\nThe schema change: `migrations/003_worker_pay_band.sql` adds `workers.pay_band`. A human adds it (protected path). `db.migrate` applies it after 001 and 002 on start-up and before 
-REQUIRES HUMAN**: the fix belongs in `migrations/`, which is a protected path. I changed nothing.
-REQUIRES HUMAN**: the fix belongs in `migrations/`, which is a protected path. I changed nothing.\n\n- **Root cause:** `migrations/003_worker_pay_band.sql` doesn't exist. The schema comes only from the numbered files in `migrations/` (`db.py:3`), and only `001_initial.sql` and `002_shift_lookup_indexes.sql` are t
-REQUIRES HUMAN. On reproduction, `python -m pytest -q tests` failed with the same error as the hint: 1 error while collecting `tests/test_isolation.py` (`sqlite3.OperationalError: table workers has no column named pay_band`). The run stops at collection, so no tests run. I haven't run it again since.
-REQUIRES HUMAN. On reproduction, `python -m pytest -q tests` failed with the same error as the hint: 1 error while collecting `tests/test_isolation.py` (`sqlite3.OperationalError: table workers has no column named pay_band`). The run stops at collection, so no tests run. I haven't run it again since.\n\n**`git di
-REQUIRES HUMAN: `migrations/003_worker_pay_band.sql` is under the protected path `migrations/`. The acceptance criteria require the schema change as a new numbered migration, and nothing else in the feature works without it (`seed.py`, `data.py`, the tests and the e2e run all depend on the column). A person must 
-REQUIRES HUMAN: add `migrations/003_worker_pay_band.sql` with exactly these contents, from the plan's Notes:
-REQUIRES HUMAN: add `migrations/003_worker_pay_band.sql` with exactly these contents, from the plan's Notes:\n```sql\n-- 003: each worker's pay band (e.g. 'Band 5'), shown to managers on the workers page and in the API for payroll.\nALTER TABLE workers ADD COLUMN pay_band TEXT;   -- e.g. 'Band 3'; NULL for rows c
-REQUIRES HUMAN:** create `migrations/003_worker_pay_band.sql` with exactly the contents in the plan's Notes. `migrations/` is a protected path, so I did not add it. `001_initial.sql` and `002_shift_lookup_indexes.sql` are unchanged.
-REQUIRES HUMAN:** create `migrations/003_worker_pay_band.sql` with exactly the contents in the plan's Notes. `migrations/` is a protected path, so I did not add it. `001_initial.sql` and `002_shift_lookup_indexes.sql` are unchanged.\n- **Write the tests first:**\n  - `tests/test_api.py` has three new tests: `test
-REQUIRES HUMAN` lines called out.
-REQUIRES HUMAN` to Notes naming the path and the reason.
-REQUIRES HUMAN`).
-REQUIRES HUMAN`.
+## What the agent asks a human to do
+
+From the plan (`specs/feature-17ac7cc3-worker-pay-band-column.md`):
+
+- Implemented in: `migrations/003_worker_pay_band.sql` (new file, `ALTER TABLE workers ADD COLUMN pay_band TEXT;` — REQUIRES HUMAN, see Notes, because `migrations/` is a protected path); `001_initial.sql` and `002_shift_lookup_indexes.sql` are untouched, so `db.migrate` checksums still match. `data.py` `_WORKER_COLUMNS` reads the column.
+
+- `migrations/003_worker_pay_band.sql` — adds `workers.pay_band`. Protected path: a human adds it (see Notes, REQUIRES HUMAN). Exact contents:
+  ```sql
+  -- 003: each worker's pay band (e.g. 'Band 5'), shown to payroll next to their registration.
+  ALTER TABLE workers ADD COLUMN pay_band TEXT;   -- NULL = not recorded yet
+  ```
+
+### Check that the migration is in place (REQUIRES HUMAN precondition)
+
+- Run every command under Validation Commands from the worktree root and fix the code (never the expectations) until all exit 0. If `migrations/003_worker_pay_band.sql` is still missing, these fail with `table workers has no column named pay_band`. Report that as the outstanding REQUIRES HUMAN step; do not create the file yourself.
+
+- REQUIRES HUMAN: `migrations/003_worker_pay_band.sql` — the acceptance criteria need a new numbered migration, and `migrations/` is a protected path (CONTRIBUTING.md rule 7), so this plan does not let the implementer create it. A person must add exactly this file before the Validation Commands can pass:
+  ```sql
+  -- 003: each worker's pay band (e.g. 'Band 5'), shown to payroll next to their registration.
+  ALTER TABLE workers ADD COLUMN pay_band TEXT;   -- NULL = not recorded yet
+  ```
+
+From step `build`:
+
+REQUIRES HUMAN: add `migrations/003_worker_pay_band.sql` with exactly this content (from the plan's Notes):
+```sql
+-- 003: each worker's pay band (e.g. 'Band 5'), shown to payroll next to their registration.
+ALTER TABLE workers ADD COLUMN pay_band TEXT;   -- NULL = not recorded yet
+```
+
+From step `test-resolve-1`:
+
+REQUIRES HUMAN: add `migrations/003_worker_pay_band.sql` with exactly this content, from the plan's Notes:
+```sql
+-- 003: each worker's pay band (e.g. 'Band 5'), shown to payroll next to their registration.
+ALTER TABLE workers ADD COLUMN pay_band TEXT;   -- NULL = not recorded yet
+```
+
+From step `test-resolve-2`:
+
+REQUIRES HUMAN: add `migrations/003_worker_pay_band.sql` with exactly this content from the plan:
+```sql
+-- 003: each worker's pay band (e.g. 'Band 5'), shown to payroll next to their registration.
+ALTER TABLE workers ADD COLUMN pay_band TEXT;   -- NULL = not recorded yet
+```
+

@@ -113,8 +113,13 @@ def summarise(state: Any) -> str:
     parts = [f"adw {adw_id} {status}"]
     if branch:
         parts.append(f"branch `{branch}`")
-    url = ship.get("url") or ship.get("pr_url") if isinstance(ship, Mapping) else None
-    if url:
+    ship = ship if isinstance(ship, Mapping) else {}
+    pr = ship.get("pr") if isinstance(ship.get("pr"), Mapping) else {}
+    url = ship.get("url") or ship.get("pr_url") or pr.get("url")
+    if ship.get("action") == "handoff":   # a stopped run whose work was handed over (ship.handoff)
+        parts.append(f"stopped at `{ship.get('stopped_at', '?')}`; the work needs a human: "
+                     + (f"PR {url}" if url else str(ship.get("target") or "see the run")))
+    elif url:
         parts.append(f"PR {url}")
     commit = ship.get("commit") if isinstance(ship, Mapping) else None
     if commit:

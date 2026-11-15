@@ -1,21 +1,23 @@
 dispatch: feature <- issue:1
-[adw 7a1214b5] feature start: class=feature dry_run=False
-[adw 7a1214b5] step plan (run) start
-[adw 7a1214b5] container started: al-rota-demo-7a1214b5
-[adw 7a1214b5] step plan (run) passed: <tmp>/rota.al/specs/feature-7a1214b5-worker-pay-band-column.md
-[adw 7a1214b5] step build (run) start
-[adw 7a1214b5] step build (run) passed: # Report: worker pay band (7a1214b5)
-[adw 7a1214b5] step test (check) start
-[adw 7a1214b5] step test (check) failed: test: check test exited 2 after 3 attempt(s); log agents/7a1214b5/checks/test.3.log
-[adw 7a1214b5] run failed: test: check test exited 2 after 3 attempt(s); log agents/7a1214b5/checks/test.3.log
-[adw 7a1214b5] container removed: al-rota-demo-7a1214b5
+[adw 17ac7cc3] feature start: class=feature dry_run=False
+[adw 17ac7cc3] step plan (run) start
+[adw 17ac7cc3] container started: al-rota-demo-17ac7cc3
+[adw 17ac7cc3] step plan (run) passed: <tmp>/rota.al/specs/feature-17ac7cc3-worker-pay-band-column.md
+[adw 17ac7cc3] step build (run) start
+[adw 17ac7cc3] step build (run) passed: The code changes for the pay band feature are all in place, but every validation command except the migration check fails. The migration that adds the `pay_band
+[adw 17ac7cc3] step test (check) start
+[adw 17ac7cc3] step test (check) failed: test: check test exited 2 after 3 attempt(s); log agents/17ac7cc3/checks/test.3.log
+[adw 17ac7cc3] run failed: test: check test exited 2 after 3 attempt(s); log agents/17ac7cc3/checks/test.3.log
+[adw 17ac7cc3] handoff: PR #2 http://127.0.0.1:41829/adw/rota/pulls/2 needs a human
+[adw 17ac7cc3] container removed: al-rota-demo-17ac7cc3
 === ADW summary ===
-adw:       feature 7a1214b5
+adw:       feature 17ac7cc3
 status:    failed
-branch:    feature/7a1214b5-record-each-workers-pay-band-and
-plan:      <tmp>/rota.al/specs/feature-7a1214b5-worker-pay-band-column.md
+branch:    feature/17ac7cc3-record-each-workers-pay-band-and
+plan:      <tmp>/rota.al/specs/feature-17ac7cc3-worker-pay-band-column.md
 checks:    test=2
 review:    none
-ship:      none
+ship:      handoff -> http://127.0.0.1:41829/adw/rota/pulls/2 (shipped=False)
+handoff:   stopped at test; the work needs a human: http://127.0.0.1:41829/adw/rota/pulls/2 (branch feature/17ac7cc3-record-each-workers-pay-band-and)
 artefacts: 3
-state:     <tmp>/rota.al/agents/7a1214b5/state.json
+state:     <tmp>/rota.al/agents/17ac7cc3/state.json
