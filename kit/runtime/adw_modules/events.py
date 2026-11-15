@@ -34,6 +34,7 @@ TYPES = (
     "check.start", "check.end",
     "script.start", "script.end",
     "budget.stop",
+    "limit.status", "limit.stop", "limit.wait",
     "review.round", "gate.decision", "ship.result", "handoff",
     "fanout.candidate",
 )

@@ -134,8 +134,63 @@
     return b.run !== null && b.run !== undefined ? `${fmt.cost(run.cost)} of ${fmt.cost(b.run)}` : fmt.cost(run.cost);
   }
 
+  /** The agent CLI's name of a usage window, in words: five_hour → 5-hour, seven_day → weekly. */
+  function windowLabel(name) {
+    return { five_hour: "5-hour", seven_day: "weekly" }[name] || String(name || "").replace(/_/g, " ");
+  }
+
+  /** "API-equivalent" for a run whose agent calls ran on a subscription: its dollars are an estimate, not a bill. */
+  function costLabel(run) {
+    return run && (run.billing === "subscription" || run.billing === "mixed") ? "API-equivalent" : "";
+  }
+
+  /** A run a subscription usage limit stopped, with the window that did it. */
+  function limitBadge(run) {
+    const stop = run.usage && run.usage.stopped;
+    if (!stop) return null;
+    return h("span", { class: "badge limit", title: stop.reason || "", text: `limit stop: ${windowLabel(stop.window)}` });
+  }
+
+  /** One layer's block of the "Subscription usage" panel: what the agent CLI last reported. */
+  function usagePanel(layer) {
+    const usage = layer.usage || { state: "none", windows: [] };
+    const el = h("div", { class: "usage-layer", dataset: { layer: layer.key } },
+      h("div", { class: "name" }, h("a", { href: `#/layer/${enc(layer.key)}`, text: layer.name || layer.key })));
+    const threshold = usage.threshold;
+    if (usage.state === "api-key") {
+      el.appendChild(h("div", { class: "empty", text: "API key: not applicable" }));
+    } else if (usage.state !== "known") {
+      el.appendChild(h("div", { class: "empty", text: "no data yet" }));
+    } else {
+      for (const w of usage.windows || []) {
+        const known = w.used !== null && w.used !== undefined;
+        let share;
+        if (known) {
+          const fill = h("i", { class: threshold && w.used * 100 >= threshold.percent ? "over" : "" });
+          fill.style.width = `${Math.round(w.used * 100)}%`;
+          share = [h("span", { class: "usage-bar" }, fill), h("b", { class: "num", text: fmt.pct(w.used) })];
+        } else {
+          share = h("span", { class: "faint", text: "share used: not reported by the CLI" });
+        }
+        const reset = w.expired ? "reset time passed; no newer report" : (w.resets_at ? `resets ${fmt.time(w.resets_at)}` : "reset time: not reported");
+        el.appendChild(h("div", { class: "usage-window", dataset: { window: w.window } },
+          h("span", { class: "label", text: w.label || windowLabel(w.window) }), share,
+          w.status ? h("span", { class: `badge${w.status === "rejected" ? " limit" : (w.status === "allowed_warning" ? " warn" : "")}`, text: w.status }) : null,
+          h("span", { class: "reset", text: reset }),
+          h("span", { class: "faint" }, w.at ? `as of ${fmt.time(w.at)} (${fmt.ago(w.at)})` : "as of: unknown",
+            w.run ? [" · ", h("a", { href: `#/run/${enc(layer.key)}/${enc(w.run)}`, text: w.run })] : null)));
+      }
+    }
+    if (threshold) {
+      el.appendChild(h("div", { class: "faint", text: `no new agent step at ${threshold.percent}% (then: ${threshold.on_limit === "wait"
+        ? `wait for the reset, at most ${threshold.wait_minutes} min` : "hand over"})` }));
+    }
+    return el;
+  }
+
   function outcomeBadge(run) {
     const o = run.outcome || {};
+    if (run.usage && run.usage.stopped) return limitBadge(run);
     if (run.budget && run.budget.stopped) return budgetBadge(run);
     if (o.ship === "merge" && o.shipped) return h("span", { class: "badge good", text: "merged" });
     if (o.ship === "deploy" && o.shipped) return h("span", { class: "badge good", text: "deployed" });
@@ -428,7 +483,7 @@
     bars.forEach((bar, index) => {
       const y = top + index * rowH;
       const end = bar.end || now();
-      const x = labelW + (bar.start - t0) * k, w = Math.max(2, (end - bar.start) * k);
+      const x = labelW + (bar.start - t0) * k, w = Math.max(bar.kind === "limit" ? 3 : 2, (end - bar.start) * k);
       const duration = end - bar.start;
       const label = bar.level === 0 ? bar.label : `  ${bar.label}`;
       const tip = `${bar.label} · ${bar.kind}${bar.role && bar.role !== "main" ? ` (${bar.role})` : ""} · ${bar.status}\n${fmt.dur(duration)}${bar.cost ? ` · ${fmt.cost(bar.cost)}` : ""}${bar.exit !== undefined && bar.exit !== null ? ` · exit ${bar.exit}` : ""}`;
@@ -762,14 +817,18 @@
     const strip = h("div", { class: "strip" });
     const grid = h("div", { class: "now-grid" });
     const pools = h("div", { class: "pools" });
+    const usage = h("div", { class: "usage" });
     const recent = h("div", { class: "table-wrap" });
     const containerNote = h("span", { class: "faint" });
     main.append(strip,
       h("div", { class: "card-head" }, h("h2", { text: "In flight" }), h("span", { class: "spacer" }), containerNote), grid,
+      h("div", { class: "card-head" }, h("h2", { text: "Subscription usage" }), h("span", { class: "spacer" }),
+        h("span", { class: "faint", text: "what the agent CLI last reported; not a live meter" })), usage,
       h("div", { class: "card-head", style: null }, h("h2", { text: "Slots and ports" })), pools,
       h("div", { class: "card-head" }, h("h2", { text: "Recently finished" })), recent);
     grid.style.marginBottom = "18px";
     pools.style.marginBottom = "18px";
+    usage.style.marginBottom = "18px";
     const cards = new Map();
     let selected = -1;
 
@@ -804,7 +863,8 @@
           h("span", { class: "action", text: run.waiting ? `waiting for a free ${run.waiting} slot` : (current.action || "working") })),
         h("div", { class: "facts" },
           h("span", {}, "elapsed ", h("b", { class: "num", "data-since": run.started || "", text: fmt.dur(now() - (run.started || now())) })),
-          h("span", {}, "cost so far ", h("b", { class: "num", text: costOfLimit(run) }), run.cost_partial ? h("span", { class: "faint", text: " +running step" }) : null),
+          h("span", {}, "cost so far ", h("b", { class: "num", text: costOfLimit(run) }),
+            costLabel(run) ? h("span", { class: "faint", text: " API-equivalent" }) : null, run.cost_partial ? h("span", { class: "faint", text: " +running step" }) : null),
           current.since ? h("span", {}, "step ", h("b", { class: "num", "data-since": current.since, text: fmt.dur(now() - current.since) })) : null,
           run.waiting ? h("span", { class: "badge warn", text: `waiting: ${run.waiting} slot` }) : null,
           run.ports && run.ports.length ? h("span", { class: "mono faint", text: `ports ${run.ports.join(",")}` }) : null),
@@ -824,7 +884,7 @@
       replace(strip,
         stat("running", running.length, running.filter((r) => r.waiting).length ? `${running.filter((r) => r.waiting).length} waiting` : ""),
         stat("runs, 24 h", day.length, finishedDay.length ? `${fmt.pct(finishedDay.filter((r) => r.status === "passed").length / finishedDay.length)} passed` : ""),
-        stat("cost, 24 h", fmt.cost(costDay)),
+        stat("cost, 24 h", fmt.cost(costDay), day.some((r) => costLabel(r)) ? "API-equivalent" : ""),
         ...store.layers.filter((l) => l.budget).map((l) => budgetStat(l)),
         stat("layers watched", store.layers.length),
         stat("all runs", runs.length));
@@ -842,8 +902,13 @@
       }
       const info = store.containers || {};
       containerNote.textContent = info.available ? `containers: ${info.note}` : (info.note || "");
+      renderUsage();
       renderPools();
       renderRecent(runs);
+    }
+
+    function renderUsage() {
+      replace(usage, store.layers.length ? store.layers.map((layer) => usagePanel(layer)) : h("div", { class: "empty", text: "no layers yet" }));
     }
 
     function renderPools() {
@@ -1066,7 +1131,7 @@
             h("button", { class: "toggle", type: "button", text: "copy link", title: "copy a deep link to this view", onclick: (e) => copyLink(e.target) })),
           prompt,
           sm.problem ? h("div", { class: "badge warn", text: sm.problem }) : null),
-        h("div", { class: "figures" }, fig("time", elapsed), fig("cost", h("b", { text: fmt.cost(sm.cost_children ? (sm.cost || 0) + sm.cost_children : sm.cost) },
+        h("div", { class: "figures" }, fig("time", elapsed), fig(costLabel(sm) ? "cost (API-equivalent)" : "cost", h("b", { text: fmt.cost(sm.cost_children ? (sm.cost || 0) + sm.cost_children : sm.cost) },
           sm.cost_children ? h("small", { text: ` incl. ${fmt.cost(sm.cost_children)} candidates` }) : null,
           sm.budget && sm.budget.run !== null && sm.budget.run !== undefined ? h("small", { class: "budget-of", text: ` of ${fmt.cost(sm.budget.run)} run limit` }) : null)),
           fig("tokens out", h("b", { text: fmt.tokens(sm.tokens.out) })), fig("turns", h("b", { text: sm.turns || "—" }))));
@@ -1101,7 +1166,7 @@
       const sw = (colour) => { const i = h("i"); i.style.background = colour; return i; };
       const wrap = h("div", { class: "tl-wrap" });
       const draw = () => replace(wrap, renderTimeline(detail.timeline, { width: wrap.clientWidth || 800, onBar: (bar) => {
-        if (bar.kind === "wait") return;
+        if (bar.kind === "wait" || bar.kind === "limit") return;
         if (bar.kind === "agent") go(link(["step", bar.step || bar.ref], { agent: bar.ref }));
         else if (bar.kind === "check" || bar.kind === "gate") go(link(["step", bar.step || bar.check], { attempt: bar.ref }));
         else go(link(["step", bar.step]));
@@ -1138,7 +1203,9 @@
           h("td", { class: "right num", text: a.start ? fmt.dur((a.end || now()) - a.start) : "—" }), h("td", { class: "right num", text: fmt.cost(a.cost) }), h("td", {}, bar));
       });
       return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", { text: "Cost and tokens" }), h("span", { class: "spacer" }),
-        h("span", { class: "faint", text: "from each agent's final result event; cache = read / write" })),
+        h("span", { class: "faint", text: costLabel(detail.summary)
+          ? "from each agent's final result event; API-equivalent: these calls ran on a subscription; cache = read / write"
+          : "from each agent's final result event; cache = read / write" })),
         h("div", { class: "table-wrap" }, h("table", {},
           h("thead", {}, h("tr", {}, ["step", "agent", "model", "turns", "in", "out", "cache", "time", "cost", "share"].map((label, i) => h("th", { class: i >= 3 && i <= 8 ? "right" : "", text: label })))),
           h("tbody", {}, rows.length ? rows : h("tr", {}, h("td", { colspan: 10, class: "dim", text: "no agent steps yet" }))),
@@ -1164,6 +1231,13 @@
             ["limits", `run ${limit(b.run)} · per agent call ${limit(b.step)} · per day ${limit(b.day)}`],
             ["why it stopped", stop ? stop.reason : ""],
             ["no cost reported", (b.unreported || []).length ? `${b.unreported.join(", ")} (counted as $0)` : ""]])));
+      }
+      if (detail.usage && detail.usage.stopped) {
+        const stop = detail.usage.stopped;
+        blocks.push(h("div", { class: "outcome-block limit-block" }, h("div", { class: "card-head" }, h("h3", { text: "Subscription limit" }),
+          h("span", { class: "badge limit", text: `stopped by the ${windowLabel(stop.window)} limit` })),
+          kv([["window", windowLabel(stop.window)], ["share used", stop.used === null || stop.used === undefined ? "not reported by the CLI" : fmt.pct(stop.used)],
+            ["resets", stop.resets_at ? fmt.time(stop.resets_at) : "not reported"], ["why", stop.reason]])));
       }
       if (detail.handoff) {
         const ho = detail.handoff;

@@ -185,6 +185,17 @@ svg text { font-family: var(--sans); }
 .g-node.t-script-node .box { stroke-dasharray: 4 2; }
 .badge.budget { color: var(--budget); border-color: rgba(232, 135, 90, .5); background: rgba(232, 135, 90, .1); font-weight: 600; }
 .stat.budget-stat.over .value { color: var(--budget); }
+/* subscription usage: what the agent CLI last reported about its usage windows, per layer */
+.badge.limit { color: var(--budget); border-color: rgba(232, 135, 90, .5); background: rgba(232, 135, 90, .1); font-weight: 600; }
+.usage { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; }
+.usage-layer { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; }
+.usage-layer .name { font-weight: 600; margin-bottom: 6px; }
+.usage-layer .empty { padding: 6px 0; text-align: left; }
+.usage-window { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; padding: 3px 0; overflow-wrap: anywhere; }
+.usage-window .label { min-width: 60px; font-weight: 600; }
+.usage-bar { display: inline-block; width: 120px; height: 8px; border-radius: 2px; background: var(--panel-3); border: 1px solid var(--border-2); overflow: hidden; }
+.usage-bar i { display: block; height: 100%; max-width: 100%; background: var(--agent); }
+.usage-bar i.over { background: var(--budget); }
 .g-node text.label { fill: var(--text); font-size: 12px; font-weight: 600; }
 .g-node text.sub { fill: var(--dim); font-size: 10px; }
 .g-node text.meta { fill: var(--text-2); font-size: 10px; font-variant-numeric: tabular-nums; }
@@ -223,6 +234,7 @@ svg text { font-family: var(--sans); }
 .tl-bar.k-script { fill: var(--script); }
 .tl-bar.l0 { opacity: .28; }
 .tl-bar.k-wait { fill: var(--waiting); opacity: .55; }
+.tl-bar.k-limit { fill: var(--budget); }
 .tl-bar.st-failed { fill: var(--failed); }
 .tl-bar.st-running { animation: pulse 1.4s infinite; }
 .tl-bar.st-skipped { opacity: .25; }
@@ -334,7 +346,7 @@ video { width: 100%; max-width: 860px; max-height: 460px; background: #000; bord
   main { padding: 10px; }
   .top { gap: 8px; padding: 0 8px; }
   .brand-text, .views kbd, .crumbs { display: none; }
-  .now-grid, .layer-grid, .pools { grid-template-columns: minmax(0, 1fr); }
+  .now-grid, .layer-grid, .pools, .usage { grid-template-columns: minmax(0, 1fr); }
   .run-head { grid-template-columns: minmax(0, 1fr); }
   .ev { grid-template-columns: 40px 56px minmax(0, 1fr) 18px; gap: 6px; }
 }
