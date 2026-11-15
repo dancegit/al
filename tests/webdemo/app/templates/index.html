@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notes</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="page">
+    <h1>Notes</h1>
+    <p class="subtitle">{{ notes|length }} note{{ '' if notes|length == 1 else 's' }}</p>
+
+    <form class="add-form" method="post" action="{{ url_for('add_note') }}">
+      <label for="note-text">New note</label>
+      <input id="note-text" name="text" type="text" maxlength="200" placeholder="What do you want to remember?" autocomplete="off">
+      <button id="add-note" type="submit">Add note</button>
+    </form>
+
+    <ul id="notes" class="notes">
+      {% for note in notes %}
+      <li class="note">{{ note }}</li>
+      {% endfor %}
+    </ul>
+  </main>
+</body>
+</html>

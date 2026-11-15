@@ -1,0 +1,75 @@
+{
+  "gate": {
+    "action": "merge",
+    "changed_files": [
+      "README.md",
+      "e2e/scenario.py",
+      "static/app.js",
+      "static/style.css",
+      "templates/index.html",
+      "tests/test_app.py"
+    ],
+    "diff_lines": 116,
+    "reasons": [],
+    "ship": true
+  },
+  "shipped": true,
+  "target": "main via PR #4",
+  "combined_verdict": {
+    "issues": [],
+    "mode": "auto",
+    "success": true,
+    "summary": "The change adds a labelled search box (#note-search) between the add form and the notes list, a hidden 'No notes match' paragraph after the list, a deferred static/app.js that filters notes case-insensitively on each input event and ignores leading/trailing whitespace, the CSS rules the spec asks for, 4 new unit tests, 6 new e2e steps and a README row. Every requirement in the spec is implemented as asked: templates/index.html:9,22-25,32; static/app.js:3-30; static/style.css:70-99; tests/test_app.py:67-91; e2e/scenario.py:44-62; README.md:13. No protected path is touched, app.py is unchanged and no existing test or expectation was changed. Pytest shows 11 passed with no failures or skips, the e2e run passed all 12 steps, and the screenshots and keyframes show the filtering, case-insensitive matching, the 'No notes match' state and clearing the box. | The change adds a labelled search box (#note-search) between the add form and the notes list (templates/index.html:22-25). It also adds a hidden 'No notes match' paragraph (templates/index.html:32) and a deferred static/app.js that filters #notes .note on every input, ignoring case and surrounding spaces (static/app.js:3-30). CSS, README, four unit tests and six e2e steps are added as the spec asks; no existing test or expectation was changed and no protected path or app.py was touched. pytest passes 11/11 with no failures or skips, e2e passes all 12 steps, and the screenshots and keyframes show filtering by 'milk', case-insensitive 'WATER', the 'No notes match' state for 'xyz', and the full list coming back when the box is cleared."
+  },
+  "rounds": 1,
+  "reviewers": [
+    {
+      "artefacts_reviewed": [
+        "artefacts/3e23886c/log/e2e.1.log",
+        "artefacts/3e23886c/log/test.1.log",
+        "artefacts/3e23886c/screenshots/e2e-results/01-home.png",
+        "artefacts/3e23886c/screenshots/e2e-results/02-note-added.png",
+        "artefacts/3e23886c/screenshots/e2e-results/03-search-milk.png",
+        "artefacts/3e23886c/screenshots/e2e-results/04-search-case-insensitive.png",
+        "artefacts/3e23886c/screenshots/e2e-results/05-no-match.png",
+        "artefacts/3e23886c/screenshots/e2e-results/06-search-cleared.png",
+        "artefacts/3e23886c/recording/e2e-results/session.webm",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-01.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-02.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-03.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-04.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-05.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-06.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-07.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-08.png"
+      ],
+      "issues": [],
+      "success": true,
+      "summary": "The change adds a labelled search box (#note-search) between the add form and the notes list, a hidden 'No notes match' paragraph after the list, a deferred static/app.js that filters notes case-insensitively on each input event and ignores leading/trailing whitespace, the CSS rules the spec asks for, 4 new unit tests, 6 new e2e steps and a README row. Every requirement in the spec is implemented as asked: templates/index.html:9,22-25,32; static/app.js:3-30; static/style.css:70-99; tests/test_app.py:67-91; e2e/scenario.py:44-62; README.md:13. No protected path is touched, app.py is unchanged and no existing test or expectation was changed. Pytest shows 11 passed with no failures or skips, the e2e run passed all 12 steps, and the screenshots and keyframes show the filtering, case-insensitive matching, the 'No notes match' state and clearing the box."
+    },
+    {
+      "artefacts_reviewed": [
+        "artefacts/3e23886c/log/e2e.1.log",
+        "artefacts/3e23886c/log/test.1.log",
+        "artefacts/3e23886c/screenshots/e2e-results/01-home.png",
+        "artefacts/3e23886c/screenshots/e2e-results/02-note-added.png",
+        "artefacts/3e23886c/screenshots/e2e-results/03-search-milk.png",
+        "artefacts/3e23886c/screenshots/e2e-results/04-search-case-insensitive.png",
+        "artefacts/3e23886c/screenshots/e2e-results/05-no-match.png",
+        "artefacts/3e23886c/screenshots/e2e-results/06-search-cleared.png",
+        "artefacts/3e23886c/recording/e2e-results/session.webm",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-01.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-02.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-03.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-04.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-05.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-06.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-07.png",
+        "artefacts/3e23886c/recording/e2e-results/session.keyframes/session-08.png"
+      ],
+      "issues": [],
+      "success": true,
+      "summary": "The change adds a labelled search box (#note-search) between the add form and the notes list (templates/index.html:22-25). It also adds a hidden 'No notes match' paragraph (templates/index.html:32) and a deferred static/app.js that filters #notes .note on every input, ignoring case and surrounding spaces (static/app.js:3-30). CSS, README, four unit tests and six e2e steps are added as the spec asks; no existing test or expectation was changed and no protected path or app.py was touched. pytest passes 11/11 with no failures or skips, e2e passes all 12 steps, and the screenshots and keyframes show filtering by 'milk', case-insensitive 'WATER', the 'No notes match' state for 'xyz', and the full list coming back when the box is cleared."
+    }
+  ]
+}

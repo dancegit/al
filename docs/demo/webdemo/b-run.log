@@ -1,0 +1,36 @@
+dispatch: feature <- issue:3
+[adw 3e23886c] feature start: class=feature dry_run=False
+[adw 3e23886c] step plan-chore (run) skipped: when=class-chore, class=feature
+[adw 3e23886c] step plan-feature (run) start
+[adw 3e23886c] container started: al-notes-demo-3e23886c
+[adw 3e23886c] step plan-feature (run) passed: <tmp>/notes.al/specs/feature-3e23886c-search-box-filters-notes.md
+[adw 3e23886c] step build (run) start
+[adw 3e23886c] step build (run) passed: The search box is in and working: typing filters the notes case-insensitively, "No notes match" shows when nothing matches, and clearing the box brings every no
+[adw 3e23886c] step test (check) start
+[adw 3e23886c] step test (check) passed: exit 0, log agents/3e23886c/checks/test.1.log
+[adw 3e23886c] step e2e (check) start
+[adw 3e23886c] step e2e (check) passed: exit 0, log agents/3e23886c/checks/e2e.1.log
+[adw 3e23886c] step commit (run) start
+[adw 3e23886c] step commit (run) passed: Committed, but the commit is on a detached HEAD, not on a branch.
+[adw 3e23886c] step review (review) start
+[adw 3e23886c] review verdict: pass after 1 round(s): The change adds a labelled search box (#note-search) between the add form and the notes list, a hidden 'No notes match' paragraph after the list, a deferred static/app.js that filters notes case-insen
+[adw 3e23886c] step review (review) passed: ok
+[adw 3e23886c] step ship (ship) start
+[adw 3e23886c] gate: test exit 0
+[adw 3e23886c] gate: e2e exit 0
+[adw 3e23886c] gate: action merge
+[adw 3e23886c] ship: PR #4 http://127.0.0.1:46461/adw/notes/pulls/4
+[adw 3e23886c] ship: proof comment on PR #4 (9 file(s) attached)
+[adw 3e23886c] step ship (ship) passed: ok
+[adw 3e23886c] container removed: al-notes-demo-3e23886c
+[adw 3e23886c] worktree removed: <tmp>/notes.al/trees/3e23886c
+=== ADW summary ===
+adw:       feature 3e23886c
+status:    passed
+branch:    feature/3e23886c-search-box-that-filters-the-notes
+plan:      <tmp>/notes.al/specs/feature-3e23886c-search-box-filters-notes.md
+checks:    test=0, e2e=0
+review:    pass (auto)
+ship:      merge -> main via PR #4 (shipped=True)
+artefacts: 9
+state:     <tmp>/notes.al/agents/3e23886c/state.json

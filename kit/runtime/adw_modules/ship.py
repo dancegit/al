@@ -90,6 +90,104 @@ def pr_body(state: Any, message: str) -> str:
     return "\n\n".join(parts) + "\n"
 
 
+# ---------------------------------------------------------------- proof on the pull request
+
+MAX_PROOF_IMAGES = 8
+
+
+def _spread(items: list[Any], count: int) -> list[Any]:
+    """`count` evenly spaced items, first and last included."""
+    if count <= 0:
+        return []
+    if len(items) <= count:
+        return list(items)
+    if count == 1:
+        return [items[len(items) // 2]]
+    return [items[round(index * (len(items) - 1) / (count - 1))] for index in range(count)]
+
+
+def proof_items(artefacts: list[dict[str, Any]], limit: int = MAX_PROOF_IMAGES) -> list[dict[str, str]]:
+    """What the Proof comment shows: screenshots inline, each video as a link plus its keyframes
+    inline. At most `limit` inline images; with a video, up to half the slots go to its
+    keyframes (evenly spread) and slots one kind leaves unused go to the other."""
+    images = [item for item in artefacts if item.get("type") == "image" and item.get("path")]
+    videos = [item for item in artefacts if item.get("type") == "video" and item.get("path")]
+    frames = [(video, frame) for video in videos for frame in video.get("keyframes") or [] if frame.get("path")]
+    shots = images[: max(0, limit - min(len(frames), limit // 2))]
+    frames = _spread(frames, limit - len(shots))
+    items = [{"kind": "image", "path": str(item["path"]), "caption": Path(str(item["path"])).name} for item in shots]
+    for video in videos:
+        name = Path(str(video["path"])).name
+        items.append({"kind": "video", "path": str(video["path"]), "caption": name})
+        items += [{"kind": "keyframe", "path": str(frame["path"]),
+                   "caption": f"{Path(str(frame['path'])).name} (keyframe of {name})"}
+                  for owner, frame in frames if owner is video]
+    return items
+
+
+def proof_comment(adw_id: str, rows: list[dict[str, str]]) -> str:
+    """Markdown of the Proof comment; `rows` are proof_items with the attachment `url` ("" = failed)."""
+    def image(row: dict[str, str]) -> str:
+        if not row["url"]:
+            return f"{row['caption']} (could not be attached)"
+        return f"**{row['caption']}**\n\n![{row['caption']}]({row['url']})"
+
+    parts = [f"Proof from run `{adw_id}`: what the run's checks captured (screenshots and video keyframes, "
+             "taken in a real browser)."]
+    shots = [row for row in rows if row["kind"] == "image"]
+    if shots:
+        parts.append("### Screenshots")
+        parts += [image(row) for row in shots]
+    videos = [row for row in rows if row["kind"] == "video"]
+    if videos:
+        parts.append("### Video")
+    for video in videos:
+        link = f"[{video['caption']}]({video['url']})" if video["url"] else f"{video['caption']} (could not be attached)"
+        frames = [row for row in rows if row["kind"] == "keyframe" and row["caption"].endswith(f"(keyframe of {video['caption']})")]
+        parts.append(f"{link}" + (" — keyframes:" if frames else ""))
+        parts += [image(row) for row in frames]
+    return "\n\n".join(parts) + "\n"
+
+
+def post_proof(layer: Any, state: Any, client: Any, pr: dict[str, Any]) -> dict[str, Any]:
+    """Attach the run's image/video artefacts to the PR and post ONE Proof comment embedding them.
+    Never raises: a forge that cannot host files, or any failure, is a warning in state.ship["proof"]."""
+    result: dict[str, Any] = {"posted": False, "attached": 0, "warnings": []}
+    items = proof_items(list(getattr(state, "artefacts", []) or []))
+    if not getattr(client, "can_attach", False) or not items:
+        # GitHub / none: no file hosting, so the PR body's artefact list stays the only reference
+        result["reason"] = "forge does not support attachments" if items else "no image or video artefacts"
+        state.ship["proof"] = result
+        return result
+
+    def warn(text: str) -> None:
+        result["warnings"].append(text)
+        print(f"[adw {state.adw_id}] warning: proof: {text}")
+
+    try:
+        # The files belong to the Proof comment (listed under it, not under the PR description):
+        # post it, attach to it, then edit it so it embeds what was attached.
+        comment_id = client.comment(pr["number"], f"Proof from run `{state.adw_id}`: attaching {len(items)} file(s)…")
+        if comment_id is None:
+            raise RuntimeError("the forge returned no comment id")
+        rows = []
+        for item in items:
+            try:
+                url = client.attach(pr["number"], Path(layer.layer_dir) / item["path"], comment_id=comment_id)
+            except Exception as exc:  # noqa: BLE001 — one file the forge refuses must not lose the rest
+                warn(f"could not attach {Path(item['path']).name}: {_short_reason(exc)}")
+                url = ""
+            result["attached"] += 1 if url else 0
+            rows.append({**item, "url": url})
+        client.edit_comment(comment_id, proof_comment(state.adw_id, rows))
+        result["posted"] = True
+        print(f"[adw {state.adw_id}] ship: proof comment on PR #{pr['number']} ({result['attached']} file(s) attached)")
+    except Exception as exc:  # noqa: BLE001 — proof is a courtesy to the reviewer; shipping goes on
+        warn(f"proof comment failed: {_short_reason(exc)}")
+    state.ship["proof"] = result
+    return result
+
+
 def _forge_client(layer: Any) -> Any | None:
     if layer.singleton("forge")["kind"] == "none":
         return None
@@ -242,6 +340,7 @@ def ship(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_
         try:
             if client is not None:
                 pr = _open_pr(layer, state, client, worktree, body, sandbox)
+                post_proof(layer, state, client, pr)  # before the merge, so the proof sits on the PR's history
                 client.merge_pr(pr["number"])
                 shipped, target = True, f"{layer.default_branch} via PR #{pr['number']}"
             elif layer.singleton("forge").get("remote"):
@@ -288,6 +387,7 @@ def _human_path(layer: Any, state: Any, client: Any, worktree: Path, body: str,
     """A human decides: a PR on the forge, or PR.md in the run's directory with the branch kept."""
     if client is not None:
         pr = _open_pr(layer, state, client, worktree, body, sandbox)
+        post_proof(layer, state, client, pr)
         return pr, str(pr.get("url", ""))
     path = Path(layer.layer_dir) / "agents" / state.adw_id / "PR.md"
     path.parent.mkdir(parents=True, exist_ok=True)
