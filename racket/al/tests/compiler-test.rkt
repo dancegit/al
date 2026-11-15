@@ -89,7 +89,7 @@
   (check-rejects (layer plan '(agent claude-code #:permission-mode bypassPermissions) simple-adw)
                  #rx"only accepted when the agent itself runs inside a podman")
   (check-rejects (layer plan '(agent claude-code #:permission-mode bypassPermissions)
-                        '(environment worktree) '(environment podman)
+                        '(environment worktree) '(environment podman #:agent-inside #f)
                         '(adw a #:environment (worktree podman) (steps (run plan #:command plan))))
                  #rx"add \\(environment podman #:agent-inside #t")
   (check-rejects (layer plan review-cmd '(review auto #:require-checks (test))
@@ -115,6 +115,17 @@
   (check-equal? (hash-ref (car (hash-ref ir 'reviews)) 'ship) "merge")
   (check-equal? (hash-ref (hash-ref ir 'concurrency) 'maxRuns) 8)
   (check-equal? (hash-ref (cadr (hash-ref ir 'environments)) 'scope) "run"))
+
+(define (agent-inside-of . fields)
+  (hash-ref (cadr (hash-ref (compile-layer-datum
+                             (layer plan '(environment worktree) `(environment podman ,@fields)
+                                    '(adw a #:environment (worktree podman) (steps (run plan #:command plan)))))
+                            'environments))
+            'agentInside))
+
+(test-case "#:agent-inside is honoured when written"
+  (check-equal? (agent-inside-of '#:agent-inside #f) #f)
+  (check-equal? (agent-inside-of '#:agent-inside #t) #t))
 
 (define build-cmd '(command build #:template build))
 (define candidate-adw '(adw candidate (steps (run plan #:command plan) (run build #:command build))))

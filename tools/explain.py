@@ -128,6 +128,25 @@ def describe_step(step: dict, ir: dict | None = None) -> str:
     return "ship"
 
 
+def where_it_runs(adw: dict, ir: dict) -> str:
+    """Where a workflow's agent and its checks run, in plain words (the rule of the runtime's
+    EnvStack: the first podman option of the stack decides, else a Nix shell wraps both)."""
+    environments = by_id(ir, "environments")
+    stack = [environments[i] for i in adw["environment"]]
+    kinds = [o["kind"] for o in stack]
+    box = next((o for o in stack if o["kind"] == "podman"), None)
+    if box and box["agentInside"]:
+        return "The agent runs inside the container; checks run inside the container."
+    if box:
+        return ("The agent runs on your machine, outside the container, with your own access "
+                "(`#:agent-inside #f`); checks run inside the container.")
+    if "worktree" not in kinds:
+        return ("The agent runs on your machine, in the checkout itself; a workflow without a private copy "
+                "has no checks.")
+    shell = ", inside the Nix shell" if "nix-devshell" in kinds else ""
+    return f"The agent and the checks run on your machine{shell}, in a private copy of the repository."
+
+
 def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
     """(heading, one-paragraph explanation, extra bullet points)."""
     head, cb = block["head"], ir["codebase"]
@@ -276,7 +295,7 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
             outcome = "No ship step: nothing is reviewed or published; the result stays with the run."
         steps = [s for s in adw["steps"]]
         short = " → ".join(s["name"] for s in steps)
-        text = (f"The `{name}` workflow" + (f": {adw['description'].rstrip('.')}" if adw["description"] else "") + f". Steps: {short}. {outcome}")
+        text = (f"The `{name}` workflow" + (f": {adw['description'].rstrip('.')}" if adw["description"] else "") + f". Steps: {short}. {outcome} {where_it_runs(adw, ir)}")
         if adw.get("changes") == "layer":
             text += " It changes the agentic layer itself, so a person always reviews it."
         bullets = [f"Work from {listing([pi[i]['kind'] for i in adw['input']], 'or')}; started by {listing([tr[i]['kind'] for i in adw['trigger']], 'or')}; "
