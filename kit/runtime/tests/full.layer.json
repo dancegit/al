@@ -603,6 +603,9 @@
     "dayUsd": 50,
     "id": "limits",
     "kind": "limits",
+    "limitStopPercent": 90,
+    "limitWaitMinutes": 120,
+    "onLimit": "wait",
     "runUsd": 5,
     "status": "stable",
     "stepUsd": 2
