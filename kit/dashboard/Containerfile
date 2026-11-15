@@ -1,0 +1,15 @@
+# The al work dashboard in its own small container: the script and its static files, nothing else.
+# Build context: kit/dashboard. Normally built and started by run-in-podman.sh.
+FROM docker.io/library/python:3.12-slim
+LABEL org.opencontainers.image.title="al-dashboard" \
+      org.opencontainers.image.description="Live, read-only work dashboard for al agentic layers"
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY dashboard.py /app/dashboard.py
+COPY static/ /app/static/
+# run-in-podman.sh runs it as the host user (--userns=keep-id) so it can read the layers' run state;
+# without that, an unprivileged user.
+USER 65534:65534
+EXPOSE 8765
+# Inside the container it must listen on all interfaces for the published port to reach it, so a
+# token is required (the dashboard refuses a non-loopback bind without one).
+ENTRYPOINT ["python3", "-I", "/app/dashboard.py", "--in-container", "--bind", "0.0.0.0", "--port", "8765"]
