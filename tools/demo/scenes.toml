@@ -51,23 +51,45 @@ steps = [
 [[scene]]
 id = "05-zero-touch-opus"
 title = "Zero-touch on flask with Claude Opus 5.5"
-subtitle = "Replay of real run 1bf4bd76: 3 min 17 s, $0.71, one attempt — plan, build, real checks, review, gate, ship"
+subtitle = "Replay of real run d8c03973: 2 min 14 s, $0.69, one attempt — the agent itself ran inside the container"
 gap = 0.5
 hold = 2.5
 steps = [
-  { run = "while IFS= read -r l; do printf '%s\\n' \"$l\" | cut -c1-108; sleep 0.3; done < docs/demo/logs/flask-zte-opus-1bf4bd76.log", show = "uv run flask.al/adws/adw_zte.py \"Add a test asserting that Flask.debug is False on a newly created app\" --class chore", note = "REPLAY of the saved log of a real run (docs/demo/logs/flask-zte-opus-1bf4bd76.log)" },
+  { run = "while IFS= read -r l; do printf '%s\\n' \"$l\" | cut -c1-108; sleep 0.3; done < docs/demo/logs/flask-zte-opus-inside-container-d8c03973.log", show = "uv run flask.al/adws/adw_zte.py \"Add a test asserting that Flask.testing is False on a newly created app\" --class chore", note = "REPLAY of the saved log of a real run (docs/demo/logs/flask-zte-opus-inside-container-d8c03973.log)" },
 ]
 
 [[scene]]
 id = "06-scaling"
-title = "Scaling out: worktree + container per run"
-subtitle = "Three runs at once against max-runs 2; the agent itself runs inside the sandbox"
+title = "Isolation per run: worktree, container, network, database"
+subtitle = "Three runs at once (max-runs 2): each has its own app on :8000 and its own Postgres; nothing is shared"
 gap = 0.5
 steps = [
   { run = "tools/demo/prep.sh scale && al gen /tmp/al-demo/scale.al >/dev/null", hidden = true },
-  { run = "grep -E 'concurrency|podman|agent custom' /tmp/al-demo/scale.al/agentic.rkt | cut -c1-108", show = "grep -E 'concurrency|podman|agent' scale.al/agentic.rkt" },
-  { run = "cd /tmp/al-demo/scale.al && for i in 1 2 3; do (uv run -q adws/adw_sandboxed.py \"run $i\" 2>&1 | grep -E 'slots|container started|passed|status' | sed \"s/^/run $i | /\" | cut -c1-108) & done; wait", show = "for i in 1 2 3; do uv run scale.al/adws/adw_sandboxed.py \"run $i\" & done; wait" },
-  { run = "podman ps -a --format '{{.Names}}' | grep -c al-scale-demo; git -C testbeds/flask status --short | wc -l", show = "podman ps -a | grep -c al-scale-demo; git -C testbeds/flask status --short | wc -l", note = "no containers left behind, application untouched" },
+  { run = "grep -E 'concurrency|service|podman' /tmp/al-demo/scale.al/agentic.rkt | cut -c1-108", show = "grep -E 'concurrency|service|podman' scale.al/agentic.rkt" },
+  { run = "cd /tmp/al-demo/scale.al && for i in 1 2 3; do (uv run -q adws/adw_sandboxed.py \"run $i\" 2>&1 | grep -E 'slots|sidecar ready|passed|status' | sed \"s/^/run $i | /\" | cut -c1-108) & done; sleep 9; printf 'host -> 127.0.0.1:8000: '; curl -s -m 1 http://127.0.0.1:8000/ >/dev/null && echo OPEN || echo 'closed (not published)'; printf 'host -> 127.0.0.1:5432: '; (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null && echo OPEN || echo 'closed (databases are private)'; wait", show = "for i in 1 2 3; do uv run scale.al/adws/adw_sandboxed.py \"run $i\" & done; probe host ports; wait" },
+  { run = "cat /tmp/al-demo/scale.al/agents/*/checks/serve.1.log | cut -c1-108", show = "cat scale.al/agents/*/checks/serve.1.log", note = "every run saw its own app and its own database on the same ports" },
+  { run = "echo pods=$(podman pod ps --format '{{.Name}}' | grep -c al-scale-demo) containers=$(podman ps -a --format '{{.Names}}' | grep -c al-scale-demo) app-changes=$(git -C testbeds/flask status --short | wc -l)", show = "podman pod ps | grep -c al-scale-demo; git -C testbeds/flask status --short | wc -l", note = "nothing left behind, application untouched" },
+]
+
+[[scene]]
+id = "06b-fan-out"
+title = "Fan-out: race one task across several agents"
+subtitle = "Three candidate runs, each in its own worktree; the best is merged into the parent run"
+steps = [
+  { run = "tools/demo/prep.sh fanout && al gen /tmp/al-demo/fanout.al >/dev/null", hidden = true },
+  { run = "grep -E 'adw |fan-out' /tmp/al-demo/fanout.al/agentic.rkt | cut -c1-108", show = "grep -E 'adw |fan-out' fanout.al/agentic.rkt" },
+  { run = "cd /tmp/al-demo/fanout.al && uv run -q adws/adw_race.py 'Write the attempt file' 2>&1 | grep -E 'fan-out|check|status' | sed 's/, log agents.*//' | cut -c1-108", show = "uv run fanout.al/adws/adw_race.py 'Write the attempt file'" },
+]
+
+[[scene]]
+id = "06c-verify"
+title = "al verify: is the layer true?"
+subtitle = "gin's real test suite, run in the layer's own environment. Its tests bind :8443 — busy on this host, free in the run's namespace"
+gap = 0.4
+steps = [
+  { run = "tools/demo/prep.sh layer gin && al gen /tmp/al-demo/gin.al >/dev/null", hidden = true },
+  { run = "(ss -ltn 2>/dev/null | grep -q ':8443 ' && echo 'port 8443 on this host: in use') || echo 'port 8443 on this host: free'", show = "ss -ltn | grep 8443" },
+  { run = "al verify /tmp/al-demo/gin.al --cmd test 2>&1 | grep -vE 'container started|^$' | sed 's|/tmp/al-demo/||g' | tail -6 | cut -c1-108", show = "al verify gin.al --cmd test    # make test, inside a per-run container" },
 ]
 
 [[scene]]

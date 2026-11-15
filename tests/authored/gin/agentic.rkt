@@ -32,6 +32,9 @@
   (trigger manual)
 
   (environment worktree)
+  ;; gin's own tests bind fixed ports (:8443 among others); a container per run gives every run its
+  ;; own network namespace, so they cannot collide with the host or with each other.
+  (environment podman #:base-image "docker.io/library/golang:1.26-bookworm" #:caches ("go"))
 
   (artefact log)
   (artefact coverage #:glob "coverage.out")
@@ -89,7 +92,7 @@
       (run build #:command run-plan #:args ("$plan"))))
 
   (adw sdlc #:description "Plan, build, vet, test, document, commit; a human reviews the pull request"
-       #:input (issue) #:trigger (forge-actions manual) #:environment (worktree) #:review human #:agent codex
+       #:input (issue) #:trigger (forge-actions manual) #:environment (worktree podman) #:review human #:agent codex
     (steps
       (compose plan-build)
       (check lint #:cmd lint #:resolve resolve-test)

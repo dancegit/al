@@ -60,9 +60,10 @@ racket racket/al/cli.rkt schema    > schemas/agentic-layer-v1.schema.json   # af
 racket racket/al/cli.rkt reference > docs/AL-DSL.llms.txt
 ```
 
-The integration suite clones the testbeds at pinned commits on first use, builds each layer from
-`tests/authored/<name>/` in a temp dir, and its teardown fails any test that leaves a worktree, branch,
-container or modified file behind. Tiers and markers (`slow`, `podman`, `nix`, `network`, `llm`): [`tests/README.md`](tests/README.md).
+The integration suite never works in `testbeds/`: per session it makes a private clone of each example
+codebase at its pinned commit (from `testbeds/<name>` when present, else from the pinned URL), builds each
+layer from `tests/authored/<name>/` in a temp dir, and its teardown fails any test that leaves a worktree,
+branch, container or modified file behind. Tiers and markers (`slow`, `podman`, `nix`, `network`, `llm`): [`tests/README.md`](tests/README.md).
 
 Adding a PITER alternative: one `define-kind` in `racket/al/private/vocab.rkt`, its runtime support in
 `kit/runtime`, regenerate schema + reference.
