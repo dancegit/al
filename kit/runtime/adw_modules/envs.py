@@ -69,7 +69,13 @@ def _alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    return True
+    # A killed process whose parent has not collected it yet (a zombie) still answers a signal. It
+    # runs nothing, so it holds nothing: this matters in containers, where no init collects it.
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return stat.rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return True
 
 
 def _live_leases(layer_dir: Path, table: Path, keep: str) -> dict[str, dict[str, Any]]:
