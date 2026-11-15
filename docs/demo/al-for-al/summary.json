@@ -1,0 +1,249 @@
+{
+  "what": "one real run of the al-for-al layer's human-reviewed workflow (sdlc) on the al repository, watched live in the layer's dashboard",
+  "agent": "Claude Code CLI, model claude-opus-5-5 for every agent step (the layer sets the base and the heavy model set to it)",
+  "request": "request.txt",
+  "run": "987d41e7",
+  "workflow": "sdlc",
+  "class": "chore",
+  "status": "passed",
+  "branch": "chore/987d41e7-add-unit-tests-for-the-pure",
+  "seconds": 750.5,
+  "cost_usd": 1.008,
+  "agent_steps": 5,
+  "agents": [
+    {
+      "step": "classify",
+      "cost_usd": 0.1558,
+      "turns": 1,
+      "seconds": 1.7,
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "output_tokens": 49,
+      "is_error": false
+    },
+    {
+      "step": "plan-chore",
+      "cost_usd": 0.2837,
+      "turns": 6,
+      "seconds": 57.2,
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "output_tokens": 6200,
+      "is_error": false
+    },
+    {
+      "step": "build",
+      "cost_usd": 0.2685,
+      "turns": 7,
+      "seconds": 295.6,
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "output_tokens": 4684,
+      "is_error": false
+    },
+    {
+      "step": "document",
+      "cost_usd": 0.2222,
+      "turns": 6,
+      "seconds": 31.9,
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "output_tokens": 3092,
+      "is_error": false
+    },
+    {
+      "step": "commit",
+      "cost_usd": 0.0778,
+      "turns": 4,
+      "seconds": 10.2,
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "output_tokens": 667,
+      "is_error": false
+    }
+  ],
+  "checks": {
+    "test-compiler": 0,
+    "test-dashboard": 0,
+    "test-integration": 0,
+    "test-runtime": 0,
+    "test-tools": 0
+  },
+  "steps": [
+    {
+      "name": "classify",
+      "kind": "run",
+      "status": "passed",
+      "seconds": 2.2
+    },
+    {
+      "name": "plan-chore",
+      "kind": "run",
+      "status": "passed",
+      "seconds": 57.6
+    },
+    {
+      "name": "plan-bug",
+      "kind": "run",
+      "status": "skipped",
+      "seconds": 0.0
+    },
+    {
+      "name": "plan-feature",
+      "kind": "run",
+      "status": "skipped",
+      "seconds": 0.0
+    },
+    {
+      "name": "build",
+      "kind": "run",
+      "status": "passed",
+      "seconds": 296.1
+    },
+    {
+      "name": "test-compiler",
+      "kind": "check",
+      "status": "passed",
+      "seconds": 1.8
+    },
+    {
+      "name": "test-runtime",
+      "kind": "check",
+      "status": "passed",
+      "seconds": 49.3
+    },
+    {
+      "name": "test-tools",
+      "kind": "check",
+      "status": "passed",
+      "seconds": 186.2
+    },
+    {
+      "name": "test-dashboard",
+      "kind": "check",
+      "status": "passed",
+      "seconds": 10.2
+    },
+    {
+      "name": "test-integration",
+      "kind": "check",
+      "status": "passed",
+      "seconds": 103.9
+    },
+    {
+      "name": "document",
+      "kind": "run",
+      "status": "passed",
+      "seconds": 32.3
+    },
+    {
+      "name": "commit",
+      "kind": "run",
+      "status": "passed",
+      "seconds": 10.6
+    },
+    {
+      "name": "review",
+      "kind": "review",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "name": "ship",
+      "kind": "ship",
+      "status": "passed",
+      "seconds": 0.0
+    }
+  ],
+  "ship": {
+    "action": "pr",
+    "commit": "f0d1a64feeca3d72632ee184bec2ccdc478c41b5",
+    "gate": {
+      "action": "pr",
+      "changed_files": [
+        "tests/tools/test_explain.py"
+      ],
+      "diff_lines": 156,
+      "reasons": [
+        "review-human: a human merges"
+      ],
+      "ship": false
+    },
+    "pr": null,
+    "reasons": [
+      "review-human: a human merges"
+    ],
+    "shipped": false,
+    "target": "agents/987d41e7/PR.md"
+  },
+  "cost_source": "sum of total_cost_usd in the result event of each agent step's raw.jsonl",
+  "base": "the run's branch was cut from the repository's default branch (main), as the layer declares",
+  "merged": true,
+  "merged_how": "cherry-picked onto the branch that holds this layer (commit b4c8d07); the run's branch is based on a newer commit of main, so a merge would also have brought in that unrelated commit",
+  "merged_why": [
+    "the diff is one new file, tests/tools/test_explain.py (156 lines); tools/explain.py is unchanged",
+    "on the run's branch: tests/tools/test_explain.py passes (18 tests, 0.04 s) and the whole tests/tools suite passes (53 passed, 1 skipped)",
+    "mutating listing, split_blocks and describe_step in tools/explain.py makes 7 of the 18 tests fail, so the tests bind the behaviour in the acceptance criteria",
+    "no network, subprocess, racket or agent is used by the new tests; no personal path or name in the diff",
+    "every acceptance criterion of request.txt is covered; one test (test_split_blocks_one_based_inclusive) is looser than the plan asked, which the run's own document step reported"
+  ],
+  "not_merged": "agentic/conditional_docs.md: the document step appended a line to this committed layer file that points to a run document in a git-ignored directory; the reviewer restored the file",
+  "recording": {
+    "files": [
+      "dashboard-live.mp4",
+      "dashboard-live.gif",
+      "run.png",
+      "transcript.png",
+      "history.png"
+    ],
+    "how": "record_run.py (adapted from kit/dashboard/demo/live_demo.py): the host's Chrome, headless, driven by Playwright, 1280x800",
+    "real_seconds_recorded": 734.8,
+    "starts_seconds_into_the_run": 41,
+    "note": "The recorder that started the run was stopped by an operator mistake 30 s into the run; a second recorder was attached to the same dashboard and the same run 41 s in, so classify is seen as already finished. Waiting time is cut: each scene is sped up to a fixed length (transcript x12.4, check log x15.6), one continuous run, nothing staged.",
+    "scenes": [
+      {
+        "scene": "now",
+        "starts_at_real_second": 0.2
+      },
+      {
+        "scene": "graph",
+        "starts_at_real_second": 6.3
+      },
+      {
+        "scene": "transcript",
+        "starts_at_real_second": 24.1
+      },
+      {
+        "scene": "graph-checks",
+        "starts_at_real_second": 320.8
+      },
+      {
+        "scene": "check-log",
+        "starts_at_real_second": 370.8
+      },
+      {
+        "scene": "graph-rest",
+        "starts_at_real_second": 558.0
+      },
+      {
+        "scene": "finished",
+        "starts_at_real_second": 717.2
+      },
+      {
+        "scene": "transcript-done",
+        "starts_at_real_second": 725.5
+      },
+      {
+        "scene": "history",
+        "starts_at_real_second": 730.7
+      }
+    ],
+    "privacy_check": "passed: no page text shown during the recording contained the home directory, a home path, the user name, the repository path or the work directory"
+  },
+  "scrubbed": "run.log and PR.md are as the run wrote them except that the absolute path of the checkout is replaced by <repo>"
+}
