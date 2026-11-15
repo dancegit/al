@@ -36,7 +36,7 @@
   [models (list-of (record model-tier)) ()
    "Named model tiers, e.g. ((fast \"claude-haiku-5-5\") (heavy \"claude-fable-5-2\" #:effort high)). `base` and `heavy` may be given here instead of with #:model-base / #:model-heavy, but not both ways."]
   [model-base (shorthand models base) "claude-opus-5-5" "Model of the `base` tier (routine steps: classify, commit, branch name, document)."]
-  [model-heavy (shorthand models heavy) "claude-fable-5-2" "Model of the `heavy` tier (planning, building, review)."]
+  [model-heavy (shorthand models heavy) "claude-opus-5-5" "Model of the `heavy` tier (planning, building, review)."]
   [permission-mode (enum acceptEdits bypassPermissions plan default) acceptEdits
    "Headless permission mode. bypassPermissions only inside a podman environment."]
   [safe-mode boolean #t "Run with --safe-mode so user CLAUDE.md, hooks, plugins and skills are not loaded."]

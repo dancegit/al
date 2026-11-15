@@ -2,7 +2,7 @@
  "generator": "al 0.2",
  "files": {
   ".gitignore": "13d2924fed5fa7845753851939f62c69404ab4e04c54da22523066204056836c",
-  "AL-DSL.llms.txt": "d4107fe0c9fb116fb262143c52b4259c9dfdc8176ae9801ae92922e6789b353b",
+  "AL-DSL.llms.txt": "fd9d634fdd7fbd0b175d4cea48ac0fecfd5c58bf1472b87d63afea9b8284faa2",
   "README.md": "8f818a640b50f41226fee06c254ba42875ca5b9933b8e614bc1dcb4597872311",
   "adws/adw_modules/__init__.py": "8c027f605e83a0911dde782ab5867b08deeedb519b589e8f99dc8c587710cf18",
   "adws/adw_modules/agents.py": "d16073b8a5abbc10b15c363a89cf26ef5533a7a3c74913604c81408f581975ac",

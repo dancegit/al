@@ -52,12 +52,7 @@ def _builtin_tiers() -> list[tuple[str, str, str]]:
     return [(kind, tier, model) for kind, tiers in models.BUILTIN_TIERS.items() for tier, model in tiers.items()]
 
 
-@pytest.mark.parametrize("kind, tier, model", [
-    pytest.param(*case, marks=pytest.mark.xfail(
-        strict=True, reason="the vocabulary default changes with the REQUIRES HUMAN edit of "
-                            "racket/al/private/vocab.rkt; remove this mark with that edit"))
-    if case[:2] == ("claude-code", "heavy") else case
-    for case in _builtin_tiers()])
+@pytest.mark.parametrize("kind, tier, model", _builtin_tiers())
 def test_runtime_builtin_tiers_equal_the_vocabulary_defaults(tmp_path, kind, tier, model) -> None:
     """The runtime tells `built-in default` from `layer` by comparing with BUILTIN_TIERS, so it must
     equal what the vocabulary gives an agent that names no models."""

@@ -322,7 +322,7 @@
 (test-case "model tiers: claude-code defaults, shorthands and #:models compile to one list"
   (define ir (compile-layer-datum (layer plan simple-adw)))
   (check-equal? (tiers-of (agent-of ir))
-                '(("base" "claude-opus-5-5" "default") ("heavy" "claude-fable-5-2" "default")))
+                '(("base" "claude-opus-5-5" "default") ("heavy" "claude-opus-5-5" "default")))
   (check-false (hash-has-key? (agent-of ir) 'modelBase))
   (check-false (hash-has-key? (agent-of ir) 'modelHeavy))
   (define ir2 (compile-layer-datum
