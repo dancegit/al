@@ -618,7 +618,7 @@ def report(al: Any, worktree: Path, target: Path, a: argparse.Namespace) -> str:
     rel = lambda p: p[len(prefix):] if prefix and p.startswith(prefix) else p  # noqa: E731
     generated = sorted(p for p in stats if rel(p) in manifest)
     source = sorted(p for p in stats if p not in generated)
-    templates = [rel(p) for p in source if rel(p).startswith("templates/")]
+    templates = [rel(p) for p in source if re.fullmatch(r"templates/(commands|hops|experts|custom)/[^/]+", rel(p))]
     name = (new_ir or old_ir or {}).get("name", "the layer")
 
     lines = ["## A change to the agentic layer, for review", "",

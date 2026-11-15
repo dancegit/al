@@ -1,0 +1,35 @@
+[adw 0bad0001] feature start: class=chore dry_run=True
+[adw 0bad0001] step plan-chore (run) start
+[adw 0bad0001] step plan-chore (run) passed: <tmp>/protect/agentic/specs/plan-0bad0001-plan-chore.md
+[adw 0bad0001] step plan-feature (run) skipped: when=class-feature, class=chore
+[adw 0bad0001] step build (run) start
+[adw 0bad0001] step build (run) passed: mock: build ok
+[adw 0bad0001] step test (check) start
+[adw 0bad0001] container started: al-notes-demo-0bad0001
+[adw 0bad0001] step test (check) passed: exit 0, log agents/0bad0001/checks/test.1.log
+[adw 0bad0001] step e2e (check) start
+[adw 0bad0001] step e2e (check) passed: exit 0, log agents/0bad0001/checks/e2e.1.log
+[adw 0bad0001] step commit (run) start
+[adw 0bad0001] step commit (run) passed: mock: commit ok
+[adw 0bad0001] step review (review) start
+[adw 0bad0001] review verdict: pass after 1 round(s): mock review: no issues | mock review: no issues
+[adw 0bad0001] step review (review) passed: ok
+[adw 0bad0001] step ship (ship) start
+[adw 0bad0001] ship: dry run, so the forge is not used: PR.md and local branches only
+[adw 0bad0001] gate: test exit 0
+[adw 0bad0001] gate: e2e exit 0
+[adw 0bad0001] gate: action pr (fallback: protected-path:agentic/commands/plan-chore.md, layer-changed: this run changed the agentic layer itself; layer changes are made with `al improve` and always pass a person)
+[adw 0bad0001] ship: no forge; PR description written to agents/0bad0001/PR.md, branch chore/0bad0001-tidy-the-planning-prompt kept
+[adw 0bad0001] step ship (ship) passed: ok
+[adw 0bad0001] container removed: al-notes-demo-0bad0001
+[adw 0bad0001] worktree removed: <tmp>/protect/agentic/trees/0bad0001
+=== ADW summary ===
+adw:       feature 0bad0001
+status:    passed
+branch:    chore/0bad0001-tidy-the-planning-prompt
+plan:      <tmp>/protect/agentic/specs/plan-0bad0001-plan-chore.md
+checks:    test=0, e2e=0
+review:    pass (auto)
+ship:      pr -> agents/0bad0001/PR.md (shipped=False)
+artefacts: 5
+state:     <tmp>/protect/agentic/agents/0bad0001/state.json

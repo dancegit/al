@@ -1,0 +1,23 @@
+diff --git a/agentic/agentic.rkt b/agentic/agentic.rkt
+index 770bd40..d44aa5a 100644
+--- a/agentic/agentic.rkt
++++ b/agentic/agentic.rkt
+@@ -20,7 +20,9 @@
+   (agent claude-code #:id claude-sandboxed #:model-base "claude-opus-5-5" #:model-heavy "claude-opus-5-5"
+          #:permission-mode bypassPermissions #:max-turns 80)
+   (prompt-input issue #:labels () #:classify #f)
++  (prompt-input tasklist)
+   (trigger manual)
++  (trigger cron)
+ 
+   (environment worktree)
+   (environment podman #:base-image "docker.io/library/python:3.12-slim" #:packages ("git" "curl" "ca-certificates" "libatomic1")
+@@ -64,7 +66,7 @@
+   (hop implement #:template run-plan #:takes plan)
+ 
+   (adw ui-change #:description "Plan, build, unit tests, e2e capture, commit; a human reviews the pull request with the screenshots"
+-       #:input (issue) #:trigger (manual) #:environment (worktree podman) #:review human #:agent claude-sandboxed
++       #:input (issue tasklist) #:trigger (manual cron) #:environment (worktree podman) #:review human #:agent claude-sandboxed
+     (steps
+       (run plan-chore #:command plan-chore #:args ("$prompt") #:when class-chore)
+       (run plan-feature #:command plan-feature #:args ("$prompt") #:when class-feature)

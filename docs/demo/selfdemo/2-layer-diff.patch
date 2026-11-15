@@ -1,0 +1,230 @@
+diff --git a/agentic/templates/.al-eject.json b/agentic/templates/.al-eject.json
+new file mode 100644
+index 0000000..db3cdca
+--- /dev/null
++++ b/agentic/templates/.al-eject.json
+@@ -0,0 +1,4 @@
++{
++ "commands/plan-chore.md": "0c2043d8ed411cb655ae520a393cd5aa4c59918fbc6023b42f72a13bd582631e",
++ "commands/plan-feature.md": "9f9b14bb0d9b3a1bb9eab17fec61a5ad71786f0fd38595825f5db12273c08929"
++}
+diff --git a/agentic/templates/commands/plan-chore.md b/agentic/templates/commands/plan-chore.md
+new file mode 100644
+index 0000000..819adb5
+--- /dev/null
++++ b/agentic/templates/commands/plan-chore.md
+@@ -0,0 +1,93 @@
++---
++description: {{description}}
++argument-hint: [prompt]
++---
++
++# Plan Chore
++
++`{{command_name}}` in layer `{{name}}`: turn a high-level chore prompt into a surgical plan file that another agent can execute without asking a single question. Plan only; implement nothing.
++
++## Variables
++
++PROMPT: $1
++PLAN_FILE: ${specs_dir}/chore-${adw_id}-<descriptive-name>.md
++
++## Codebase
++
++{{codebase_description}}
++
++Languages: {{languages}}. Entry document: `{{readme}}`. Default branch: `{{default_branch}}`.
++
++## Instructions
++
++- You are in `${worktree}`, a git worktree of the application. Read it, do not modify it. The only file you create is PLAN_FILE, which lives in the layer and never in the application tree. Never switch branches, push, or touch the main checkout.
++- Research before writing: read `{{readme}}`, then the Relevant Files, then follow the code until you can name every file the chore touches.
++- Think hard about the smallest change that fully satisfies PROMPT. A chore changes no behaviour users rely on; if PROMPT needs a behaviour change, say so in Notes and plan only the chore part.
++- Write PLAN_FILE in exactly the Plan Format: keep every heading, replace every `<placeholder>`, add no sections. `<descriptive-name>` is 3-6 lowercase hyphenated words. `## Rollback` is always the last section of PLAN_FILE.
++- Under `## Rollback`, say exactly how to undo the change once it has merged: every file to revert or delete (by path), the commit(s) to revert with `git revert`, any other step needed to restore the previous state, and the Validation Commands that confirm the previous behaviour is back. Write it so that someone who has not read the rest of the plan can follow it. Rollback is never a step to execute while implementing.
++- Be surgical: list only files that must change, name the function or block in each, and leave unrelated code, formatting and dependencies alone.
++- Tests: name every test to add or update, with its path. If the chore needs none, state why in Notes.
++- Keep the commands already present under `## Validation Commands` in the Plan Format unchanged and in order; add chore-specific commands only after them.
++- If the result is user-visible, name in Notes the artefacts that will prove it (screenshots, video, reports) and the step that produces them.
++- Never plan a change under a protected path. If the chore cannot be done without one, plan everything else and add a line starting `REQUIRES HUMAN` to Notes naming the path and the reason.
++- A new dependency is added with `{{package_manager}}` and listed in Notes with its justification.
++- Read a conditional document when its condition matches what you are planning.
++{{focus}}
++
++## Relevant Files
++
++{{relevant_files}}
++
++Protected paths (do not plan changes here):
++
++{{protected_paths}}
++
++## Conditional Documentation
++
++{{conditional_docs}}
++
++{{fabric}}
++
++## Plan Format
++
++```md
++# Chore: <chore name>
++
++## Chore Description
++<what must be done and why, in enough detail that the prompt is no longer needed>
++
++## Relevant Files
++<bullet per existing file: path, then why it is relevant and what changes in it>
++
++## Step by Step Tasks
++IMPORTANT: execute every step in order, top to bottom.
++
++### <step title>
++- <one concrete action per bullet: file, symbol, change>
++
++### Run validation
++- Run every command under Validation Commands and fix until all pass.
++
++## Validation Commands
++Execute every command from the worktree root; all must exit 0.
++
++{{validation_commands}}
++<additional chore-specific commands, each with what it proves; delete this line if none>
++
++## Notes
++<tests added or why none; new dependencies; artefacts that prove a user-visible result; REQUIRES HUMAN lines; anything the implementer must know>
++
++## Rollback
++For undoing this change after it has merged; not a step to execute while implementing.
++<numbered steps that exactly undo the change: files to revert or delete by path, commits to revert, anything else to restore, then the Validation Commands that confirm the previous behaviour>
++```
++
++## Validation Commands
++
++Do not run these now. They are the commands the plan embeds; the implementer runs them.
++
++{{validation_commands}}
++
++## Report
++
++{{output_contract}}
+diff --git a/agentic/templates/commands/plan-feature.md b/agentic/templates/commands/plan-feature.md
+new file mode 100644
+index 0000000..84e856f
+--- /dev/null
++++ b/agentic/templates/commands/plan-feature.md
+@@ -0,0 +1,115 @@
++---
++description: {{description}}
++argument-hint: [prompt]
++---
++
++# Plan Feature
++
++`{{command_name}}` in layer `{{name}}`: turn a feature request into a phased plan that another agent can implement end to end without asking a single question. Plan only; implement nothing.
++
++## Variables
++
++PROMPT: $1
++PLAN_FILE: ${specs_dir}/feature-${adw_id}-<descriptive-name>.md
++
++## Codebase
++
++{{codebase_description}}
++
++Languages: {{languages}}. Entry document: `{{readme}}`. Default branch: `{{default_branch}}`.
++
++## Instructions
++
++- You are in `${worktree}`, a git worktree of the application. Read it, do not modify it. The only file you create is PLAN_FILE, which lives in the layer and never in the application tree. Never switch branches, push, or touch the main checkout.
++- Research before writing: read `{{readme}}`, then the Relevant Files, then the closest existing feature. Follow its patterns, naming and file layout; do not invent a new architecture. Think hard about the smallest design that delivers the user value in PROMPT. Leave out everything PROMPT does not ask for.
++- Write PLAN_FILE in exactly the Plan Format: keep every heading, replace every `<placeholder>`, add no sections. `<descriptive-name>` is 3-6 lowercase hyphenated words. `## Rollback` is always the last section of PLAN_FILE.
++- Under `## Rollback`, say exactly how to undo the change once it has merged: every file to revert or delete (by path, including every new file), the commit(s) to revert with `git revert`, any other step needed to restore the previous state, and the Validation Commands that confirm the previous behaviour is back. Write it so that someone who has not read the rest of the plan can follow it. Rollback is never a step to execute while implementing.
++- Be surgical: list only files that must change or be created, and name the function, type or block in each.
++- Tests: name every test to add, with its path, under Testing Strategy, and give each a step in Step by Step Tasks. Tests come before or with the code they cover, never after validation. Acceptance Criteria are observable and checkable: each one maps to a test, a validation command or a named artefact.
++- Keep the commands already present under `## Validation Commands` in the Plan Format unchanged and in order; add feature-specific commands after them.
++- If the feature is user-visible, name in Notes the artefacts that will prove it (screenshots, video, reports), where they land, and the step that produces them.
++- Never plan a change under a protected path. If the feature cannot avoid one, plan everything else and add a line starting `REQUIRES HUMAN` to Notes naming the path and the reason.
++- A new dependency is added with `{{package_manager}}` and justified in Notes. Read a conditional document when its condition matches what you are planning.
++{{focus}}
++
++## Relevant Files
++
++{{relevant_files}}
++
++Protected paths (do not plan changes here):
++
++{{protected_paths}}
++
++## Conditional Documentation
++
++{{conditional_docs}}
++
++{{fabric}}
++
++## Plan Format
++
++```md
++# Feature: <feature name>
++
++## Feature Description
++<what the feature does and the value it delivers>
++
++## User Story
++As a <type of user>, I want to <action or goal>, so that <benefit>.
++
++## Problem Statement
++<the problem or opportunity this feature addresses>
++
++## Solution Statement
++<the approach, and how it fits the existing design>
++
++## Relevant Files
++<bullet per existing file: path, why it is relevant, what changes in it; then, under a `### New Files` heading, a bullet per file to create with its purpose>
++
++## Implementation Plan
++### Phase 1: Foundation
++<shared groundwork needed before the feature itself: types, schema, config, scaffolding>
++### Phase 2: Core Implementation
++<the feature's main behaviour>
++### Phase 3: Integration
++<wiring into existing entry points, interfaces and documentation>
++
++## Step by Step Tasks
++IMPORTANT: execute every step in order, top to bottom. The last step runs every command under Validation Commands and fixes until all pass.
++### <step title>
++- <one concrete action per bullet: file, symbol, change>
++
++## Testing Strategy
++### Unit Tests
++<test path, then what it asserts>
++### Integration Tests
++<test path, then the flow it covers>
++### Edge Cases
++<each edge case and the test that covers it>
++
++## Acceptance Criteria
++<checkable statements, each tied to a test, command or artefact>
++
++## Validation Commands
++Execute every command from the worktree root; all must exit 0.
++
++{{validation_commands}}
++<additional feature-specific commands, each with what it proves; delete this line if none>
++
++## Notes
++<new dependencies; artefacts that prove the user-visible result; REQUIRES HUMAN lines; deliberate omissions and follow-ups>
++
++## Rollback
++For undoing this change after it has merged; not a step to execute while implementing.
++<numbered steps that exactly undo the change: files to revert or delete by path, commits to revert, anything else to restore, then the Validation Commands that confirm the previous behaviour>
++```
++
++## Validation Commands
++
++Do not run these now. They are the commands the plan embeds; the implementer runs them.
++
++{{validation_commands}}
++
++## Report
++
++{{output_contract}}

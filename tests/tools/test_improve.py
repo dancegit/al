@@ -95,6 +95,7 @@ def test_an_ejected_and_edited_template_ends_in_a_pull_request(in_repo, app, tmp
     improve(in_repo, "Every plan must end with a 'Rollback' section", scripts)
     pr = (run_dir(in_repo) / "PR.md").read_text().split("\n---\n")[0]
     assert "A layer-local template changed: `templates/commands/plan-chore.md`" in pr
+    assert "`templates/.al-eject.json` (every" not in pr                    # the eject record is not a template
     assert "No block's description changed" in pr
     assert "## What the agents will be told differently" in pr and "+## Rollback" in pr
     assert "`commands/plan.md`:" in pr and "`commands/tidy.md`:" in pr                    # both users of plan-chore
@@ -204,3 +205,17 @@ def test_a_sibling_layer_is_changed_in_its_own_repository(sibling, app, tmp_path
     assert "Name the notes list NOTES" in (sibling / "commands" / "plan.md").read_text()
     assert status(app) == ""                                       # the application was never touched
     assert git(sibling, "status", "--porcelain") == ""
+
+
+def test_a_changed_codebase_cmd_is_verified_for_real(in_repo, app, tmp_path) -> None:
+    source = (in_repo / "agentic.rkt").read_text()
+    changed = source.replace('(cmd test "./test.sh" #:timeout 60 #:description "the tests pass")',
+                             '(cmd test "./test.sh && test -f app.py" #:timeout 60 #:description "the tests pass and app.py exists")')
+    assert changed != source
+    scripts = mock_scripts(tmp_path, {"plan": plan("stricter test", "- the test cmd also checks app.py"),
+                                      "implement": {"files": {"agentic/agentic.rkt": changed}}})
+    improve(in_repo, "The test command must also check that app.py exists", scripts)
+    log = (run_dir(in_repo) / "checks" / "verify.1.log").read_text()
+    assert "codebase cmds changed: al verify --cmd test" in log and "ok: al verify passes for test" in log
+    assert "The codebase commands changed." in (run_dir(in_repo) / "PR.md").read_text()
+    assert status(app) == ""

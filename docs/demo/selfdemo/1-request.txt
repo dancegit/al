@@ -1,0 +1,1 @@
+I want to queue work in a text file: add a task-file prompt input and a poller trigger, and let the ui-change workflow accept them.

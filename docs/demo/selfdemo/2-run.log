@@ -1,0 +1,41 @@
+al improve: agent `claude-sandboxed`: permission mode bypassPermissions becomes acceptEdits here (the workflow runs on the host, where bypassPermissions is not allowed)
+al improve: layer <tmp>/notes/agentic (in-repo); the change is made in a worktree of <tmp>/notes (branch from `main`), never in your checkout
+al improve: workflow: <tmp>/notes/agentic/.al-improve/agentic.rkt (run id 5e1f0002); environment: a host worktree (no container: the checks need racket, uv, the al tools and podman); review: a person, in the pull request
+[adw 5e1f0002] improve start: class=chore dry_run=False
+[adw 5e1f0002] step plan (run) start
+[adw 5e1f0002] step plan (run) passed: <tmp>/notes/agentic/.al-improve/specs/layer-change-5e1f0002-plans-end-with-rollback-section.md
+[adw 5e1f0002] step implement (run) start
+[adw 5e1f0002] step implement (run) passed: Both planning commands now end their Plan Format with a `## Rollback` section, and both validation commands pass.
+[adw 5e1f0002] step definition (check) start
+[adw 5e1f0002] step definition (check) passed: exit 0, log agents/5e1f0002/checks/definition.1.log
+[adw 5e1f0002] step regenerate (check) start
+[adw 5e1f0002] step regenerate (check) passed: exit 0, log agents/5e1f0002/checks/regenerate.1.log
+[adw 5e1f0002] step scope (check) start
+[adw 5e1f0002] step scope (check) passed: exit 0, log agents/5e1f0002/checks/scope.1.log
+[adw 5e1f0002] step layer-check (check) start
+[adw 5e1f0002] step layer-check (check) passed: exit 0, log agents/5e1f0002/checks/layer-check.1.log
+[adw 5e1f0002] step dry-runs (check) start
+[adw 5e1f0002] step dry-runs (check) passed: exit 0, log agents/5e1f0002/checks/dry-runs.1.log
+[adw 5e1f0002] step verify (check) start
+[adw 5e1f0002] step verify (check) passed: exit 0, log agents/5e1f0002/checks/verify.1.log
+[adw 5e1f0002] step commit (run) start
+[adw 5e1f0002] step commit (run) passed: I committed `a58ab4fea1f56ffaf199bf2529ab99afa1cf5d03` with the subject `agentic layer: plans now end with a Rollback section`.
+[adw 5e1f0002] step review (review) start
+[adw 5e1f0002] step review (review) passed: ok
+[adw 5e1f0002] step ship (ship) start
+[adw 5e1f0002] gate: action pr
+[adw 5e1f0002] ship: PR #2 http://127.0.0.1:51319/adw/notes/pulls/2
+[adw 5e1f0002] step ship (ship) passed: ok
+[adw 5e1f0002] worktree removed: <tmp>/notes/agentic/.al-improve/trees/5e1f0002
+=== ADW summary ===
+adw:       improve 5e1f0002
+status:    passed
+branch:    chore/5e1f0002-every-plan-must-end-with-a
+plan:      <tmp>/notes/agentic/.al-improve/specs/layer-change-5e1f0002-plans-end-with-rollback-section.md
+checks:    definition=0, regenerate=0, scope=0, layer-check=0, dry-runs=0, verify=0
+review:    pass (human)
+ship:      pr -> http://127.0.0.1:51319/adw/notes/pulls/2 (shipped=False)
+artefacts: 0
+state:     <tmp>/notes/agentic/.al-improve/agents/5e1f0002/state.json
+al improve: done: pull request #2 http://127.0.0.1:51319/adw/notes/pulls/2 (branch chore/5e1f0002-every-plan-must-end-with-a) waits for a person
+al improve: the pull request includes the regenerated files: merging it is all that is needed
