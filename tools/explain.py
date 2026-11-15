@@ -153,9 +153,10 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
     if head == "review":
         bullets, kinds = [], []
         for o in ir["reviews"]:
+            body = f"; the description opens with the output of the `{o['bodyCmd']}` command" if o.get("bodyCmd") else ""
             if o["kind"] == "human":
                 kinds.append("a person, through a pull request")
-                bullets.append(f"`{o['id']}`: open a pull request and stop; a person reads it and merges")
+                bullets.append(f"`{o['id']}`: open a pull request and stop; a person reads it and merges{body}")
             elif o["kind"] == "agent":
                 kinds.append("an agent that reviews on evidence, with a person merging")
                 bullets.append(f"`{o['id']}`: {o['reviewers']} reviewer agent(s) judge the change against the plan; a person merges")
@@ -190,7 +191,14 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
     if head == "voice":
         return "Voice", "Speech in and out, both running locally (Kokoro for speech, Whisper for recognition).", []
     if head == "layer":
-        return "Where the layer lives", "The generated layer is a folder beside the repository, not inside it.", []
+        placement = ir.get("layer") or {}
+        if placement.get("kind") == "in-repo":
+            return ("Where the layer lives", f"The layer is the `{placement['dir']}/` directory of the repository itself and is "
+                    "committed with the code. Runs keep their state in ignored directories, and an ordinary workflow that "
+                    "changes the layer goes to a person.", [])
+        where = {"central": "a folder under a central directory of layers", "separate-repo": "its own repository"}
+        return ("Where the layer lives", f"The generated layer is {where.get(placement.get('kind'), 'a folder beside the repository')}, "
+                "not inside the application.", [])
     if head == "command":
         cmds = ir["commands"]
         focus = [f for c in cmds for f in c["focus"]]
@@ -218,6 +226,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         steps = [s for s in adw["steps"]]
         short = " → ".join(s["name"] for s in steps)
         text = (f"The `{name}` workflow" + (f": {adw['description'].rstrip('.')}" if adw["description"] else "") + f". Steps: {short}. {outcome}")
+        if adw.get("changes") == "layer":
+            text += " It changes the agentic layer itself, so a person always reviews it."
         bullets = [f"Work from {listing([pi[i]['kind'] for i in adw['input']], 'or')}; started by {listing([tr[i]['kind'] for i in adw['trigger']], 'or')}; "
                    f"runs in {listing([en[i]['kind'] for i in adw['environment']])}; agent `{adw['agent']}`"]
         bullets += [f"{n}. {describe_step(s)}" for n, s in enumerate(steps, 1)]

@@ -2,6 +2,7 @@
   "adws": [
     {
       "agent": "claude-code",
+      "changes": "codebase",
       "classes": [],
       "description": "Plan and implement, nothing else",
       "environment": [
@@ -82,6 +83,7 @@
     },
     {
       "agent": "claude-code",
+      "changes": "codebase",
       "classes": [],
       "description": "Plan, build, test, review; a human merges",
       "environment": [
@@ -215,6 +217,7 @@
     },
     {
       "agent": "claude-code",
+      "changes": "codebase",
       "classes": [
         "chore",
         "bug"
@@ -350,6 +353,7 @@
     },
     {
       "agent": "claude-code",
+      "changes": "codebase",
       "classes": [],
       "description": "One candidate of a race: plan, build, test, commit; never ships",
       "environment": [
@@ -447,6 +451,7 @@
     },
     {
       "agent": "claude-code",
+      "changes": "codebase",
       "classes": [],
       "description": "Three candidates race (two at a time); a human reviews the best one",
       "environment": [
@@ -928,6 +933,7 @@
   ],
   "reviews": [
     {
+      "bodyCmd": "",
       "draft": false,
       "id": "human",
       "kind": "human",
@@ -946,6 +952,7 @@
         "recordings"
       ],
       "blockProtectedPaths": true,
+      "bodyCmd": "",
       "command": "review",
       "deployCmd": "deploy",
       "id": "zero-touch",

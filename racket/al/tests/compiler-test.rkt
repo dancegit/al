@@ -220,3 +220,35 @@
   (define full (dynamic-require (build-path examples "full.rkt") 'layer-spec))
   (check-true (for*/or ([a (hash-ref full 'adws)] [s (hash-ref a 'steps)])
                 (equal? (hash-ref s 'kind) "fan-out"))))
+
+(define (in-repo-layer root . clauses)
+  `(agentic-layer #:name "t" (codebase #:root ,root #:languages (python) (cmd test "pytest")) ,@clauses))
+
+(test-case "in-repo placement: the layer lives inside the repository, root leads back up"
+  (define ir (compile-layer-datum (in-repo-layer ".." '(layer in-repo) plan simple-adw)))
+  (check-equal? (hash-ref ir 'layer) (hasheq 'id "in-repo" 'kind "in-repo" 'status "stable" 'dir "agentic"))
+  (check-equal? (hash-ref (hash-ref (compile-layer-datum (in-repo-layer "../.." '(layer in-repo #:dir "tools/agentic") plan simple-adw))
+                                    'layer) 'dir)
+                "tools/agentic")
+  (check-rejects (in-repo-layer "." '(layer in-repo) plan simple-adw)
+                 #rx"#:root …\\) must lead from the layer directory back to the repository root, i.e. \"..\" \\(got \".\"\\)")
+  (check-rejects (in-repo-layer ".." '(layer in-repo #:dir "tools/agentic") plan simple-adw) #rx"i.e. \"../..\"")
+  (check-rejects (in-repo-layer "../.." '(layer in-repo #:dir "../agentic") plan simple-adw) #rx"without `..`")
+  (check-rejects (in-repo-layer "/abs" '(layer in-repo #:dir "/agentic") plan simple-adw) #rx"relative directory")
+  (check-rejects (in-repo-layer "/srv/app" '(layer in-repo) plan simple-adw) #rx"must lead from the layer directory"))
+
+(test-case "#:changes layer: never zero-touch, always a person"
+  (define ir (compile-layer-datum (layer plan '(adw a #:changes layer (steps (run plan #:command plan))))))
+  (check-equal? (hash-ref (car (hash-ref ir 'adws)) 'changes) "layer")
+  (check-equal? (hash-ref (car (hash-ref (compile-layer-datum (layer plan simple-adw)) 'adws)) 'changes) "codebase")
+  (check-not-exn (lambda () (compile-layer-datum (layer plan review-cmd '(review agent)
+                                                        '(adw a #:changes layer (steps (run plan #:command plan) (review) (ship)))))))
+  (check-rejects (layer plan review-cmd '(review auto #:require-checks (test) #:ship pr)
+                        '(adw a #:changes layer (steps (run plan #:command plan) (check t #:cmd test) (review) (ship))))
+                 #rx"#:changes layer needs a review option of kind human or agent .*no zero-touch mode for layer changes"))
+
+(test-case "review #:body-cmd names a codebase cmd"
+  (define ir (compile-layer-datum (layer plan '(review human #:body-cmd lint) simple-adw)))
+  (check-equal? (hash-ref (car (hash-ref ir 'reviews)) 'bodyCmd) "lint")
+  (check-equal? (hash-ref (car (hash-ref (compile-layer-datum (layer plan simple-adw)) 'reviews)) 'bodyCmd) "")
+  (check-rejects (layer plan '(review human #:body-cmd report) simple-adw) #rx"`report` is not a declared codebase cmd"))

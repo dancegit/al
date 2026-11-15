@@ -13,6 +13,14 @@
             "description": "Agent the steps run on.",
             "type": "string"
           },
+          "changes": {
+            "description": "What the ADW changes. `codebase`: the application. `layer`: an agentic layer (its codebase is the repository that holds a layer, as in the workflow `al improve` runs); such an ADW never ships without a person and is exempt from the in-repo layer protection.",
+            "enum": [
+              "codebase",
+              "layer"
+            ],
+            "type": "string"
+          },
           "classes": {
             "description": "Work classes routed to this ADW by classification; empty = any.",
             "items": {
@@ -261,6 +269,7 @@
         },
         "required": [
           "agent",
+          "changes",
           "classes",
           "description",
           "environment",
@@ -920,6 +929,7 @@
               "plan-bug",
               "plan-chore",
               "plan-patch",
+              "plan-layer-change",
               "implement",
               "build",
               "test",
@@ -1572,7 +1582,7 @@
       "type": "array"
     },
     "layer": {
-      "description": "Where the generated agentic layer lives. It is never part of the application tree.",
+      "description": "Where the generated agentic layer lives. Only `in-repo` puts it inside the application repository; the others keep it out of the application tree.",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -1663,6 +1673,32 @@
             "id",
             "kind",
             "remote",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The layer is a directory INSIDE the application repository, committed with the code. agentic.rkt lives in that directory and (codebase #:root …) is the way back up to the repository root (\"..\" for a top-level directory). Run state (worktrees, run logs, artefacts, plans, the task list) stays in git-ignored directories of the layer, and every ADW that does not change the layer itself treats the layer directory as a protected path.",
+          "properties": {
+            "dir": {
+              "description": "Layer directory relative to the repository root (no `..`, no leading `/`).",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "in-repo"
+            },
+            "status": {
+              "const": "stable"
+            }
+          },
+          "required": [
+            "dir",
+            "id",
+            "kind",
             "status"
           ],
           "type": "object"
@@ -1991,6 +2027,10 @@
             "additionalProperties": false,
             "description": "Open a pull request and stop. A human reads it (presence = 2: prompt and review).",
             "properties": {
+              "bodyCmd": {
+                "description": "Codebase command run in the worktree just before the pull request is written; its standard output (markdown) opens the PR description. It gets ADW_STATE (path of the run's state.json) and ADW_BASE (the commit the change is based on).",
+                "type": "string"
+              },
               "draft": {
                 "description": "Open the PR as draft.",
                 "type": "boolean"
@@ -2013,6 +2053,7 @@
               }
             },
             "required": [
+              "bodyCmd",
               "draft",
               "id",
               "kind",
@@ -2031,6 +2072,10 @@
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "bodyCmd": {
+                "description": "Codebase command whose standard output opens the PR description (see review human).",
+                "type": "string"
               },
               "command": {
                 "description": "Review command.",
@@ -2056,6 +2101,7 @@
             },
             "required": [
               "artefacts",
+              "bodyCmd",
               "command",
               "id",
               "kind",
@@ -2092,6 +2138,10 @@
               "blockProtectedPaths": {
                 "description": "Any change under codebase protected paths falls back to a human PR.",
                 "type": "boolean"
+              },
+              "bodyCmd": {
+                "description": "Codebase command whose standard output opens the PR description (see review human).",
+                "type": "string"
               },
               "command": {
                 "description": "Review command.",
@@ -2143,6 +2193,7 @@
               "allowedClasses",
               "artefacts",
               "blockProtectedPaths",
+              "bodyCmd",
               "command",
               "deployCmd",
               "id",

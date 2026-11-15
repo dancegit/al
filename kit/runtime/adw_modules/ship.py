@@ -37,9 +37,18 @@ def _ref_exists(repo: Path, ref: str, sandbox: gitsafe.Sandbox | None = None) ->
     return result.returncode == 0
 
 
-def _title(state: Any) -> str:
+def _title(state: Any, layer: Any = None) -> str:
     first = next((line.strip() for line in state.prompt.splitlines() if line.strip()), "adw changes")
+    if layer is not None and _changes_layer(layer, state):
+        return f"agentic layer: {first}"
     return f"{state.klass}: {first}"
+
+
+def _changes_layer(layer: Any, state: Any) -> bool:
+    try:
+        return bool(layer.changes_layer(state.adw))
+    except (AttributeError, LayerError):
+        return False
 
 
 def commit_pending(worktree: Path, state: Any, never_commit: list[str] | None = None,
@@ -90,12 +99,63 @@ def _sections(state: Any) -> dict[str, str]:
     }
 
 
-def pr_body(state: Any, message: str) -> str:
+def pr_body(state: Any, message: str, lead: str = "") -> str:
+    """The PR description. `lead` (the output of the review option's #:body-cmd) opens it; the
+    standard sections follow as the run's record."""
     sections = _sections(state)
     parts = [sections[name] for name in ("summary", "plan", "checks", "review", "why", "artefacts")]
     if message:
         parts.append(f"## Notes\n\n{message}")
+    if lead.strip():
+        parts = [lead.strip(), "---", "## Run record", *parts]
     return "\n\n".join(parts) + "\n"
+
+
+BODY_CMD_TIMEOUT = 600
+
+
+def body_lead(layer: Any, state: Any, env_stack: Any, sandbox: gitsafe.Sandbox | None = None,
+              head: str = "") -> str:
+    """Run the review option's #:body-cmd in the worktree and return its stdout ("" when none is
+    declared or it fails: the PR then has the standard sections only, and the failure is recorded).
+    The command gets ADW_STATE (the run's state.json), ADW_ID and ADW_BASE (the commit the run's
+    change is based on: the merge base with the default branch)."""
+    try:
+        option = layer.option("reviews", layer.adw(state.adw)["review"])
+    except LayerError:
+        return ""
+    name = str(option.get("bodyCmd") or "")
+    if not name:
+        return ""
+    command = layer.cmd(name)
+    default = f"refs/heads/{layer.default_branch}"
+    try:
+        if sandbox is not None:
+            base = gitsafe.run_app(sandbox, ["merge-base", head or "HEAD", default], "ship", check=False).stdout.strip()
+        else:
+            base = subprocess.run(["git", "-C", str(state.worktree), "merge-base", "HEAD", default], capture_output=True,
+                                  text=True, timeout=GIT_TIMEOUT, check=False).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired, StepFailed):
+        base = ""
+    state.save(layer.layer_dir)  # the command reads the run's record
+    extra = {"ADW_STATE": str(Path(layer.layer_dir) / "agents" / state.adw_id / "state.json"),
+             "ADW_ID": state.adw_id, "ADW_BASE": base}
+    saved = dict(env_stack.env)
+    env_stack.env.update(extra)  # also reaches a podman container (its env comes from the stack)
+    try:
+        code, output = steps.run_command(env_stack.wrap(str(command["run"])), env_stack.cwd, env_stack.process_env(),
+                                         int(command.get("timeout") or BODY_CMD_TIMEOUT))
+    finally:
+        env_stack.env.clear()
+        env_stack.env.update(saved)
+    log = Path(layer.layer_dir) / "agents" / state.adw_id / "checks" / f"body-{name}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(output, encoding="utf-8")
+    state.ship["body_cmd"] = {"cmd": name, "exit": code, "log": log.relative_to(layer.layer_dir).as_posix()}
+    if code != 0:
+        print(f"[adw {state.adw_id}] warning: body-cmd {name} exited {code}; the PR has the standard sections only")
+        return ""
+    return output
 
 
 # ---------------------------------------------------------------- proof on the pull request
@@ -218,7 +278,7 @@ def _open_pr(layer: Any, state: Any, client: Any, worktree: Path, body: str,
     _push_branch(state, worktree, sandbox)
     # draft / requested reviewers exist only on `human` reviews; agent/auto `reviewers` is a count of review agents.
     human = option["kind"] == "human"
-    pr = client.create_pr(state.branch, layer.default_branch, _title(state), body,
+    pr = client.create_pr(state.branch, layer.default_branch, _title(state, layer), body,
                           draft=bool(option.get("draft")) if human else False,
                           reviewers=tuple(option.get("reviewers", [])) if human else ())
     if not isinstance(pr, dict) or not isinstance(pr.get("number"), int):
@@ -325,6 +385,9 @@ def ship(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_
     with gitsafe.session(sandbox) if sandbox is not None else contextlib.nullcontext():
         commit_pending(worktree, state, _never_commit(layer, state), sandbox)
         client = _forge_client(layer)
+        if client is not None and state.dry_run:
+            print(f"[adw {state.adw_id}] ship: dry run, so the forge is not used: PR.md and local branches only")
+            client = None
         option = layer.option("reviews", layer.adw(state.adw)["review"])
         if option["kind"] == "auto":
             reviewed = state.review.get("tree")
@@ -343,7 +406,8 @@ def ship(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_
     action = decision["action"]
     reasons = list(decision["reasons"])
     message = str(step.get("message") or "")
-    body = pr_body(state, message)
+    lead = body_lead(layer, state, env_stack, sandbox, shipping)
+    body = pr_body(state, message, lead)
     pr: dict[str, Any] | None = None
     shipped, target = False, ""
     if action == "pr":
@@ -368,7 +432,7 @@ def ship(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_
             note = (f"The gate decided `{action}`, but shipping failed: {reason}\n\n"
                     f"Nothing was merged or deployed. The run's commits are on `{state.branch}`.")
             pr, target = _fallback(layer, state, client, worktree, sandbox, pr_body(state, "\n\n".join(
-                part for part in (message, note) if part)), pr, note, exc)
+                part for part in (message, note) if part), lead), pr, note, exc)
             state.ship["fallback"] = {"decided": action, "error": str(exc)[:2000]}
             if action == "deploy":
                 state.ship["deploy"] = {"skipped": "not deployed: shipping fell back to a human PR"}
@@ -403,7 +467,7 @@ def _human_path(layer: Any, state: Any, client: Any, worktree: Path, body: str,
         return pr, str(pr.get("url", ""))
     path = Path(layer.layer_dir) / "agents" / state.adw_id / "PR.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"# {_title(state)}\n\n{body}", encoding="utf-8")
+    path.write_text(f"# {_title(state, layer)}\n\n{body}", encoding="utf-8")
     target = path.relative_to(layer.layer_dir).as_posix()
     print(f"[adw {state.adw_id}] ship: no forge; PR description written to {target}, branch {state.branch} kept")
     return None, target
@@ -610,7 +674,7 @@ def handoff(layer: Any, state: Any, adw: dict[str, Any], env_stack: Any, failure
     worktree = Path(state.worktree)
     sandbox = getattr(env_stack, "sandbox", None)
     reasons = [f"run-stopped:{step}: {_short_reason(reason)}"]
-    title = f"{HANDOFF_TITLE} {_title(state)}"
+    title = f"{HANDOFF_TITLE} {_title(state, layer)}"
     try:
         # Sandboxed: the container stays frozen and the git metadata verified while the host
         # commits, and the run's branch is created host-side from imported objects only.
@@ -630,6 +694,13 @@ def handoff(layer: Any, state: Any, adw: dict[str, Any], env_stack: Any, failure
                        "commit": commit, "branch": state.branch, "stopped_at": step})
     try:
         body = handoff_body(layer, state, step, kind, reason)
+        try:
+            lead = body_lead(layer, state, env_stack, sandbox, commit)
+        except Exception as exc:  # noqa: BLE001 — the explanation is a courtesy; the handoff goes on
+            print(f"[adw {state.adw_id}] warning: body-cmd failed in the handoff: {_short_reason(exc)}")
+            lead = ""
+        if lead.strip():
+            body = f"{body.rstrip()}\n\n---\n\n{lead.strip()}\n"
         client = _forge_client(layer)
         if client is not None and state.dry_run:
             print(f"[adw {state.adw_id}] handoff: dry run, so no pull request on the forge; writing PR.md")

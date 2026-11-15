@@ -16,6 +16,7 @@ from . import gitsafe, slots
 from .errors import LayerError, StepFailed
 
 PODMAN_BUILD_TIMEOUT = 1800
+IMPROVE_DIR = ".al-improve"  # run state of `al improve` inside a layer: never visible to an ordinary run
 
 
 def _run_git(args: list[str], step: str) -> subprocess.CompletedProcess[str]:
@@ -391,7 +392,9 @@ class EnvStack:
             run_dirs = [layer_dir / "specs", layer_dir / "docs", layer_dir / "experts",
                         layer_dir / "agents" / self.state.adw_id, layer_dir / "artefacts" / self.state.adw_id]
             # writable run dirs are left out of the read-only set: one destination, one mount
-            private = [layer_dir / "agents", layer_dir / "artefacts", self._tree_dir(), *run_dirs]
+            # .al-improve: the layer-change workflow of `al improve` (its own runs and worktrees)
+            private = [layer_dir / "agents", layer_dir / "artefacts", self._tree_dir(), layer_dir / IMPROVE_DIR,
+                       *run_dirs]
             for entry in _shared_layer_entries(layer_dir, private):
                 mounts += ["-v", f"{entry}:{entry}:ro"]
             for directory in run_dirs:

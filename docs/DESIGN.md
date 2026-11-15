@@ -126,6 +126,28 @@ expertise and docs about runs live in the layer. The single optional exception i
 file for the `forge-actions` trigger, which by nature must sit in the app repo; it contains no
 logic, only a call into the layer, and it is generated into `forge/` for you to copy deliberately.
 
+`(layer in-repo #:dir "agentic")` is the deliberate alternative: the layer is a directory of the
+application repository and is committed with it, so the team shares one layer and reviews changes to
+it like code. Run state stays out of git (the generated `.gitignore` covers worktrees, run records,
+artefacts, plans, the task list and machine-specific files), so runs leave `git status` clean; worktrees
+sit in the ignored `agentic/trees/`, and runs always use the main checkout's layer, never the copy
+inside their worktree. Every ADW that is not a layer-change workflow treats `agentic/` as a protected
+path, whatever its review option says: the runtime's gate adds `protected-path:` reasons, so an agent
+cannot quietly rewrite its own rules.
+
+## Changing a layer
+
+A layer has two kinds of source: `agentic.rkt` and layer-local templates under `templates/`, which
+replace a kit template of the same name (`al eject` makes one). Everything else is generated, and
+`.al-manifest.json` records a sha256 per generated file, so `al gen` refuses to overwrite a hand edit
+instead of losing it. `al improve LAYER "request"` changes a layer through al's own workflow
+(`kit/self/agentic.rkt.in`, a `#lang al` program instantiated per layer into the ignored
+`.al-improve/`): plan → implement → checks (compiles; regenerates without hand edits, twice, the
+second time changing nothing; only the layer changed; `al check`; every ADW completes a dry run
+against a pristine clone of the application; `al verify` when cmds or environments changed) →
+commit → review → ship. It is an ordinary ADW with `#:changes layer`, which the compiler only accepts
+with a human or agent review: there is no zero-touch mode for changes to how agents work.
+
 ## Supporting the LLM: our own commands
 
 `meta/commands/` holds the prompts that drive an LLM through the pipeline: `scout-codebase`

@@ -1,0 +1,686 @@
+"""`al improve`: change an agentic layer through al's own reviewed workflow.
+
+    al improve LAYER "what to change, in plain words" [--dry-run] [--review human|agent]
+
+The workflow is an ordinary ADW, run by the ordinary runtime (no second engine). Its definition is
+kit/self/agentic.rkt.in, instantiated for LAYER into LAYER/.al-improve/ (git-ignored run state) and
+generated with `al gen`. Its codebase is the git repository that holds the layer, so it works in a
+throwaway worktree of that repository: plan (kit template plan-layer-change) → implement (run-plan)
+→ checks (`al improve-check …`, each with a resolve loop) → commit → review → ship. It ends in a pull
+request (or a branch + PR.md without a forge) that a person reviews; there is no zero-touch mode.
+
+The checks run in the worktree, whose layer copy cannot reach the application through its relative
+`#:root`. They name the application explicitly: the runtime's ir.load and `tools/al` honour
+AL_APP_ROOT, and the checks point it at a pristine clone of the application's default branch, so
+nothing is rewritten and the user's own checkout is never touched.
+"""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import difflib
+import json
+import os
+import re
+import secrets
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+SELF_TEMPLATE = "self/agentic.rkt.in"
+REVIEWS = ("human", "agent")
+NO_ZERO_TOUCH = ("there is no zero-touch mode for layer changes: a change to how agents work always passes a person. "
+                 "Use --review human (a person reviews the pull request) or --review agent (an agent reviews first, "
+                 "a person merges)")
+GENERATED_PROMPT_DIFF_LINES = 80
+
+
+def main(a: argparse.Namespace, al: Any) -> int:
+    if a.cmd == "improve":
+        return improve(a, al)
+    return improve_check(a, al)
+
+
+# ------------------------------------------------------------------------------------------ git helpers
+
+def sh(argv: list[str], cwd: Path | None = None, env: dict | None = None, check: bool = False,
+       timeout: float | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run([str(x) for x in argv], cwd=cwd, env=env, text=True, capture_output=True, check=check,
+                          timeout=timeout)
+
+
+def git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return sh(["git", "-C", str(repo), *args])
+
+
+def git_out(repo: Path, *args: str) -> str:
+    cp = git(repo, *args)
+    return cp.stdout.strip() if cp.returncode == 0 else ""
+
+
+def rkt(value: str) -> str:
+    """A Racket string literal."""
+    return json.dumps(value, ensure_ascii=False)
+
+
+# ------------------------------------------------------------------------------------------ al improve
+
+class Target:
+    """The layer being changed and the repository that holds it."""
+
+    def __init__(self, layer: Path, al: Any):
+        self.layer = layer
+        self.ir = al.compile_layer(layer)
+        if not (layer / "agentic-layer.json").is_file():
+            raise al.AlError(f"{layer} has not been generated yet: run `al gen {layer}` first")
+        self.placement = self.ir["layer"]
+        self.kind = self.placement["kind"]
+        self.app = al.app_root_of(layer, self.ir)
+        if self.kind == "in-repo":
+            top = git_out(layer, "rev-parse", "--show-toplevel")
+            if not top or Path(top).resolve() != self.app:
+                raise al.AlError(f"in-repo layer {layer}: its repository ({top or 'none'}) is not the codebase root {self.app}")
+            self.repo, self.sub = self.app, self.placement["dir"].strip("/")
+        else:
+            self.repo, self.sub = layer, "."
+        self.self_dir = layer / al.IMPROVE_DIR
+
+    @property
+    def default_branch(self) -> str:
+        if self.kind == "in-repo":
+            return self.ir["codebase"]["defaultBranch"]
+        return git_out(self.repo, "symbolic-ref", "--short", "HEAD") or "main"
+
+    def prepare_repo(self, al: Any, say) -> None:
+        """The layer's repository exists, has a commit, and its committed layer is what is on disk."""
+        if self.kind != "in-repo" and not (self.repo / ".git").exists():
+            if self.kind in ("sibling", "central") and self.placement.get("git", True):
+                git(self.repo, "init", "-q", "-b", "main")
+                say(f"initialised {self.repo} as a git repository (#:git #t)")
+            else:
+                raise al.AlError(f"{self.repo} is not a git repository; al improve proposes changes as a branch and a "
+                                 "pull request, so the layer must be one (git init, commit the layer)")
+        gitignore = self.layer / ".gitignore"
+        if f"/{al.IMPROVE_DIR}/" not in (gitignore.read_text() if gitignore.is_file() else ""):
+            raise al.AlError(f"{gitignore} does not ignore {al.IMPROVE_DIR}/ (it was generated by an older al): run "
+                             f"`al gen {self.layer}` and commit the layer, then run al improve again")
+        if git(self.repo, "rev-parse", "--verify", "--quiet", "HEAD").returncode != 0:
+            git(self.repo, "add", "-A", "--", self.sub)
+            cp = git(self.repo, "-c", "user.name=al", "-c", "user.email=al@localhost", "commit", "-q", "-m",
+                     "al: the layer as generated (baseline for al improve)")
+            if cp.returncode != 0:
+                raise al.AlError(f"could not make the baseline commit in {self.repo}: {cp.stderr.strip()}")
+            say(f"no commit yet in {self.repo}: committed the layer as it is, as the baseline")
+        branch = self.default_branch
+        if git(self.repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode != 0:
+            raise al.AlError(f"{self.repo} has no branch {branch!r} to base the change on")
+        pathspec = ["--", self.sub, f":(exclude){self.sub}/{al.IMPROVE_DIR}" if self.sub != "." else f":(exclude){al.IMPROVE_DIR}"]
+        dirty = [line for line in git_out(self.repo, "status", "--porcelain", "--untracked-files=all", *pathspec).splitlines() if line]
+        differs = git(self.repo, "diff", "--quiet", f"refs/heads/{branch}", *pathspec).returncode != 0
+        if dirty or differs:
+            raise al.AlError(f"the layer in {self.repo} has changes that are not committed on `{branch}`:\n  "
+                             + "\n  ".join(dirty[:20] or ["(the checkout differs from " + branch + ")"])
+                             + f"\nal improve bases its change on `{branch}`: commit (or stash) these first")
+
+
+def agent_clause(ir: dict, say) -> tuple[str, str]:
+    """The layer's own agent (the first declared), as a DSL clause safe to run on the host."""
+    agent = dict(ir["agents"][0])
+    kind, aid = agent["kind"], agent["id"]
+    fields: list[str] = []
+    if kind == "claude-code":
+        mode = agent["permissionMode"]
+        if mode in ("bypassPermissions", "plan"):
+            say(f"agent `{aid}`: permission mode {mode} becomes acceptEdits here (the workflow runs on the host"
+                + (", where bypassPermissions is not allowed)" if mode == "bypassPermissions" else "; plan mode cannot edit)"))
+            mode = "acceptEdits"
+        fields = [f"#:model-base {rkt(agent['modelBase'])}", f"#:model-heavy {rkt(agent['modelHeavy'])}",
+                  f"#:permission-mode {mode}", f"#:safe-mode {'#t' if agent['safeMode'] else '#f'}",
+                  "#:allowed-tools (" + " ".join(rkt(t) for t in agent["allowedTools"]) + ")",
+                  f"#:max-turns {agent['maxTurns']}", f"#:timeout {agent['timeout']}"]
+    elif kind == "codex":
+        sandbox = agent["sandbox"]
+        if sandbox == "danger-full-access":
+            say(f"agent `{aid}`: sandbox danger-full-access becomes workspace-write here (the workflow runs on the host)")
+            sandbox = "workspace-write"
+        fields = [f"#:model-base {rkt(agent['modelBase'])}", f"#:model-heavy {rkt(agent['modelHeavy'])}",
+                  f"#:sandbox {sandbox}", f"#:timeout {agent['timeout']}"]
+    elif kind == "custom":
+        fields = [f"#:command {rkt(agent['command'])}", f"#:model-base {rkt(agent['modelBase'])}",
+                  f"#:model-heavy {rkt(agent['modelHeavy'])}", f"#:timeout {agent['timeout']}"]
+    else:  # mock
+        fields = [f"#:timeout {max(int(agent.get('timeout') or 60), 60)}"]
+    return f"(agent {kind} #:id {aid} " + " ".join(fields) + ")", aid
+
+
+def forge_clause(target: Target) -> str:
+    """The forge of the repository that holds the layer: the application's for an in-repo layer."""
+    forge = target.ir["forge"]
+    if target.kind != "in-repo" or forge["kind"] == "none":
+        return "(forge none)"
+    if forge["kind"] == "forgejo":
+        return (f"(forge forgejo #:host {rkt(forge['host'])} #:repo {rkt(forge['repo'])} "
+                f"#:token-env {rkt(forge['tokenEnv'])} #:bot-marker {rkt(forge['botMarker'])})")
+    if forge["kind"] == "github":
+        return (f"(forge github #:repo {rkt(forge['repo'])} #:host {rkt(forge['host'])} "
+                f"#:token-env {rkt(forge['tokenEnv'])} #:bot-marker {rkt(forge['botMarker'])})")
+    return "(forge none)"
+
+
+def check_cmd(al: Any, what: str, target: Target) -> str:
+    argv = [str(al.ROOT / "tools" / "al"), "improve-check", what, "--sub", target.sub, "--app", str(target.app),
+            "--default-branch", target.default_branch]
+    return rkt(" ".join(shlex.quote(x) for x in argv))
+
+
+def self_definition(al: Any, target: Target, review: str, say) -> str:
+    agent, agent_id = agent_clause(target.ir, say)
+    sub, al_bin = target.sub, al.ROOT / "tools" / "al"
+    where = f"`{sub}/`" if sub != "." else "the worktree root"
+    eject = f"{al_bin} eject {sub} command NAME"
+    focus = [f"The layer to change is {where} in your worktree: its definition is `{sub}/agentic.rkt`, the language "
+             f"`{sub}/AL-DSL.llms.txt`, the codebase description `{sub}/LLM.txt`, layer-local templates under `{sub}/templates/`.",
+             f"Run al as `{al_bin}`. To make a layer-local copy of a kit template: `{eject}` (or hop/expert NAME).",
+             f"The layer wraps the application `{target.ir['name']}` at {target.app}; read it there if the request is about "
+             "how agents work on specific code, but never plan a change to it."]
+    resolve = [f"The failing command is one of al's checks of the agentic layer {where}: fix the layer's source "
+               f"(`{sub}/agentic.rkt` or files under `{sub}/templates/`), never a generated file and never the application.",
+               f"If `al gen` reports hand-edited generated files: move the change into the definition or into an ejected "
+               f"template (`{eject}`), then restore the generated files with `{al_bin} gen {sub} --discard-edits`.",
+               f"Run al as `{al_bin}`; `{al_bin} compile {sub}` shows a compile error with its location and the valid alternatives."]
+    if review == "agent":
+        review_clause = "(review agent #:command review-layer #:body-cmd report)"
+        review_command = ("(command review-layer #:template review #:model-set heavy #:output json #:focus ("
+                          + rkt(f"This is a change to an agentic layer ({where}), not to application code. The spec is the plan file; "
+                                "judge whether the change to agentic.rkt and templates/ does what the request asks, is the smallest "
+                                "such change, and loosens no check, review or protected path the request did not ask to loosen.")
+                          + " " + rkt("Generated files changed only because al gen ran; a hand edit of one is a blocker.") + "))")
+    else:
+        review_clause, review_command = "(review human #:body-cmd report)", ""
+    values = {
+        "@NAME@": rkt(f"{target.ir['name']}-improve"),
+        "@DESCRIPTION@": rkt(f"al improve: reviewed changes to the {target.ir['name']} agentic layer"),
+        "@REPO_ROOT@": rkt(os.path.relpath(target.repo, target.self_dir)),
+        "@SELF_DIR@": rkt(target.self_dir.relative_to(target.repo).as_posix()),
+        "@DEFAULT_BRANCH@": rkt(target.default_branch),
+        "@CODEBASE_DESCRIPTION@": rkt(f"The repository that holds the agentic layer of `{target.ir['name']}`"
+                                      + (f" (the application repository; the layer is its `{sub}/` directory)" if sub != "."
+                                         else " (the layer's own repository)")
+                                      + f". The layer: {target.ir['description'] or target.ir['name']}."),
+        "@README@": rkt(f"{sub}/README.md" if sub != "." else "README.md"),
+        "@SUB@": rkt(sub),
+        "@FORGE@": forge_clause(target),
+        "@AGENT@": agent,
+        "@AGENT_ID@": agent_id,
+        "@REVIEW@": review_clause,
+        "@REVIEW_ID@": review,
+        "@REVIEW_COMMAND@": review_command,
+        "@FOCUS@": " ".join(rkt(x) for x in focus),
+        "@RESOLVE_FOCUS@": " ".join(rkt(x) for x in resolve),
+    }
+    for what in ("definition", "regenerate", "scope", "check", "dry-runs", "verify", "report"):
+        key = "@CMD_" + ("CHECK" if what == "check" else what.upper().replace("-", "_")) + "@"
+        values[key] = check_cmd(al, what, target)
+    text = (al.KIT / SELF_TEMPLATE).read_text()
+    for key, value in values.items():
+        text = text.replace(key, value)
+    left = sorted(set(re.findall(r"@[A-Z_]+@", text)))
+    if left:
+        raise al.AlError(f"kit/{SELF_TEMPLATE}: unfilled placeholders {left}")
+    return text
+
+
+def improve(a: argparse.Namespace, al: Any) -> int:
+    say = lambda line: print(f"al improve: {line}", flush=True)  # noqa: E731
+    if a.review not in REVIEWS:
+        raise al.AlError(f"--review {a.review}: {NO_ZERO_TOUCH}")
+    if a.mock_scripts and not a.dry_run:
+        raise al.AlError("--mock-scripts only makes sense with --dry-run")
+    layer = a.layer.resolve()
+    target = Target(layer, al)
+    target.prepare_repo(al, say)
+    self_dir = target.self_dir
+    self_dir.mkdir(exist_ok=True)
+    (self_dir / "agentic.rkt").write_text(self_definition(al, target, a.review, say))
+    gen = al.Generator(self_dir, al.compile_layer(self_dir))
+    gen.generate(discard_edits=True)  # the workflow's own layer belongs to al improve: always regenerated
+    mock = self_dir / "mock" / "improve"
+    shutil.rmtree(mock, ignore_errors=True)
+    if a.mock_scripts:
+        shutil.copytree(a.mock_scripts, mock)
+    adw_id = a.adw_id or secrets.token_hex(4)
+    say(f"layer {layer} ({target.kind}); the change is made in a worktree of {target.repo} "
+        f"(branch from `{target.default_branch}`), never in your checkout")
+    say(f"workflow: {self_dir / 'agentic.rkt'} (run id {adw_id}); environment: a host worktree (no container: the "
+        "checks need racket, uv, the al tools and podman); review: "
+        + ("a person, in the pull request" if a.review == "human" else "an agent reviewer, then a person merges")
+        + ("; DRY RUN: the mock agent does the work" if a.dry_run else ""))
+    env = {k: v for k, v in os.environ.items() if k != "AL_APP_ROOT"}  # the workflow's own app root is its definition's
+    argv = ["uv", "run", "--quiet", str(self_dir / "adws" / "adw_improve.py"), a.request, "--adw-id", adw_id]
+    if a.dry_run:
+        argv.append("--dry-run")
+    code = subprocess.call(argv, env=env)
+    state_file = self_dir / "agents" / adw_id / "state.json"
+    shutil.rmtree(self_dir / "agents" / adw_id / "app", ignore_errors=True)  # the pristine clone the checks used
+    if not state_file.is_file():
+        say("the workflow did not start (see above)")
+        return code or 1
+    state = json.loads(state_file.read_text())
+    ship = state.get("ship") or {}
+    pr = ship.get("pr") or {}
+    if ship.get("action") == "pr":
+        say(f"done: {'pull request #' + str(pr['number']) + ' ' + str(pr.get('url', '')) if pr else ship.get('target')} "
+            f"(branch {state.get('branch')}) waits for a person")
+        if target.kind == "in-repo":
+            say("the pull request includes the regenerated files: merging it is all that is needed")
+        else:
+            say(f"after merging it into the layer's repository, run `al gen {layer}`")
+    elif ship.get("action") == "handoff":
+        say(f"stopped at {ship.get('stopped_at')}; the work is handed to a person: {ship.get('target')}")
+    else:
+        say(f"the workflow ended {state.get('status')}; its record: {state_file}")
+    return code
+
+
+# ------------------------------------------------------------------------------------------ al improve-check
+
+class CheckFailed(Exception):
+    pass
+
+
+def improve_check(a: argparse.Namespace, al: Any) -> int:
+    worktree = Path.cwd().resolve()
+    target = (worktree / a.sub).resolve()
+    out = lambda line="": print(line, flush=True)  # noqa: E731
+    try:
+        if a.what == "report":
+            out(report(al, worktree, target, a))
+            return 0
+        {"definition": check_definition, "regenerate": check_regenerate, "scope": check_scope, "check": check_layer,
+         "dry-runs": check_dry_runs, "verify": check_verify}[a.what](al, worktree, target, a, out)
+    except (CheckFailed, al.AlError) as exc:
+        out(f"FAILED: {exc}")
+        return 1
+    return 0
+
+
+@contextlib.contextmanager
+def app_root(path: Path | None):
+    """AL_APP_ROOT for this process and its children while a check runs."""
+    old = os.environ.get("AL_APP_ROOT")
+    if path is not None:
+        os.environ["AL_APP_ROOT"] = str(path)
+    else:
+        os.environ.pop("AL_APP_ROOT", None)
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("AL_APP_ROOT", None)
+        else:
+            os.environ["AL_APP_ROOT"] = old
+
+
+def in_repo(a: argparse.Namespace) -> bool:
+    return a.sub not in ("", ".")
+
+
+def pristine_app(worktree: Path, a: argparse.Namespace) -> Path:
+    """A clone of the application's default branch (as the changed definition names it), made once
+    per run inside the run's own record (<.al-improve>/agents/<run id>/app; `al improve` removes it
+    when the run ends). Dry runs, `al check` of a non-in-repo layer and `al verify` work on it, so
+    the user's checkout is never touched, whatever state it is in."""
+    self_dir = worktree.parent.parent
+    clone = self_dir / "agents" / worktree.name / "app"
+    if not (clone / ".git").is_dir():
+        shutil.rmtree(clone, ignore_errors=True)
+        clone.parent.mkdir(parents=True, exist_ok=True)
+        ir_file = (worktree / a.sub / "agentic-layer.json")
+        branch = json.loads(ir_file.read_text())["codebase"]["defaultBranch"] if ir_file.is_file() else a.default_branch
+        cp = sh(["git", "clone", "-q", "--branch", branch, str(a.app), str(clone)])
+        if cp.returncode != 0:
+            raise CheckFailed(f"cannot clone the application {a.app} at {branch}: {cp.stderr.strip()}")
+    return clone
+
+
+def app_for(worktree: Path, a: argparse.Namespace, need_clone: bool) -> Path | None:
+    """The AL_APP_ROOT a check uses: none for an in-repo layer whose own worktree is an application
+    checkout (unless a pristine clone is needed), else the pristine clone."""
+    if in_repo(a) and not need_clone:
+        return None
+    return pristine_app(worktree, a)
+
+
+def check_definition(al, worktree, target, a, out) -> None:
+    al.compile_layer(target)  # compiling needs no application
+    out(f"ok: {os.path.relpath(target / 'agentic.rkt', worktree)} compiles")
+
+
+def check_regenerate(al, worktree, target, a, out) -> None:
+    with app_root(None if in_repo(a) else Path(a.app)):
+        first = al.Generator(target, al.compile_layer(target))
+        try:
+            first.generate()
+        except al.HandEditError as exc:
+            raise CheckFailed(f"al gen refused:\n{exc}") from exc
+        out(f"ok: al gen regenerated the layer ({len(first.changed)} file(s) changed"
+            + (": " + ", ".join(first.changed[:12]) + (" …" if len(first.changed) > 12 else "") if first.changed else "") + ")")
+        second = al.Generator(target, al.compile_layer(target))
+        second.generate()
+        if second.changed:
+            raise CheckFailed("a second al gen changed files again, so generation is not deterministic: "
+                              + ", ".join(second.changed))
+    out("ok: a second al gen changed nothing")
+
+
+def changed_paths(worktree: Path, base: str) -> list[str]:
+    tracked = git_out(worktree, "diff", "--name-only", "--no-renames", base).splitlines()
+    untracked = git_out(worktree, "ls-files", "--others", "--exclude-standard").splitlines()
+    return sorted({p for p in tracked + untracked if p})
+
+
+def base_commit(worktree: Path, a: argparse.Namespace) -> str:
+    base = os.environ.get("ADW_BASE") or git_out(worktree, "merge-base", "HEAD", f"refs/heads/{a.default_branch}")
+    if not base:
+        raise CheckFailed(f"cannot find the commit the change is based on (merge base with {a.default_branch})")
+    return base
+
+
+def check_scope(al, worktree, target, a, out) -> None:
+    base = base_commit(worktree, a)
+    paths = changed_paths(worktree, base)
+    prefix = "" if not in_repo(a) else a.sub.strip("/") + "/"
+    outside = [p for p in paths if prefix and not p.startswith(prefix)]
+    if outside:
+        raise CheckFailed("a layer change may only change the layer, but these files outside "
+                          f"`{prefix}` changed: " + ", ".join(outside) + "; restore them (git checkout -- <file>)")
+    out(f"ok: {len(paths)} changed file(s), all inside the layer" + (f" `{prefix}`" if prefix else ""))
+
+
+def check_layer(al, worktree, target, a, out) -> None:
+    with app_root(app_for(worktree, a, False)):
+        problems = al.check_layer(target)
+    if problems:
+        raise CheckFailed("al check found problems:\n  " + "\n  ".join(problems))
+    out("ok: al check passes")
+
+
+def check_dry_runs(al, worktree, target, a, out) -> None:
+    clone = pristine_app(worktree, a)
+    ir = json.loads((target / "agentic-layer.json").read_text())
+    env = {**{k: v for k, v in os.environ.items() if not k.startswith("ADW_")}, "AL_APP_ROOT": str(clone)}
+    failed = []
+    logs = worktree.parent.parent / "agents" / worktree.name / "dry-runs"
+    logs.mkdir(parents=True, exist_ok=True)
+    for adw in ir["adws"]:
+        adw_id = secrets.token_hex(4)
+        klass = (adw.get("classes") or ["chore"])[0]
+        argv = ["uv", "run", "--quiet", str(target / "adws" / f"adw_{adw['name']}.py"),
+                f"al improve: dry run of {adw['name']}", "--dry-run", "--class", klass, "--adw-id", adw_id]
+        cp = sh(argv, cwd=target, env=env, timeout=3000)
+        (logs / f"{adw['name']}.log").write_text(cp.stdout + cp.stderr)
+        state = target / "agents" / adw_id / "state.json"
+        status = json.loads(state.read_text()).get("status") if state.is_file() else "did not start"
+        line = f"{adw['name']}: {status} (exit {cp.returncode})"
+        if cp.returncode != 0 or status != "passed":
+            failed.append(adw["name"])
+            tail = (cp.stdout + cp.stderr).strip().splitlines()[-15:]
+            out(f"FAIL {line}\n      " + "\n      ".join(tail))
+        else:
+            out(f"ok   {line}")
+    if failed:
+        raise CheckFailed(f"{len(failed)} of {len(ir['adws'])} workflow(s) did not complete a --dry-run: {', '.join(failed)}")
+    out(f"ok: all {len(ir['adws'])} workflow(s) complete a --dry-run against a pristine copy of the application")
+
+
+def base_ir(al, worktree: Path, base: str, sub: str) -> dict | None:
+    path = f"{sub.strip('/')}/agentic-layer.json" if sub not in ("", ".") else "agentic-layer.json"
+    text = git_out(worktree, "show", f"{base}:{path}")
+    return json.loads(text) if text else None
+
+
+def verify_targets(old: dict | None, new: dict) -> tuple[list[str], str]:
+    """(cmd names to verify, why). Every cmd when an environment changed; else the new or changed cmds."""
+    cmds = {c["name"]: c for c in new["codebase"]["commands"]}
+    if old is None:
+        return sorted(cmds), "no committed layer to compare with"
+    if old.get("environments") != new.get("environments") or old.get("services") != new.get("services"):
+        return sorted(cmds), "an environment changed"
+    before = {c["name"]: c for c in old["codebase"]["commands"]}
+    changed = sorted(name for name, c in cmds.items() if before.get(name) != c)
+    return changed, "codebase cmds changed" if changed else "no codebase cmd or environment changed"
+
+
+def check_verify(al, worktree, target, a, out) -> None:
+    base = base_commit(worktree, a)
+    names, why = verify_targets(base_ir(al, worktree, base, a.sub), json.loads((target / "agentic-layer.json").read_text()))
+    if not names:
+        out(f"ok: {why}; nothing to verify")
+        return
+    clone = pristine_app(worktree, a)
+    out(f"{why}: al verify --cmd {' --cmd '.join(names)}")
+    with app_root(clone):
+        rows, _ = al.verify_layer(target, names, None, out)
+    failed = [r["name"] for r in rows if r["exit"] != 0]
+    if failed:
+        raise CheckFailed(f"al verify failed for: {', '.join(failed)} (logs under {target / 'agents/verify'})")
+    out(f"ok: al verify passes for {', '.join(names)}")
+
+
+# ------------------------------------------------------------------------------------------ the PR description
+
+def explain_module(al: Any):
+    sys.path.insert(0, str(al.ROOT / "tools"))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("al_explain", al.ROOT / "tools" / "explain.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def explanations(al: Any, explain: Any, source: str) -> tuple[dict | None, list[tuple[str, str, list[str]]]]:
+    """(ir, [(heading, text, bullets)]) of a definition; (None, []) when it does not compile."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "agentic.rkt"
+        path.write_text(source)
+        try:
+            ir = al.compile_layer(path)
+        except al.AlError:
+            return None, []
+    blocks = explain.split_blocks(source.splitlines())
+    return ir, [explain.explain(b, ir) for b in blocks]
+
+
+def keyed(items: list[tuple[str, str, list[str]]]) -> dict[str, tuple[str, list[str]]]:
+    seen: dict[str, int] = {}
+    out = {}
+    for heading, text, bullets in items:
+        seen[heading] = seen.get(heading, 0) + 1
+        key = heading if seen[heading] == 1 else f"{heading} ({seen[heading]})"
+        out[key] = (text, bullets)
+    return out
+
+
+def plain(text: str) -> str:
+    return text.replace("`", "")
+
+
+DEFAULTED = ("prompt-input", "trigger", "environment", "review", "agent", "forge", "storage", "concurrency", "layer")
+
+
+def with_defaults(explain: Any, blocks: dict, ir: dict | None, wanted: list[str]) -> dict:
+    """A family the file does not declare still has its default option; describe that too, so a
+    newly written-out block compares with what applied before instead of with nothing."""
+    if ir is None:
+        return blocks
+    out = dict(blocks)
+    for head in DEFAULTED:
+        heading, text, bullets = explain.explain({"head": head, "first": "", "start": 0, "end": 0}, ir)
+        if heading in wanted and heading not in out:
+            out[heading] = (text + " (not written in the file: the default)", bullets)
+    return out
+
+
+def explain_section(before: dict, after: dict) -> list[str]:
+    lines: list[str] = []
+    for key in list(after) + [k for k in before if k not in after]:
+        if before.get(key) == after.get(key):
+            continue
+        lines.append(f"### {key}")
+        lines.append("")
+        for label, value in (("Before", before.get(key)), ("After", after.get(key))):
+            if value is None:
+                lines.append(f"**{label}:** (not in the layer)")
+            else:
+                text, bullets = value
+                lines.append(f"**{label}:** {text}")
+                lines += [f"- {b}" for b in bullets]
+            lines.append("")
+    return lines
+
+
+def plan_section(plan_text: str, heading: str) -> str:
+    match = re.search(rf"^##\s+{re.escape(heading)}\s*$(.*?)(?=^##\s|\Z)", plan_text, re.M | re.S | re.I)
+    return match.group(1).strip() if match else ""
+
+
+def derived_changes(old: dict | None, new: dict, templates: list[str]) -> list[str]:
+    """What changed, in plain words, from the compiled definitions (no agent involved)."""
+    if old is None:
+        return ["The whole layer is new."]
+    items = []
+    names = {"promptInputs": "Where work comes from", "triggers": "What starts a run", "environments": "Where agents work",
+             "reviews": "Who decides", "agents": "Agents", "artefacts": "Proof collected"}
+    for key, label in names.items():
+        a = {o["id"]: o["kind"] for o in old.get(key) or []}
+        b = {o["id"]: o["kind"] for o in new.get(key) or []}
+        for oid in sorted(set(b) - set(a)):
+            items.append(f"{label}: new option `{oid}` ({b[oid]}).")
+        for oid in sorted(set(a) - set(b)):
+            items.append(f"{label}: option `{oid}` ({a[oid]}) removed.")
+        for oid in sorted(set(a) & set(b)):
+            if next(o for o in old[key] if o["id"] == oid) != next(o for o in new[key] if o["id"] == oid):
+                items.append(f"{label}: option `{oid}` changed.")
+    for key, label in (("commands", "prompt"), ("hops", "higher-order prompt"), ("experts", "expert")):
+        a = {c["name"]: c for c in old.get(key) or []}
+        b = {c["name"]: c for c in new.get(key) or []}
+        items += [f"New {label} `{n}`." for n in sorted(set(b) - set(a))]
+        items += [f"The {label} `{n}` was removed." for n in sorted(set(a) - set(b))]
+        items += [f"The {label} `{n}` changed in the definition." for n in sorted(set(a) & set(b)) if a[n] != b[n]]
+    a = {x["name"]: x for x in old.get("adws") or []}
+    b = {x["name"]: x for x in new.get("adws") or []}
+    items += [f"New workflow `{n}`." for n in sorted(set(b) - set(a))]
+    items += [f"The workflow `{n}` was removed." for n in sorted(set(a) - set(b))]
+    for n in sorted(set(a) & set(b)):
+        changes = [f for f in ("input", "trigger", "environment", "review", "agent", "steps", "classes") if a[n].get(f) != b[n].get(f)]
+        if changes:
+            items.append(f"The workflow `{n}` changed: {', '.join(changes)}.")
+    items += [f"A layer-local template changed: `{t}` (every prompt that uses it renders from it)." for t in templates]
+    if old.get("codebase", {}).get("commands") != new.get("codebase", {}).get("commands"):
+        items.append("The codebase commands changed.")
+    return items or ["Nothing in the definition changed (only generated files or wording)."]
+
+
+def numstat(worktree: Path, base: str) -> dict[str, tuple[str, str]]:
+    rows = {}
+    for line in git_out(worktree, "diff", "--numstat", "--no-renames", base).splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) == 3:
+            rows[parts[2]] = (parts[0], parts[1])
+    for path in git_out(worktree, "ls-files", "--others", "--exclude-standard").splitlines():
+        if path and path not in rows:
+            lines = len((worktree / path).read_text(errors="replace").splitlines()) if (worktree / path).is_file() else 0
+            rows[path] = (str(lines), "0")
+    return rows
+
+
+def report(al: Any, worktree: Path, target: Path, a: argparse.Namespace) -> str:
+    """The pull request description: for a person who does not read Racket."""
+    explain = explain_module(al)
+    state = {}
+    if os.environ.get("ADW_STATE") and Path(os.environ["ADW_STATE"]).is_file():
+        state = json.loads(Path(os.environ["ADW_STATE"]).read_text())
+    base = base_commit(worktree, a)
+    sub = a.sub.strip("/") if in_repo(a) else ""
+    prefix = f"{sub}/" if sub else ""
+    request = str(state.get("prompt") or "(no request recorded)").strip()
+    plan_text = Path(state["plan"]).read_text(errors="replace") if state.get("plan") and Path(state["plan"]).is_file() else ""
+    old_source = git_out(worktree, "show", f"{base}:{prefix}agentic.rkt")
+    new_source = (target / "agentic.rkt").read_text()
+    old_ir, old_blocks = explanations(al, explain, old_source) if old_source else (None, [])
+    new_ir, new_blocks = explanations(al, explain, new_source)
+    stats = numstat(worktree, base)
+    manifest = set(al.load_manifest(target)) | {al.MANIFEST}
+    rel = lambda p: p[len(prefix):] if prefix and p.startswith(prefix) else p  # noqa: E731
+    generated = sorted(p for p in stats if rel(p) in manifest)
+    source = sorted(p for p in stats if p not in generated)
+    templates = [rel(p) for p in source if rel(p).startswith("templates/")]
+    name = (new_ir or old_ir or {}).get("name", "the layer")
+
+    lines = ["## A change to the agentic layer, for review", "",
+             f"This pull request changes **how agents work** on `{name}`, not the application. It was made by "
+             "`al improve`: an agent planned and made the change in a worktree, and al's checks regenerated the "
+             "layer and ran every workflow before anyone was asked to look at it.", "",
+             "**The request:**", "", *[f"> {line}" for line in request.splitlines()], ""]
+    lines += ["## What changes for you", ""]
+    stated = plan_section(plan_text, "What changes for you")
+    lines += [stated, ""] if stated else ["(The plan has no “What changes for you” section.)", ""]
+    lines += ["In the definition, precisely:", ""] + [f"- {x}" for x in derived_changes(old_ir, new_ir or {}, templates)] + [""]
+    if in_repo(a):
+        lines += [f"This pull request includes the regenerated files, so **merging it is all that is needed**: the next "
+                  f"run uses the changed layer. (`al gen {sub}` after merging changes nothing.)", ""]
+    else:
+        lines += ["After merging it into the layer's repository, run `al gen <layer>` there; it regenerates the "
+                  "machine-specific files, the rest is already in this pull request.", ""]
+    summary = plan_section(plan_text, "Summary")
+    how = plan_section(plan_text, "How")
+    if summary or how:
+        lines += ["## The plan in short", ""] + ([summary, ""] if summary else []) + ([f"**How:** {how}", ""] if how else [])
+    lines += ["## The layer explained: before → after", "",
+              "`al explain` describes every block of the definition in plain words. These are the blocks whose "
+              "description changed.", ""]
+    before, after = keyed(old_blocks), keyed(new_blocks)
+    before = with_defaults(explain, before, old_ir, list(after))
+    after = with_defaults(explain, after, new_ir, list(before))
+    section = explain_section(before, after) if new_ir else ["(The changed definition does not compile.)"]
+    lines += section or ["No block's description changed: the change is in a template or in wording that "
+                         "`al explain` does not show; see the prompt changes below.", ""]
+    prompt_diffs = []
+    for path in generated:
+        r = rel(path)
+        if not (r.startswith("commands/") or r.startswith("hops/")) or not r.endswith(".md"):
+            continue
+        before = git_out(worktree, "show", f"{base}:{path}").splitlines()
+        after = (worktree / path).read_text().splitlines() if (worktree / path).is_file() else []
+        diff = [d for d in difflib.unified_diff(before, after, f"before/{r}", f"after/{r}", n=1, lineterm="")]
+        if diff:
+            shown = diff[:GENERATED_PROMPT_DIFF_LINES]
+            more = len(diff) - len(shown)
+            prompt_diffs += [f"`{r}`:", "", "```diff", *shown, *([f"… {more} more line(s)"] if more > 0 else []), "```", ""]
+    if prompt_diffs:
+        lines += ["## What the agents will be told differently", "",
+                  "The generated prompts that changed, as a diff (what an agent reads at the start of that step):", ""] + prompt_diffs
+    lines += ["## Files", "", "**Source** (what the change is):", ""]
+    lines += [f"- `{p}` +{stats[p][0]} −{stats[p][1]}" for p in source] or ["- (none)"]
+    lines += ["", f"**Generated by `al gen`** ({len(generated)} file(s); never edited by hand):", "", "| file | + | − |", "|---|---|---|"]
+    lines += [f"| `{p}` | {stats[p][0]} | {stats[p][1]} |" for p in generated] or ["| (none) | | |"]
+    lines += ["", "## Checks", "", "| check | result | attempts |", "|---|---|---|"]
+    attempts = {}
+    for record in state.get("steps") or []:
+        attempts[record.get("name")] = record.get("attempts", 1)
+    labels = {"definition": "the definition compiles", "regenerate": "al gen regenerates, no hand edit, second run no-op",
+              "scope": "only the layer changed", "layer-check": "al check passes",
+              "dry-runs": "every workflow completes a --dry-run", "verify": "al verify for changed cmds/environments"}
+    checks = state.get("checks") or {}
+    order = [r.get("name") for r in state.get("steps") or [] if r.get("name") in checks]
+    for check_name, record in [(n, checks[n]) for n in order] + [(n, r) for n, r in checks.items() if n not in order]:
+        resolves = sum(1 for k in (state.get("outputs") or {}) if k.startswith(f"{check_name}-resolve-"))
+        lines.append(f"| {labels.get(check_name, check_name)} | {'pass' if record.get('exit') == 0 else 'FAIL'} "
+                     f"| {1 + resolves} |")
+    if not state.get("checks"):
+        lines.append("| (no checks recorded) | | |")
+    return "\n".join(lines).rstrip() + "\n"

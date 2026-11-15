@@ -11,7 +11,7 @@ argument-hint: [problem-class-description]
 
 PROBLEM_CLASS: $1
 COMMANDS_DIR: ${layer_dir}/commands
-NEW_COMMAND_FILE: ${layer_dir}/commands/<command-name>.md
+NEW_COMMAND_FILE: ${layer_dir}/templates/custom/<command-name>.md
 LAYER_SOURCE: ${layer_dir}/agentic.rkt
 DSL_REFERENCE: ${layer_dir}/AL-DSL.llms.txt
 
@@ -24,7 +24,9 @@ Flask is a Python WSGI web application framework distributed as the Flask packag
 
 ## Instructions
 
-- You write exactly one file, NEW_COMMAND_FILE, in the layer. Do not edit application code and do not edit LAYER_SOURCE: you output the line to add, a human or another step adds it. Never switch branches, push, or touch the main checkout.
+- You write exactly one file, NEW_COMMAND_FILE, in the layer's `templates/custom/`. Do not edit application code and do not edit LAYER_SOURCE: you output the line to add, a human or another step adds it. Never switch branches, push, or touch the main checkout.
+- COMMANDS_DIR holds generated prompts: read them, never write there. `al gen` overwrites every generated file and refuses to run over a hand edit.
+- Change only the layer's source: LAYER_SOURCE and files under `${layer_dir}/templates/` (to change a kit prompt, copy it there first with `${layer_dir}/bin/al eject ${layer_dir} command NAME`). These edits are not reviewed by anyone; for a reviewed change, a person runs `al improve ${layer_dir} "<request>"` instead, which makes the change in a worktree, checks and regenerates the layer, and opens a pull request.
 - You are writing a prompt for another agent, not solving one instance of the problem. Template the class: everything that varies between instances becomes an argument, everything that is always true of this codebase is written into the command.
 - One agent, one prompt, one purpose. If PROBLEM_CLASS needs two purposes (for example plan and implement), write the first and name the second in your report.
 - First list COMMANDS_DIR and read the two existing commands closest to PROBLEM_CLASS. If one already covers it, stop and report its name instead of writing a duplicate.
@@ -35,7 +37,7 @@ Flask is a Python WSGI web application framework distributed as the Flask packag
 - Instructions are imperative, specific and checkable. Carry over the standing rules: work in the worktree, non-application files go to the layer, no branch switching, no pushing, no protected paths without `REQUIRES HUMAN`, never weaken a test.
 - Close the loop: the command must say how its own result is validated.
 - Keep it between 40 and 110 lines.
-- Then write the `(command …)` line that registers it: template `custom`, `#:file` relative to the layer, a `#:description`, and `#:model-set`, `#:output` and `#:validation` as the command needs. Use only fields listed for `command` in DSL_REFERENCE and only cmd names declared in LAYER_SOURCE.
+- Then write the `(command …)` line that registers it: template `custom`, `#:file "templates/custom/<command-name>.md"`, a `#:description`, and `#:model-set`, `#:output` and `#:validation` as the command needs. Use only fields listed for `command` in DSL_REFERENCE and only cmd names declared in LAYER_SOURCE.
 
 
 ## Relevant Files
@@ -91,5 +93,6 @@ The new command is valid when it has every required section, uses only arguments
 - The path of NEW_COMMAND_FILE.
 - The exact line to add to LAYER_SOURCE, in a code block, and where to add it (after the last existing `(command …)` clause).
 - One example invocation with realistic arguments.
+- The one-sentence request a person can give to `al improve` to have this command added through review.
 
 Finish with a concise report in plain markdown. No preamble.

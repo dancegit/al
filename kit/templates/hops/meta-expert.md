@@ -24,7 +24,8 @@ COMPILE: ${layer_dir}/bin/al compile ${layer_dir} >/dev/null
 
 ## Instructions
 
-- You change two files, both in the layer: LAYER_SOURCE (one added line) and EXPERTISE_FILE (new). Do not edit application code. Never switch branches, push, or touch the main checkout.
+- You change two files, both in the layer: LAYER_SOURCE (one added line) and EXPERTISE_FILE (new). Do not edit application code or any generated file of the layer (`al gen` overwrites them and refuses to run over a hand edit). Never switch branches, push, or touch the main checkout.
+{{layer_change_rule}}
 - Your current directory is `${worktree}`. Research DOMAIN there, read-only: find the directories that implement it, their entry points, their tests and how they are exercised.
 - An expert is worth having when the domain is a coherent slice of the codebase that work returns to repeatedly. If DOMAIN is the whole codebase, or a single file, or already covered by an expert declared in LAYER_SOURCE, stop and report that instead.
 - `<expert-name>` is 1-2 lowercase hyphenated words, unique among declared experts.
@@ -65,5 +66,6 @@ COMPILE: ${layer_dir}/bin/al compile ${layer_dir} >/dev/null
 - The `(expert …)` line added, in a code block, and the compile result.
 - The path of EXPERTISE_FILE and its line count.
 - Two example questions this expert can now answer.
+- The one-sentence request a person can give to `al improve` to have this expert added through review.
 
 {{output_contract}}
