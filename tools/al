@@ -2137,6 +2137,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--open", action="store_true", help="open the page in a browser")
     p.add_argument("--podman", action="store_true", help="run it in its own locked-down podman container")
     p.add_argument("--read-only", action="store_true", help="the dashboard changes nothing, not even model settings")
+    p.add_argument("--remote", metavar="HOST", help="watch the dashboard of a layer deployed on HOST (`al deploy`) "
+                   "through an ssh tunnel, loopback on both ends; HOST is whatever `ssh HOST` accepts")
+    p.add_argument("--remote-port", type=int, metavar="N", help="with --remote: the dashboard's port on HOST "
+                   "(default: the port the given layer declares, else 8765)")
     p = sub.add_parser("models", help="show or change which model each tier of a layer uses (a local setting)")
     p.add_argument("layer", type=Path)
     group = p.add_mutually_exclusive_group()
@@ -2144,10 +2148,6 @@ def main(argv: list[str] | None = None) -> int:
                        help="use MODEL_ID for tier TIER in runs of this layer on this machine (repeatable)")
     group.add_argument("--reset", nargs="?", const="*", metavar="TIER",
                        help="drop the local setting of TIER, or of every tier without TIER")
-    p.add_argument("--remote", metavar="HOST", help="watch the dashboard of a layer deployed on HOST (`al deploy`) "
-                   "through an ssh tunnel, loopback on both ends; HOST is whatever `ssh HOST` accepts")
-    p.add_argument("--remote-port", type=int, metavar="N", help="with --remote: the dashboard's port on HOST "
-                   "(default: the port the given layer declares, else 8765)")
     p = sub.add_parser("deploy", help="put an in-repo layer on another machine over ssh and keep it running there",
                        description="Put an in-repo layer and its repository on HOST over ssh (your own ssh configuration; "
                        "al stores no host name, key or password), check that HOST can run it, and keep its poller, webhook "
