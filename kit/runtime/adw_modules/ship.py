@@ -231,37 +231,88 @@ def ship(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_
         envs.check_run_branch(state.branch, state.adw_id)
         gitsafe.update_ref(sandbox, f"refs/heads/{state.branch}", shipping, "ship", f"adw {state.adw_id}: run branch")
     action = decision["action"]
-    body = pr_body(state, str(step.get("message") or ""))
+    reasons = list(decision["reasons"])
+    message = str(step.get("message") or "")
+    body = pr_body(state, message)
     pr: dict[str, Any] | None = None
     shipped, target = False, ""
     if action == "pr":
-        if client is not None:
-            pr = _open_pr(layer, state, client, worktree, body, sandbox)
-            target = str(pr.get("url", ""))
-        else:
-            path = Path(layer.layer_dir) / "agents" / state.adw_id / "PR.md"
-            path.write_text(f"# {_title(state)}\n\n{body}", encoding="utf-8")
-            target = path.relative_to(layer.layer_dir).as_posix()
-            print(f"[adw {state.adw_id}] ship: no forge; PR description written to {target}, branch {state.branch} kept")
+        pr, target = _human_path(layer, state, client, worktree, body, sandbox)
     elif action in {"merge", "deploy"}:
-        if client is not None:
-            pr = _open_pr(layer, state, client, worktree, body, sandbox)
-            client.merge_pr(pr["number"])
-            shipped, target = True, f"{layer.default_branch} via PR #{pr['number']}"
-        elif layer.singleton("forge").get("remote"):
-            shipped, target = True, _merge_via_remote(worktree, str(layer.singleton("forge")["remote"]),
-                                                      layer.default_branch, sandbox, shipping)
+        try:
+            if client is not None:
+                pr = _open_pr(layer, state, client, worktree, body, sandbox)
+                client.merge_pr(pr["number"])
+                shipped, target = True, f"{layer.default_branch} via PR #{pr['number']}"
+            elif layer.singleton("forge").get("remote"):
+                shipped, target = True, _merge_via_remote(worktree, str(layer.singleton("forge")["remote"]),
+                                                          layer.default_branch, sandbox, shipping)
+            else:
+                shipped, target = _merge_locally(layer, state, worktree, sandbox, shipping)
+        except Exception as exc:  # noqa: BLE001 — every failure after the decision has the same safe answer
+            if isinstance(exc, StepFailed) and exc.step == gitsafe.INTEGRITY:
+                raise  # a tampered sandbox is never papered over with a PR
+            reason = _short_reason(exc)
+            print(f"[adw {state.adw_id}] ship: {action} failed ({reason}); falling back to a human PR")
+            note = (f"The gate decided `{action}`, but shipping failed: {reason}\n\n"
+                    f"Nothing was merged or deployed. The run's commits are on `{state.branch}`.")
+            pr, target = _fallback(layer, state, client, worktree, sandbox, pr_body(state, "\n\n".join(
+                part for part in (message, note) if part)), pr, note, exc)
+            state.ship["fallback"] = {"decided": action, "error": str(exc)[:2000]}
+            if action == "deploy":
+                state.ship["deploy"] = {"skipped": "not deployed: shipping fell back to a human PR"}
+            action, shipped = "pr", False
+            reasons.append(f"ship-failed:{reason}")
         else:
-            shipped, target = _merge_locally(layer, state, worktree, sandbox, shipping)
-        if action == "deploy" and shipped:
-            _deploy(layer, state, env_stack)
-        elif action == "deploy":
-            state.ship["deploy"] = {"skipped": f"not deployed: change is staged on {target}, not yet on {layer.default_branch}"}
-            print(f"[adw {state.adw_id}] ship: {state.ship['deploy']['skipped']}")
+            if action == "deploy" and shipped:
+                _deploy(layer, state, env_stack)  # a failing deploy after a successful merge is a real failure
+            elif action == "deploy":
+                state.ship["deploy"] = {"skipped": f"not deployed: change is staged on {target}, not yet on {layer.default_branch}"}
+                print(f"[adw {state.adw_id}] ship: {state.ship['deploy']['skipped']}")
     elif action != "none":
         raise LayerError(f"Unknown ship action: {action!r}")
     commit = shipping or _git(worktree, ["rev-parse", "HEAD"]).strip()
     state.ship.update({"action": action, "shipped": shipped, "target": target, "commit": commit,
-                       "pr": pr, "reasons": list(decision["reasons"])})
+                       "pr": pr, "reasons": reasons})
     state.save(layer.layer_dir)
     return state.ship
+
+
+def _short_reason(exc: BaseException) -> str:
+    text = " ".join(str(exc).split()) or type(exc).__name__
+    return text if len(text) <= 160 else text[:157] + "..."
+
+
+def _human_path(layer: Any, state: Any, client: Any, worktree: Path, body: str,
+                sandbox: gitsafe.Sandbox | None) -> tuple[dict[str, Any] | None, str]:
+    """A human decides: a PR on the forge, or PR.md in the run's directory with the branch kept."""
+    if client is not None:
+        pr = _open_pr(layer, state, client, worktree, body, sandbox)
+        return pr, str(pr.get("url", ""))
+    path = Path(layer.layer_dir) / "agents" / state.adw_id / "PR.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"# {_title(state)}\n\n{body}", encoding="utf-8")
+    target = path.relative_to(layer.layer_dir).as_posix()
+    print(f"[adw {state.adw_id}] ship: no forge; PR description written to {target}, branch {state.branch} kept")
+    return None, target
+
+
+def _fallback(layer: Any, state: Any, client: Any, worktree: Path, sandbox: gitsafe.Sandbox | None, body: str,
+              pr: dict[str, Any] | None, note: str, cause: BaseException) -> tuple[dict[str, Any] | None, str]:
+    """Shipping failed after the gate said merge/deploy: hand the run to a human instead. A PR
+    that was already opened stays open (with a note); otherwise one is opened, or PR.md written.
+    The run's commits stay on refs/heads/<branch> either way (sandboxed: published by the host
+    before the decision was acted on; otherwise the worktree's own branch). Only when even this
+    fails is the ship step a failure."""
+    try:
+        if pr is not None:
+            try:
+                client.comment(pr["number"], note)
+            except Exception as exc:  # noqa: BLE001 — the note is a courtesy; the open PR is what matters
+                print(f"[adw {state.adw_id}] ship: could not comment on PR #{pr['number']}: {exc}")
+            print(f"[adw {state.adw_id}] ship: PR #{pr['number']} left open for a human")
+            return pr, str(pr.get("url", ""))
+        return _human_path(layer, state, client, worktree, body, sandbox)
+    except Exception as exc:  # noqa: BLE001
+        raise StepFailed("ship", f"shipping failed ({_short_reason(cause)}) and the fallback to a human PR "
+                                 f"failed too: {_short_reason(exc)}") from exc
