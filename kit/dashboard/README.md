@@ -56,6 +56,7 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | **Runs** (`2`) | history with filters (layer, workflow, status, class, dates, text), sortable by time, cost and duration; count, pass rate, total and median cost and time |
 | **Run** | the workflow as a graph from the layer's IR (agent / check / review / ship / fan-out nodes; `when` branches stacked in one column; resolve loops and the review → patch → re-check loop as back-edges; fan-out candidates as lanes linked to their own runs), coloured live with duration and cost per node; a timeline of every step, check attempt, resolve agent, reviewer, patch round and gate re-run, with agent / check / slot-wait totals, and marks for what the CLI reported about subscription usage, a limit stop and a wait for a reset (`limit.*` events); cost and tokens per agent ("API-equivalent" when the calls ran on a subscription); the outcome: gate decision and reasons, ship target or PR, **why the run stopped** (a run a subscription limit stopped carries a "limit stop" mark and a "Subscription limit" block with the window, the share used and the reset time) and what the agent asks a human to do, review verdicts per round and reviewer with issues by severity |
 | **Step** | the exact prompt (sections collapsible), the transcript as one row per event: what the agent said, tool calls summarised (file read / edit with a diff / write, shell command, search pattern), results collapsed with size, errors marked, thinking as a marker, the final cost / turns / time. Filters (kind, errors only, tool), search with highlight, follow mode, raw JSON of any event, download of the raw `.jsonl`. Checks: every attempt's log with ANSI colours, its exit code and the resolve agent that followed |
+| **Documents** | what the run has written for people to read, as soon as each file exists: the plan, the `.md` / `.txt` / `.json` / `.log` outputs its steps recorded (a review's `patch-<n>` plans among them), review patch plans, `PR.md` (the handoff or PR text) and other text files in `agents/<id>/`, each reviewer's verdict (`review-*/output.txt`) and text artefacts; with the step that produced each, its size and time. **View** renders Markdown in the page (with a raw toggle), pretty-prints JSON and shows text as text; **Download** saves the exact file, **Download all** a zip of them all. A step's panel links the documents it produced (the plan on `plan-feature`). A new document appears live |
 | **Artefacts** | screenshots as thumbnails (click for full size), videos playable in the page with their keyframes, logs with their tail, all with the step that collected them |
 | **Layers** (`3`) | each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists |
 
@@ -79,7 +80,8 @@ agents/settings/models.json (the Models panel; off with `--read-only`).
 | `agents/<id>/<step>/{prompt.md,raw.jsonl,output.txt,stderr.log}` | one directory per agent call (the transcript's init event also says whether the call ran on a subscription or an API key, so older runs are labelled too). `<check>-resolve-<n>` belongs to that check, `review-<n>`, `review-<round>-<n>`, `patch-<n>`, `implement-<n>` to the review step. Without events: start = `prompt.md` mtime, end = `output.txt` mtime |
 | `agents/<id>/scripts/<name>.<n>.log` | the output of a `script` step, shown when its node is opened |
 | `agents/<id>/checks/<name>.<attempt>.log`, `gate-<name>.log` | ANSI logs, followed live while the check runs (newer runtimes write a check's output to its log as it comes). Without events: attempts end at the log's mtime and start where whatever ran before them ended, since the runtime is sequential; a log only appears when its command finished |
-| `agents/<id>/PR.md` | the "Why this stopped" and "What the agent asks" sections of a handoff |
+| `agents/<id>/PR.md` | the "Why this stopped" and "What the agent asks" sections of a handoff; also a document of the run |
+| `state.json` `plan`, `outputs`, `review.rounds[].patch.patch_plan`, `artefacts` | the run's **Documents**: recorded paths (absolute on the host or in a container, or layer-relative) mapped to the layer's `specs/`, `agents/<id>/`, `artefacts/<id>/`; with `PR.md`, other text files in `agents/<id>/` and `review-*/output.txt` |
 | `agents/.slots/<pool>.<n>.lock`, `agents/.ports.json` | which slots are held (from `/proc/locks`, read-only) and by which run; leased ports and whether their owner is alive |
 | `artefacts/<id>/manifest.json` | artefacts when `state.json` has none |
 
@@ -121,6 +123,13 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
   paths, NUL bytes and anything whose real path leaves that tree (symlinked files or directories)
   are refused. Files are sent with `Content-Security-Policy: sandbox`, `nosniff`, and unknown
   types as downloads, so an HTML artefact cannot run in the dashboard's origin.
+- **Documents** (`/api/doc`, `/api/doc/download`, `/api/doc/zip`) serve only files listed for that run:
+  in `specs/`, or in the run's own `agents/<id>/` and `artefacts/<id>/`, regular files whose real path
+  stays in the layer. Anything else (traversal, absolute paths, symlinks out, another run's file,
+  `state.json`, transcripts, a missing file) is 404. Only `.md`, `.txt`, `.json` and `.log` up to 1 MB
+  are shown inline; Markdown is built as DOM text by the page's own renderer (raw HTML stays text,
+  links only `http(s)`, `#` or `/`, with `rel="noopener noreferrer"`); downloads are attachments with a
+  `sandbox` CSP; the zip is built in memory (at most 50 MB of files).
 - **Agent output is untrusted.** The page never parses data as HTML: everything is set with
   `textContent` or SVG attributes (a test checks the script for `innerHTML` & co.), JSON responses
   escape `<`, `>` and `&`, and the page's CSP allows only its own script (no inline, no eval).
@@ -188,6 +197,11 @@ stopped (the mock agent replays the events of `kit/runtime/tests/data/usage/`), 
 "Subscription usage" panel, the limit marks on the timeline and the "API-equivalent" labels, in the
 model and in Chrome; with `AL_DASHBOARD_SHOTS=DIR` its browser test saves
 `subscription-usage-panel.png` and `subscription-usage-run.png` to DIR.
+`tests/test_documents.py` covers a run's documents: the list (plan, `PR.md`, patch plans, verdicts),
+path mapping, view, download, zip, refusals (all 404), the token and a new document arriving on the
+event stream. `tests/test_browser_documents.py` (Chrome) checks the Documents tab, the rendered and raw
+view, the download, an inert `<script>` in a plan, live appearance and the step panel's link; with
+`AL_DASHBOARD_SHOTS=DIR` it saves `run-documents.png` and `run-documents-step-link.png` to DIR.
 
 ## Demo scripts (`demo/`)
 

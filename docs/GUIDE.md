@@ -237,6 +237,12 @@ check's log can be read while the check is still running. A run whose process wa
 the Models panel (see [Choose models and limit spending](#choose-models-and-limit-spending)), which
 changes the layer's local model setting; start it with `--read-only` to turn that off too.
 
+A run's **Documents** tab lists the plan, `PR.md`, review reports and patch plans and other text the run
+wrote, as soon as each exists, with the step that produced it. **View** shows it in the page (Markdown
+rendered, or raw), **Download** saves the file, **Download all** saves them as one zip. To get the plan
+while the run is still building: open the run, then Documents, then **Download** next to the plan (or
+open the `plan-feature` step and follow its document link).
+
 To watch several codebases at once: `al dashboard ~/code` (finds every layer under that folder;
 `al dashboard ~/code --read-only` for a page that changes nothing). To run it in its own locked-down
 container, declare `(dashboard podman)` in `agentic.rkt`; to turn it off, `(dashboard none)`. It listens
