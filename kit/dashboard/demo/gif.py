@@ -28,6 +28,7 @@ THEME = [
     # status and type colours, and their dim variants on dark panels
     "3fb950", "2a6b37", "7ee2a0", "f2555a", "7a2e33", "ff9b9b", "58a6ff", "6ea8fe", "2b4a75", "bcd4ff",
     "d6a23a", "6e5525", "b18cf7", "33b8a6", "e47bc4", "8f7cf0", "f87171", "4ade80",
+    "ff8c5a", "7a4630",   # died
 ]
 
 

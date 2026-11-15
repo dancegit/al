@@ -254,3 +254,45 @@ of the failing log, and collects every `REQUIRES HUMAN` request from the plan an
 reports, including the code block each one introduces. The run still counts as failed, so triggers
 and the task list see a failure; the difference is that a person is pointed at the work and told
 what it needs. A tampered sandbox is never handed over, and nothing is merged or deployed.
+
+## Run events
+
+Besides `state.json` (the current picture, rewritten as it changes) and `run.log` (progress lines for
+people, each prefixed with its UTC time), every run appends what happened, as it happens, to
+`agents/<id>/events.jsonl`. One module owns the format (`kit/runtime/adw_modules/events.py`); the
+places that print a progress line record the matching event in the same call, so the two cannot
+drift. One JSON object per line, appended with a single `write` on an `O_APPEND` file; a failed write
+never fails a run. Readers ignore types and fields they do not know, and a directory without the file
+is an older run (the dashboard then infers timings from file times, as before).
+
+Every event has `ts` (ISO-8601 UTC, milliseconds), `seq` (1, 2, … within the file; a resumed run
+continues the count) and `type`. `owner` is the ADW step running at the time (a resolve agent belongs
+to its check, a re-check and the reviewers to the review step).
+
+| `type` | Fields |
+|---|---|
+| `run.start` | `adw`, `adw_id`, `klass`, `dry_run`, `resumed`, `pid`, `host`, `fanout_parent` (`{run, step, index}` or null) |
+| `run.end` | `status` (passed / failed), `exit` |
+| `slot.wait` | `pool` (runs / agents / checks), `limit`, `who` |
+| `slot.acquire` | `pool`, `slot`, `waited` (seconds), `who` |
+| `slot.release` | `pool`, `slot`, `held` (seconds), `who` |
+| `env.container.start` / `env.container.stop` | `name` |
+| `step.start` | `step`, `kind`, `attempt` |
+| `step.end` | `step`, `kind`, `status` (passed / failed / skipped), `detail`, `seconds` |
+| `agent.start` | `step` (the agent's directory: `build`, `test-resolve-1`, `review-2-1`, `patch-1`, …), `owner`, `agent` (option id), `agent_kind` (claude-code / codex / custom / mock), `model`, `model_set`; emitted before the call waits for an `agents` slot (a `slot.wait` / `slot.acquire` with `who` = `adw <id> step <dir>` follows) |
+| `agent.end` | as `agent.start`, plus `status` (passed / failed), `seconds`, and when the transcript says so `cost` (USD), `turns`, `duration_ms`; `error` on failure |
+| `check.start` | `step` (check step, or `gate` / `deploy`), `owner`, `phase` (check / recheck / gate / deploy), `cmd` (codebase cmd name), `attempt`, `log` (layer-relative) |
+| `check.end` | as `check.start`, plus `exit`, `seconds` |
+| `review.round` | `step`, `round`, `success`, `reviewers`, `issues` (`{blocker, tech_debt, skippable}` counts), `summary` |
+| `gate.decision` | `action` (pr / merge / deploy / none), `ship`, `reasons` |
+| `ship.result` | `action`, `shipped`, `target`, `pr_url`, `reasons` |
+| `handoff` | `status` (opened / skipped / failed), `reason`, `stopped_at`, `target`, `pr_url` |
+| `fanout.candidate` | `step`, `id`, `index`, `status` (running / passed / failed / stopped), and when finished `exit`, `seconds`, `reason` |
+
+Two more things make a run observable from outside. A check's log file grows while the check runs
+(its output goes straight to the file; when it ends the content is normalised exactly as before).
+And `state.json` holds `pid`, `host` and a `heartbeat` refreshed every few seconds by a small daemon
+thread of the run, so a run whose heartbeat is old and whose process is gone has died (killed, out
+of memory, machine rebooted) rather than still working; the dashboard shows it as **died**, and `al
+check` lists such runs. A fan-out candidate's state names its parent (`fanout_parent`), and each step
+record names the agent (`agent`, `agent_kind`, `model`) that ran it.

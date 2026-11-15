@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import subprocess
 import sys
 import traceback
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import envs, ir, state as state_module, steps
+from . import envs, events, ir, state as state_module, steps
 from . import slots
 from .agents import CLASSES
 from .errors import LayerError, StepFailed
@@ -28,20 +30,37 @@ class Request:
     hooks: Any | None  # inputs.resolve() result with on_start/on_finish, or None
 
 
+def log_stamp() -> str:
+    """The UTC time that starts every run.log line: 2026-11-15T10:04:12.345Z."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
 class _Tee:
-    """Writes progress to the terminal and to agents/<id>/run.log."""
+    """Writes progress to the terminal unchanged and to agents/<id>/run.log with each line
+    prefixed by its UTC time (`2026-11-15T10:04:12.345Z [adw 1a2b3c4d] step plan (run) start`).
+    Readers that look for the usual `[adw …]` / `[slots]` prefixes strip the stamp first."""
 
     def __init__(self, terminal: TextIO, log: TextIO) -> None:
         self.terminal, self.log = terminal, log
+        self.partial = ""
 
     def write(self, value: str) -> int:
-        self.log.write(value)
-        self.log.flush()
+        lines = (self.partial + value).split("\n")
+        self.partial = lines.pop()
+        if lines:
+            self.log.write("".join(f"{log_stamp()} {line}\n" for line in lines))
+            self.log.flush()
         return self.terminal.write(value)
 
     def flush(self) -> None:
         self.log.flush()
         self.terminal.flush()
+
+    def close(self) -> None:
+        if self.partial:
+            self.log.write(f"{log_stamp()} {self.partial}\n")
+            self.partial = ""
+        self.log.flush()
 
 
 def _parser(adw: str) -> argparse.ArgumentParser:
@@ -94,8 +113,18 @@ def _new_state(adw_name: str, adw: dict[str, Any], args: argparse.Namespace, req
     return state_module.ADWState(
         adw_id=args.adw_id or state_module.new_adw_id(), adw=adw_name, prompt=request.prompt,
         source=request.source, klass=initial, class_fixed=fixed is not None, dry_run=args.dry_run,
-        model_set=request.model_set or "",
+        model_set=request.model_set or "", fanout_parent=fanout_parent(),
     )
+
+
+def fanout_parent() -> dict[str, Any]:
+    """{run, step, index} when this run is a fan-out candidate (the parent exports ADW_FANOUT_*)."""
+    parent = os.environ.get("ADW_FANOUT_PARENT", "").strip()
+    if not parent:
+        return {}
+    index = os.environ.get("ADW_FANOUT_INDEX", "").strip()
+    return {"run": parent, "step": os.environ.get("ADW_FANOUT_STEP", ""),
+            "index": int(index) if index.isdigit() else None}
 
 
 def _resumed_state(layer: Any, adw_name: str, args: argparse.Namespace) -> state_module.ADWState:
@@ -190,7 +219,11 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
     exit_code = 1
     stack = envs.build(layer, state, list(adw.get("environment", [])))
     stack.keep_worktree = bool(args.keep_worktree)
-    print(f"[adw {state.adw_id}] {state.adw} start: class={state.klass} dry_run={state.dry_run}")
+    beat = state_module.Heartbeat(state, layer.layer_dir).start()
+    state.save(layer.layer_dir)
+    events.say(f"[adw {state.adw_id}] {state.adw} start: class={state.klass} dry_run={state.dry_run}", "run.start",
+               adw=state.adw, adw_id=state.adw_id, klass=state.klass, dry_run=state.dry_run,
+               resumed=bool(args.resume), pid=state.pid, host=state.host, fanout_parent=state.fanout_parent or None)
     try:
         if request is not None and request.hooks is not None:
             request.hooks.on_start(state)
@@ -221,8 +254,10 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
             except Exception as exc:  # the source hook is foreign code; report it without masking the run result
                 print(f"[adw {state.adw_id}] source on_finish failed: {type(exc).__name__}: {exc}")
                 state.status, exit_code = "failed", 1
+        beat.stop()
         state.ended = state_module.now()
         state.save(layer.layer_dir)
+        events.emit("run.end", status=state.status, exit=exit_code)
     return exit_code
 
 
@@ -247,9 +282,14 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None) -> int:
         print(f"adw_{adw}: error: {exc}", file=sys.stderr)
         return 1
     log_path = state_module.run_dir(layer.layer_dir, state.adw_id) / "run.log"
-    with log_path.open("a", encoding="utf-8") as log, contextlib.redirect_stdout(_Tee(sys.stdout, log)):
-        exit_code = _run(layer, state, definition, args, request)
-        lines = summary_lines(layer, state)
-        print("\n".join(lines))
+    with log_path.open("a", encoding="utf-8") as log, events.recording(layer.layer_dir, state.adw_id):
+        tee = _Tee(sys.stdout, log)
+        try:
+            with contextlib.redirect_stdout(tee):
+                exit_code = _run(layer, state, definition, args, request)
+                lines = summary_lines(layer, state)
+                print("\n".join(lines))
+        finally:
+            tee.close()
     _speak(layer, f"ADW {adw} {state.adw_id} {state.status}. Ship: {state.ship.get('action', 'none')}.")
     return exit_code

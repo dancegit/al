@@ -39,6 +39,7 @@
 
   (review human)
   (concurrency slots #:max-runs 4 #:max-agents 2)
+  (dashboard local #:port 8765 #:also ("../storefront.al") #:systemd #t)
   (review auto #:id zero-touch #:artefacts (log junit screenshots recordings)
           #:ship deploy #:deploy-cmd deploy #:require-checks (lint test e2e)
           #:allowed-classes (chore bug) #:max-diff-lines 300)

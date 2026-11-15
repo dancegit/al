@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the al work dashboard in its own rootless podman container.
 #
-#   kit/dashboard/run-in-podman.sh [--port 8765] [--podman-socket] DIR [DIR …]
+#   kit/dashboard/run-in-podman.sh [--port 8765] [--poll SECONDS] [--podman-socket] DIR [DIR …]
 #
 # Each DIR that contains agentic-layer.json is watched as a layer (--layer); any other DIR is
 # scanned for layers (--scan). Every DIR is mounted READ-ONLY at the same path inside the
@@ -17,18 +17,20 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 port=8765
+poll=""
 socket=0
 dirs=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) port="$2"; shift 2 ;;
+    --poll) poll="$2"; shift 2 ;;
     --podman-socket) socket=1; shift ;;
     -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) dirs+=("$1"); shift ;;
   esac
 done
-[ ${#dirs[@]} -gt 0 ] || { echo "usage: $0 [--port N] [--podman-socket] DIR [DIR …]" >&2; exit 2; }
+[ ${#dirs[@]} -gt 0 ] || { echo "usage: $0 [--port N] [--poll S] [--podman-socket] DIR [DIR …]" >&2; exit 2; }
 command -v podman >/dev/null || { echo "podman is required" >&2; exit 1; }
 
 image=localhost/al-dashboard:latest
@@ -44,6 +46,8 @@ for dir in "${dirs[@]}"; do
   mounts+=(-v "$real:$real:ro")
   if [ -f "$real/agentic-layer.json" ]; then watch+=(--layer "$real"); else watch+=(--scan "$real"); fi
 done
+
+[ -z "$poll" ] || watch+=(--poll "$poll")
 
 extra=()
 if [ "$socket" = 1 ]; then

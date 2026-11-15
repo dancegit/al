@@ -18,6 +18,16 @@ The still images are real Claude Opus runs (the flask layer and the healthcare s
 
 ## Run it
 
+Every generated layer has its own (the default `(dashboard local)` in `agentic.rkt`; see
+"Declared in the layer" below):
+
+```bash
+uv run adws/dashboard.py                                         # in a layer: this layer, its #:also layers
+al dashboard ~/code                                              # any layers, several codebases at once
+```
+
+Or straight from the kit:
+
 ```bash
 uv run kit/dashboard/dashboard.py --scan .                       # every layer below this directory
 uv run kit/dashboard/dashboard.py --layer ~/code/myapp.al --open # one layer, open a browser
@@ -59,10 +69,11 @@ Everything comes from files the runtime already writes; nothing in a layer is ev
 | File | Used for |
 |---|---|
 | `agentic-layer.json` | the workflows (graphs), slot limits, review options, declared commands |
-| `agents/<id>/state.json` | status, class, request, step records (status, start, end, detail), checks, review rounds, ship and gate, fan-out candidates, artefacts. Older files without newer keys are fine. A run without `state.json` is shown as `unknown` from its `run.log` |
-| `agents/<id>/run.log` | container name and removal, slot waits (`[slots] … waiting for a free runs slot`), gate re-run exit codes |
-| `agents/<id>/<step>/{prompt.md,raw.jsonl,output.txt,stderr.log}` | one directory per agent call. `<check>-resolve-<n>` belongs to that check, `review-<n>`, `review-<round>-<n>`, `patch-<n>`, `implement-<n>` to the review step. Start = `prompt.md` mtime, end = `output.txt` mtime |
-| `agents/<id>/checks/<name>.<attempt>.log`, `gate-<name>.log` | attempts (end = mtime; start = the end of whatever ran just before, since the runtime is sequential), exit codes, ANSI logs |
+| `agents/<id>/events.jsonl` | when present (runs of this runtime version and later): exact start and end of every agent call (with the agent, its kind and model), check attempt (exit code, re-check or not), gate and deploy command, slot wait and the container; the check running now. See "Run events" in `docs/DESIGN.md`. Older runs have no such file and are read as below, from file times |
+| `agents/<id>/state.json` | status, class, request, step records (status, start, end, detail, the agent and model used), checks, review rounds, ship and gate, fan-out candidates and a candidate's parent (`fanout_parent`), artefacts. Liveness: `pid`, `host` and `heartbeat` (refreshed every ~5 s). A run whose state says running but whose heartbeat is older than 20 s while its process is gone is shown as **died**, with when it was last seen (other host, or inside the container where pids are not visible: after 5 min without a heartbeat). Older files without newer keys are fine. A run without `state.json` is shown as `unknown` from its `run.log` |
+| `agents/<id>/run.log` | without events: container name and removal, slot waits (`[slots] … waiting for a free runs slot`), gate re-run exit codes. Newer runtimes start each line with its UTC time, which is stripped before matching |
+| `agents/<id>/<step>/{prompt.md,raw.jsonl,output.txt,stderr.log}` | one directory per agent call. `<check>-resolve-<n>` belongs to that check, `review-<n>`, `review-<round>-<n>`, `patch-<n>`, `implement-<n>` to the review step. Without events: start = `prompt.md` mtime, end = `output.txt` mtime |
+| `agents/<id>/checks/<name>.<attempt>.log`, `gate-<name>.log` | ANSI logs, followed live while the check runs (newer runtimes write a check's output to its log as it comes). Without events: attempts end at the log's mtime and start where whatever ran before them ended, since the runtime is sequential; a log only appears when its command finished |
 | `agents/<id>/PR.md` | the "Why this stopped" and "What the agent asks" sections of a handoff |
 | `agents/.slots/<pool>.<n>.lock`, `agents/.ports.json` | which slots are held (from `/proc/locks`, read-only) and by which run; leased ports and whether their owner is alive |
 | `artefacts/<id>/manifest.json` | artefacts when `state.json` has none |
@@ -145,7 +156,12 @@ skip without Playwright or Chrome, and nothing is downloaded. `podman`-marked te
 podman and `python:3.12-slim`. The fixture layers are code (`tests/fixtures.py`, `python
 tests/fixtures.py DIR` writes them out): a passed run, a failed run with a handoff, a resolve loop,
 two review rounds, a fan-out, a run in progress with a half-written line, hostile HTML, corrupt
-JSON, a run without `state.json`, a plain-text agent and a mock run.
+JSON, a run without `state.json`, a plain-text agent and a mock run. `tests/fixtures_events.py`
+adds runs with `events.jsonl` (all file times identical, so only the events can give the right
+timings), a running check whose log grows, a run that died and a fan-out candidate naming its parent.
+`tests/test_generated_layer_e2e.py` generates a layer for a pinned example repository, starts its
+`adws/dashboard.py`, runs two mock-agent workflows through the generated scripts with the page open
+in Chrome, and checks the page live (skipped without Chrome or the testbed).
 
 ## Demo scripts (`demo/`)
 
@@ -156,12 +172,24 @@ JSON, a run without `state.json`, a plain-text agent and a mock run.
 | `gif.py` | GIF encoder with the dashboard's own colours as palette, so status colours survive a small file |
 | `perf.py` | the dashboard's own CPU use, idle and with busy runs |
 
-## Wiring it into layers (planned)
+## Declared in the layer
 
-Phase 2 would let a layer declare its dashboard, for example
-`(dashboard #:port 8765 #:bind "127.0.0.1" #:container #f #:podman-socket #f #:also ("../other.al"))`,
-with `al gen` emitting `adws/dashboard.py` (a thin entry that runs this script with the layer
-preselected) and, for `#:container #t`, `env/dashboard.Containerfile` plus a systemd user unit.
-An append-only `agents/<id>/events.jsonl` written by the runtime (step start/end, check attempt
-start/end with exit code, slot wait start/end, container start/stop) would replace the mtime-based
-reconstruction of check start times and slot waits with exact ones.
+```racket
+(dashboard local #:port 8765 #:bind "127.0.0.1" #:also ("../other.al") #:poll-ms 750 #:systemd #f)
+(dashboard podman #:port 8765 #:podman-socket #f)   ; the container recipe above
+(dashboard none)
+```
+
+`local` is the default when a layer says nothing. `al gen` then writes `adws/dashboard/` (this
+script and its page; for `podman` also the `Containerfile` and `run-in-podman.sh`) and the launcher
+`adws/dashboard.py`, which starts it with the layer and its `#:also` layers (paths relative to the
+layer) and the declared port, bind address and poll interval; flags given to the launcher win
+(`uv run adws/dashboard.py --port 9000 --open`). A non-loopback `#:bind` needs `#:token-env "VAR"`
+(a compile-time rule); the launcher hands the token over in the environment, not on the command line.
+`#:systemd #t` adds a user unit under `systemd/` (machine-specific, so git-ignored in an in-repo
+layer; everything else is the same on every machine and committed). `al check` requires these files
+when a dashboard is declared, and notes runs that died.
+
+`al dashboard [LAYER_OR_DIR …] [--port N] [--open] [--podman]` runs this kit's dashboard over any
+layers (a directory with `agentic-layer.json`) and directories (scanned), the current directory
+when none is given: one page for several codebases.

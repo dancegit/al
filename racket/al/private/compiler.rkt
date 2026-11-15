@@ -249,6 +249,12 @@
 
 ;; --- whole layer ------------------------------------------------------------------------
 
+;; --- dashboard ----------------------------------------------------------------------------
+
+(define (loopback-address? s)
+  (or (member (string-downcase s) '("localhost" "localhost.localdomain" "::1" "[::1]"))
+      (regexp-match? #px"^127\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$" s)))
+
 (define (compile-layer-datum datum)
   (parameterize ([pending-refs (box '())] [current-clause #f])
     (unless (and (pair? datum) (eq? (car datum) 'agentic-layer))
@@ -297,6 +303,7 @@
            (when (and (memq (family-name fam) singleton-families) (pair? existing))
              (fail "(~a …): only one ~a may be declared" (family-name fam) (family-name fam)))
            (when (eq? (family-name fam) 'layer) (set! layer-clause (car c)))
+           (when (eq? (family-name fam) 'dashboard) (hash-set! clause-of 'dashboard-clause (car c)))
            (hash-set! options (family-name fam) (cons o existing))]
           [(eq? (car d) 'codebase)
            (when codebase (fail "(codebase …) given twice"))
@@ -365,6 +372,20 @@
       (when (equal? (hash-ref placement 'kind) "in-repo")
         (parameterize ([current-clause layer-clause])
           (check-in-repo (hash-ref placement 'dir) (hash-ref codebase 'root)))))
+    (let ([d (car (opts 'dashboard))])
+      (unless (equal? (hash-ref d 'kind) "none")
+        (parameterize ([current-clause (hash-ref clause-of 'dashboard-clause #f)])
+          (define who (format "(dashboard ~a)" (hash-ref d 'kind)))
+          (define port (hash-ref d 'port))
+          (unless (<= 1 port 65535) (fail "~a: #:port must be 1–65535 (got ~a)" who port))
+          (unless (>= (hash-ref d 'pollMs) 100)
+            (fail "~a: #:poll-ms must be at least 100 (got ~a)" who (hash-ref d 'pollMs)))
+          (define bind (hash-ref d 'bind))
+          (when (and (not (loopback-address? bind)) (string=? (string-trim (hash-ref d 'tokenEnv)) ""))
+            (fail "~a: #:bind ~s is not a loopback address, so anyone on that network could watch the agents' work; add #:token-env \"VARIABLE\" naming the environment variable that holds the access token (or bind to \"127.0.0.1\")"
+                  who bind))
+          (unless (regexp-match? #px"^([A-Za-z_][A-Za-z0-9_]*)?$" (hash-ref d 'tokenEnv))
+            (fail "~a: #:token-env must be an environment variable name (got ~s)" who (hash-ref d 'tokenEnv))))))
     (define forge (car (opts 'forge)))
     (define no-forge? (equal? (hash-ref forge 'kind) "none"))
     (define voice (let ([v (opts 'voice)]) (and (pair? v) (car v))))
@@ -494,6 +515,7 @@
                'storage (single 'storage)
                'voice (single 'voice)
                'concurrency (single 'concurrency)
+               'dashboard (single 'dashboard)
                'agents (opts 'agent)
                'promptInputs (opts 'prompt-input)
                'triggers (opts 'trigger)

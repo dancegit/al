@@ -234,3 +234,9 @@ def test_end_to_end_sandboxed_mock_run(make_layer, app_repo, sandbox_image, monk
     assert set(after["for-each-ref"].splitlines()) - set(before["for-each-ref"].splitlines()) == \
         {f"refs/heads/al/ship/main {state['ship']['commit']}"}             # the only ref change: the shipment
     assert _podman("container", "exists", f"al-test-layer-{adw_id}").returncode != 0
+    from adw_modules import events
+    found = events.read(layer / f"agents/{adw_id}/events.jsonl")
+    containers = [(e["type"], e["name"]) for e in found if e["type"].startswith("env.container.")]
+    assert containers == [("env.container.start", f"al-test-layer-{adw_id}"), ("env.container.stop", f"al-test-layer-{adw_id}")]
+    check = [e for e in found if e["type"] == "check.end" and e["phase"] == "check"]
+    assert len(check) == 1 and check[0]["exit"] == 0       # the check ran in the container, its log streamed

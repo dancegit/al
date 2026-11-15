@@ -107,3 +107,7 @@ def mock_scripts(tmp_path: Path, scripts: dict[str, dict]) -> Path:
     for step, data in scripts.items():
         (directory / f"{step}.json").write_text(json.dumps(data))
     return directory
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "browser: drives the host's Chrome through Playwright (skipped without one)")

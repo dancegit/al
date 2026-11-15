@@ -169,6 +169,12 @@ def test_best_picks_fewest_resolves_then_smallest_diff(make_layer, app_repo, tmp
     assert log.count("fan-out race: candidate ") == 3 and "fan-out race: pick best ->" in log
     assert all(call[-2:] == ["--", "Race them"] and "--class" in call for call in launches)
     assert "--dry-run" not in launches[0]
+    from adw_modules import events
+    found = [e for e in events.read(layer / "agents" / PARENT_ID / "events.jsonl") if e["type"] == "fanout.candidate"]
+    assert sorted((e["index"], e["status"]) for e in found) == [(i, s) for i in (1, 2, 3) for s in ("passed", "running")]
+    for index in (1, 2, 3):   # each candidate's own state names its parent
+        child = json.loads((layer / "agents" / by_index[index]["id"] / "state.json").read_text())
+        assert child["fanout_parent"] == {"run": PARENT_ID, "step": "race", "index": index}
 
 
 def test_first_picks_by_completion_and_runs_in_parallel(make_layer, app_repo, tmp_path, launches):

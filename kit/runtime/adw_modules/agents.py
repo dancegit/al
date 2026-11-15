@@ -6,11 +6,12 @@ import re
 import shutil
 import signal
 import subprocess
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from . import gitsafe, slots, storage
+from . import events, gitsafe, slots, storage
 from .errors import LayerError, StepFailed
 from .templates import render
 
@@ -367,6 +368,52 @@ def run_agent(layer: Any, state: Any, step_name: str, command_name: str, args: l
     # different vendor for an independent look; otherwise the ADW's agent runs it.
     agent = layer.option("agents", agent_id or layer.adw(state.adw)["agent"])
     kind = "mock" if state.dry_run else agent["kind"]
+    used = {"agent": str(agent["id"]), "agent_kind": kind, "model": "" if state.dry_run else _model(agent, model_set)}
+    owner = next((r for r in reversed(state.steps) if r.get("status") == "running"), None)
+    if owner is not None:
+        owner.update(used)  # the step record names the agent, its kind and the model actually used
+    span = {"step": step_name, "owner": str(owner.get("name")) if owner else "", **used, "model_set": model_set}
+    events.emit("agent.start", **span)
+    started = time.monotonic()
+    try:
+        result = _call_agent(layer, state, agent, kind, step_name, command, prompt, args, model_set, env_stack,
+                             raw_path, directory)
+    except BaseException as exc:
+        events.emit("agent.end", **span, status="failed", seconds=round(time.monotonic() - started, 3),
+                    error=str(exc)[:500], **transcript_totals(raw_path))
+        raise
+    events.emit("agent.end", **span, status="passed", seconds=round(time.monotonic() - started, 3),
+                **transcript_totals(raw_path))
+    return result
+
+
+def transcript_totals(raw_path: Path) -> dict[str, Any]:
+    """cost / turns / duration_ms from the last `result` event of a stream-json transcript (if any)."""
+    totals: dict[str, Any] = {}
+    try:
+        with raw_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - 262144))
+            lines = handle.read().splitlines()
+    except OSError:
+        return totals
+    for line in reversed(lines):
+        if b'"result"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            for key, name in (("total_cost_usd", "cost"), ("num_turns", "turns"), ("duration_ms", "duration_ms")):
+                if isinstance(event.get(key), (int, float)) and not isinstance(event.get(key), bool):
+                    totals[name] = event[key]
+            break
+    return totals
+
+
+def _call_agent(layer: Any, state: Any, agent: dict[str, Any], kind: str, step_name: str, command: dict[str, Any],
+                prompt: str, args: list[str], model_set: str, env_stack: Any, raw_path: Path, directory: Path) -> str:
     cwd = work_dir(layer, state)
     if kind == "mock":
         output = _run_mock(layer, state, agent, step_name, command, args, raw_path, env_stack)

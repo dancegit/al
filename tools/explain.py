@@ -188,6 +188,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
     if head == "service":
         return ("Services each run gets", "Every run starts its own " + listing([f"`{o['id']}` ({o['image']})" for o in ir["services"]])
                 + ", so parallel runs never share state.", [])
+    if head == "dashboard":
+        return dashboard_text(ir)
     if head == "voice":
         return "Voice", "Speech in and out, both running locally (Kokoro for speech, Whisper for recognition).", []
     if head == "layer":
@@ -235,6 +237,32 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
     return head, f"`({head} …)`", []
 
 
+def dashboard_text(ir: dict) -> tuple[str, str, list[str]]:
+    """The (dashboard …) block, or the default a layer gets without one."""
+    d = ir.get("dashboard") or {"kind": "local", "port": 8765, "bind": "127.0.0.1", "also": [], "pollMs": 750,
+                                 "systemd": False, "tokenEnv": ""}
+    if d["kind"] == "none":
+        return "Watching the work", "No dashboard is generated.", []
+    host = d["bind"] if d["kind"] == "local" else "127.0.0.1"
+    host = f"[{host}]" if ":" in host else host
+    text = f"A live dashboard on http://{host}:{d['port']} shows what the agents are doing"
+    text += (", from its own locked-down container." if d["kind"] == "podman" else ".")
+    placement = ir.get("layer") or {}
+    prefix = f"{placement['dir']}/" if placement.get("kind") == "in-repo" else ""
+    bullets = [f"Start it with `uv run {prefix}adws/dashboard.py`; it only reads the layer's run files and never changes anything"]
+    if d["also"]:
+        bullets.append("The same page also watches " + listing([f"`{x}`" for x in d["also"]]))
+    if d["kind"] == "podman":
+        bullets.append("The container sees the layers read-only, has no network route out and publishes only on 127.0.0.1"
+                       + ("; it can also read container status through your podman socket, which gives it full control of podman"
+                          if d.get("podmanSocket") else ""))
+    if d.get("tokenEnv"):
+        bullets.append(f"Every request needs the token in the environment variable `{d['tokenEnv']}`")
+    if d.get("systemd"):
+        bullets.append("A systemd user unit keeps it running")
+    return "Watching the work", text, bullets
+
+
 # ------------------------------------------------------------------------------------------ markdown
 
 def markdown(name: str, source_label: str, lines: list[str], blocks: list[dict], ir: dict, gif: str | None) -> str:
@@ -253,6 +281,10 @@ def markdown(name: str, source_label: str, lines: list[str], blocks: list[dict],
         out += [f"### {heading}", "", f"Lines {b['start']}–{b['end']}. {text}", ""]
         out += [f"- {x}" for x in bullets] + ([""] if bullets else [])
         out += ["```racket", *lines[b["start"] - 1:b["end"]], "```", ""]
+    if not any(b["head"] == "dashboard" for b in blocks):
+        heading, text, bullets = dashboard_text(ir)
+        out += [f"### {heading} (not written down: the default)", "", text, ""]
+        out += [f"- {x}" for x in bullets] + ([""] if bullets else [])
     return "\n".join(out)
 
 

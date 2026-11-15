@@ -7,7 +7,7 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-from . import envs, gitsafe, review, steps
+from . import envs, events, gitsafe, review, steps
 from .errors import LayerError, StepFailed
 
 GIT_TIMEOUT = 300
@@ -368,11 +368,8 @@ def _deploy(layer: Any, state: Any, env_stack: Any) -> None:
     if not option.get("deployCmd"):
         raise StepFailed("ship", "ship = deploy but the review option has no deployCmd")
     command = layer.cmd(str(option["deployCmd"]))
-    code, output = steps.run_command(env_stack.wrap(str(command["run"])), env_stack.cwd,
-                                     env_stack.process_env(), int(command.get("timeout", 900)))
     log = Path(layer.layer_dir) / "agents" / state.adw_id / "checks" / "deploy.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text(output, encoding="utf-8")
+    code = steps.run_logged(layer, state, env_stack, command, log, "deploy", "deploy")
     state.ship["deploy"] = {"cmd": command["run"], "exit": code, "log": log.relative_to(layer.layer_dir).as_posix()}
     if code != 0:
         raise StepFailed("ship", f"deploy command {command['name']!r} exited {code}")
@@ -457,6 +454,8 @@ def ship(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_
     state.ship.update({"action": action, "shipped": shipped, "target": target, "commit": commit,
                        "pr": pr, "reasons": reasons})
     state.save(layer.layer_dir)
+    events.emit("ship.result", action=action, shipped=shipped, target=target, reasons=reasons,
+                pr_url=str((pr or {}).get("url", "")) if isinstance(pr, dict) else "")
     return state.ship
 
 
@@ -658,7 +657,8 @@ def handoff_body(layer: Any, state: Any, step: str, kind: str, reason: str) -> s
 
 def _skip(state: Any, why: str) -> None:
     state.ship["handoff_skipped"] = why
-    print(f"[adw {state.adw_id}] handoff: none: {why}")
+    events.say(f"[adw {state.adw_id}] handoff: none: {why}", "handoff", status="skipped", reason=why,
+               stopped_at=str(state.ship.get("stopped_at", "")), target="", pr_url="")
 
 
 def handoff(layer: Any, state: Any, adw: dict[str, Any], env_stack: Any, failure: BaseException) -> dict[str, Any] | None:
@@ -735,12 +735,15 @@ def handoff(layer: Any, state: Any, adw: dict[str, Any], env_stack: Any, failure
     except Exception as exc:  # noqa: BLE001
         return _handoff_failed(state, exc, {})
     state.save(layer.layer_dir)
+    events.emit("handoff", status="opened", reason=_short_reason(reason, 500), stopped_at=step,
+                target=str(state.ship.get("target", "")), pr_url=str(state.ship.get("url", "")))
     return state.ship
 
 
 def _handoff_failed(state: Any, exc: BaseException, record: dict[str, Any]) -> dict[str, Any]:
     state.ship.update(record)
     state.ship["handoff_error"] = str(exc)[:2000] or type(exc).__name__
-    print(f"[adw {state.adw_id}] warning: handoff failed, the work stays on branch {state.branch or '(none)'}"
-          f" and in the worktree: {_short_reason(exc)}")
+    events.say(f"[adw {state.adw_id}] warning: handoff failed, the work stays on branch {state.branch or '(none)'}"
+               f" and in the worktree: {_short_reason(exc)}", "handoff", status="failed", reason=_short_reason(exc, 500),
+               stopped_at=str(state.ship.get("stopped_at", "")), target=str(state.ship.get("target", "")), pr_url="")
     return state.ship

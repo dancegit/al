@@ -787,6 +787,19 @@
     "status": "stable",
     "waitSeconds": 3600
   },
+  "dashboard": {
+    "also": [
+      "../storefront.al"
+    ],
+    "bind": "127.0.0.1",
+    "id": "local",
+    "kind": "local",
+    "pollMs": 750,
+    "port": 8765,
+    "status": "stable",
+    "systemd": true,
+    "tokenEnv": ""
+  },
   "description": "Agentic layer for the webshop monorepo",
   "environments": [
     {

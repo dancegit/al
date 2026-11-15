@@ -4,11 +4,13 @@ import json
 import os
 import signal
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from . import artefacts
+from . import events
 from . import slots
 from .agents import run_agent
 from .errors import LayerError, StepFailed
@@ -36,23 +38,59 @@ def _log_number(check_dir: Path, name: str) -> int:
     return max(numbers, default=0) + 1
 
 
-def run_command(argv: list[str], cwd: Path, env: dict[str, str], timeout: int) -> tuple[int, str]:
-    """Run argv in its own process group; returns (exit, combined output). Timeout kills the group, exit 124."""
+def _kill_group(process: subprocess.Popen) -> None:
     try:
-        process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, text=True, start_new_session=True)
-    except OSError as exc:
-        return 127, f"could not start {argv[0]!r}: {exc}\n"
-    try:
-        output, _ = process.communicate(timeout=max(1, timeout))
-        return int(process.returncode or 0), output
-    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # the group exited between the timeout and the kill; nothing left to stop
+
+
+def _as_text(data: bytes) -> str:
+    """Decode command output the way text-mode pipes did: UTF-8, universal newlines."""
+    return data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def run_command(argv: list[str], cwd: Path, env: dict[str, str], timeout: int,
+                log_path: Path | None = None) -> tuple[int, str]:
+    """Run argv in its own process group; returns (exit, combined output). Timeout kills the group, exit 124.
+
+    With `log_path` the output goes straight to that file while the command runs, so it can be
+    followed live (as fast as the command itself flushes); when the command ends the file is
+    rewritten once with the same normalised text that is returned, exactly as before."""
+    if log_path is None:
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass  # the group exited between the timeout and the kill; nothing left to stop
-        output, _ = process.communicate(timeout=30)
-        return 124, output + f"\ncommand timed out after {timeout}s\n"
+            process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        except OSError as exc:
+            return 127, f"could not start {argv[0]!r}: {exc}\n"
+        try:
+            output, _ = process.communicate(timeout=max(1, timeout))
+            return int(process.returncode or 0), output
+        except subprocess.TimeoutExpired:
+            _kill_group(process)
+            output, _ = process.communicate(timeout=30)
+            return 124, output + f"\ncommand timed out after {timeout}s\n"
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("wb", buffering=0) as log:
+        try:
+            process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT,
+                                       start_new_session=True)
+        except OSError as exc:
+            output = f"could not start {argv[0]!r}: {exc}\n"
+            log.write(output.encode("utf-8"))
+            return 127, output
+        try:
+            code = int(process.wait(timeout=max(1, timeout)) or 0)
+            note = ""
+        except subprocess.TimeoutExpired:
+            _kill_group(process)
+            process.wait(timeout=30)
+            code, note = 124, f"\ncommand timed out after {timeout}s\n"
+    output = _as_text(log_path.read_bytes()) + note
+    if log_path.read_bytes() != output.encode("utf-8"):
+        log_path.write_text(output, encoding="utf-8")
+    return code, output
 
 
 def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
@@ -66,14 +104,40 @@ def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
     check_dir.mkdir(parents=True, exist_ok=True)
     attempt = max(_log_number(check_dir, name), attempt_offset + 1)
     log_path = check_dir / f"{name}.{attempt}.log"
-    with slots.slot(layer, "checks", f"adw {state.adw_id} check {name}"):
-        exit_code, output = run_command(env_stack.wrap(cmd), env_stack.cwd, env_stack.process_env(),
-                                         int(command.get("timeout", 900)))
-    log_path.write_text(output, encoding="utf-8")
     relative_log = log_path.relative_to(layer.layer_dir).as_posix()
+    owner = running_step(state)
+    span = {"step": name, "owner": owner, "phase": "check" if owner in ("", name) else "recheck",
+            "cmd": str(step["cmd"]), "attempt": attempt, "log": relative_log}
+    with slots.slot(layer, "checks", f"adw {state.adw_id} check {name}"):
+        argv = env_stack.wrap(cmd)
+        events.emit("check.start", **span)
+        started = time.monotonic()
+        exit_code, _output = run_command(argv, env_stack.cwd, env_stack.process_env(),
+                                          int(command.get("timeout", 900)), log_path=log_path)
+        events.emit("check.end", **span, exit=exit_code, seconds=round(time.monotonic() - started, 3))
     state.checks[name] = {"cmd": cmd, "exit": exit_code, "log": relative_log}
     state.save(layer.layer_dir)
     return exit_code
+
+
+def running_step(state: Any) -> str:
+    """The ADW step running now ("" before the first): it owns every agent call and check."""
+    return next((str(r.get("name")) for r in reversed(state.steps) if r.get("status") == "running"), "")
+
+
+def run_logged(layer: Any, state: Any, env_stack: Any, command: dict[str, Any], log_path: Path,
+               step: str, phase: str) -> int:
+    """A codebase command outside a check step (the gate's re-runs, the deploy command), with its
+    log streamed to log_path and a check.start / check.end pair."""
+    span = {"step": step, "owner": running_step(state), "phase": phase, "cmd": str(command["name"]),
+            "attempt": 1, "log": Path(log_path).relative_to(layer.layer_dir).as_posix()}
+    argv = env_stack.wrap(str(command["run"]))
+    events.emit("check.start", **span)
+    started = time.monotonic()
+    code, _output = run_command(argv, env_stack.cwd, env_stack.process_env(), int(command.get("timeout", 900)),
+                                log_path=log_path)
+    events.emit("check.end", **span, exit=code, seconds=round(time.monotonic() - started, 3))
+    return code
 
 
 def run_run(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> None:
@@ -164,30 +228,34 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
         stamp = _timestamp()
         record.update(status="skipped", started=stamp, ended=stamp, detail=f"when={when}, class={state.klass}")
         state.save(layer.layer_dir)
-        print(f"[adw {state.adw_id}] step {name} ({kind}) skipped: {record['detail']}")
+        events.say(f"[adw {state.adw_id}] step {name} ({kind}) skipped: {record['detail']}", "step.end",
+                   step=name, kind=kind, status="skipped", detail=record["detail"], seconds=0.0)
         return
-    print(f"[adw {state.adw_id}] step {name} ({kind}) start")
-    record.update(status="running", attempts=int(record.get("attempts", 0)) + 1,
-                  started=_timestamp(), ended="", detail="")
+    attempts = int(record.get("attempts", 0)) + 1
+    events.say(f"[adw {state.adw_id}] step {name} ({kind}) start", "step.start", step=name, kind=kind, attempt=attempts)
+    started = time.monotonic()
+    record.update(status="running", attempts=attempts, started=_timestamp(), ended="", detail="")
     state.save(layer.layer_dir)
+
+    def ended(status: str, detail: str, line: str) -> None:
+        record.update(status=status, ended=_timestamp(), detail=detail)
+        state.save(layer.layer_dir)
+        events.say(line, "step.end", step=name, kind=kind, status=status, detail=detail[:2000],
+                   seconds=round(time.monotonic() - started, 3))
+
     try:
         _execute_step(layer, state, adw, step, env_stack)
     except (StepFailed, LayerError) as exc:
-        record.update(status="failed", ended=_timestamp(), detail=str(exc))
-        state.save(layer.layer_dir)
-        print(f"[adw {state.adw_id}] step {name} ({kind}) failed: {exc}")
+        ended("failed", str(exc), f"[adw {state.adw_id}] step {name} ({kind}) failed: {exc}")
         if isinstance(exc, StepFailed):
             raise
         raise StepFailed(name, str(exc)) from exc
     except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
         detail = f"{type(exc).__name__}: {exc}"
-        record.update(status="failed", ended=_timestamp(), detail=detail)
-        state.save(layer.layer_dir)
-        print(f"[adw {state.adw_id}] step {name} ({kind}) failed: {detail}")
+        ended("failed", detail, f"[adw {state.adw_id}] step {name} ({kind}) failed: {detail}")
         raise StepFailed(name, detail) from exc
-    record.update(status="passed", ended=_timestamp(), detail=_pass_detail(state, step))
-    state.save(layer.layer_dir)
-    print(f"[adw {state.adw_id}] step {name} ({kind}) passed: {record['detail']}")
+    detail = _pass_detail(state, step)
+    ended("passed", detail, f"[adw {state.adw_id}] step {name} ({kind}) passed: {detail}")
 
 
 def _pass_detail(state: Any, step: dict[str, Any]) -> str:

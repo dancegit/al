@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-from . import gitsafe, slots
+from . import events, gitsafe, slots
 from .errors import LayerError, StepFailed
 
 PODMAN_BUILD_TIMEOUT = 1800
@@ -527,7 +527,7 @@ class EnvStack:
         if result.returncode:
             raise StepFailed("environment setup", result.stderr.strip() or "podman container start failed")
         self._container = name
-        print(f"[adw {self.state.adw_id}] container started: {name}")
+        events.say(f"[adw {self.state.adw_id}] container started: {name}", "env.container.start", name=name)
         return name
 
     def _podman_argv(self, argv: list[str], interactive: bool = False) -> list[str]:
@@ -589,7 +589,8 @@ class EnvStack:
         if not paused:
             if not _podman_ok(["rm", "-f", name]):
                 raise StepFailed(gitsafe.INTEGRITY, f"cannot pause or remove container {name} before host git")
-            print(f"[adw {self.state.adw_id}] container {name} could not be paused; removed it instead")
+            events.say(f"[adw {self.state.adw_id}] container {name} could not be paused; removed it instead",
+                       "env.container.stop", name=name)
             self._container = None
         try:
             yield
@@ -604,7 +605,8 @@ class EnvStack:
         if self._container:
             subprocess.run(["podman", "rm", "-f", "-t", "0", self._container], capture_output=True, text=True,
                            timeout=120, check=False)
-            print(f"[adw {self.state.adw_id}] container removed: {self._container}")
+            events.say(f"[adw {self.state.adw_id}] container removed: {self._container}", "env.container.stop",
+                       name=self._container)
             self._container = None
         if self._pod:  # always, also on failure and when the worktree is kept: sidecars hold no work
             self._remove_pod(self._pod)

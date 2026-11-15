@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import IO, Any, Callable
 
-from . import envs, gitsafe, slots
+from . import envs, events, gitsafe, slots
 from . import state as state_module
 from .errors import LayerError, StepFailed
 
@@ -130,8 +130,9 @@ def _launch_all(layer: Any, state: Any, name: str, child: str, candidates: list[
                     log.close()
                     raise StepFailed(name, f"could not launch candidate {candidate['id']}: {exc}") from exc
                 running[candidate["id"]] = (candidate, process, log, time.monotonic())
-                print(f"[adw {state.adw_id}] fan-out {name}: launched {candidate['id']} "
-                      f"({candidate['index']}/{len(candidates)}), log {candidate['log']}")
+                events.say(f"[adw {state.adw_id}] fan-out {name}: launched {candidate['id']} "
+                           f"({candidate['index']}/{len(candidates)}), log {candidate['log']}", "fanout.candidate",
+                           step=name, id=candidate["id"], index=candidate["index"], status="running")
             for adw_id, (candidate, process, log, started) in list(running.items()):
                 code = process.poll()
                 if code is None:
@@ -147,6 +148,8 @@ def _launch_all(layer: Any, state: Any, name: str, child: str, candidates: list[
             _stop(process)
             log.close()
             candidate.update(exit=process.returncode, reason="stopped: the fan-out step was interrupted")
+            events.emit("fanout.candidate", step=name, id=candidate["id"], index=candidate["index"], status="stopped",
+                        exit=process.returncode, reason=candidate["reason"])
 
 
 # ---------------------------------------------------------------- judging
@@ -274,11 +277,14 @@ def _report(state: Any, name: str, candidates: list[dict[str, Any]]) -> None:
     for item in sorted(candidates, key=lambda c: c["index"]):
         prefix = f"[adw {state.adw_id}] fan-out {name}: candidate {item['id']} ({item['index']}/{total})"
         seconds = item.get("seconds", "?")
+        fields = {"step": name, "id": item["id"], "index": item["index"], "status": item["status"],
+                  "exit": item.get("exit"), "seconds": item.get("seconds"), "reason": item.get("reason", "")}
         if item["status"] == "passed":
-            print(f"{prefix} passed in {seconds}s: branch {item['branch']} head {item['head'][:12]}, "
-                  f"diff {item['diff_lines']} lines, {item['resolve_attempts']} resolve attempt(s)")
+            events.say(f"{prefix} passed in {seconds}s: branch {item['branch']} head {item['head'][:12]}, "
+                       f"diff {item['diff_lines']} lines, {item['resolve_attempts']} resolve attempt(s)",
+                       "fanout.candidate", **fields)
         else:
-            print(f"{prefix} failed in {seconds}s: {item.get('reason', '')}")
+            events.say(f"{prefix} failed in {seconds}s: {item.get('reason', '')}", "fanout.candidate", **fields)
 
 
 # ---------------------------------------------------------------- the step

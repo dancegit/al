@@ -276,7 +276,13 @@
   }
 
   // =========================================================================== components: workflow graph
-  const GLYPH = { passed: "✓", failed: "✗", running: "●", pending: "○", skipped: "–", done: "•", unknown: "?" };
+  const GLYPH = { passed: "✓", failed: "✗", running: "●", pending: "○", skipped: "–", done: "•", unknown: "?", died: "⊘" };
+
+  /** "claude-opus-5-5" → "opus-5-5": the part of a model name that tells models apart on a small node. */
+  function shortModel(agent) {
+    if (!agent) return "";
+    return String(agent.model || agent.kind || "").replace(/^claude-/, "");
+  }
   let graphSerial = 0;
 
   function renderGraph(graph, opts = {}) {
@@ -289,7 +295,7 @@
     svg.style.maxWidth = `${graph.width}px`;
     svg.appendChild(s("defs", {}, s("marker", { id: marker, viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" },
       s("path", { d: "M0,0 L8,4 L0,8 z", class: "g-arrow" }))));
-    const live = (st) => ["passed", "failed", "running", "done"].includes(st);
+    const live = (st) => ["passed", "failed", "running", "done", "died"].includes(st);
     const edgesLayer = s("g", {});
     const labelsLayer = s("g", {});
     for (const edge of graph.edges) {
@@ -336,7 +342,9 @@
       } else if (node.when && node.when !== "always") {
         meta.push(`when ${node.when.replace("class-", "")}`);
       }
-      const title = [`${node.label} (${node.type})`, node.sub, status !== "pending" ? status : "", node.detail || ""].filter(Boolean).join("\n");
+      const agentLine = node.agent ? `agent ${node.agent.id || "?"} · ${node.agent.kind}${node.agent.model ? ` · ${node.agent.model}` : ""}` : "";
+      const title = [`${node.label} (${node.type})`, node.sub, agentLine, status !== "pending" ? status : "", node.detail || ""].filter(Boolean).join("\n");
+      const subText = node.agent && !opts.static ? `${node.sub ? `${String(node.sub).split(" @")[0]} · ` : ""}${shortModel(node.agent)}` : node.sub;
       const g = s("g", { class: classes.join(" "), tabindex: opts.onNode ? 0 : null, "data-step": node.step, "data-node": node.id,
         onclick: opts.onNode ? () => opts.onNode(node) : null,
         onkeydown: opts.onNode ? (event) => { if (event.key === "Enter") opts.onNode(node); } : null },
@@ -344,12 +352,19 @@
         s("rect", { class: "box", x: node.x, y: node.y, width: node.w, height: node.h, rx: 6 }),
         s("rect", { class: `type t-${node.type}`, x: node.x, y: node.y + 6, width: 3, height: node.h - 12, rx: 1.5 }),
         s("text", { class: "label", x: node.x + 11, y: node.y + 18, text: clip(node.label, 17) }),
-        s("text", { class: "sub", x: node.x + 11, y: node.y + 31, text: clip(node.sub, 22) }),
+        s("text", { class: "sub", x: node.x + 11, y: node.y + 31, text: clip(subText, 24) }),
         s("text", { class: "meta", x: node.x + 11, y: node.y + 45, text: meta.join(" · ") }),
         opts.static ? null : s("text", { class: "icon", x: node.x + node.w - 9, y: node.y + 17, "text-anchor": "end", text: GLYPH[status] || "" }));
       svg.appendChild(g);
     }
     return svg;
+  }
+
+  /** What ran an agent call: the model when known, else the agent kind (claude-code, codex, custom, mock). */
+  function agentLabel(a) {
+    if (a.model) return a.agent_kind && a.agent_kind !== "claude-code" ? `${a.model} (${a.agent_kind})` : a.model;
+    if (a.agent_kind) return a.agent_kind;
+    return a.kind === "claude" ? "claude" : a.kind;
   }
 
   function clip(text, n) {
@@ -872,7 +887,7 @@
       const runs = store.runList();
       const uniq = (key) => [...new Set(runs.map((r) => r[key]).filter(Boolean))].sort();
       replace(filters, select("layer", "layers", store.layers.map((l) => l.key)), select("adw", "workflows", uniq("adw")),
-        select("status", "statuses", ["running", "passed", "failed", "unknown"]), select("klass", "classes", uniq("klass")),
+        select("status", "statuses", ["running", "passed", "failed", "died", "unknown"]), select("klass", "classes", uniq("klass")),
         h("label", {}, "from", from), h("label", {}, "to", to), search);
     }
 
@@ -998,7 +1013,10 @@
           h("div", { class: "line1" }, pill(sm.status), h("h1", { text: `${sm.adw}` }), h("span", { class: "mono dim", text: sm.id }),
             h("span", { class: "badge", text: sm.layer }), sm.klass ? h("span", { class: "badge", text: `class ${sm.klass}` }) : null,
             sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, outcomeBadge(sm),
-            sm.fanout_parent ? h("a", { class: "badge info", href: `#/run/${enc(layerKey)}/${enc(sm.fanout_parent)}`, text: `candidate of ${sm.fanout_parent}` }) : null,
+            sm.fanout_parent ? h("a", { class: "badge info", href: `#/run/${enc(layerKey)}/${enc(sm.fanout_parent)}`,
+              text: sm.fanout && sm.fanout.index ? `candidate ${sm.fanout.index} of ${sm.fanout_parent}${sm.fanout.step ? ` (${sm.fanout.step})` : ""}` : `candidate of ${sm.fanout_parent}` }) : null,
+            sm.status === "died" ? h("span", { class: "badge died", title: "state.json still says running, but its heartbeat stopped and its process is gone",
+              text: `process died · last seen ${fmt.ago(sm.last_seen)} (${fmt.time(sm.last_seen)})` }) : null,
             sm.waiting ? h("span", { class: "badge warn", text: `waiting for a ${sm.waiting} slot` }) : null,
             sm.current ? h("span", { class: "badge info", text: `▶ ${sm.current.step}: ${sm.current.action}` }) : null,
             h("button", { class: "toggle", type: "button", text: "copy link", title: "copy a deep link to this view", onclick: (e) => copyLink(e.target) })),
@@ -1067,7 +1085,8 @@
         bar.style.width = "80px";
         bar.appendChild(fill);
         return h("tr", { onclick: () => go(link(["step", a.step || a.dir], { agent: a.dir })) },
-          h("td", { text: a.step || "—" }), h("td", { class: "mono", text: a.dir }), h("td", { class: "dim", text: a.kind === "claude" ? (a.model || "claude") : a.kind }),
+          h("td", { text: a.step || "—" }), h("td", { class: "mono", text: a.dir }),
+          h("td", { class: "dim", title: a.agent_kind ? `agent ${a.agent_id || "?"} (${a.agent_kind})` : "", text: agentLabel(a) }),
           h("td", { class: "right num", text: a.turns ?? "—" }), h("td", { class: "right num", text: fmt.tokens(a.tokens.in) }),
           h("td", { class: "right num", text: fmt.tokens(a.tokens.out) }), h("td", { class: "right num dim", text: `${fmt.tokens(a.tokens.cache_read)} / ${fmt.tokens(a.tokens.cache_write)}` }),
           h("td", { class: "right num", text: a.start ? fmt.dur((a.end || now()) - a.start) : "—" }), h("td", { class: "right num", text: fmt.cost(a.cost) }), h("td", {}, bar));
@@ -1165,7 +1184,8 @@
         for (const at of attempts) {
           const inStep = name === checkName || (type === "review" && at.phase === step);
           if (!inStep) continue;
-          sources.push({ key: at.file, kind: "check", label: `${name} #${at.attempt}${at.phase ? " (re-check)" : ""}`, status: at.exit === 0 ? "passed" : at.exit === null || at.exit === undefined ? "done" : "failed", start: at.start || at.end, attempt: at, check: name });
+          const status = at.running ? "running" : at.exit === 0 ? "passed" : at.exit === null || at.exit === undefined ? "done" : "failed";
+          sources.push({ key: at.file, kind: "check", label: `${name} #${at.attempt}${at.phase ? " (re-check)" : ""}${at.running ? " (running)" : ""}`, status, start: at.start || at.end, attempt: at, check: name });
         }
       }
       if (type === "ship") {
@@ -1173,7 +1193,7 @@
           sources.push({ key: bar.ref, kind: "check", label: bar.label, status: bar.status, start: bar.start, attempt: { file: bar.ref, exit: bar.exit }, check: bar.check });
         }
       }
-      const live = detail.timeline.bars.find((b) => b.kind === "check" && b.step === step && b.status === "running");
+      const live = detail.timeline.bars.find((b) => b.level === 1 && b.kind === "check" && b.step === step && b.status === "running");
       if (live && !sources.some((src) => src.key === live.ref)) sources.push({ key: live.ref, kind: "check", label: `${live.label} (running)`, status: "running", start: live.start, attempt: { file: live.ref }, check: live.check, pending: true });
       sources.sort((a, b) => (a.start || 0) - (b.start || 0));
       return { node, type, sources };
@@ -1217,7 +1237,7 @@
         const tabBar = h("div", { class: "tabs" });
         const tab = (name, label) => h("button", { type: "button", class: tabName === name ? "active" : "", text: label,
           onclick: () => go(link(["step", step], { ...state.params, agent: agent.dir, tab: name === "transcript" ? "" : name }), true) });
-        const figures = h("span", { class: "dim num" }, `${agent.kind === "claude" ? agent.model || "claude" : agent.kind} · ${fmt.cost(agent.cost)} · ${agent.turns ?? "—"} turns · `,
+        const figures = h("span", { class: "dim num" }, `${agentLabel(agent)} · ${fmt.cost(agent.cost)} · ${agent.turns ?? "—"} turns · `,
           `${fmt.tokens(agent.tokens.in)} in / ${fmt.tokens(agent.tokens.out)} out · `, agent.status === "running" ? h("span", { "data-since": agent.start, text: fmt.dur(now() - agent.start) }) : fmt.dur(agent.start ? (agent.end || now()) - agent.start : null));
         tabBar.append(tab("transcript", "Transcript"), tab("prompt", "Prompt"), tab("output", "Output"), h("span", { class: "spacer" }), figures);
         tabBar.style.alignItems = "center";
@@ -1242,11 +1262,13 @@
           h("span", { class: "mono", text: cmd ? `$ ${cmd}` : source.label }),
           at.exit !== undefined && at.exit !== null ? h("span", { class: `badge ${at.exit === 0 ? "good" : "bad"}`, text: at.exit === "fail" ? "exit ≠ 0" : `exit ${at.exit}` }) : null,
           source.pending ? h("span", { class: "badge info" }, "running for ", h("span", { class: "num", "data-since": source.start, text: fmt.dur(now() - source.start) }),
-            " · the runtime writes the log when the command finishes") : null,
+            " · this run's runtime writes the log when the command finishes") : null,
+          at.running ? h("span", { class: "badge info", "data-role": "live-check" }, "running for ", h("span", { class: "num", "data-since": source.start, text: fmt.dur(now() - source.start) }),
+            " · following the log as it is written") : null,
           resolveAfter ? h("a", { href: link(["step", step], { agent: resolveAfter.dir }), class: "toggle", text: `→ resolved by ${resolveAfter.dir}` }) : null,
           h("span", { class: "spacer" }),
           !source.pending ? h("a", { class: "toggle", href: `/files/${enc(layerKey)}/agents/${enc(runId)}/checks/${enc(at.file)}?download=1`, text: "download log" }) : null));
-        if (!source.pending) sub = new LogView(content, { layer: layerKey, run: runId, what: "check", file: at.file, running: false, label: source.label });
+        if (!source.pending) sub = new LogView(content, { layer: layerKey, run: runId, what: "check", file: at.file, running: !!at.running, label: source.label });
       }
     }
 

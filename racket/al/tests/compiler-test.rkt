@@ -252,3 +252,41 @@
   (check-equal? (hash-ref (car (hash-ref ir 'reviews)) 'bodyCmd) "lint")
   (check-equal? (hash-ref (car (hash-ref (compile-layer-datum (layer plan simple-adw)) 'reviews)) 'bodyCmd) "")
   (check-rejects (layer plan '(review human #:body-cmd report) simple-adw) #rx"`report` is not a declared codebase cmd"))
+
+(test-case "dashboard: local on loopback by default"
+  (define d (hash-ref (compile-layer-datum (layer plan simple-adw)) 'dashboard))
+  (check-equal? (hash-ref d 'kind) "local")
+  (check-equal? (hash-ref d 'port) 8765)
+  (check-equal? (hash-ref d 'bind) "127.0.0.1")
+  (check-equal? (hash-ref d 'also) '())
+  (check-equal? (hash-ref d 'pollMs) 750)
+  (check-equal? (hash-ref d 'systemd) #f)
+  (check-equal? (hash-ref d 'tokenEnv) ""))
+
+(test-case "dashboard: podman, none, also-layers"
+  (define p (hash-ref (compile-layer-datum
+                       (layer plan simple-adw '(dashboard podman #:port 9001 #:also ("../other.al") #:podman-socket #t)))
+                      'dashboard))
+  (check-equal? (hash-ref p 'kind) "podman")
+  (check-equal? (hash-ref p 'port) 9001)
+  (check-equal? (hash-ref p 'also) '("../other.al"))
+  (check-equal? (hash-ref p 'podmanSocket) #t)
+  (check-equal? (hash-ref (hash-ref (compile-layer-datum (layer plan simple-adw '(dashboard none))) 'dashboard) 'kind)
+                "none")
+  (check-equal? (hash-ref (hash-ref (compile-layer-datum (layer plan simple-adw '(dashboard podman))) 'dashboard)
+                          'podmanSocket)
+                #f))
+
+(test-case "dashboard: a non-loopback bind needs a token"
+  (check-rejects (layer plan simple-adw '(dashboard local #:bind "0.0.0.0")) #rx"not a loopback address.*#:token-env")
+  (check-rejects (layer plan simple-adw '(dashboard local #:bind "192.168.1.5")) #rx"#:token-env")
+  (define d (hash-ref (compile-layer-datum
+                       (layer plan simple-adw '(dashboard local #:bind "0.0.0.0" #:token-env "AL_DASHBOARD_TOKEN")))
+                      'dashboard))
+  (check-equal? (hash-ref d 'tokenEnv) "AL_DASHBOARD_TOKEN")
+  (for ([b '("127.0.0.1" "127.0.1.1" "::1" "localhost")])
+    (check-equal? (hash-ref (hash-ref (compile-layer-datum (layer plan simple-adw `(dashboard local #:bind ,b))) 'dashboard) 'bind) b))
+  (check-rejects (layer plan simple-adw '(dashboard local #:bind "0.0.0.0" #:token-env "not a name")) #rx"environment variable name")
+  (check-rejects (layer plan simple-adw '(dashboard local #:port 70000)) #rx"#:port must be 1")
+  (check-rejects (layer plan simple-adw '(dashboard local #:poll-ms 10)) #rx"#:poll-ms must be at least 100")
+  (check-rejects (layer plan simple-adw '(dashboard local) '(dashboard none)) #rx"only one dashboard"))

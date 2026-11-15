@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from . import events
 from .errors import StepFailed
 
 POOL_FIELD = {"runs": "maxRuns", "agents": "maxAgents", "checks": "maxChecks"}
@@ -31,7 +32,8 @@ def slot(layer: Any, pool: str, who: str = "", poll: float = 0.5) -> Iterator[in
     limit = max(1, config[pool])
     directory = Path(layer.layer_dir) / "agents" / ".slots"
     directory.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + config["wait"]
+    started = time.monotonic()
+    deadline = started + config["wait"]
     announced = False
     while True:
         for index in range(limit):
@@ -41,6 +43,8 @@ def slot(layer: Any, pool: str, who: str = "", poll: float = 0.5) -> Iterator[in
             except OSError:
                 os.close(handle)
                 continue
+            acquired = time.monotonic()
+            events.emit("slot.acquire", pool=pool, slot=index, waited=round(acquired - started, 3), who=who)
             try:
                 os.ftruncate(handle, 0)
                 os.write(handle, f"{os.getpid()} {who}\n".encode())
@@ -48,11 +52,13 @@ def slot(layer: Any, pool: str, who: str = "", poll: float = 0.5) -> Iterator[in
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
                 os.close(handle)
+                events.emit("slot.release", pool=pool, slot=index, held=round(time.monotonic() - acquired, 3), who=who)
             return
         if time.monotonic() >= deadline:
             raise StepFailed(who or pool, f"no free {pool} slot ({limit}) after {config['wait']}s")
         if not announced:
-            print(f"[slots] {who or pool}: waiting for a free {pool} slot ({limit} in use)", flush=True)
+            events.say(f"[slots] {who or pool}: waiting for a free {pool} slot ({limit} in use)", "slot.wait",
+                       pool=pool, limit=limit, who=who)
             announced = True
         time.sleep(poll)
 

@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from . import agents, artefacts, gitsafe, steps
+from . import agents, artefacts, events, gitsafe, steps
 from .errors import LayerError, StepFailed
 
 GIT_TIMEOUT = 120
@@ -103,6 +103,10 @@ def run_review(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> 
         if state.worktree:
             state.review["tree"] = tree_fingerprint(state.worktree, getattr(env_stack, "sandbox", None))
         state.save(layer.layer_dir)
+        events.emit("review.round", step=step_name, round=round_number, success=verdict["success"],
+                    reviewers=len(verdicts), summary=str(verdict["summary"])[:500],
+                    issues={severity: sum(1 for issue in verdict["issues"] if issue["severity"] == severity)
+                            for severity in agents.SEVERITIES})
         blockers = [issue for issue in verdict["issues"] if issue["severity"] == "blocker"]
         if verdict["success"] or not blockers or not can_patch or round_number > max_retries:
             break
@@ -226,9 +230,7 @@ def _rerun_required(layer: Any, state: Any, option: dict[str, Any], env_stack: A
     log_dir.mkdir(parents=True, exist_ok=True)
     for name in option.get("requireChecks", []):
         command = layer.cmd(name)
-        code, output = steps.run_command(env_stack.wrap(str(command["run"])), env_stack.cwd,
-                                         env_stack.process_env(), int(command.get("timeout", 900)))
-        (log_dir / f"gate-{name}.log").write_text(output, encoding="utf-8")
+        code = steps.run_logged(layer, state, env_stack, command, log_dir / f"gate-{name}.log", "gate", "gate")
         print(f"[adw {state.adw_id}] gate: {name} exit {code}")
         exits[name] = code
     return exits
@@ -292,6 +294,8 @@ def gate(layer: Any, state: Any, env_stack: Any, base: str | None = None,
     if extra_reasons and option["kind"] == "auto":
         decision = {"action": "pr", "ship": False, "reasons": [*decision["reasons"], *extra_reasons]}
     state.ship["gate"] = {**decision, "diff_lines": facts["diff_lines"], "changed_files": facts["changed_files"]}
-    print(f"[adw {state.adw_id}] gate: action {decision['action']}"
-          + (f" (fallback: {', '.join(decision['reasons'])})" if decision["reasons"] and option["kind"] == "auto" else ""))
+    events.say(f"[adw {state.adw_id}] gate: action {decision['action']}"
+               + (f" (fallback: {', '.join(decision['reasons'])})" if decision["reasons"] and option["kind"] == "auto" else ""),
+               "gate.decision", action=decision["action"], ship=bool(decision.get("ship")),
+               reasons=list(decision["reasons"]))
     return decision

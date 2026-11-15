@@ -331,3 +331,13 @@ video { width: 100%; max-width: 860px; max-height: 460px; background: #000; bord
   .run-head { grid-template-columns: minmax(0, 1fr); }
   .ev { grid-template-columns: 40px 56px minmax(0, 1fr) 18px; gap: 6px; }
 }
+
+/* a run whose process died (heartbeat stale, pid gone): distinct from a run that failed */
+:root { --died: #ff8c5a; }
+.s-died { color: var(--died); }
+.progress i.s-died { background: var(--died); opacity: 1; }
+.g-node.st-died rect.box { stroke: var(--died); stroke-dasharray: 4 3; fill: rgba(255, 140, 90, .08); }
+.g-node.st-died text.icon { fill: var(--died); }
+.tl-bar.st-died { fill: var(--died); opacity: .8; }
+.badge.died { color: var(--died); border-color: rgba(255, 140, 90, .45); background: rgba(255, 140, 90, .08); }
+.g-node text.model { fill: var(--dim); font-size: 9.5px; }

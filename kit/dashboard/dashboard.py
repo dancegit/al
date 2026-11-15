@@ -38,7 +38,7 @@ import time
 import urllib.parse
 import webbrowser
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -61,6 +61,71 @@ TRANSCRIPT_SETTLE = 20.0   # a JSON line without its newline is held this long b
 TEXT_CAP = 400_000
 POOLS = ("runs", "agents", "checks")
 POOL_DEFAULTS = {"runs": ("maxRuns", 4), "agents": ("maxAgents", 2), "checks": ("maxChecks", 2)}
+EVENTS_FILE = "events.jsonl"
+# Liveness (state.json pid / host / heartbeat, refreshed every ~5 s by a running run):
+HEARTBEAT_STALE = 20.0      # older than this and its process is gone: the run died
+HEARTBEAT_UNSEEN = 300.0    # its process cannot be checked (other host, container): died after this long
+HEARTBEAT_REUSED = 3600.0   # a live pid with a heartbeat this old is another process that got the same pid
+_STAMP = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ")   # run.log line prefix since run events
+
+
+def liveness(state: dict[str, Any], now: float, can_see_pids: bool = True) -> dict[str, Any] | None:
+    """For a run whose state says `running` and that records a heartbeat: did its process die?
+    → {"died": bool, "last_seen": epoch}; None when there is nothing to judge (finished, or an old
+    run without a heartbeat)."""
+    if not isinstance(state, dict) or state.get("status") != "running":
+        return None
+    seen = parse_time(state.get("heartbeat"))
+    if seen is None:
+        return None
+    age = now - seen
+    if age <= HEARTBEAT_STALE:
+        return {"died": False, "last_seen": seen}
+    pid = state.get("pid") if isinstance(state.get("pid"), int) else 0
+    if can_see_pids and pid > 0 and state.get("host") == socket.gethostname():
+        alive = pid_alive(pid)
+        if alive is False:
+            return {"died": True, "last_seen": seen}
+        if alive is True:
+            return {"died": age > HEARTBEAT_REUSED, "last_seen": seen}
+    return {"died": age > HEARTBEAT_UNSEEN, "last_seen": seen}
+
+
+_EVENT_CACHE: dict[str, tuple[tuple[int, int, int] | None, list[dict[str, Any]]]] = {}
+_EVENT_LOCK = threading.Lock()
+
+
+def load_events(path: Path) -> list[dict[str, Any]]:
+    """Every complete, parseable event of a run's events.jsonl (cached by size/mtime; a torn last
+    line is left for the next poll). [] when there is none (an older run)."""
+    sig = stat_sig(path)
+    if sig is None:
+        return []
+    key = str(path)
+    with _EVENT_LOCK:
+        cached = _EVENT_CACHE.get(key)
+        if cached and cached[0] == sig:
+            return cached[1]
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(32 * 1024 * 1024)
+    except OSError:
+        return []
+    events: list[dict[str, Any]] = []
+    for line in data.split(b"\n")[:-1]:
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict) and isinstance(value.get("type"), str):
+            value["_t"] = parse_time(value.get("ts"))
+            if value["_t"] is not None:
+                events.append(value)
+    with _EVENT_LOCK:
+        if len(_EVENT_CACHE) > 512:
+            _EVENT_CACHE.clear()
+        _EVENT_CACHE[key] = (sig, events)
+    return events
 
 
 # ============================================================================ small helpers
@@ -906,6 +971,12 @@ def load_layer(path: Path, taken: set[str]) -> Layer | None:
 
 # ============================================================================ runs
 
+def step_status(data: dict[str, Any], name: str) -> str:
+    """A step record's status; the step a died run was in is shown as died, not running."""
+    status = str(data["records"].get(name, {}).get("status", "pending"))
+    return "died" if status == "running" and data["status"] == "died" else status
+
+
 def agent_group(dirname: str, step_names: list[str], kinds: dict[str, str]) -> tuple[str, str]:
     """Which ADW step an agent directory belongs to → (step name, role)."""
     if dirname in kinds:
@@ -955,7 +1026,8 @@ class RunFiles:
             return []
 
     def signature(self, deep: bool) -> tuple:
-        items: list[Any] = [stat_sig(self.dir / "state.json"), stat_sig(self.dir / "run.log"), mtime(self.dir)]
+        items: list[Any] = [stat_sig(self.dir / "state.json"), stat_sig(self.dir / "run.log"), mtime(self.dir),
+                            stat_sig(self.dir / EVENTS_FILE)]
         if deep:
             items.append(stat_sig(self.dir / "PR.md"))
             items.append(stat_sig(self.layer.path / "artefacts" / self.id / "manifest.json"))
@@ -1011,6 +1083,7 @@ def runlog_facts(path: Path) -> dict[str, Any]:
     for line in text.splitlines():
         if not line.strip():
             continue
+        line = _STAMP.sub("", line, count=1)   # newer runtimes prefix each line with its UTC time
         facts["last_line"] = line
         if (match := _CONTAINER_STARTED.search(line)):
             facts["container"], facts["container_removed"] = match.group(1), False
@@ -1041,11 +1114,97 @@ class Activity:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Exact spans from a run's events (see docs/DESIGN.md, "Run events"): agent calls, check
+    attempts (with re-checks), gate / deploy commands, slot waits, the container, the check that is
+    running now. Later events of the same agent directory or log file win (a resumed run)."""
+    agents: dict[str, dict[str, Any]] = {}
+    attempts: dict[str, list[dict[str, Any]]] = {}
+    gates: dict[str, dict[str, Any]] = {}
+    waits: list[dict[str, Any]] = []
+    open_waits: dict[tuple[str, str], dict[str, Any]] = {}
+    container: dict[str, Any] | None = None
+    current = ""
+    for event in events:
+        kind, at = event["type"], event["_t"]
+        if kind == "step.start":
+            current = str(event.get("step") or "")
+        elif kind == "step.end":
+            if event.get("step") == current:
+                current = ""
+        elif kind == "agent.start":
+            agents[str(event.get("step") or "")] = {
+                "start": at, "end": None, "status": "running", "owner": str(event.get("owner") or ""),
+                "agent": str(event.get("agent") or ""), "agent_kind": str(event.get("agent_kind") or ""),
+                "model": str(event.get("model") or "")}
+        elif kind == "agent.end":
+            span = agents.setdefault(str(event.get("step") or ""), {
+                "start": at, "owner": str(event.get("owner") or ""), "agent": str(event.get("agent") or ""),
+                "agent_kind": str(event.get("agent_kind") or ""), "model": str(event.get("model") or "")})
+            span.update(end=at, status="failed" if event.get("status") == "failed" else "passed",
+                        cost=event.get("cost") if isinstance(event.get("cost"), (int, float)) else None,
+                        turns=event.get("turns") if isinstance(event.get("turns"), int) else None,
+                        error=str(event.get("error") or ""))
+        elif kind in {"check.start", "check.end"}:
+            file = os.path.basename(str(event.get("log") or ""))
+            if not file:
+                continue
+            phase = str(event.get("phase") or "check")
+            step, owner = str(event.get("step") or ""), str(event.get("owner") or "")
+            exit_code = event.get("exit") if isinstance(event.get("exit"), int) else None
+            if phase in {"gate", "deploy"}:
+                if kind == "check.start":
+                    gates[file] = {"file": file, "phase": phase, "cmd": str(event.get("cmd") or ""),
+                                   "owner": owner, "start": at, "end": None, "exit": None}
+                elif file in gates:
+                    gates[file].update(end=at, exit=exit_code)
+                continue
+            items = attempts.setdefault(step, [])
+            if kind == "check.start":
+                items[:] = [item for item in items if item["file"] != file]
+                items.append({"file": file, "attempt": int(event.get("attempt") or len(items) + 1), "start": at,
+                              "end": None, "exit": None, "phase": owner if phase == "recheck" else "",
+                              "owner": owner or step, "running": True})
+            else:
+                item = next((i for i in items if i["file"] == file), None)
+                if item is None:
+                    item = {"file": file, "attempt": int(event.get("attempt") or len(items) + 1), "start": at,
+                            "phase": owner if phase == "recheck" else "", "owner": owner or step}
+                    items.append(item)
+                item.update(end=at, exit=exit_code, running=False)
+        elif kind == "slot.wait":
+            key = (str(event.get("pool") or ""), str(event.get("who") or ""))
+            open_waits[key] = {"pool": key[0], "who": key[1], "start": at, "end": None, "step": current}
+        elif kind == "slot.acquire":
+            key = (str(event.get("pool") or ""), str(event.get("who") or ""))
+            if key in open_waits:
+                wait = open_waits.pop(key)
+                wait["end"] = at
+                waits.append(wait)
+        elif kind == "env.container.start":
+            container = {"name": str(event.get("name") or ""), "removed": False}
+        elif kind == "env.container.stop":
+            if container and container["name"] == event.get("name"):
+                container["removed"] = True
+    waits.extend(open_waits.values())
+    for items in attempts.values():
+        items.sort(key=lambda item: (item["start"] or 0, item["attempt"]))
+    live = None
+    for step, items in attempts.items():
+        for item in items:
+            if item.get("running") and (live is None or item["start"] > live["start"]):
+                live = {"check": step, "attempt": item["attempt"], "start": item["start"], "file": item["file"]}
+    return {"agents": agents, "attempts": attempts, "gates": list(gates.values()), "waits": waits,
+            "container": container, "live_check": live}
+
+
 class RunModel:
     """Builds the summary and the detail of one run from its files."""
 
-    def __init__(self, layer: Layer, run_id: str, aggs: AggCache, now: Callable[[], float] = time.time) -> None:
+    def __init__(self, layer: Layer, run_id: str, aggs: AggCache, now: Callable[[], float] = time.time,
+                 can_see_pids: bool = True) -> None:
         self.layer, self.id, self.aggs, self.now = layer, run_id, aggs, now
+        self.can_see_pids = can_see_pids
         self.files = RunFiles(layer, run_id)
 
     def _short(self, state: dict[str, Any] | None) -> Shortener:
@@ -1058,6 +1217,8 @@ class RunModel:
     def collect(self) -> dict[str, Any]:
         state, problem = load_state(self.files)
         facts = runlog_facts(self.files.dir / "run.log")
+        events = load_events(self.files.dir / EVENTS_FILE)
+        spans = event_spans(events) if any(e["type"] == "run.start" for e in events) else None
         adw_name = (state or {}).get("adw") or (facts["start"] or {}).get("adw") or "?"
         adw = self.layer.adw(adw_name) or {"name": adw_name, "steps": []}
         ir_steps = [s for s in adw.get("steps") or [] if isinstance(s, dict)]
@@ -1069,36 +1230,115 @@ class RunModel:
             if name not in step_names:
                 step_names.append(name)
         status = str((state or {}).get("status") or "unknown")
+        now = self.now()
+        alive = liveness(state or {}, now, self.can_see_pids)
+        if alive and alive["died"]:
+            status = "died"
+        last_seen = alive["last_seen"] if alive else None
         short = self._short(state)
         running = status == "running"
-        now = self.now()
+        unfinished = "died" if status == "died" else "failed"
         activities: list[Activity] = []
         agents: list[dict[str, Any]] = []
         for directory in self.files.agent_dirs():
             agg = self.aggs.get(directory / "raw.jsonl", short)
             step, role = agent_group(directory.name, step_names, kinds)
-            start = mtime(directory / "prompt.md") or mtime(directory / "raw.jsonl")
-            out = mtime(directory / "output.txt")
-            raw_m = mtime(directory / "raw.jsonl")
             record = records.get(step, {})
-            if out is not None:
-                end, astatus = out, "passed"
-            elif running and (record.get("status") == "running" or role != "main"):
-                end, astatus = None, "running"
+            span = (spans or {}).get("agents", {}).get(directory.name)
+            if span:
+                start, end = span["start"], span["end"]
+                if end is not None:
+                    astatus = span["status"]
+                elif running:
+                    astatus = "running"
+                else:   # it never finished: the run failed or died around it
+                    end, astatus = (mtime(directory / "raw.jsonl") or start), unfinished
             else:
-                end, astatus = (raw_m or start), ("failed" if record.get("status") == "failed" or agg.is_error else "done")
+                start = mtime(directory / "prompt.md") or mtime(directory / "raw.jsonl")
+                out = mtime(directory / "output.txt")
+                raw_m = mtime(directory / "raw.jsonl")
+                if out is not None:
+                    end, astatus = out, "passed"
+                elif running and (record.get("status") == "running" or role != "main"):
+                    end, astatus = None, "running"
+                else:
+                    end, astatus = (raw_m or start), ("failed" if record.get("status") == "failed" or agg.is_error else
+                                                      (unfinished if status == "died" else "done"))
             if agg.final and agg.is_error:
                 astatus = "failed"
+            ident = span or ({"agent": record.get("agent"), "agent_kind": record.get("agent_kind"), "model": record.get("model")}
+                             if role == "main" and record.get("agent_kind") else {})
             info = {"dir": directory.name, "step": step, "role": role, "start": start, "end": end,
-                    "status": astatus, **agg.as_dict()}
+                    "status": astatus, **agg.as_dict(), "agent_id": str(ident.get("agent") or ""),
+                    "agent_kind": str(ident.get("agent_kind") or "")}
+            info["model"] = str(ident.get("model") or "") or agg.model
+            if info["cost"] is None and span and span.get("cost") is not None:
+                info["cost"] = span["cost"]
             agents.append(info)
             activities.append(Activity(directory.name, "agent", step, role, directory.name, start, end, astatus,
-                                       {"cost": agg.cost}))
-        # a running step's agent: the newest open one
-        open_agents = [a for a in agents if a["status"] == "running"]
-        for extra in open_agents[:-1]:
-            extra["status"] = "passed" if extra["final"] else "done"
-            extra["end"] = extra["end"] or mtime(self.files.dir / extra["dir"] / "raw.jsonl")
+                                       {"cost": info["cost"]}))
+        if spans is None:
+            # a running step's agent: the newest open one
+            open_agents = [a for a in agents if a["status"] == "running"]
+            for extra in open_agents[:-1]:
+                extra["status"] = "passed" if extra["final"] else "done"
+                extra["end"] = extra["end"] or mtime(self.files.dir / extra["dir"] / "raw.jsonl")
+        run_start = parse_time((state or {}).get("started")) or min(
+            (a.start for a in activities if a.start), default=None) or mtime(self.files.dir / "run.log")
+        run_end = parse_time((state or {}).get("ended")) if not running else None
+        if status == "died":
+            run_end = last_seen
+        current_record = next((r for r in reversed(list(records.values())) if r.get("status") == "running"), None)
+        if spans is not None:
+            attempts, live_check = self._event_checks(spans, activities, running, unfinished, run_end or now)
+        else:
+            attempts, live_check = self._inferred_checks(state, facts, records, kinds, step_names, activities, agents,
+                                                         running, run_start, current_record, now)
+        return {"state": state, "problem": problem, "facts": facts, "adw": adw, "steps": step_names, "kinds": kinds,
+                "records": records, "status": status, "running": running, "agents": agents,
+                "activities": activities, "attempts": attempts, "run_start": run_start, "run_end": run_end,
+                "current": current_record if running else None, "live_check": live_check, "now": now,
+                "spans": spans, "last_seen": last_seen}
+
+    def _event_checks(self, spans: dict[str, Any], activities: list[Activity], running: bool, unfinished: str,
+                      cutoff: float) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any] | None]:
+        def outcome(item: dict[str, Any]) -> str:
+            if item.get("exit") is not None:
+                return "passed" if item["exit"] == 0 else "failed"
+            return "running" if running else unfinished
+
+        attempts: dict[str, list[dict[str, Any]]] = {}
+        for name, items in spans["attempts"].items():
+            out = []
+            for item in items:
+                state_ = outcome(item)
+                end = item.get("end") if item.get("end") is not None else (None if state_ == "running" else cutoff)
+                entry = {"file": item["file"], "attempt": item["attempt"], "start": item["start"], "end": end,
+                         "exit": item.get("exit"), "phase": item.get("phase", ""), "running": state_ == "running",
+                         "size": (stat_sig(self.files.dir / "checks" / item["file"]) or (0, 0))[1]}
+                out.append(entry)
+                recheck = bool(entry["phase"])
+                activities.append(Activity(item["file"], "check", entry["phase"] or name, "recheck" if recheck else "attempt",
+                                           f"{'re-check ' if recheck else ''}{name} #{item['attempt']}", item["start"], end,
+                                           state_, {"check": name, "attempt": item["attempt"], "exit": item.get("exit"),
+                                                    "phase": entry["phase"]}))
+            attempts[name] = out
+        for gate in spans["gates"]:
+            state_ = outcome(gate)
+            end = gate["end"] if gate["end"] is not None else (None if state_ == "running" else cutoff)
+            label = f"gate {gate['cmd']}" if gate["phase"] == "gate" else f"deploy ({gate['cmd']})"
+            activities.append(Activity(gate["file"], "gate", gate["owner"], "gate", label, gate["start"], end, state_,
+                                       {"check": gate["cmd"], "exit": gate["exit"]}))
+        live = spans["live_check"] if running else None
+        return attempts, live
+
+    def _inferred_checks(self, state: dict[str, Any] | None, facts: dict[str, Any], records: dict[str, Any],
+                         kinds: dict[str, str], step_names: list[str], activities: list[Activity],
+                         agents: list[dict[str, Any]], running: bool, run_start: float | None,
+                         current_record: dict[str, Any] | None, now: float
+                         ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any] | None]:
+        """Older runs (no events.jsonl): check attempts from log file names and mtimes. A log is
+        written when its command ends, so an attempt starts where whatever ran before it ended."""
         checks_state = (state or {}).get("checks") or {}
         logs = self.files.check_logs()
         attempts: dict[str, list[dict[str, Any]]] = {}
@@ -1120,7 +1360,6 @@ class RunModel:
             for item in items:
                 activities.append(Activity(item["file"], "check", name, "attempt", f"{name} #{item['attempt']}",
                                            None, item["end"], "done", {"check": name, "attempt": item["attempt"]}))
-        # step windows from state
         windows = []
         for name in step_names:
             record = records.get(name)
@@ -1128,9 +1367,6 @@ class RunModel:
                 continue
             windows.append((name, parse_time(record.get("started")), parse_time(record.get("ended")),
                             str(record.get("status", ""))))
-        run_start = parse_time((state or {}).get("started")) or min(
-            (a.start for a in activities if a.start), default=None) or mtime(self.files.dir / "run.log")
-        run_end = parse_time((state or {}).get("ended")) if not running else None
 
         def window_of(at: float | None) -> str:
             if at is None:
@@ -1140,7 +1376,6 @@ class RunModel:
                     return name
             return ""
 
-        # reconstruct check/gate starts: the end of whatever finished just before (sequential runtime)
         activities.sort(key=lambda a: (a.end if a.end is not None else now + 1e6))
         previous_end = run_start
         for activity in activities:
@@ -1182,7 +1417,6 @@ class RunModel:
                     found.status = "passed" if exit_code == 0 else ("failed" if exit_code is not None else "done")
                     found.extra["exit"] = exit_code
         # a running check with no new log yet
-        current_record = next((r for r in reversed(list(records.values())) if r.get("status") == "running"), None)
         live_check = None
         if running and current_record and current_record.get("kind") == "check":
             name = str(current_record.get("name"))
@@ -1196,14 +1430,7 @@ class RunModel:
                 activities.append(Activity(f"{name}.{live_check['attempt']}.log", "check", name, "attempt",
                                            f"{name} #{live_check['attempt']}", started, None, "running",
                                            {"check": name, "attempt": live_check["attempt"]}))
-        if running and current_record and current_record.get("kind") == "review":
-            open_review = [a for a in activities if a.kind == "check" and a.end is None]
-            if not open_review and not any(a["status"] == "running" for a in agents):
-                pass
-        return {"state": state, "problem": problem, "facts": facts, "adw": adw, "steps": step_names, "kinds": kinds,
-                "records": records, "status": status, "running": running, "agents": agents,
-                "activities": activities, "attempts": attempts, "run_start": run_start, "run_end": run_end,
-                "current": current_record, "live_check": live_check, "now": now}
+        return attempts, live_check
 
     # ------------------------------------------------------------------ summary
     def summary(self, extras: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1248,7 +1475,10 @@ class RunModel:
                        "since": parse_time(record.get("started"))}
         elif data["running"]:
             current = {"step": "", "kind": "", "action": "setting up", "since": start}
+        spans = data["spans"]
         waiting = facts["waiting"] if data["running"] else ""
+        if spans is not None:
+            waiting = next((w["pool"] for w in spans["waits"] if w["end"] is None), "") if data["running"] else ""
         ship = state.get("ship") or {}
         review = state.get("review") or {}
         verdict = review.get("verdict") or {}
@@ -1256,10 +1486,14 @@ class RunModel:
         fanout_children = [c.get("id") for record in (state.get("fanout") or {}).values() if isinstance(record, dict)
                            for c in record.get("candidates") or [] if isinstance(c, dict)]
         container = None
-        if facts["container"]:
+        if spans is not None and spans["container"]:
+            container = {"name": spans["container"]["name"], "state": "removed" if spans["container"]["removed"] else
+                         ("running" if data["running"] else "unknown"), "source": "events"}
+        elif facts["container"]:
             container = {"name": facts["container"], "state": "removed" if facts["container_removed"] else
                          ("running" if data["running"] else "unknown"), "source": "run.log"}
         prompt = str(state.get("prompt") or "")
+        parent = state.get("fanout_parent") if isinstance(state.get("fanout_parent"), dict) else {}
         return {
             "key": f"{self.layer.key}/{self.id}", "layer": self.layer.key, "id": self.id, "adw": data["adw"].get("name"),
             "status": status, "problem": data["problem"],
@@ -1271,7 +1505,7 @@ class RunModel:
             "cost_partial": any(a["status"] == "running" and a["kind"] == "claude" for a in agents),
             "tokens": tokens, "turns": turns,
             "steps": [{"name": name, "kind": data["kinds"].get(name, ""),
-                       "status": str(data["records"].get(name, {}).get("status", "pending"))} for name in data["steps"]],
+                       "status": step_status(data, name)} for name in data["steps"]],
             "current": current, "waiting": waiting, "container": container, "ports": state.get("ports") or [],
             "outcome": {"ship": ship.get("action", ""), "shipped": ship.get("shipped"), "target": ship.get("target", ""),
                         "url": str(ship.get("url") or (ship.get("pr").get("url", "") if isinstance(ship.get("pr"), dict) else "")),
@@ -1280,8 +1514,13 @@ class RunModel:
             "error": clip(str(failed.get("detail", "")), 300) if failed else "",
             "failed_step": failed.get("name") if failed else "",
             "fanout_children": [c for c in fanout_children if c],
+            **({"fanout_parent": str(parent["run"]),
+                "fanout": {"run": str(parent["run"]), "step": str(parent.get("step") or ""), "index": parent.get("index")}}
+               if parent.get("run") else {}),
             "artefacts": len(state.get("artefacts") or []),
             "agents": len(agents),
+            "timing": "events" if spans is not None else "files",
+            "last_seen": data["last_seen"],
             "mtime": max([mtime(self.files.dir / "state.json") or 0, mtime(self.files.dir / "run.log") or 0]),
             **extras,
         }
@@ -1307,9 +1546,18 @@ class RunModel:
             step = node["step"]
             record = records.get(step, {})
             group = [a for a in agents if a["step"] == step]
-            node["status"] = str(record.get("status", "pending"))
+            node["status"] = step_status(data, step)
             started, ended = parse_time(record.get("started")), parse_time(record.get("ended"))
+            if node["status"] == "died":
+                ended = data["run_end"]
             node["duration"] = ((ended or now) - started) if started and (ended or node["status"] == "running") else None
+            used = next((a for a in group if a["agent_kind"] and a["role"] == "main"), None) or \
+                next((a for a in group if a["agent_kind"]), None)
+            if used:
+                node["agent"] = {"id": used["agent_id"], "kind": used["agent_kind"], "model": used["model"]}
+            elif record.get("agent_kind"):
+                node["agent"] = {"id": str(record.get("agent") or ""), "kind": str(record["agent_kind"]),
+                                 "model": str(record.get("model") or "")}
             costs = [a["cost"] for a in group if a["cost"] is not None]
             node["cost"] = round(sum(costs), 4) if costs else None
             node["attempts"] = len(data["attempts"].get(step, [])) if node["type"] == "check" else None
@@ -1343,9 +1591,11 @@ class RunModel:
             started, ended = parse_time(record.get("started")), parse_time(record.get("ended"))
             if started is None:
                 continue
+            died = step_status(data, name) == "died"
             bars.append({"id": f"step:{name}", "step": name, "level": 0, "kind": data["kinds"].get(name, ""),
-                         "label": name, "start": started, "end": ended if record.get("status") != "running" else None,
-                         "status": str(record.get("status", "")),
+                         "label": name, "start": started,
+                         "end": data["run_end"] if died else (ended if record.get("status") != "running" else None),
+                         "status": step_status(data, name),
                          "cost": next((n["cost"] for n in graph["nodes"] if n["id"] == name), None)})
         for activity in data["activities"]:
             if activity.start is None and activity.end is None:
@@ -1357,7 +1607,18 @@ class RunModel:
                          "ref": activity.key, "check": activity.extra.get("check"), "exit": activity.extra.get("exit")})
         # waiting for a `runs` slot: from the run's start until its first step started (run.log says it waited)
         wait_time = 0.0
-        if "runs" in (data["facts"].get("waited") or []) and data["run_start"]:
+        if data["spans"] is not None:
+            # exact: every slot.wait → slot.acquire; a run's own slot at the top, agent/check slots under their step
+            for index, wait in enumerate(data["spans"]["waits"]):
+                runs_pool = wait["pool"] == "runs"
+                end = wait["end"] if wait["end"] is not None else (None if data["running"] else data["run_end"])
+                first_runs = runs_pool and not any(b["id"] == "wait:runs" for b in bars)
+                bars.append({"id": "wait:runs" if first_runs else f"wait:{wait['pool']}:{index}",
+                             "step": "" if runs_pool else wait["step"], "level": 0 if runs_pool else 1, "kind": "wait",
+                             "label": f"waiting for a {wait['pool']} slot", "start": wait["start"], "end": end,
+                             "status": "waiting" if end is None else "done"})
+                wait_time += (end or now) - wait["start"]
+        elif "runs" in (data["facts"].get("waited") or []) and data["run_start"]:
             first = min((b["start"] for b in bars if b["level"] == 0 and b["start"]), default=None)
             wait_end = first if first else (None if data["running"] else data["run_end"])
             bars.append({"id": "wait:runs", "step": "", "level": 0, "kind": "wait", "label": "waiting for a runs slot",
@@ -1725,6 +1986,7 @@ class Model:
         self.ticks = 0
         self.parents: dict[str, str] = {}
         self._parents_size, self._parents_dirty = -1, True
+        self.liveness_checked: dict[str, float] = {}
 
     # ---------------------------------------------------------------- discovery
     def discover(self) -> bool:
@@ -1826,9 +2088,15 @@ class Model:
                     continue
                 if summary is not None and self.signatures.get(key) == sig:
                     any_running = any_running or summary["status"] == "running"
-                    continue  # nothing on disk changed; elapsed time is computed by the page
+                    seen_at = summary.get("last_seen")
+                    stale = (summary["status"] == "running" and seen_at and now - seen_at > HEARTBEAT_STALE
+                             and now - self.liveness_checked.get(key, 0) >= 2)
+                    if not stale:
+                        continue  # nothing on disk changed; elapsed time is computed by the page
+                    self.liveness_checked[key] = now   # silent for a while: has its process died?
                 try:
-                    fresh = RunModel(layer, run_id, self.aggs).summary(self._extras(layer, run_id))
+                    fresh = RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary(
+                        self._extras(layer, run_id))
                 except Exception as exc:  # one broken run must never stop the watcher
                     fresh = {"key": key, "layer": layer.key, "id": run_id, "status": "unknown", "adw": "?",
                              "problem": f"{type(exc).__name__}: {exc}"[:300], "steps": [], "title": "", "prompt": "",
@@ -1919,7 +2187,7 @@ class Model:
         cached = self.detail_cache.get(key)
         if cached and cached[0] == sig and cached[1]["summary"]["status"] != "running":
             return cached[1]
-        detail = RunModel(layer, run_id, self.aggs).detail()
+        detail = RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).detail()
         detail["summary"] = self._decorated(detail["summary"])
         if len(self.detail_cache) > 64:
             self.detail_cache.clear()
