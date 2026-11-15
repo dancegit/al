@@ -214,6 +214,7 @@ svg text { font-family: var(--sans); }
 .tl-bar.k-run, .tl-bar.k-agent { fill: var(--agent); } .tl-bar.k-check { fill: var(--check); } .tl-bar.k-gate { fill: var(--gate); }
 .tl-bar.k-review { fill: var(--review); } .tl-bar.k-ship { fill: var(--ship); } .tl-bar.k-fan-out { fill: var(--fan); }
 .tl-bar.l0 { opacity: .28; }
+.tl-bar.k-wait { fill: var(--waiting); opacity: .55; }
 .tl-bar.st-failed { fill: var(--failed); }
 .tl-bar.st-running { animation: pulse 1.4s infinite; }
 .tl-bar.st-skipped { opacity: .25; }

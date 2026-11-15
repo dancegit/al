@@ -156,7 +156,9 @@ def test_resolve_loop_timeline_reconstructs_attempt_windows(fx):
     totals = detail["timeline"]["totals"]
     assert totals["check"] == pytest.approx(4 + 3 + 7)
     assert totals["agent"] == pytest.approx(10 + 30 + 50 + 16 + 8 + 12 + 12)
-    assert totals["run"] == pytest.approx(158)
+    assert totals["run"] == pytest.approx(170) and totals["wait"] == pytest.approx(12)   # run.log: it waited for a runs slot
+    wait = next(b for b in detail["timeline"]["bars"] if b["kind"] == "wait")
+    assert (wait["start"] - t0, wait["end"] - t0) == pytest.approx((-12, 0)) and detail["timeline"]["bars"][0] is wait
 
 
 def test_two_round_review(fx):

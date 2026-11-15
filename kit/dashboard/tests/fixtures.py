@@ -374,13 +374,15 @@ def build(root: Path) -> dict[str, Path]:
     records += [rec("lint", "check", "passed", base + 90, base + 113, "exit 0"), rec("test", "check", "passed", base + 113, base + 120, "exit 0"),
                 rec("commit", "run", "passed", base + 120, base + 128), rec("review", "review", "passed", base + 128, base + 152),
                 rec("ship", "ship", "passed", base + 152, base + 158)]
-    write(run / "state.json", json.dumps(state(rid, "zte", "Remove unused imports in the cart module", "passed", base, base + 158, records,
+    write(run / "state.json", json.dumps(state(rid, "zte", "Remove unused imports in the cart module", "passed", base - 12, base + 158, records,
                                                checks={"lint": {"cmd": "ruff check .", "exit": 0, "log": f"agents/{rid}/checks/lint.2.log"},
                                                        "test": {"cmd": "pytest -q", "exit": 0, "log": f"agents/{rid}/checks/test.1.log"}},
                                                review={"mode": "auto", "verdict": {"success": True, "summary": "ok | ok", "issues": []},
                                                        "rounds": [{"round": 1, "reviewers": [{"success": True, "summary": "ok", "issues": []}] * 2, "verdict": {"success": True}}]},
                                                ship={"action": "merge", "shipped": True, "target": "al/ship/main", "reasons": []}), indent=2), base + 158)
-    write(run / "run.log", f"[adw {rid}] zte start: class=chore dry_run=False\n", base + 158)
+    write(run / "run.log", f"[adw {rid}] zte start: class=chore dry_run=False\n"
+                           f"[slots] adw {rid}: waiting for a free runs slot (2 in use)\n"
+                           f"[adw {rid}] step classify (run) start\n", base + 158)
 
     # ---- a1000004: two review rounds
     rid, run = "a1000004", agents_dir / "a1000004"

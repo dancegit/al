@@ -1018,6 +1018,7 @@ def runlog_facts(path: Path) -> dict[str, Any]:
             facts["container_removed"] = True
         if (match := _WAITING.match(line)):
             facts["waiting"] = match.group(2)
+            facts.setdefault("waited", []).append(match.group(2))
         elif line.startswith("[adw "):
             facts["waiting"] = ""
         if (match := _GATE_EXIT.search(line)):
@@ -1285,6 +1286,12 @@ class RunModel:
         }
 
     # ------------------------------------------------------------------ detail
+    def _declared_check_cmds(self, adw: dict[str, Any]) -> dict[str, str]:
+        """check step name → the command line the layer declares for it (before any attempt ran)."""
+        commands = {str(c.get("name")): str(c.get("run", "")) for c in (self.layer.ir.get("codebase") or {}).get("commands") or []
+                    if isinstance(c, dict)}
+        return {str(s.get("name")): commands.get(str(s.get("cmd")), "") for s in adw.get("steps") or []
+                if isinstance(s, dict) and s.get("kind") == "check"}
     def detail(self, extras: dict[str, Any] | None = None) -> dict[str, Any]:
         data = self.collect()
         summary = self._summary(data, extras or {})
@@ -1347,13 +1354,22 @@ class RunModel:
                          "start": activity.start if activity.start is not None else activity.end,
                          "end": activity.end, "status": activity.status, "cost": activity.extra.get("cost"),
                          "ref": activity.key, "check": activity.extra.get("check"), "exit": activity.extra.get("exit")})
+        # waiting for a `runs` slot: from the run's start until its first step started (run.log says it waited)
+        wait_time = 0.0
+        if "runs" in (data["facts"].get("waited") or []) and data["run_start"]:
+            first = min((b["start"] for b in bars if b["level"] == 0 and b["start"]), default=None)
+            wait_end = first if first else (None if data["running"] else data["run_end"])
+            bars.append({"id": "wait:runs", "step": "", "level": 0, "kind": "wait", "label": "waiting for a runs slot",
+                         "start": data["run_start"], "end": wait_end, "status": "waiting" if wait_end is None else "done"})
+            wait_time = (wait_end or now) - data["run_start"]
+        order[""] = -1
         bars.sort(key=lambda b: (order.get(b["step"], 999), b["level"], b["start"] or 0))
         agent_time = sum(((b["end"] or now) - b["start"]) for b in bars if b["level"] == 1 and b["kind"] == "agent" and b["start"])
         check_time = sum(((b["end"] or now) - b["start"]) for b in bars if b["level"] == 1 and b["kind"] in {"check", "gate"} and b["start"])
-        total = summary["duration"] or 0
+        total = summary["duration"] or ((now - data["run_start"]) if data["run_start"] and data["running"] else 0)
         timeline = {"start": data["run_start"], "end": data["run_end"], "bars": bars,
-                    "totals": {"run": total, "agent": agent_time, "check": check_time,
-                               "other": max(0.0, total - agent_time - check_time)}}
+                    "totals": {"run": total, "agent": agent_time, "check": check_time, "wait": wait_time,
+                               "other": max(0.0, total - agent_time - check_time - wait_time)}}
         # outcome
         ship = dict(state.get("ship") or {})
         handoff = None
@@ -1421,7 +1437,8 @@ class RunModel:
             "summary": summary, "graph": graph, "timeline": timeline,
             "agents": [{**a, "label": a["dir"]} for a in agents],
             "checks": {name: items for name, items in data["attempts"].items()},
-            "check_cmds": {name: short(rec.get("cmd", "")) for name, rec in (state.get("checks") or {}).items()},
+            "check_cmds": {**self._declared_check_cmds(data["adw"]),
+                           **{name: short(rec.get("cmd", "")) for name, rec in (state.get("checks") or {}).items()}},
             "state": {"branch": state.get("branch", ""), "plan": short(state.get("plan", "")),
                       "worktree": short(state.get("worktree", "")), "ports": state.get("ports") or [],
                       "model_set": state.get("model_set", ""), "class_fixed": state.get("class_fixed"),

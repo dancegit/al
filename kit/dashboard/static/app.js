@@ -827,6 +827,7 @@
           h("td", { class: "right num", text: fmt.dur(run.duration) }), h("td", { class: "right num", text: fmt.cost(run.cost) }),
           h("td", {}, outcomeBadge(run))));
       }
+      if (!done.length) body.appendChild(h("tr", {}, h("td", { class: "dim", text: store.loaded ? "no finished runs yet" : "loading…" })));
       replace(recent, h("table", {}, body));
     }
 
@@ -1037,6 +1038,7 @@
       const sw = (colour) => { const i = h("i"); i.style.background = colour; return i; };
       const wrap = h("div", { class: "tl-wrap" });
       const draw = () => replace(wrap, renderTimeline(detail.timeline, { width: wrap.clientWidth || 800, onBar: (bar) => {
+        if (bar.kind === "wait") return;
         if (bar.kind === "agent") go(link(["step", bar.step || bar.ref], { agent: bar.ref }));
         else if (bar.kind === "check" || bar.kind === "gate") go(link(["step", bar.step || bar.check], { attempt: bar.ref }));
         else go(link(["step", bar.step]));
@@ -1048,6 +1050,7 @@
         h("div", { class: "totals" }, h("span", {}, "run ", h("b", { text: fmt.dur(t.run) })),
           h("span", {}, sw("var(--agent)"), "agents ", h("b", { text: fmt.dur(t.agent) })),
           h("span", {}, sw("var(--check)"), "checks ", h("b", { text: fmt.dur(t.check) })),
+          t.wait ? h("span", {}, sw("var(--waiting)"), "waiting for a slot ", h("b", { text: fmt.dur(t.wait) })) : null,
           h("span", {}, sw("var(--panel-3)"), "other (setup, slots, git, gate bookkeeping) ", h("b", { text: fmt.dur(t.other) }))));
     }
 
@@ -1101,11 +1104,12 @@
         const gate = detail.gate || {}, ship = detail.ship || {};
         const url = ship.url || (ship.pr && ship.pr.url) || "";
         blocks.push(h("div", { class: "outcome-block" }, h("div", { class: "card-head" }, h("h3", { text: "Gate and ship" }),
-          gate.action ? h("span", { class: `badge ${gate.ship ? "good" : "warn"}`, text: gate.ship ? `gate: ${gate.action}` : "gate: to a human" }) : null),
+          gate.action ? h("span", { class: `badge ${gate.ship ? "good" : (gate.reasons || []).every((r) => /^review-(human|agent):/.test(r)) ? "info" : "warn"}`,
+            text: gate.ship ? `gate: ${gate.action}` : "gate: a human decides" }) : null),
           kv([["action", ship.action], ["shipped", ship.shipped === undefined ? "" : String(ship.shipped)], ["target", ship.target],
             ["pull request", /^https?:\/\//.test(url) ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: url }) : ""],
             ["commit", ship.commit ? h("span", { class: "mono", text: String(ship.commit).slice(0, 12) }) : ""],
-            ["gate reasons", gate.reasons && gate.reasons.length ? h("ul", { class: "issues" }, gate.reasons.map((r) => h("li", { class: "sev-blocker", text: r }))) : (gate.action ? "none: every rule held" : "")],
+            ["gate reasons", gate.reasons && gate.reasons.length ? h("ul", { class: "issues" }, gate.reasons.map((r) => h("li", { class: /^review-(human|agent):/.test(r) ? "" : "sev-blocker", text: r }))) : (gate.action ? "none: every rule held" : "")],
             ["diff", gate.diff_lines !== undefined ? `${gate.diff_lines} lines in ${(gate.changed_files || []).length} files` : ""],
             ["changed", gate.changed_files && gate.changed_files.length ? h("span", { class: "mono", text: gate.changed_files.join("  ") }) : ""],
             ["proof", ship.proof ? `${ship.proof.attached || 0} file(s) attached${ship.proof.reason ? ` (${ship.proof.reason})` : ""}` : ""],
@@ -1194,7 +1198,7 @@
         record.started ? h("span", { class: "num dim", ...(record.status === "running" ? { "data-since": record.started } : {}),
           text: fmt.dur((record.ended || now()) - record.started) }) : null,
         node && node.cost ? h("span", { class: "num", text: fmt.cost(node.cost) }) : null,
-        record.detail ? h("span", { class: "dim title-cell", text: clip(record.detail, 160) }) : null);
+        record.detail && !record.detail.trimStart().startsWith("{") ? h("span", { class: "dim title-cell", text: clip(record.detail, 160) }) : null);
       panel.appendChild(headEl);
       panel.refreshHead = () => {};
       if (sources.length > 1 || type === "check" || type === "review") panel.appendChild(chips);
@@ -1237,7 +1241,8 @@
         content.appendChild(h("div", { class: "toolbar" },
           h("span", { class: "mono", text: cmd ? `$ ${cmd}` : source.label }),
           at.exit !== undefined && at.exit !== null ? h("span", { class: `badge ${at.exit === 0 ? "good" : "bad"}`, text: at.exit === "fail" ? "exit ≠ 0" : `exit ${at.exit}` }) : null,
-          source.pending ? h("span", { class: "badge info", text: "running: the log is written when the command finishes" }) : null,
+          source.pending ? h("span", { class: "badge info" }, "running for ", h("span", { class: "num", "data-since": source.start, text: fmt.dur(now() - source.start) }),
+            " · the runtime writes the log when the command finishes") : null,
           resolveAfter ? h("a", { href: link(["step", step], { agent: resolveAfter.dir }), class: "toggle", text: `→ resolved by ${resolveAfter.dir}` }) : null,
           h("span", { class: "spacer" }),
           !source.pending ? h("a", { class: "toggle", href: `/files/${enc(layerKey)}/agents/${enc(runId)}/checks/${enc(at.file)}?download=1`, text: "download log" }) : null));

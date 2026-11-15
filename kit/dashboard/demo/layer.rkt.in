@@ -1,0 +1,35 @@
+#lang al
+;; Demo layer for the work dashboard (kit/dashboard/demo/live_demo.py fills in @APP@ and @REPLAY@).
+;; No LLM is involved: plan, commit and review run on the mock agent; build runs a scripted stand-in
+;; CLI agent that streams a Claude-format transcript; lint and test are real commands in a container.
+(agentic-layer #:name "dash-demo" #:description "A tiny cart library, used to show the work dashboard live"
+  (codebase #:root "@APP@" #:languages (python) #:default-branch "main"
+            #:description "cart.py is a shopping cart with integer prices in cents; tests/ holds test functions run by tools/run_tests.py."
+    (cmd lint "python3 tools/lint.py" #:timeout 120 #:description "Every Python file compiles and no line is longer than 120 characters.")
+    (cmd test "python3 tools/run_tests.py" #:timeout 300 #:description "Every test_* function in tests/ passes.")
+    (paths #:source ("cart.py") #:tests ("tests") #:protected ("tools")))
+
+  (agent mock)
+  (agent custom #:id replay #:command "python3 @REPLAY@ {cwd}" #:timeout 300)
+  (trigger manual)
+  (environment worktree)
+  (environment podman #:base-image "docker.io/library/python:3.12-slim" #:memory "512m" #:cpus "1")
+  (concurrency slots #:max-runs 2 #:max-agents 2 #:max-checks 2)
+  (review agent #:reviewers 2)
+
+  (command plan #:template plan-chore #:output path #:validation (lint test))
+  (command resolve-test #:template resolve-test)
+  (command review #:template review #:output json)
+  (command commit #:template commit)
+  (hop implement #:template run-plan #:takes plan)
+
+  (adw change #:description "Plan (mock), build (scripted stand-in agent), lint and test in a container, commit, two reviewers, PR"
+       #:agent mock #:environment (worktree podman) #:review agent
+    (steps
+      (run plan #:command plan #:args ("$prompt"))
+      (run build #:command implement #:args ("$plan") #:agent replay)
+      (check lint #:cmd lint #:resolve resolve-test #:retries 1)
+      (check test #:cmd test #:resolve resolve-test #:retries 2)
+      (run commit #:command commit)
+      (review)
+      (ship))))
