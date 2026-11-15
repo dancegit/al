@@ -1,0 +1,68 @@
+$ al improve notes/agentic "$(cat request.txt)"
+I want to queue work in a text file: add a task-file prompt input and a poller trigger, and let the ui-change 
+workflow accept them.
+
+$ … the run (REPLAY of the saved log of a real run: 158 seconds, $0.98)
+[adw 5e1f0001] improve start: class=chore dry_run=False
+[adw 5e1f0001] step plan (run) start
+[adw 5e1f0001] step plan (run) passed: <tmp>/notes/agentic/.al-improve/specs/layer-change-5e1f0001-tasklist-
+[adw 5e1f0001] step implement (run) start
+[adw 5e1f0001] step implement (run) passed: I added the task file input and the poller trigger to the layer,
+[adw 5e1f0001] step definition (check) start
+[adw 5e1f0001] step definition (check) passed: exit 0, log agents/5e1f0001/checks/definition.1.log
+[adw 5e1f0001] step regenerate (check) start
+[adw 5e1f0001] step regenerate (check) passed: exit 0, log agents/5e1f0001/checks/regenerate.1.log
+[adw 5e1f0001] step scope (check) start
+[adw 5e1f0001] step scope (check) passed: exit 0, log agents/5e1f0001/checks/scope.1.log
+[adw 5e1f0001] step layer-check (check) start
+[adw 5e1f0001] step layer-check (check) passed: exit 0, log agents/5e1f0001/checks/layer-check.1.log
+[adw 5e1f0001] step dry-runs (check) start
+[adw 5e1f0001] step dry-runs (check) passed: exit 0, log agents/5e1f0001/checks/dry-runs.1.log
+[adw 5e1f0001] step verify (check) start
+[adw 5e1f0001] step verify (check) passed: exit 0, log agents/5e1f0001/checks/verify.1.log
+[adw 5e1f0001] step commit (run) start
+[adw 5e1f0001] step commit (run) passed: **Commit:** `f99793ec27d1f15867489fe4b9f507194797b2fe`: `agentic la
+[adw 5e1f0001] step review (review) start
+[adw 5e1f0001] step review (review) passed: ok
+[adw 5e1f0001] step ship (ship) start
+[adw 5e1f0001] gate: action pr
+[adw 5e1f0001] ship: PR #1 http://127.0.0.1:51319/adw/notes/pulls/1
+[adw 5e1f0001] step ship (ship) passed: ok
+[adw 5e1f0001] worktree removed: <tmp>/notes/agentic/.al-improve/trees/5e1f0001
+=== ADW summary ===
+adw:       improve 5e1f0001
+status:    passed
+branch:    chore/5e1f0001-i-want-to-queue-work-in
+plan:      <tmp>/notes/agentic/.al-improve/specs/layer-change-5e1f0001-tasklist-poller-for-ui-change.md
+checks:    definition=0, regenerate=0, scope=0, layer-check=0, dry-runs=0, verify=0
+review:    pass (human)
+ship:      pr -> http://127.0.0.1:51319/adw/notes/pulls/1 (shipped=False)
+artefacts: 0
+state:     <tmp>/notes/agentic/.al-improve/agents/5e1f0001/state.json
+al improve: done: pull request #1 http://127.0.0.1:51319/adw/notes/pulls/1 (branch chore/5e1f0001-i-want-to-
+al improve: the pull request includes the regenerated files: merging it is all that is needed
+$ 
+
+$ 
+
+$ git diff agentic/agentic.rkt   # then a person merges, and a task is queued
++  (prompt-input tasklist)
++  (trigger cron)
+-       #:input (issue) #:trigger (manual) #:environment (worktree podman) #:review human #:agent claude-san
++       #:input (issue tasklist) #:trigger (manual cron) #:environment (worktree podman) #:review human #:ag
+
+HUMAN STEP: approve and merge the pull request
+
+[14:01:34] cron cron: layer <tmp>/notes/agentic, adws ui-change, every 20s, max 3 [dry-run]
+[14:01:34] start ui-change <- tasklist:8 (bold-button: Make the label of the Add button bold.)
+[14:01:47] done ui-change <- tasklist:8 exit 0
+$ al improve notes/agentic "$(cat request2.txt)"   # then: the next plan an agent writes
+Every plan must end with a 'Rollback' section that says exactly how to undo the change.
+
+
+## Rollback
+For undoing this change after it has merged; not a step to execute while implementing.
+1. Find the commit(s) that made this change: `git log --oneline -- static/style.css e2e/scenario.py` (the co
+2. Revert them on a branch from `main`: `git revert <commit-sha>` for each such commit, newest first (for a 
+3. If reverting by hand instead, restore exactly two files: in `static/style.css` remove the `font-weight: 7
+4. Confirm the previous state: run `python -m pytest -q tests` and `python e2e/capture.py` from the worktree

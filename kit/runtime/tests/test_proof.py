@@ -136,7 +136,9 @@ def test_proof_comment_embeds_images_with_captions_and_links_the_video():
     assert "[session.webm](https://f/attachments/2)" in body
     assert "![session-01.png (keyframe of session.webm)](https://f/attachments/3)" in body
     assert "02-added.png (could not be attached)" in body
-    assert body.index("01-home.png") < body.index("session.webm")   # screenshots first, then the video
+    # the recording comes first and is playable; screenshots follow; frames last, labelled for agents
+    assert '<video src="https://f/attachments/2" title="session.webm" controls></video>' in body
+    assert body.index("### Recording") < body.index("### Screenshots") < body.index("as given to the reviewer agents")
 
 
 # ---------------------------------------------------------------- posting

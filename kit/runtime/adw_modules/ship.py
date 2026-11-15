@@ -200,20 +200,27 @@ def proof_comment(adw_id: str, rows: list[dict[str, str]]) -> str:
             return f"{row['caption']} (could not be attached)"
         return f"**{row['caption']}**\n\n![{row['caption']}]({row['url']})"
 
-    parts = [f"Proof from run `{adw_id}`: what the run's checks captured (screenshots and video keyframes, "
-             "taken in a real browser)."]
+    parts = [f"Proof from run `{adw_id}`: what the run's checks captured in a real browser."]
+    videos = [row for row in rows if row["kind"] == "video"]
+    # The recording comes first and is playable: a person reviewing should watch the real thing.
+    # The frames cut from it are what reviewer agents were given (they cannot watch a video).
+    if videos:
+        parts.append("### Recording")
+    for video in videos:
+        if video["url"]:
+            parts.append(f'<video src="{video["url"]}" title="{video["caption"]}" controls></video>')
+            parts.append(f"Play it above, or open the file: [{video['caption']}]({video['url']})")
+        else:
+            parts.append(f"{video['caption']} (could not be attached)")
     shots = [row for row in rows if row["kind"] == "image"]
     if shots:
         parts.append("### Screenshots")
         parts += [image(row) for row in shots]
-    videos = [row for row in rows if row["kind"] == "video"]
-    if videos:
-        parts.append("### Video")
     for video in videos:
-        link = f"[{video['caption']}]({video['url']})" if video["url"] else f"{video['caption']} (could not be attached)"
         frames = [row for row in rows if row["kind"] == "keyframe" and row["caption"].endswith(f"(keyframe of {video['caption']})")]
-        parts.append(f"{link}" + (" — keyframes:" if frames else ""))
-        parts += [image(row) for row in frames]
+        if frames:
+            parts.append(f"### Frames from {video['caption']}, as given to the reviewer agents")
+            parts += [image(row) for row in frames]
     return "\n\n".join(parts) + "\n"
 
 

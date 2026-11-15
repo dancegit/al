@@ -5,7 +5,7 @@ the real build and test commands, a safe place to work, a way to prove what they
 change may ship. That setup is called an **agentic layer**. `al` generates one for any repository, in any
 language, without changing the repository.
 
-**[Watch the 10-minute tour (MP4, 7 MB)](docs/demo/tour.mp4)** — it explains the idea and shows every part
+**[Watch the 11-minute tour (MP4, 8 MB)](docs/demo/tour.mp4)** — it explains the idea and shows every part
 running for real.
 
 ![How it works: codebase → LLM.txt → agentic.rkt → compiler → agentic layer](docs/demo/pipeline.png)
@@ -246,6 +246,43 @@ To run them: `tests/rotademo/rotademo_live.sh` (about 20 minutes and $6.50 of mo
 Details and every output file: [`tests/rotademo/README.md`](tests/rotademo/README.md).
 A longer account of what was verified and where agents failed: [`docs/CASE-STUDY.md`](docs/CASE-STUDY.md).
 
+## Changing a layer: ask in words, approve a pull request
+
+A layer is not generated once and frozen. You will want a new way to hand out work, a rule every plan
+should follow, a stricter review. You can edit `agentic.rkt` yourself, but you do not have to:
+
+```bash
+al improve myapp/agentic "I want to queue work in a text file: add a task-file prompt input and a poller trigger."
+```
+
+An agent makes the smallest change that satisfies the request, in a private copy of the layer. Six
+checks must pass, among them that the layer still compiles, regenerates identically twice, and that
+every workflow still completes a dry run. Then it opens a pull request written for someone who does
+not read the layer language:
+
+![The layer-change pull request: what changes for you](docs/demo/selfdemo/1-pr-what-changes.png)
+
+followed by each affected part of the layer explained before and after:
+
+![Each affected block, before and after](docs/demo/selfdemo/1-pr-before-after.png)
+
+Behind it is a three-line change to the definition
+([the diff](docs/demo/selfdemo/1-layer-diff.patch)). After a person merged it, a task added to the file
+was picked up by the poller and run. A second request, *"Every plan must end with a 'Rollback' section
+that says exactly how to undo the change"*, changed a prompt template instead; the next plan an agent
+wrote [ends with one](docs/demo/selfdemo/2-plan-with-rollback.md). Both were real runs with Claude Opus
+5.5: about 160 seconds and $0.90 each.
+
+Three rules make this safe:
+
+- **A person always approves.** There is no automatic mode for changes to how agents work.
+- **Refinements survive regeneration.** `al eject` copies a prompt template into the layer for you to
+  edit; `al gen` uses your copy from then on, and refuses to overwrite a generated file you edited by hand.
+- **Agents cannot rewrite their own instructions in passing.** When the layer is checked into your
+  repository (`al init --in-repo`), an ordinary workflow that touches it is stopped and handed to a person.
+
+Details: step 14 of the [guide](docs/GUIDE.md).
+
 ## The example repositories
 
 Five well-known public repositories, chosen to cover different languages, build tools and ways of working.
@@ -310,6 +347,7 @@ Every clip is a recording of real commands, with waiting time cut. The captured 
 ![per-run isolation](docs/demo/06-scaling.gif)
 
 More clips:
+[changing the layer by asking in words](docs/demo/05g-layer-change.gif) ·
 [healthcare: a safety rule shipped on proof](docs/demo/05d-rota-feature.gif) ·
 [healthcare: the review catches a planted defect](docs/demo/05e-rota-defect.gif) ·
 [healthcare: a stopping condition and handover](docs/demo/05f-rota-handoff.gif) ·
@@ -324,6 +362,9 @@ More clips:
 [the test suites](docs/demo/09-tests.gif)
 
 ## Try it on your own repository
+
+**The full walkthrough, with what you should see at each step and what to do when it goes wrong, is the
+[step-by-step guide](docs/GUIDE.md).** The short version:
 
 You need `racket`, `uv`, `git`, and `podman` for containers.
 
@@ -340,6 +381,7 @@ Then give two prompts to an LLM agent (for example Claude Code), in this reposit
 ```bash
 tools/al gen    ~/code/myapp.al       # compile and generate; errors say what to fix
 tools/al verify ~/code/myapp.al       # run every declared command for real: is the description true?
+tools/al explain ~/code/myapp.al      # read the layer back in plain language
 tools/al check  ~/code/myapp.al       # the layer is complete and your repository is untouched
 
 cd ~/code/myapp.al
@@ -358,7 +400,10 @@ export PLTCOLLECTS="$PWD/racket:"
 raco test racket/al/tests                                    # the language rules
 (cd kit/runtime && uv run --with pytest pytest -q)           # the runtime, including attempts to escape the container
 uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q   # full runs on the five repositories
+uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q         # the al command itself: eject, in-repo layers, al improve
 tests/forge/forgejo_live.sh                                  # a throwaway Forgejo: issue → PR, merge, webhook
+tests/forge/proof_video_live.sh                              # the recording is playable on the pull request
+tests/selfdemo/selfdemo_live.sh                              # two layer changes through al improve with a real agent (about $2)
 tests/webdemo/webdemo_live.sh                                # the Notes web app scenarios with a real agent (about $1.80)
 tests/rotademo/rotademo_live.sh                              # the healthcare staffing scenarios with a real agent (about $6.50)
 ```

@@ -306,7 +306,88 @@ task and keep the best result, see `(fan-out …)` in the language reference.
 
 ## Step 14 — Change the layer later
 
-<!-- CUSTOMISE -->
+You will want to change how agents work on your codebase: a new way to hand out work, a rule every
+plan should follow, a stricter review. There are three ways, from most to least automatic. In all of
+them the rule is the same: **change the definition or a template, never a generated file.**
+
+### Ask for the change in words
+
+```bash
+al improve ~/code/myapp.al "Every plan must end with a 'Rollback' section that says exactly how to undo the change."
+al improve ~/code/myapp.al "I want to queue work in a text file: add a task-file input and a poller." --dry-run
+```
+
+An agent plans the smallest change that satisfies the request, makes it in a private copy of the layer,
+and six checks must pass: the definition compiles; it regenerates, and regenerating twice changes
+nothing; only layer files changed; `al check` passes; every workflow still completes a dry run; and
+any codebase command that changed is verified for real. The result is a pull request (or a branch and
+`PR.md` without a forge) written for someone who does not read the layer language: the request, "What
+changes for you", each affected block explained before and after, and the generated prompts that changed.
+
+A person always decides. `--review agent` adds an agent reviewer before you; there is no automatic
+mode for layer changes, and asking for one is refused. The layer must be committed on its default
+branch first. `--dry-run` rehearses the mechanics with a stand-in agent.
+
+After you merge: if the layer lives in your repository (see below), you are done, because the pull
+request includes the regenerated files. Otherwise run `al gen ~/code/myapp.al`.
+
+### Edit a prompt template yourself
+
+```bash
+al eject ~/code/myapp.al --list                    # every template, where it comes from, and whether it drifted
+al eject ~/code/myapp.al command plan-chore        # copy that command's template into the layer
+$EDITOR ~/code/myapp.al/templates/commands/plan-chore.md
+al gen ~/code/myapp.al
+```
+
+A template in the layer's `templates/` folder wins over the built-in one and survives every
+regeneration. Keep its `{{…}}` placeholders; they are how your commands and paths get filled in.
+`--list` tells you when the built-in version has changed since you took your copy. For a one-line
+instruction, a `#:focus` line on the command in `agentic.rkt` is simpler than a template.
+
+### If you edited a generated file by mistake
+
+`al gen` will not silently throw your edit away. It stops, writes nothing, and lists each file that
+was changed by hand together with the command that makes the change permanent:
+
+```text
+al gen: 1 generated file(s) in ~/code/myapp.al were edited by hand since the last `al gen`.
+Generating now would overwrite those edits, so nothing was written:
+
+  commands/plan-chore.md   al eject ~/code/myapp.al command plan-chore   (copies its template to templates/commands/plan-chore.md)
+
+Two ways forward:
+  1. Keep the change: make it in a layer-local template, which every `al gen` uses from then on. …
+  2. Throw the edit away:  al gen ~/code/myapp.al --discard-edits
+```
+
+Either eject the template and move your edit into it, or discard the edit with
+`al gen ~/code/myapp.al --discard-edits`. `al check` reports the same thing.
+
+### Keep the layer in your repository
+
+Up to here the layer has been a folder beside your repository. Most teams will want it versioned with
+the code, so that changes to it go through the same pull requests:
+
+```bash
+al init ~/code/myapp --in-repo            # creates ~/code/myapp/agentic
+```
+
+In `agentic.rkt`, the codebase root is then `".."` and the layer says where it lives:
+
+```racket
+(codebase #:root ".." …)
+(layer in-repo #:dir "agentic")
+```
+
+Then `al gen ~/code/myapp/agentic`, commit the `agentic` folder, and run workflows from the repository:
+`uv run agentic/adws/adw_sdlc.py "…"`. What is committed: the definition, your templates and the
+generated prompts and workflows. What is ignored: everything a run produces (working copies, logs,
+proof, the task list). Runs leave `git status` clean.
+
+One rule comes with this. An ordinary workflow that changes anything under `agentic/` is stopped and
+handed to a person, whatever its review setting: agents do not get to rewrite their own instructions
+on the way past. Layer changes go through `al improve`.
 
 ## When something goes wrong
 
@@ -316,6 +397,7 @@ task and keep the best result, see `(fan-out …)` in the language reference.
 | a run waits with `waiting for a free runs slot` | the concurrency limit is reached | wait, or raise `#:max-runs` |
 | `status: failed` and a `[needs human]` pull request | the run stopped and handed over | read "Why this stopped" in it |
 | `git-integrity` failure | something in the container altered git metadata it should not | inspect `trees/<run id>`; nothing was shipped |
+| `al gen` stops with "edited by hand" | a generated file was changed directly | see step 14: eject the template, or `--discard-edits` |
 | the agent cannot edit files or run commands | permission mode or allowed tools too narrow | adjust `#:permission-mode` / `#:allowed-tools` on the agent |
 | leftover branches or copies after experiments | runs you interrupted | `git -C ~/code/myapp worktree prune`, then delete the branches |
 | a container image is stale after you changed the recipe | images are built once and reused | `podman rmi al-<layer name>:latest`, then run again |

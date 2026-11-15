@@ -77,9 +77,18 @@ a person needs.
 ## On the pull request
 
 With a forge, the run attaches the proof to the pull request, so the reviewer never has to check
-anything out. This is a real pull request on Forgejo with its Proof comment:
+anything out. The recording comes first, as a player; the screenshots follow; the frames cut for the
+reviewer agents come last and are labelled as theirs. This is a real pull request on Forgejo:
+
+![A pull request whose Proof comment starts with a playable recording](demo/webdemo/proof-video-pr-crop.png)
+
+And the screenshots further down the same kind of comment, from a real run:
 
 ![The Proof comment on a pull request](demo/webdemo/a-pr-proof.png)
+
+On Forgejo the files are attached to the comment itself. GitHub has no way to attach files through its
+command-line tool, so there the route is an S3-compatible store with a public address
+(`(storage s3 … #:public-base-url …)`), and the pull request links to it.
 
 ## Test output
 
