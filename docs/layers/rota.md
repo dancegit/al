@@ -56,15 +56,16 @@ Lines 21–21. Issues and pull requests live on forgejo (`adw/rota`).
   (forge forgejo #:host "https://forge.example.org" #:repo "adw/rota" #:token-env "AL_ROTADEMO_FORGEJO_TOKEN")
 ```
 
-### Which agents do the work
+### Which agents and models do the work
 
-Lines 22–26. Agent: claude-code (`claude-sandboxed`) and mock (`planter`).
+Lines 22–26. Agent: claude-code (`claude-sandboxed`) and mock (`planter`). On `claude-sandboxed`, planning, patch plans, fixing failed checks, review and building use claude-fable-5-2; commits uses claude-opus-5-5.
 
-- `claude-sandboxed`: claude-code, models `claude-opus-5-5` / `claude-opus-5-5`, permission mode `bypassPermissions`
-- `planter`: mock
+- `claude-sandboxed`: claude-code, model tiers base = `claude-opus-5-5` and heavy = `claude-fable-5-2`, permission mode `bypassPermissions`
+- `planter`: mock, a stand-in that runs no model
+- For one run, `--model-set TIER`, `--model TIER=MODEL_ID` (or AL_MODEL_SET / AL_MODELS) change this without editing the file
 
 ```racket
-  (agent claude-code #:id claude-sandboxed #:model-base "claude-opus-5-5" #:model-heavy "claude-opus-5-5"
+  (agent claude-code #:id claude-sandboxed
          #:permission-mode bypassPermissions #:max-turns 80)
   ;; Scenario C only: a scripted stand-in for the build step that applies a deliberately flawed
   ;; change (tests/rotademo/planted/). Everything else in that workflow runs on the real agent.
@@ -217,7 +218,7 @@ Lines 83–97. The `planted` workflow: Like feature, but the build step is a scr
 
 - Work from issue; started by manual; runs in worktree and podman; agent `claude-sandboxed`
 - 1. agent step `plan` using the `plan-feature` prompt
-- 2. agent step `build` using the `implement` prompt
+- 2. agent step `build` using the `implement` prompt, by agent `planter`
 - 3. check `test`: run the `test` command; on failure the `resolve-test` prompt fixes it, up to 2 tries
 - 4. check `isolation`: run the `isolation` command; on failure the `resolve-test` prompt fixes it, up to 1 tries
 - 5. check `e2e`: run the `e2e` command; on failure the `resolve-test` prompt fixes it, up to 2 tries
@@ -242,3 +243,9 @@ Lines 83–97. The `planted` workflow: Like feature, but the build step is a scr
       (review #:patch plan-patch #:implement implement)
       (ship))))
 ```
+
+### Watching the work (not written down: the default)
+
+A live dashboard on http://127.0.0.1:8765 shows what the agents are doing.
+
+- Start it with `uv run adws/dashboard.py`; it only reads the layer's run files and never changes anything

@@ -80,6 +80,21 @@ Then read `LLM.txt` yourself. It is the one document everything else depends on,
   them in a CONTRIBUTING file so the next scout finds them.
 - **`UNVERIFIED` lines:** fill in what you know. Leaving a duration unknown is fine.
 
+**If your repository already has an agent setup** (a `CLAUDE.md` or `AGENTS.md`, prompts under
+`.claude/commands/`, an `adws/` folder, agent steps in CI), `LLM.txt` has an `## Existing agent setup`
+table listing it. Check its "in use?" column, then bring it into the layer:
+
+```bash
+al adopt ~/code/myapp.al --app ~/code/myapp --dry-run     # shows what it would do, changes nothing
+al adopt ~/code/myapp.al --app ~/code/myapp
+```
+
+Rule files become documents every agent must read; your prompts become commands of the layer, as they
+are; your workflow scripts become proposed workflows that a person reviews. It never changes your
+repository. Read `adopted/REPORT.md`, especially "For a person to decide": where an existing rule
+contradicts a built-in prompt, it shows both texts and leaves the choice to you. If you run `al adopt`
+before `agentic.rkt` exists, run it again after step 4.
+
 *If it goes wrong:* the agent invents a command. Delete the row. A command that is not written down in
 your repository does not belong in `LLM.txt`.
 
@@ -271,6 +286,35 @@ contain the agent CLI. This is the recipe the examples use for Claude Code:
 and the workflow names that agent with `#:agent claude-sandboxed`. The compiler only accepts an agent
 with all permissions when it runs inside a container.
 
+## Choose models and limit spending
+
+By default routine steps (classify, commit) run on Claude Opus 5.5 and planning, building and review on
+Claude Fable 5.2. Models are grouped in named tiers on the agent, and prompts and steps pick a tier:
+
+```racket
+(agent claude-code #:models ((fast "claude-haiku-5-5") (base "claude-opus-5-5") (heavy "claude-fable-5-2" #:effort high)))
+(command commit #:template commit #:model-set fast)
+(review agent #:agent second-opinion)                    ; reviewers on a different agent
+(budget limits #:run-usd 5 #:step-usd 2 #:day-usd 50)
+```
+
+Which tier a step uses, first match wins:
+
+| | Source | Example |
+|---|---|---|
+| 1 | an override for this run | `--model-set heavy`, or `AL_MODEL_SET=heavy` |
+| 2 | the step itself | `(run build … #:model-set fast)` |
+| 3 | the request | a task tag `{heavy}`, or `adw: sdlc heavy` in an issue |
+| 4 | the prompt | `#:model-set` on the command (default: `base` for commands, `heavy` for prompts that take a plan) |
+
+`--model heavy=MODEL_ID` (or `AL_MODELS="heavy=…,base=…"`) changes which model a tier means for one run,
+and `--max-cost 3` (or `AL_MAX_COST`) caps one run. The compiler rejects a workflow that could use a tier
+its agent does not declare.
+
+A run that goes over a limit stops and hands over like any other stopped run: a `[needs human]` pull
+request with the reason `budget:run: spent $X of $Y`, and the work so far kept. When today's limit is
+reached, new runs refuse to start (exit code 3).
+
 ## Step 10 — Hand out work without typing commands
 
 **A task file.** Add lines to `tasks.md` in the layer folder:
@@ -420,6 +464,21 @@ Two ways forward:
 Either eject the template and move your edit into it, or discard the edit with
 `al gen ~/code/myapp.al --discard-edits`. `al check` reports the same thing.
 
+### Run a script you already have
+
+An existing workflow script does not have to be rewritten. Declare it as a codebase command and call it
+as a step:
+
+```racket
+(cmd legacy-release-notes "uv run scripts/release_notes.py")
+…
+(script notes #:cmd legacy-release-notes #:args ("$prompt"))
+```
+
+It runs in the run's private copy (and container, if there is one), receives the run's context in
+`ADW_ID`, `ADW_PROMPT`, `ADW_CLASS` and `ADW_PLAN`, and fails the run if it exits non-zero. It is not a
+check: the shipping rules never count it as verification.
+
 ### Keep the layer in your repository
 
 Up to here the layer has been a folder beside your repository. Most teams will want it versioned with
@@ -456,6 +515,8 @@ on the way past. Layer changes go through `al improve`.
 | `al gen` stops with "edited by hand" | a generated file was changed directly | see step 14: eject the template, or `--discard-edits` |
 | the agent cannot edit files or run commands | permission mode or allowed tools too narrow | adjust `#:permission-mode` / `#:allowed-tools` on the agent |
 | leftover branches or copies after experiments | runs you interrupted | `git -C ~/code/myapp worktree prune`, then delete the branches |
+| a run refuses to start with exit code 3 | today's spending limit is reached | raise `#:day-usd`, or wait until tomorrow |
+| `al adopt` refuses to write | a file it wrote earlier was edited by hand | move your change into `agentic.rkt`, or `--force` |
 | a container image is stale after you changed the recipe | images are built once and reused | `podman rmi al-<layer name>:latest`, then run again |
 
 Every run leaves `agents/<run id>/`: `state.json` (what happened), `run.log`, each step's exact prompt
@@ -463,7 +524,8 @@ and raw agent output, and each check's log. Start there.
 
 ## What it costs
 
-From the real runs in this repository, with Claude Opus 5.5: a small change with tests costs about
+From the real runs in this repository (all measured with Claude Opus 5.5 on every step, before the
+default for planning, building and review became Fable 5.2): a small change with tests costs about
 $0.50 to $0.70 and takes two to three minutes; a feature with a recorded video and two reviewers costs
 $1.30 to $2.40; a change that is rejected, fixed and reviewed again about $3. Every agent step costs
 roughly $0.08 to $0.16 before it does anything, for reading its prompt, so a workflow with five agent

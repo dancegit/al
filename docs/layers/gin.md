@@ -68,11 +68,12 @@ Lines 27–27. Issues and pull requests live on github (`gin-gonic/gin`).
   (forge github #:repo "gin-gonic/gin")
 ```
 
-### Which agents do the work
+### Which agents and models do the work
 
-Lines 28–28. Agent: codex.
+Lines 28–28. Agent: codex. Reading the codebase, classifying the work, documentation, commits and pull requests use gpt-5.4-mini; planning, patch plans, fixing failed checks, review, building, new prompts and new workflows use gpt-5.4.
 
-- `codex`: codex, models `gpt-5.4-mini` / `gpt-5.4`
+- `codex`: codex, model tiers base = `gpt-5.4-mini` and heavy = `gpt-5.4`
+- For one run, `--model-set TIER`, `--model TIER=MODEL_ID` (or AL_MODEL_SET / AL_MODELS) change this without editing the file
 
 ```racket
   (agent codex)
@@ -264,3 +265,9 @@ Lines 94–103. The `sdlc` workflow: Plan, build, vet, test, document, commit; a
       (review)
       (ship))))
 ```
+
+### Watching the work (not written down: the default)
+
+A live dashboard on http://127.0.0.1:8765 shows what the agents are doing.
+
+- Start it with `uv run adws/dashboard.py`; it only reads the layer's run files and never changes anything

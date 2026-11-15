@@ -100,11 +100,12 @@ Lines 49–49. No forge: results stay as local branches.
   (forge none)
 ```
 
-### Which agents do the work
+### Which agents and models do the work
 
-Lines 50–50. Agent: claude-code.
+Lines 50–50. Agent: claude-code. Reading the codebase, classifying the work, documentation, commits and pull requests use claude-opus-5-5; planning, patch plans, fixing failed checks, review, building, new prompts and new workflows use claude-opus-5-5.
 
-- `claude-code`: claude-code, models `claude-opus-5-5` / `claude-opus-5-5`, permission mode `acceptEdits`
+- `claude-code`: claude-code, model tiers base = `claude-opus-5-5` and heavy = `claude-opus-5-5`, permission mode `acceptEdits`
+- For one run, `--model-set TIER`, `--model TIER=MODEL_ID` (or AL_MODEL_SET / AL_MODELS) change this without editing the file
 
 ```racket
   (agent claude-code #:model-base "claude-opus-5-5" #:model-heavy "claude-opus-5-5")

@@ -50,14 +50,15 @@ Lines 16–16. Issues and pull requests live on forgejo (`adw/notes`).
   (forge forgejo #:host "https://forge.example.org" #:repo "adw/notes" #:token-env "AL_WEBDEMO_FORGEJO_TOKEN")
 ```
 
-### Which agents do the work
+### Which agents and models do the work
 
-Lines 17–18. Agent: claude-code (`claude-sandboxed`).
+Lines 17–18. Agent: claude-code (`claude-sandboxed`). Planning, fixing failed checks, review and building use claude-fable-5-2; commits uses claude-opus-5-5.
 
-- `claude-sandboxed`: claude-code, models `claude-opus-5-5` / `claude-opus-5-5`, permission mode `bypassPermissions`
+- `claude-sandboxed`: claude-code, model tiers base = `claude-opus-5-5` and heavy = `claude-fable-5-2`, permission mode `bypassPermissions`
+- For one run, `--model-set TIER`, `--model TIER=MODEL_ID` (or AL_MODEL_SET / AL_MODELS) change this without editing the file
 
 ```racket
-  (agent claude-code #:id claude-sandboxed #:model-base "claude-opus-5-5" #:model-heavy "claude-opus-5-5"
+  (agent claude-code #:id claude-sandboxed
          #:permission-mode bypassPermissions #:max-turns 80)
 ```
 
@@ -229,3 +230,9 @@ Lines 75–86. The `feature` workflow: Zero-touch: plan, build, unit tests, e2e 
       (review)
       (ship))))
 ```
+
+### Watching the work (not written down: the default)
+
+A live dashboard on http://127.0.0.1:8765 shows what the agents are doing.
+
+- Start it with `uv run adws/dashboard.py`; it only reads the layer's run files and never changes anything

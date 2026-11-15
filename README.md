@@ -409,6 +409,12 @@ You need `racket`, `uv`, `git`, and `podman` for containers.
 tools/al init ~/code/myapp            # creates ~/code/myapp.al with a draft LLM.txt and the language reference
 ```
 
+If the repository already has an agent setup (`CLAUDE.md`, `AGENTS.md`, `.claude/commands/`, an `adws/`
+folder), `al scout` lists it in `LLM.txt`, and `tools/al adopt ~/code/myapp.al --app ~/code/myapp` brings
+it into the layer: rule files become documents every agent must read, your prompts become commands, your
+workflow scripts become proposed workflows a person reviews. It never changes your repository; what needs
+your decision is in `adopted/REPORT.md`.
+
 Then give two prompts to an LLM agent (for example Claude Code), in this repository:
 
 1. [`meta/commands/scout-codebase.md`](meta/commands/scout-codebase.md) completes `LLM.txt` by reading your repository.
@@ -429,6 +435,15 @@ uv run adws/triggers/trigger_cron.py                                 # work thro
 
 To change the layer, edit `agentic.rkt` and run `al gen` again. The whole language is one file:
 [`docs/AL-DSL.llms.txt`](docs/AL-DSL.llms.txt).
+
+## Models and cost
+
+Routine steps run on Claude Opus 5.5; planning, building and review on Claude Fable 5.2. An agent can
+declare more model tiers, and each prompt or step picks one with `#:model-set`. For a single run,
+`--model-set TIER`, `--model TIER=ID` or `--max-cost USD` change that without editing the file.
+`(budget limits #:run-usd 5 #:day-usd 50)` stops a run that costs too much and hands it to a person.
+Reviewers can run on a different agent than the one that built the change. Details: the
+[guide](docs/GUIDE.md#choose-models-and-limit-spending).
 
 ## Tests
 
@@ -462,6 +477,8 @@ repository at a pinned commit, and a test fails if it leaves anything behind. De
 **Not yet shown**
 
 - Large or ambiguous tasks. The real runs were small, well-defined chores.
+- A real run on the current default models. Every recorded run used Claude Opus 5.5 on all steps.
+- `al adopt` on a real team's repository. It is tested on a constructed example.
 - Fan-out with real agents, and anything on a team's private repository.
 - GitHub end to end. The live forge test uses Forgejo; GitHub is covered by unit tests only.
 - The agent inside the container on anything but flask and the Notes demo app.
@@ -478,7 +495,7 @@ repository, and why a small language in Racket, is in [`docs/DESIGN.md`](docs/DE
 
 ```
 racket/al/        the language: vocabulary, compiler, schema and reference generators, tests
-tools/al          init · scout · compile · gen · verify · check
+tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard
 kit/templates/    the prompts every layer starts from      kit/runtime/   what runs a workflow
 meta/             the prompts that guide an LLM through describing a codebase and writing its layer
 tests/            authored layers for the five repositories, integration tests, the live Forgejo test

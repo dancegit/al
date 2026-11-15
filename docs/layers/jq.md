@@ -80,11 +80,12 @@ Lines 30–30. Artefacts are kept in the layer folder.
   (storage local)
 ```
 
-### Which agents do the work
+### Which agents and models do the work
 
-Lines 31–31. Agent: claude-code.
+Lines 31–31. Agent: claude-code. Reading the codebase, classifying the work, documentation, commits and pull requests use claude-opus-5-5; planning, patch plans, fixing failed checks, review, building, new prompts and new workflows use claude-fable-5-2.
 
-- `claude-code`: claude-code, models `claude-sonnet-5-5` / `claude-opus-5-5`, permission mode `acceptEdits`
+- `claude-code`: claude-code, model tiers base = `claude-opus-5-5` and heavy = `claude-fable-5-2`, permission mode `acceptEdits`
+- For one run, `--model-set TIER`, `--model TIER=MODEL_ID` (or AL_MODEL_SET / AL_MODELS) change this without editing the file
 
 ```racket
   (agent claude-code)
@@ -273,3 +274,9 @@ Lines 96–106. The `sdlc` workflow: Plan, build, test, document, commit, agent 
       (review #:patch plan-patch #:implement implement)
       (ship))))
 ```
+
+### Watching the work (not written down: the default)
+
+A live dashboard on http://127.0.0.1:8765 shows what the agents are doing.
+
+- Start it with `uv run adws/dashboard.py`; it only reads the layer's run files and never changes anything

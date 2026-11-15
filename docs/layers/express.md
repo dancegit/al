@@ -247,3 +247,16 @@ Lines 92–96. The `ask` workflow: Read-only: answer a spoken question about the
     (steps
       (run answer #:command question #:args ("$prompt")))))
 ```
+
+### Which agents and models do the work (not written down: the default)
+
+Agent: claude-code. Reading the codebase, classifying the work, documentation, commits, pull requests and answering questions use claude-opus-5-5; planning, patch plans, fixing failed checks, review, building, new prompts and new workflows use claude-fable-5-2.
+
+- `claude-code`: claude-code, model tiers base = `claude-opus-5-5` and heavy = `claude-fable-5-2`, permission mode `acceptEdits`
+- For one run, `--model-set TIER`, `--model TIER=MODEL_ID` (or AL_MODEL_SET / AL_MODELS) change this without editing the file
+
+### Watching the work (not written down: the default)
+
+A live dashboard on http://127.0.0.1:8765 shows what the agents are doing.
+
+- Start it with `uv run adws/dashboard.py`; it only reads the layer's run files and never changes anything
