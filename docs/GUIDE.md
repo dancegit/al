@@ -235,6 +235,12 @@ and the money went, and every agent step's transcript in readable form, with fil
 check's log can be read while the check is still running. A run whose process was killed is shown as
 "died", which is different from "failed". The page only reads; it cannot start, stop or change anything.
 
+A run's **Documents** tab lists the plan, `PR.md`, review reports and patch plans and other text the run
+wrote, as soon as each exists, with the step that produced it. **View** shows it in the page (Markdown
+rendered, or raw), **Download** saves the file, **Download all** saves them as one zip. To get the plan
+while the run is still building: open the run, then Documents, then **Download** next to the plan (or
+open the `plan-feature` step and follow its document link).
+
 To watch several codebases at once: `al dashboard ~/code` (finds every layer under that folder). To run
 it in its own locked-down container, declare `(dashboard podman)` in `agentic.rkt`; to turn it off,
 `(dashboard none)`. It listens on your own machine only; exposing it elsewhere requires naming a token

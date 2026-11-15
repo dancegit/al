@@ -57,6 +57,87 @@
     return "#";
   }
 
+  /** Markdown → DOM nodes, built with h() and text nodes only, so raw HTML in a document stays text.
+   * Blocks: fenced code, ATX headings, rules, blockquotes, one level of - / * / + and 1. lists,
+   * paragraphs; lines starting with | (tables) are kept as one preformatted block. */
+  function renderMarkdown(text) {
+    const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+    const RULE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
+    const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*$/;
+    const FENCE = /^\s{0,3}(```+|~~~+)/;
+    const QUOTE = /^\s{0,3}>\s?(.*)$/;
+    const BULLET = /^\s{0,3}[-*+]\s+(.*)$/;
+    const NUMBER = /^\s{0,3}(\d{1,9})[.)]\s+(.*)$/;
+    const TABLE = /^\s{0,3}\|/;
+    const starts = (line) => FENCE.test(line) || HEADING.test(line) || RULE.test(line) || QUOTE.test(line)
+      || BULLET.test(line) || NUMBER.test(line) || TABLE.test(line);
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      let m;
+      if (!line.trim()) { i += 1; continue; }
+      if ((m = FENCE.exec(line))) {
+        const fence = m[1];
+        const code = [];
+        i += 1;
+        while (i < lines.length && !lines[i].trimStart().startsWith(fence)) code.push(lines[i++]);
+        i += 1;
+        out.push(h("pre", {}, h("code", { text: code.join("\n") })));
+      } else if ((m = HEADING.exec(line))) {
+        out.push(h(`h${m[1].length}`, {}, inlineMarkdown(m[2].replace(/\s+#+$/, ""))));
+        i += 1;
+      } else if (RULE.test(line)) {
+        out.push(h("hr"));
+        i += 1;
+      } else if (QUOTE.test(line)) {
+        const quoted = [];
+        while (i < lines.length && (m = QUOTE.exec(lines[i]))) { quoted.push(m[1]); i += 1; }
+        out.push(h("blockquote", {}, inlineMarkdown(quoted.join("\n").trim())));
+      } else if (BULLET.test(line) || NUMBER.test(line)) {
+        const ordered = !BULLET.test(line);
+        const marker = ordered ? NUMBER : BULLET;
+        const items = [];
+        while (i < lines.length) {
+          const current = lines[i];
+          if ((m = marker.exec(current)) && !RULE.test(current)) { items.push(ordered ? m[2] : m[1]); i += 1; }
+          else if (items.length && current.trim() && /^\s+/.test(current) && !starts(current.trimStart())) { items[items.length - 1] += ` ${current.trim()}`; i += 1; }
+          else break;
+        }
+        const first = ordered ? Number(NUMBER.exec(line)[1]) : 1;
+        out.push(h(ordered ? "ol" : "ul", ordered && first !== 1 ? { start: first } : {}, items.map((item) => h("li", {}, inlineMarkdown(item)))));
+      } else if (TABLE.test(line)) {
+        const rows = [];
+        while (i < lines.length && TABLE.test(lines[i])) rows.push(lines[i++]);
+        out.push(h("pre", { class: "md-table", text: rows.join("\n") }));
+      } else {
+        const para = [];
+        while (i < lines.length && lines[i].trim() && (!para.length || !starts(lines[i]))) para.push(lines[i++].trim());
+        out.push(h("p", {}, inlineMarkdown(para.join("\n"))));
+      }
+    }
+    return out;
+  }
+
+  /** Inline Markdown → nodes: `code`, **strong** / __strong__, *em* / _em_, [label](url). Links go
+   * through safeHref (javascript: and other schemes become "#") and open in a new tab without referrer. */
+  function inlineMarkdown(text) {
+    const out = [];
+    const pattern = /`([^`\n]+)`|\*\*(.+?)\*\*|__(.+?)__|\*([^*\s](?:[^*]*?[^*\s])?)\*|(?<![A-Za-z0-9_])_([^_\s](?:[^_]*?[^_\s])?)_(?![A-Za-z0-9_])|\[([^\]\n]+)\]\(\s*([^)\s]*)(?:\s+"[^"\n]*")?\s*\)/g;
+    let last = 0;
+    let m;
+    while ((m = pattern.exec(text))) {
+      if (m.index > last) out.push(document.createTextNode(text.slice(last, m.index)));
+      if (m[1] !== undefined) out.push(h("code", { text: m[1] }));
+      else if (m[2] !== undefined || m[3] !== undefined) out.push(h("strong", {}, inlineMarkdown(m[2] ?? m[3])));
+      else if (m[4] !== undefined || m[5] !== undefined) out.push(h("em", {}, inlineMarkdown(m[4] ?? m[5])));
+      else out.push(h("a", { href: safeHref(m[7]), target: "_blank", rel: "noopener noreferrer" }, inlineMarkdown(m[6])));
+      last = pattern.lastIndex;
+    }
+    if (last < text.length) out.push(document.createTextNode(text.slice(last)));
+    return out;
+  }
+
   function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
   function replace(el, ...children) { clear(el); appendAll(el, children); return el; }
   const enc = encodeURIComponent;
@@ -1108,6 +1189,7 @@
       if (state.tab === "overview" && !state.step) renderOverview();
       else if (state.tab === "step") refreshStepHead();
       else if (state.tab === "artefacts") renderArtefacts();
+      else if (state.tab === "documents") renderDocuments();
     }
 
     const reload = debounce(load, 350);
@@ -1139,7 +1221,8 @@
 
     function renderTabs() {
       const tab = (name, label, hash) => h("a", { href: hash, class: state.tab === name || (name === "overview" && state.tab === "step") ? "active" : "", text: label });
-      replace(tabs, tab("overview", "Workflow", link([])), tab("artefacts", `Artefacts (${detail.artefacts.length})`, link(["artefacts"])),
+      replace(tabs, tab("overview", "Workflow", link([])),
+        tab("documents", `Documents (${(detail.documents || []).length})`, link(["documents"])), tab("artefacts", `Artefacts (${detail.artefacts.length})`, link(["artefacts"])),
         tab("log", "Run log", link(["log"])));
     }
 
@@ -1361,6 +1444,9 @@
           text: fmt.dur((record.ended || now()) - record.started) }) : null,
         node && node.cost ? h("span", { class: "num", text: fmt.cost(node.cost) }) : null,
         record.detail && !record.detail.trimStart().startsWith("{") ? h("span", { class: "dim title-cell", text: clip(record.detail, 160) }) : null);
+      for (const doc of (detail.documents || []).filter((d) => d.step === step)) {
+        headEl.appendChild(h("a", { class: "toggle", href: link(["documents"], { path: doc.path }), text: `document: ${doc.name}` }));
+      }
       panel.appendChild(headEl);
       panel.refreshHead = () => {};
       if (sources.length > 1 || type === "check" || type === "review") panel.appendChild(chips);
@@ -1488,6 +1574,69 @@
       }
     }
 
+    // ------------------------------------------------------------------ documents tab
+    let docCache = null;   // { path, mtime, data }: the open document, kept across reloads while its file is unchanged
+
+    function docQuery() { return `layer=${enc(layerKey)}&run=${enc(runId)}`; }
+
+    function renderDocuments() {
+      for (const child of [...body.children]) child.remove();
+      const docs = detail.documents || [];
+      const steps = new Set(detail.graph.nodes.map((n) => n.step));
+      const card = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", { text: "Documents" }), h("span", { class: "spacer" }),
+        docs.length ? h("a", { class: "toggle", href: `/api/doc/zip?${docQuery()}`, download: "", text: "Download all (.zip)" }) : null));
+      body.appendChild(card);
+      if (!docs.length) {
+        card.appendChild(h("div", { class: "empty", text: "This run has produced no documents yet." }));
+      } else {
+        card.appendChild(h("table", { class: "docs" },
+          h("thead", {}, h("tr", {}, ["name", "step", "size", "time", ""].map((label) => h("th", { text: label })))),
+          h("tbody", {}, docs.map((d) => h("tr", { class: d.path === state.params.path ? "selected" : "", dataset: { path: d.path } },
+            h("td", {}, h("div", { class: "doc-name", text: d.name }), h("div", { class: "faint mono", text: d.path })),
+            h("td", {}, d.step && steps.has(d.step) ? h("a", { href: link(["step", d.step]), text: d.step }) : h("span", { class: "dim", text: d.step || "—" })),
+            h("td", { class: "num", text: fmt.bytes(d.bytes) }),
+            h("td", { class: "num", text: fmt.time(d.mtime) }),
+            h("td", { class: "actions" },
+              h("button", { type: "button", class: "toggle", "data-role": "view", text: "View", onclick: () => go(link(["documents"], { path: d.path }), true) }),
+              h("a", { class: "toggle", "data-role": "download", href: `/api/doc/download?${docQuery()}&path=${enc(d.path)}`, download: d.filename, text: "Download" })))))));
+      }
+      const path = state.params.path;
+      if (!path) return;
+      const entry = docs.find((d) => d.path === path);
+      const view = h("div", { class: "card doc-view" });
+      body.appendChild(view);
+      if (!entry) { view.appendChild(h("div", { class: "empty", text: `${path} is not a document of this run (yet).` })); return; }
+      if (docCache && docCache.path === path && docCache.mtime === entry.mtime) { showDocument(view, entry, docCache.data); return; }
+      view.appendChild(h("div", { class: "dim", text: "loading…" }));
+      api(`/api/doc?${docQuery()}&path=${enc(path)}`).then((data) => {
+        docCache = { path, mtime: data.mtime, data };
+        if (view.isConnected) showDocument(view, entry, data);
+      }, (error) => replace(view, h("div", { class: "empty", text: `Could not load ${path}: ${error.message}` })));
+    }
+
+    function showDocument(view, entry, data) {
+      const raw = !!state.params.raw;
+      const markdown = data.type === "markdown" && data.viewable;
+      let content;
+      if (data.too_large) content = h("div", { class: "empty", text: `too large to show here (${fmt.bytes(data.bytes)}); download it instead` });
+      else if (!data.viewable) content = h("div", { class: "empty", text: "download only" });
+      else if (markdown && !raw) content = h("div", { class: "md" }, renderMarkdown(data.text));
+      else if (data.type === "json") {
+        let pretty = data.text;
+        try { pretty = JSON.stringify(JSON.parse(data.text), null, 2); } catch (_error) { /* shown as written */ }
+        content = h("pre", { text: pretty });
+      } else content = h("pre", { class: "doc-raw", text: data.text });
+      replace(view,
+        h("div", { class: "card-head" }, h("h2", { text: entry.name }), h("span", { class: "badge", text: entry.kind }),
+          entry.step ? h("span", { class: "dim", text: `step ${entry.step}` }) : null,
+          h("span", { class: "dim num", text: `${fmt.bytes(entry.bytes)} · ${fmt.time(entry.mtime)}` }), h("span", { class: "spacer" }),
+          markdown ? h("button", { type: "button", class: "toggle", "data-role": "raw-toggle", text: raw ? "rendered" : "raw",
+            onclick: () => go(link(["documents"], { path: entry.path, raw: raw ? "" : "1" }), true) }) : null,
+          h("a", { class: "toggle", href: `/api/doc/download?${docQuery()}&path=${enc(entry.path)}`, download: entry.filename, text: "Download" }),
+          h("a", { class: "toggle", href: link(["documents"]), text: "close" })),
+        content);
+    }
+
     function renderLog() {
       for (const child of [...body.children]) child.remove();
       const card = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", { text: "run.log" }), h("span", { class: "spacer" }),
@@ -1515,6 +1664,7 @@
       if (tab === "overview") renderOverview();
       else if (tab === "step") { state.sourceSig = sourcesFor(state.step).sources.map((src) => `${src.key}:${src.status}`).join("|"); openStep(); }
       else if (tab === "artefacts") renderArtefacts();
+      else if (tab === "documents") renderDocuments();
       else if (tab === "log") renderLog();
       return true;
     }

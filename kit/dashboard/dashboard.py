@@ -19,6 +19,7 @@ import base64
 import difflib
 import hmac
 import http.client
+import io
 import ipaddress
 import json
 import math
@@ -37,6 +38,7 @@ import threading
 import time
 import urllib.parse
 import webbrowser
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -56,6 +58,11 @@ PRUNE_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "target", 
 EXPLAIN_FILES = ("EXPLAIN.md", "explain.md", "docs/EXPLAIN.md", "docs/explain.md", "docs/explain.txt")
 DEFINITION_FILES = (LAYER_FILE, "agentic.rkt")
 SERVED_TREES = ("agents", "artefacts", "specs")
+DOC_SUFFIXES = (".md", ".txt", ".json", ".log")   # what counts as a run's document (viewable as text)
+DOC_VIEW_CAP = 1_000_000    # bytes shown inline; larger documents are download only
+DOC_ZIP_CAP = 50_000_000    # bytes put into one "download all" zip
+DOC_TYPES = {".md": "text/markdown; charset=utf-8", ".txt": "text/plain; charset=utf-8",
+             ".log": "text/plain; charset=utf-8", ".json": "application/json"}
 PREVIEW_CHARS = 1600
 TRANSCRIPT_SETTLE = 20.0   # a JSON line without its newline is held this long before it counts as truncated
 TEXT_CAP = 400_000
@@ -1681,6 +1688,7 @@ class RunModel:
                 "fanout": {"run": str(parent["run"]), "step": str(parent.get("step") or ""), "index": parent.get("index")}}
                if parent.get("run") else {}),
             "artefacts": len(state.get("artefacts") or []),
+            "documents": len(run_documents(self.layer, self.id, data["state"])),
             "agents": len(agents),
             "budget": budget_view(state),
             "billing": str(cost_record.get("billing") or "") or collapse_billing(a["billing"] for a in agents),
@@ -1894,6 +1902,7 @@ class RunModel:
                        "summary": short((review.get("verdict") or {}).get("summary", "")), "rounds": rounds},
             "ship": {k: (short(v) if isinstance(v, str) else v) for k, v in ship.items() if k != "gate"},
             "gate": gate, "handoff": handoff, "fanout": fanout, "artefacts": artefacts,
+            "documents": run_documents(self.layer, self.id, state),
             "budget": budget_view(state),
             "usage": usage_view(state),
             "scripts": {name: {k: (short(v) if isinstance(v, str) else v) for k, v in rec.items()}
@@ -2341,7 +2350,7 @@ class Model:
                              "problem": f"{type(exc).__name__}: {exc}"[:300], "steps": [], "title": "", "prompt": "",
                              "started": None, "ended": None, "duration": None, "cost": None, "tokens": {},
                              "turns": 0, "current": None, "waiting": "", "container": None, "ports": [],
-                             "outcome": {}, "error": "", "fanout_children": [], "artefacts": 0, "mtime": now,
+                             "outcome": {}, "error": "", "fanout_children": [], "artefacts": 0, "documents": 0, "mtime": now,
                              "klass": "", "dry_run": False, "source": "", "agents": 0, "cost_partial": False,
                              "failed_step": ""}
                 if fresh["status"] == "running":
@@ -2514,6 +2523,123 @@ def safe_layer_file(layer: Layer, relative: str) -> Path:
     return target
 
 
+_PATCH_STEP = re.compile(r"^patch-\d+$")
+_VERDICT_DIR = re.compile(r"^review-\d+(-\d+)?$")
+
+
+def document_path(layer: Layer, recorded: Any) -> str | None:
+    """A path the runtime recorded (absolute on the host, possibly under another mount such as a
+    container's, or already layer-relative) → the layer-relative POSIX path, or None when it is
+    not one of the layer's served trees."""
+    if not isinstance(recorded, str) or not recorded or len(recorded) > 1024:
+        return None
+    if any(c in recorded for c in "\n\r\x00"):
+        return None
+    text = recorded.strip()
+    if not text or "\\" in text:
+        return None
+    relative: str | None = None
+    if not text.startswith("/"):
+        relative = text
+    else:
+        for root in (os.path.realpath(layer.path), str(layer.path)):
+            if text.startswith(root + os.sep):
+                relative = text[len(root) + 1:]
+                break
+        if relative is None:
+            parts = text.split("/")
+            index = next((i for i in range(len(parts) - 1, 0, -1)
+                          if parts[i] in SERVED_TREES and parts[i - 1] == layer.path.name), None)
+            if index is None:
+                return None
+            relative = "/".join(parts[index:])
+    parts = relative.split("/")
+    if any(part in {"", ".", ".."} for part in parts) or parts[0] not in SERVED_TREES or len(parts) < 2:
+        return None
+    return relative
+
+
+def _doc_type(suffix: str) -> str:
+    return {".md": "markdown", ".json": "json"}.get(suffix, "text")
+
+
+def run_documents(layer: Layer, run_id: str, state: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Every document a run has produced so far, in a stable order and without duplicates: its plan,
+    the text outputs its steps recorded, review patch plans, PR.md and other text in agents/<id>/,
+    reviewer verdicts and text artefacts. Each must be a regular file inside specs/ or this run's own
+    agents/<id>/ or artefacts/<id>/ (symlinks out of the layer are not listed)."""
+    state = state if isinstance(state, dict) else {}
+    outputs = state.get("outputs") if isinstance(state.get("outputs"), dict) else {}
+    candidates: list[tuple[Any, str, str, str, str]] = []   # (recorded, step, kind, name, filename)
+    plan = state.get("plan")
+    if isinstance(plan, str) and plan.strip():
+        step = next((str(k) for k, v in outputs.items() if isinstance(v, str) and v.strip() == plan.strip()), "plan")
+        candidates.append((plan, step, "plan", "", ""))
+    for step, value in outputs.items():
+        relative = document_path(layer, value)
+        if relative and relative.endswith(DOC_SUFFIXES):
+            candidates.append((relative, str(step), "patch" if _PATCH_STEP.match(str(step)) else "output", "", ""))
+    review = state.get("review") if isinstance(state.get("review"), dict) else {}
+    for item in review.get("rounds") or []:
+        patch = item.get("patch") if isinstance(item, dict) else None
+        if isinstance(patch, dict) and patch.get("patch_plan"):
+            candidates.append((patch["patch_plan"], "review", "patch", "", ""))
+    ship = state.get("ship") if isinstance(state.get("ship"), dict) else {}
+    candidates.append((f"agents/{run_id}/PR.md", str(ship.get("stopped_at") or "ship"), "pr", "", ""))
+    run_dir = layer.path / "agents" / run_id
+    try:
+        entries = sorted(os.scandir(run_dir), key=lambda e: e.name)
+    except OSError:
+        entries = []
+    for entry in entries:
+        if entry.name in {"state.json", "run.log"} or not entry.name.endswith(DOC_SUFFIXES):
+            continue
+        if entry.is_file(follow_symlinks=False):
+            candidates.append((f"agents/{run_id}/{entry.name}", "", "run", "", ""))
+    for entry in entries:
+        if _VERDICT_DIR.match(entry.name) and entry.is_dir(follow_symlinks=False):
+            candidates.append((f"agents/{run_id}/{entry.name}/output.txt", "review", "verdict",
+                               f"{entry.name} verdict", f"{entry.name}-output.txt"))
+    for item in state.get("artefacts") or []:
+        if isinstance(item, dict) and isinstance(item.get("path"), str) and item["path"].endswith(DOC_SUFFIXES):
+            candidates.append((item["path"], str(item.get("step") or ""), "artefact", "", ""))
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for recorded, step, kind, name, filename in candidates:
+        relative = document_path(layer, recorded)
+        if relative is None or relative in seen:
+            continue
+        parts = relative.split("/")
+        if parts[0] != "specs" and parts[1] != run_id:
+            continue
+        try:
+            target = safe_layer_file(layer, relative)
+            st = target.stat()
+        except (Refused, OSError):
+            continue
+        seen.add(relative)
+        suffix = os.path.splitext(relative)[1].lower()
+        out.append({"path": relative, "name": name or parts[-1], "filename": filename or parts[-1], "step": step,
+                    "kind": kind, "bytes": st.st_size, "mtime": st.st_mtime,
+                    "viewable": suffix in DOC_SUFFIXES and st.st_size <= DOC_VIEW_CAP, "type": _doc_type(suffix)})
+    return out
+
+
+def run_document(layer: Layer, run_id: str, relative: str) -> tuple[dict[str, Any], Path] | None:
+    """The listed document `relative` of a run and its file, or None when the run does not list it."""
+    if not RUN_ID.match(run_id or "") or not isinstance(relative, str):
+        return None
+    state = read_json(layer.path / "agents" / run_id / "state.json")
+    entry = next((e for e in run_documents(layer, run_id, state if isinstance(state, dict) else None)
+                  if e["path"] == relative), None)
+    if entry is None:
+        return None
+    try:
+        return entry, safe_layer_file(layer, relative)
+    except Refused:
+        return None
+
+
 INLINE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
                 ".webp": "image/webp", ".webm": "video/webm", ".mp4": "video/mp4", ".ogg": "video/ogg",
                 ".wav": "audio/wav", ".mp3": "audio/mpeg", ".json": "application/json; charset=utf-8",
@@ -2636,6 +2762,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._tail(query)
             if path == "/api/layer":
                 return self._layer(query)
+            if path == "/api/doc":
+                return self._doc(query)
+            if path == "/api/doc/download":
+                return self._doc_download(query)
+            if path == "/api/doc/zip":
+                return self._doc_zip(query)
             if path.startswith("/files/"):
                 return self._file(path[len("/files/"):])
             if path == "/healthz":
@@ -2741,6 +2873,81 @@ class Handler(BaseHTTPRequestHandler):
         if detail is None:
             return self._error(404, "no such layer")
         self._json(detail)
+
+    def _doc_target(self, query: dict[str, list[str]]) -> tuple[Layer, RunFiles, dict[str, Any], Path] | None:
+        """A document the run lists, or a 404 (never 403: what is not listed does not exist here)."""
+        resolved = self._resolve_run(query)
+        if not resolved:
+            return None
+        layer, run = resolved
+        relative = self._q(query, "path")
+        found = None
+        if relative and "\x00" not in relative and "\\" not in relative and not relative.startswith("/"):
+            found = run_document(layer, run.id, relative)
+        if found is None:
+            self._error(404, "no such document")
+            return None
+        entry, target = found
+        return layer, run, entry, target
+
+    def _doc(self, query: dict[str, list[str]]) -> None:
+        resolved = self._doc_target(query)
+        if not resolved:
+            return
+        _layer, _run, entry, target = resolved
+        text = ""
+        try:
+            if entry["viewable"]:
+                text = target.read_bytes()[:DOC_VIEW_CAP].decode("utf-8", errors="replace")
+        except OSError:
+            return self._error(404, "no such document")
+        self._json({**entry, "text": text, "too_large": entry["bytes"] > DOC_VIEW_CAP,
+                    "viewable": bool(entry["viewable"])})
+
+    def _doc_download(self, query: dict[str, list[str]]) -> None:
+        resolved = self._doc_target(query)
+        if not resolved:
+            return
+        _layer, _run, entry, target = resolved
+        try:
+            body = target.read_bytes()
+        except OSError:
+            return self._error(404, "no such document")
+        filename = re.sub(r"[^A-Za-z0-9._-]", "_", entry["filename"])
+        self._send(200, body, DOC_TYPES.get(target.suffix.lower(), "application/octet-stream"),
+                   {"Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Security-Policy": "sandbox; default-src 'none'"})
+
+    def _doc_zip(self, query: dict[str, list[str]]) -> None:
+        resolved = self._resolve_run(query)
+        if not resolved:
+            return
+        layer, run = resolved
+        state = read_json(run.dir / "state.json")
+        docs = run_documents(layer, run.id, state if isinstance(state, dict) else None)
+        if not docs:
+            return self._error(404, "no documents")
+        buffer = io.BytesIO()
+        total, skipped = 0, []
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for doc in docs:
+                try:
+                    target = safe_layer_file(layer, doc["path"])
+                    if total + target.stat().st_size > DOC_ZIP_CAP:
+                        skipped.append(doc["path"])
+                        continue
+                    data = target.read_bytes()
+                except (Refused, OSError):
+                    continue
+                total += len(data)
+                archive.writestr(doc["path"], data)
+            if skipped:
+                archive.writestr("SKIPPED.txt", "Not included (the zip is limited to "
+                                 f"{DOC_ZIP_CAP} bytes); download them one by one:\n" + "\n".join(skipped) + "\n")
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", f"{layer.key}-{run.id}-documents.zip")
+        self._send(200, buffer.getvalue(), "application/zip",
+                   {"Content-Disposition": f'attachment; filename="{name}"',
+                    "Content-Security-Policy": "sandbox; default-src 'none'"})
 
     def _file(self, rest: str) -> None:
         rest = urllib.parse.unquote(rest)
