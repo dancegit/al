@@ -13,6 +13,7 @@ git worktrees under `trees/`, plans land in `specs/`, run state and logs in `age
 | `plan-build` | cli, tasklist | manual, cron | worktree | your machine | your machine | human | classify → plan-chore → plan-bug → plan-feature → build |
 | `sdlc` | cli, tasklist | manual, cron | worktree | your machine | your machine | human | classify → plan-chore → plan-bug → plan-feature → build → test-compiler → test-runtime → test-tools → test-dashboard → test-integration → document → commit → review → ship |
 | `reviewed` | cli, tasklist | manual, cron | worktree | your machine | your machine | auto → pr | classify → plan-chore → plan-bug → plan-feature → build → test-compiler → test-runtime → test-tools → test-dashboard → test-integration → document → commit → review → ship |
+| `zte` | cli, tasklist | manual, cron | worktree → podman | container | container | auto → merge | classify → plan-chore → plan-bug → plan-feature → build → test-compiler → test-runtime → test-tools → test-dashboard → test-integration → document → commit → review → ship |
 
 ## Run
 

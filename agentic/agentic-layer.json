@@ -408,6 +408,171 @@
         "manual",
         "cron"
       ]
+    },
+    {
+      "agent": "claude-code",
+      "changes": "codebase",
+      "classes": [],
+      "description": "Zero-touch: plan, build and test inside a container; two reviewer agents and every suite must pass; then merge without a person",
+      "environment": [
+        "worktree",
+        "sandbox"
+      ],
+      "input": [
+        "cli",
+        "tasklist"
+      ],
+      "name": "zte",
+      "review": "zero-touch",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "implement",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "cmd": "test-compiler",
+          "collect": [
+            "log"
+          ],
+          "kind": "check",
+          "name": "test-compiler",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test-runtime",
+          "collect": [
+            "log"
+          ],
+          "kind": "check",
+          "name": "test-runtime",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test-tools",
+          "collect": [
+            "log"
+          ],
+          "kind": "check",
+          "name": "test-tools",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test-dashboard",
+          "collect": [
+            "log"
+          ],
+          "kind": "check",
+          "name": "test-dashboard",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test-integration",
+          "collect": [
+            "log"
+          ],
+          "kind": "check",
+          "name": "test-integration",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "document",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "document",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [],
+          "command": "commit",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "commit",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "implement": "implement",
+          "kind": "review",
+          "name": "review",
+          "patch": "plan-patch"
+        },
+        {
+          "kind": "ship",
+          "message": "",
+          "name": "ship"
+        }
+      ],
+      "trigger": [
+        "manual",
+        "cron"
+      ]
     }
   ],
   "agents": [
@@ -782,6 +947,38 @@
       "portsPerRun": 2,
       "sparse": [],
       "status": "stable"
+    },
+    {
+      "agentInside": true,
+      "baseImage": "docker.io/library/python:3.12-slim",
+      "caches": [
+        "uv"
+      ],
+      "cpus": "4",
+      "credentials": [
+        "claude"
+      ],
+      "id": "sandbox",
+      "kind": "podman",
+      "memory": "8g",
+      "network": "slirp",
+      "packages": [
+        "git",
+        "curl",
+        "ca-certificates",
+        "libatomic1",
+        "racket"
+      ],
+      "pidsLimit": 2048,
+      "publish": [],
+      "readOnlyRoot": false,
+      "scope": "run",
+      "services": [],
+      "setup": [
+        "pip install --no-cache-dir uv",
+        "HOME=/opt/claude bash -c 'curl -fsSL https://claude.ai/install.sh | bash' && chmod -R a+rX /opt/claude && ln -s /opt/claude/.local/bin/claude /usr/local/bin/claude"
+      ],
+      "status": "stable"
     }
   ],
   "experts": [
@@ -910,6 +1107,35 @@
       ],
       "reviewers": 2,
       "ship": "pr",
+      "status": "stable"
+    },
+    {
+      "agent": "",
+      "allowedClasses": [
+        "chore",
+        "bug",
+        "feature"
+      ],
+      "artefacts": [
+        "log"
+      ],
+      "blockProtectedPaths": true,
+      "bodyCmd": "",
+      "command": "review",
+      "deployCmd": "",
+      "id": "zero-touch",
+      "kind": "auto",
+      "maxDiffLines": 4000,
+      "maxRetries": 2,
+      "requireChecks": [
+        "test-compiler",
+        "test-runtime",
+        "test-tools",
+        "test-dashboard",
+        "test-integration"
+      ],
+      "reviewers": 2,
+      "ship": "merge",
       "status": "stable"
     }
   ],

@@ -67,3 +67,11 @@ def make_layer(tmp_path: Path, app_repo: Path):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "podman: needs a working rootless podman and a local base image")
+
+
+# A run's sandbox points git at the run's own object store through environment variables. Tests build
+# their own repositories, so those variables must not reach them: clear them once, before any test.
+import os as _os
+for _name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+              "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_QUARANTINE_PATH", "GIT_CEILING_DIRECTORIES"):
+    _os.environ.pop(_name, None)

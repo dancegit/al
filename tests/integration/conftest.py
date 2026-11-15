@@ -219,3 +219,11 @@ def layer(testbed: Callable[[str], Path], tmp_path: Path):
         if left:
             leaks.append(f"{app.name}: worktrees still registered: {left}")
     assert not leaks, "teardown found leaks:\n  " + "\n  ".join(leaks)
+
+
+# A run's sandbox points git at the run's own object store through environment variables. Tests build
+# their own repositories, so those variables must not reach them: clear them once, before any test.
+import os as _os
+for _name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+              "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_QUARANTINE_PATH", "GIT_CEILING_DIRECTORIES"):
+    _os.environ.pop(_name, None)
