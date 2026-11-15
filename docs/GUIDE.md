@@ -39,13 +39,21 @@ Your codebase must be a git checkout with at least one commit. Throughout the gu
 al init ~/code/myapp
 ```
 
-You should see the path of the new folder, `~/code/myapp.al`, containing two files:
+To keep the layer inside your repository instead, versioned with the code, use
+`al init ~/code/myapp --in-repo`. It creates `~/code/myapp/agentic`. Every later command then takes
+`~/code/myapp/agentic` where this guide writes `~/code/myapp.al`, and scripts are run from the repository
+root as `uv run agentic/adws/…`. Step 14 explains what is committed and the one rule that comes with it.
+
+You should see the path of the new folder, `~/code/myapp.al`, containing two files (three with
+`--in-repo`: a `.gitignore` as well):
 
 - `LLM.txt`: a draft description of your codebase, made by a script from facts it can prove (manifests,
   lock files, CI config). Lines it could not establish are marked `UNVERIFIED`.
 - `AL-DSL.llms.txt`: the complete reference of the layer language, for the LLM that will write your layer.
 
-The command also prints the relative path from the layer to your codebase. You need it in step 3.
+The command also prints the relative path from the layer to your codebase. You need it in step 4.
+
+The draft records your git remote URL. If the layer will be committed and the remote is private, remove that line.
 
 ## Step 2 — Describe the codebase
 
@@ -64,8 +72,12 @@ The codebase is read-only: do not change anything in it and do not run its build
 Then read `LLM.txt` yourself. It is the one document everything else depends on, and it is short. Check:
 
 - **Commands:** is each one what you actually run? Is anything missing (a type checker, an end-to-end suite)?
+  A repository with several suites gets one row per suite, with names of your choosing (`test-unit`,
+  `test-api`). The names in the template are suggestions.
 - **Protected paths:** CI config, migrations, lock files, licence, security-sensitive code. Add what the agent missed.
-- **Conventions:** the rules you would tell a new colleague. One line each.
+- **Conventions:** the rules you would tell a new colleague. One line each. Rules that are written in
+  no file are yours to add; say so under Evidence ("stated by the maintainer"), and consider putting
+  them in a CONTRIBUTING file so the next scout finds them.
 - **`UNVERIFIED` lines:** fill in what you know. Leaving a duration unknown is fine.
 
 *If it goes wrong:* the agent invents a command. Delete the row. A command that is not written down in
@@ -85,6 +97,9 @@ Every workflow answers four questions. Decide your answers in plain words; you d
 **Start conservative:** tasks from a text file or the command line, a container, and you reviewing a
 pull request (or a branch, if you have no forge). You can loosen it later, one step at a time.
 
+One exception to "a container": if your tests themselves start containers or drive a browser, run the
+checks on your machine first. A container in which those tests are skipped proves less.
+
 ## Step 4 — Have the layer written
 
 In the same agent session (still in the `al` repository):
@@ -97,6 +112,9 @@ $3 = Preferences: tasks from a text file and the command line; started by hand o
      agents work in a git worktree inside a podman container; a human reviews; no forge.
      The codebase root, relative to the layer folder, is ../myapp
 ```
+
+If the layer is in your repository, the last line of the preferences is instead
+`The layer is in the repository: (codebase #:root "..") and (layer in-repo #:dir "agentic")`.
 
 The agent writes `agentic.rkt` and compiles it. If the compiler rejects it, the error names the line and
 lists the valid choices, and the agent fixes it. When it reports success, check for yourself:
@@ -133,10 +151,13 @@ You should see `generated N files`. The folder now contains:
 commands/   the prompts, with your commands, paths and rules filled in
 hops/       prompts that take a plan or another prompt as input
 adws/       one runnable script per workflow, plus triggers
-env/        the container recipe (and the Nix file, if you chose Nix)
+env/        the container recipe and the Nix file (only if you chose a container or Nix)
 tasks.md    the task list (if you chose it)
 README.md   a table of your workflows and how to run them
 ```
+
+Also: `experts/` (if you declared any), `templates/` (your own prompt templates, step 14),
+`agentic-layer.json` (the compiled definition), `conditional_docs.md`, and a live dashboard under `adws/`.
 
 Open one prompt, for example `commands/plan-chore.md`, and read it as if you were the agent. It should
 mention your real commands and paths. If it reads as generic, your `LLM.txt` conventions were thin; add
@@ -152,6 +173,9 @@ al verify ~/code/myapp.al              # every command, on a clean throwaway cop
 al verify ~/code/myapp.al --cmd test   # one command
 ```
 
+The clean copy is made from your default branch (`#:default-branch` in `agentic.rkt`, `main` unless you
+say otherwise), not from whatever you have checked out. Commit and merge what you want checked first.
+
 Expect the first run to be slow: it builds the container image and downloads your dependencies.
 You should end with `verify: N/N ok`. Do not skip this step. On the example repositories it found
 mistakes in layers that compiled perfectly.
@@ -165,6 +189,8 @@ mistakes in layers that compiled perfectly.
 | a test cannot bind a port that is busy on your machine | it ran on the host | run checks in a container: each run has its own network |
 | needs the network but has none | the podman option has `#:network none` | remove it, or add a `#:caches` entry and warm the cache |
 | Nix takes minutes or stalls | fetching nixpkgs | set `#:nixpkgs` to a local or pinned flake reference |
+| a command from your README fails on the clean copy although it works for you | your checkout has files the clean copy lacks (build output, caches), or the documented command was never run as written | find the command that works, put it in `LLM.txt` with its citation, and correct the document |
+| a command passes one time and fails the next | a test that depends on timing | do not use it as a check: an agent would be sent to "fix" it. Declare a deterministic variant, and fix the test |
 
 ## Step 8 — Check, then rehearse for free
 
@@ -208,14 +234,23 @@ cd ~/code/myapp.al
 uv run adws/adw_sdlc.py "Add a test that <specific behaviour>. Acceptance: <what must be true>."
 ```
 
-Watch the step lines. A typical run takes two to five minutes. At the end:
+Watch the step lines. A run takes the agent's time (two to four minutes for a small change) plus your
+checks, and the build step runs the plan's validation commands once itself before the checks run them
+again. With a five-minute test suite, expect ten to fifteen minutes. Keep `#:validation` on the planning
+commands to your fast commands.
+
+Like `al verify`, a run starts from your default branch, not from what you have checked out. If you are
+on another branch, the run's branch will not be based on it: take the change with `git cherry-pick`, or
+merge after your branch has caught up. At the end:
 
 - **With a forge:** a pull request, with the plan, the check results and any proof attached.
 - **Without one:** a branch in your repository and `agents/<run id>/PR.md` with the same text.
   Look at the change with `git -C ~/code/myapp log -p <branch>`.
 
-Your checkout is exactly as you left it (`git -C ~/code/myapp status`). Merge the branch or the pull
-request if you are happy.
+Your checkout is as you left it (`git -C ~/code/myapp status`). One known exception: with the layer in
+your repository, a workflow that has a `document` step adds a line to the committed file
+`agentic/conditional_docs.md`; review that line with the change, or restore the file. Merge the branch
+or the pull request if you are happy.
 
 **If the run stops** (a check will not go green, or the agent says something needs a person), it does
 not just fail: it opens a pull request marked `[needs human]` (or writes `PR.md`) saying why it stopped
@@ -254,6 +289,7 @@ uv run adws/triggers/trigger_cron.py            # keep polling
 ```
 
 Each task is claimed, run, and marked `[x]` with the run id, or `[!]` with the reason.
+`uv run adws/triggers/trigger_cron.py --once --dry-run` rehearses this with the stand-in agent and charges nothing.
 
 **Issues on a forge.** Declare `(forge github #:repo "you/myapp")` or
 `(forge forgejo #:host "https://…" #:repo "you/myapp")`, a `(prompt-input issue)`, and either
@@ -362,7 +398,8 @@ al gen ~/code/myapp.al
 A template in the layer's `templates/` folder wins over the built-in one and survives every
 regeneration. Keep its `{{…}}` placeholders; they are how your commands and paths get filled in.
 `--list` tells you when the built-in version has changed since you took your copy. For a one-line
-instruction, a `#:focus` line on the command in `agentic.rkt` is simpler than a template.
+instruction, a `#:focus` line on the command in `agentic.rkt` is simpler than a template. A focus line
+adds to the template; to change something the template already prescribes, eject it.
 
 ### If you edited a generated file by mistake
 
@@ -402,7 +439,7 @@ In `agentic.rkt`, the codebase root is then `".."` and the layer says where it l
 Then `al gen ~/code/myapp/agentic`, commit the `agentic` folder, and run workflows from the repository:
 `uv run agentic/adws/adw_sdlc.py "…"`. What is committed: the definition, your templates and the
 generated prompts and workflows. What is ignored: everything a run produces (working copies, logs,
-proof, the task list). Runs leave `git status` clean.
+proof, the task list). Runs leave `git status` clean, with the one exception named in step 9.
 
 One rule comes with this. An ordinary workflow that changes anything under `agentic/` is stopped and
 handed to a person, whatever its review setting: agents do not get to rewrite their own instructions
@@ -428,5 +465,7 @@ and raw agent output, and each check's log. Start there.
 
 From the real runs in this repository, with Claude Opus 5.5: a small change with tests costs about
 $0.50 to $0.70 and takes two to three minutes; a feature with a recorded video and two reviewers costs
-$1.30 to $2.40; a change that is rejected, fixed and reviewed again about $3. Dry runs, `al verify`
-and `al check` cost nothing.
+$1.30 to $2.40; a change that is rejected, fixed and reviewed again about $3. Every agent step costs
+roughly $0.08 to $0.16 before it does anything, for reading its prompt, so a workflow with five agent
+steps starts at about $0.60. On this repository itself, with five test suites as checks, one small
+change took 12½ minutes and $1.01. Dry runs, `al verify` and `al check` cost nothing.

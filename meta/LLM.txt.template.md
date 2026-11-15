@@ -28,8 +28,8 @@ repository as `UNVERIFIED`. Delete this comment and all `<…>` guidance in the 
 
 ## Commands
 
-<Only commands that work from the repo root on a fresh checkout after `install`. Names are drawn from:
-install, lint, format, typecheck, test, test-fast, e2e, build, start, docs, deploy. One row per name that exists; omit names the codebase does not have.>
+<Only commands that work from the repo root on a fresh checkout after `install`. Usual names are:
+install, lint, format, typecheck, test, test-fast, e2e, build, start, docs, deploy; use others (`test-unit`, `test-api`) when the codebase has several commands of one kind. One row per command that exists.>
 
 | name | shell command from repo root | proves what | typical duration | needs network? |
 | --- | --- | --- | --- | --- |
