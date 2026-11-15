@@ -96,7 +96,7 @@ Protected paths:
 
 Codebase commands the new command may list as its validation:
 
-- **install**: `git submodule update --init && autoreconf -i && ./configure --disable-docs --with-oniguruma=builtin --enable-static` — The Oniguruma submodule is fetched and the build system is generated and configured; must run once in a fresh checkout before build or test
+- **install**: `autoreconf -i && ./configure --disable-docs --with-oniguruma=yes --enable-static` — The build system is generated and configured against the system Oniguruma (libonig-dev); the vendor/oniguruma submodule is not fetched, because a run's container mounts the repository's .git read-only and git submodule update cannot register it; must run once in a fresh checkout before build or test
 - **build**: `make -j"$(nproc)"` — libjq and the jq binary compile and link with -Wextra -Wall
 - **test**: `make check VERBOSE=yes` — Every driver in TESTS of Makefile.am passes against the built ./jq; writes test-suite.log and tests/*.log
 - **docs**: `(cd docs && pipenv sync && pipenv run python3 build_website.py)` — The website renders from docs/content into docs/output/

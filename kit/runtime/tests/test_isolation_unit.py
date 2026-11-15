@@ -457,3 +457,17 @@ def test_zero_port_runs_still_record_their_owner(tmp_path: Path) -> None:
     assert table["bbbb0001"] == {"ports": [], "pid": os.getpid()}
     envs.release_ports(tmp_path, "bbbb0001")
     assert "bbbb0001" not in json.loads((tmp_path / "agents" / ".ports.json").read_text())
+
+
+def test_sidecars_start_as_namespace_root_with_a_minimal_capability_set() -> None:
+    """Service images chown their data dir and drop privileges themselves; they cannot do that as
+    the host uid with every capability dropped (postgres:16-alpine fails initdb). The run container
+    keeps the stricter flags."""
+    option = {"pidsLimit": 256, "readOnlyRoot": False}
+    sidecar = envs.sidecar_flags(option)
+    assert sidecar[:2] == ["--user", "0:0"]
+    assert "--cap-drop=ALL" in sidecar and "--security-opt=no-new-privileges" in sidecar
+    assert f"--cap-add={envs.SIDECAR_CAPABILITIES}" in sidecar
+    assert set(envs.SIDECAR_CAPABILITIES.split(",")) == {"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"}
+    run = envs.hardening_flags(option)
+    assert not any(flag.startswith("--cap-add") for flag in run) and "--user" not in run

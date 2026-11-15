@@ -193,3 +193,23 @@ the host. Consequences, each covered by a test against real podman:
 `al verify` is the counterpart for truth: the compiler proves the layer is coherent, `verify` runs
 every declared codebase command in its declared environment on a clean worktree and proves the
 descriptor is true.
+
+## Isolation per run
+
+Every run is isolated on five axes, and none of them depends on runs being polite to each other:
+
+| Axis | Mechanism |
+|---|---|
+| Files | Own git worktree; with podman only that worktree is mounted. Other runs' worktrees, state, artefacts and object quarantines are not mounted at all, and neither is the application's working tree. |
+| Git | The app's `.git` is read-only in the container; new objects go to a per-run quarantine; only the host moves refs, after freezing the container and verifying its git metadata. |
+| Network and ports | Each run has its own network namespace, so the app inside binds its usual ports and runs cannot collide. `#:publish (8000)` exposes a container port on `127.0.0.1` at a host port leased to that run (`ADW_PUBLISHED_8000`); nothing else is reachable from the host. Leases are tied to a live process. |
+| Services | `(service container #:id db #:image … #:ready-cmd …)` listed in `#:services` gives each run its own sidecar instances in a per-run pod (shared localhost, no mounts). Parallel runs never share a database. |
+| Privileges and resources | `--cap-drop=ALL`, `no-new-privileges`, a pids limit, memory and CPU limits, optional read-only root, per-container HOME and /tmp. Layer-wide slot pools cap runs, agent calls and checks. |
+
+Stale containers and pods of dead runs are removed when the next run starts, selected by label so
+one layer never touches another's.
+
+If anything fails *after* the gate decided to ship — the default branch moved, a push was rejected,
+the forge refused the merge — the run falls back to the human path: a PR (or `PR.md` without a
+forge) with the reason recorded, the commits kept on the run's branch, and no deploy. A git
+integrity failure is never turned into a PR.

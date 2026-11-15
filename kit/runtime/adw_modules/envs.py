@@ -148,6 +148,21 @@ def hardening_flags(option: dict[str, Any]) -> list[str]:
     return flags
 
 
+SIDECAR_CAPABILITIES = "CHOWN,DAC_OVERRIDE,FOWNER,SETGID,SETUID"
+
+
+def sidecar_flags(option: dict[str, Any]) -> list[str]:
+    """Hardening for sidecar services. Service images (postgres, redis, …) start as root, chown
+    their data directory and then drop to their own user, which the run container's flags forbid:
+    under the pod's keep-id namespace they would start as the host uid and fail to initialise
+    (verified with postgres:16-alpine). So a sidecar starts as root INSIDE the user namespace —
+    an unprivileged sub-uid on the host — with only the five capabilities that hand-over needs.
+    Everything else stays dropped, and a sidecar has no mounts at all."""
+    flags = hardening_flags(option)
+    flags.insert(1, f"--cap-add={SIDECAR_CAPABILITIES}")
+    return ["--user", "0:0", *flags]
+
+
 class EnvStack:
     def __init__(self, layer: Any, state: Any, definitions: list[dict[str, Any]]) -> None:
         self.layer = layer
@@ -445,7 +460,7 @@ class EnvStack:
                 env = [flag for item in service.get("env") or [] for flag in ("-e", str(item))]
                 command = shlex.split(str(service.get("command") or ""))
                 _podman_checked(["run", "-d", "--pod", pod, "--name", name, "--security-opt", "label=disable",
-                                 *hardening_flags(option), *self._labels(), "--memory", str(option["memory"]),
+                                 *sidecar_flags(option), *self._labels(), "--memory", str(option["memory"]),
                                  "--cpus", str(option["cpus"]), *env, str(service["image"]), *command],
                                 f"sidecar {service['id']} failed to start")
                 self._wait_ready(service, name)
@@ -616,7 +631,9 @@ class EnvStack:
         if not sandbox.worktree.is_dir():
             gitsafe.remove_quarantine(sandbox)
             return
-        publish_run_branch(sandbox, self.state.branch, self.state.adw_id, "environment teardown")
+        if self.state.branch:
+            publish_run_branch(sandbox, self.state.branch, self.state.adw_id, "environment teardown")
+        # else: a branch-less run (`al verify` on a detached worktree) has nothing to publish
         if keeping:
             return  # the kept worktree's commits live in the quarantine: keep it too
         _run_git(["git", "-C", str(self.layer.app_root), *gitsafe.HARDENING, "worktree", "remove", "--force",

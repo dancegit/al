@@ -220,7 +220,7 @@ def test_sidecars_are_per_run_and_reachable_on_localhost(isolated) -> None:
         out = _podman("exec", sidecar, "sh", "-c", f"grep CapEff /proc/self/status; test ! -e '{run_a.state.worktree}' "
                                                    f"&& test ! -e '{run_a.layer.app_root / '.git'}' "
                                                    f"&& test ! -e '{run_a.layer.layer_dir}' && echo NOTHING-MOUNTED").stdout
-        assert "0000000000000000" in out and "NOTHING-MOUNTED" in out, out
+        assert "00000000000000cb" in out and "NOTHING-MOUNTED" in out, out  # exactly CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID
     # freezing for host git pauses the run container only; the sidecar keeps serving; unpause follows
     with gitsafe.session(run_a.sandbox):
         assert _podman("inspect", "-f", "{{.State.Status}}", run_a.run_name).stdout.strip() == "paused"

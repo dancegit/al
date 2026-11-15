@@ -33,7 +33,7 @@
 
 | name | shell command from repo root | proves what | typical duration | needs network? |
 | --- | --- | --- | --- | --- |
-| install | `git submodule update --init && autoreconf -i && ./configure --disable-docs --with-oniguruma=builtin --enable-static` | the Oniguruma submodule is fetched and the build system is generated and configured; must run once in a fresh checkout before `build` or `test` | UNVERIFIED | yes |
+| install | `autoreconf -i && ./configure --disable-docs --with-oniguruma=yes --enable-static` | the build system is generated and configured against the system Oniguruma (Debian `libonig-dev`); the `vendor/oniguruma` submodule is not fetched, because a run's container mounts the repository's `.git` read-only and `git submodule update --init` fails there (`could not lock config file .git/config: Read-only file system`); must run once in a fresh checkout before `build` or `test` | UNVERIFIED | yes |
 | build | `make -j"$(nproc)"` | libjq and the `jq` binary compile and link with `-Wextra -Wall` | UNVERIFIED | no |
 | test | `make check VERBOSE=yes` | every driver in `TESTS` of `Makefile.am` passes against the built `./jq` (builds first if needed); writes `test-suite.log` and `tests/*.log` | UNVERIFIED | no |
 | docs | `(cd docs && pipenv sync && pipenv run python3 build_website.py)` | the website renders from `docs/content` into `docs/output/` | UNVERIFIED | yes |
@@ -41,7 +41,7 @@
 ## Toolchain
 
 - nixpkgs: UNVERIFIED attribute names `gcc`, `gnumake`, `autoconf` (>= 2.65), `automake` (>= 1.11.2), `libtool`, `git`; for `docs` only: `python311` (3.11), `pipenv`
-- System packages: Debian apt names `build-essential`, `autoconf`, `automake`, `libtool`, `git`. For `docs` only: Python 3.11 and `pipenv` (the repository installs it with `pip install pipenv`; apt package names UNVERIFIED). Only when regenerating `src/lexer.c` or `src/parser.c`: `flex` and `bison` >= 3.0
+- System packages: Debian apt names `build-essential`, `autoconf`, `automake`, `libtool`, `git`, `libonig-dev` (Oniguruma headers and library, used by `install` instead of the submodule). For `docs` only: Python 3.11 and `pipenv` (the repository installs it with `pip install pipenv`; apt package names UNVERIFIED). Only when regenerating `src/lexer.c` or `src/parser.c`: `flex` and `bison` >= 3.0
 - Services: none
 
 ## Artefacts

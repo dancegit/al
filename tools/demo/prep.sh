@@ -23,14 +23,15 @@ case "${1:-}" in
 #lang al
 (agentic-layer #:name "scale-demo"
   (codebase #:root "$ROOT/testbeds/flask" #:languages (python)
-    (cmd proof "test -f proof.txt && sleep 4 && echo check ran in \$(cat /etc/hostname)"))
+    (cmd serve "test -f proof.txt && (python3 -m http.server 8000 >/dev/null 2>&1 &) && sleep 1 && python3 -c \"import socket,urllib.request as u; socket.create_connection(('127.0.0.1',5432),3); print('own database reachable on localhost:5432; app on :8000 ->', u.urlopen('http://127.0.0.1:8000/proof.txt').read().decode().strip())\" && sleep 6"))
   (concurrency slots #:max-runs 2)
-  (agent custom #:command "cat >/dev/null; test -f /run/.containerenv && echo agent-inside-container || echo agent-on-host; touch proof.txt")
+  (agent custom #:command "cat >/dev/null; test -f /run/.containerenv && echo agent-inside-container || echo agent-on-host; printf made-by-run- > proof.txt; cat /etc/hostname >> proof.txt")
+  (service container #:id db #:image "docker.io/library/postgres:16-alpine" #:env ("POSTGRES_PASSWORD=demo") #:ready-cmd "pg_isready -U postgres")
   (environment worktree)
-  (environment podman #:base-image "docker.io/library/python:3.12-slim" #:network none #:agent-inside #t)
+  (environment podman #:base-image "docker.io/library/python:3.12-slim" #:agent-inside #t #:publish (8000) #:services (db))
   (command touch #:template custom #:file "commands/touch.src.md")
   (adw sandboxed #:environment (worktree podman)
-    (steps (run agent #:command touch) (check proof #:cmd proof))))
+    (steps (run agent #:command touch) (check serve #:cmd serve))))
 RKT
     ;;
   clean)

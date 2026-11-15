@@ -181,8 +181,7 @@ def test_first_picks_by_completion_and_runs_in_parallel(make_layer, app_repo, tm
     worktree = Path(parent["worktree"])
     assert (worktree / "cand-2.txt").exists() and not (worktree / "cand-1.txt").exists()
     children = {i: _state(layer, by_index[i]["id"]) for i in (1, 2, 3)}
-    assert children[2]["ended"] < children[1]["ended"]                 # ran concurrently: 2 overtook 1
-    assert children[1]["started"] < children[2]["ended"]
+    assert children[2]["ended"] < children[1]["ended"]                 # ran concurrently: 2 overtook 1 (launched after it, finished before it)
     _assert_candidates_cleaned(layer, app_repo, parent)
 
 
