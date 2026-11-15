@@ -163,6 +163,68 @@ def wrap(text: str, width: int) -> list[str]:
     return out + [line] if line else out
 
 
+def _canvas(title: str, caption: str) -> tuple[Image.Image, ImageDraw.ImageDraw, tuple[int, int, int, int]]:
+    """An empty frame with the window bar and caption strip; returns the free area (x0, y0, x1, y1)."""
+    img = frame(title, [], False, caption)
+    return img, ImageDraw.Draw(img), (PAD, 34 + PAD, W - PAD, H - CAP_H - PAD)
+
+
+def _fit(picture: Image.Image, width: int, height: int) -> Image.Image:
+    ratio = min(width / picture.width, height / picture.height)
+    return picture.resize((max(1, int(picture.width * ratio)), max(1, int(picture.height * ratio))), Image.LANCZOS)
+
+
+def media_frames(title: str, media: dict, caption: str):
+    """Yield (frame, repeat) for an image step, a side-by-side images step or an embedded video step.
+
+      { image = "path.png", label = "…", seconds = 5 }
+      { images = ["a.png", "b.png"], labels = ["before", "after"], seconds = 6 }
+      { video = "clip.mp4", label = "…", speed = 1.0, hold = 1.5 }
+    """
+    seconds = float(media.get("seconds", 5))
+    paths = [media["image"]] if "image" in media else list(media.get("images", []))
+    labels = [media["label"]] if "label" in media else list(media.get("labels", []))
+    if paths:
+        img, d, (x0, y0, x1, y1) = _canvas(title, caption)
+        gap = 16
+        slot = (x1 - x0 - gap * (len(paths) - 1)) // len(paths)
+        for i, path in enumerate(paths):
+            label = labels[i] if i < len(labels) else ""
+            top = y0 + (26 if label else 0)
+            picture = _fit(Image.open(ROOT / path).convert("RGB"), slot, y1 - top)
+            px = x0 + i * (slot + gap) + (slot - picture.width) // 2
+            top += (y1 - top - picture.height) // 2
+            label_y = top - 18
+            if label:
+                d.text((x0 + i * (slot + gap) + slot // 2, label_y), label, font=BOLD, fill=YELLOW, anchor="mm")
+            img.paste(picture, (px, top))
+            d.rectangle([px - 1, top - 1, px + picture.width, top + picture.height], outline="#30363d")
+        yield img, int(seconds * FPS)
+        return
+    if "video" in media:
+        speed = float(media.get("speed", 1.0))
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(ROOT / media["video"]),
+                            "-vf", f"setpts=PTS/{speed},fps={FPS}", str(Path(tmp) / "%05d.png")], check=True)
+            stills = sorted(Path(tmp).glob("*.png"))
+            last = None
+            for still in stills:
+                img, d, (x0, y0, x1, y1) = _canvas(title, caption)
+                label = media.get("label", "")
+                top = y0 + (26 if label else 0)
+                picture = _fit(Image.open(still).convert("RGB"), x1 - x0, y1 - top)
+                px = x0 + (x1 - x0 - picture.width) // 2
+                top += (y1 - top - picture.height) // 2
+                if label:
+                    d.text(((x0 + x1) // 2, top - 18), label, font=BOLD, fill=YELLOW, anchor="mm")
+                img.paste(picture, (px, top))
+                d.rectangle([px - 1, top - 1, px + picture.width, top + picture.height], outline="#30363d")
+                last = img
+                yield img, 1
+            if last is not None:
+                yield last, int(float(media.get("hold", 1.5)) * FPS)
+
+
 def run_step(step: dict, env: dict) -> list[tuple[float, str]]:
     """Run one command; return (seconds since start, line) for every output line."""
     cwd = (ROOT / step.get("cwd", ".")).resolve()
@@ -192,6 +254,9 @@ def capture(scene: dict) -> list[dict]:
             subprocess.run(["bash", "-c", step["run"]], cwd=(ROOT / step.get("cwd", ".")).resolve(), env=env,
                            capture_output=True, text=True)
             continue
+        if "run" not in step:                      # image / images / video step: shown, not executed
+            recorded.append({"kind": "media", "events": [], "show": "", "note": "", "max_lines": 0})
+            continue
         shown = step.get("show", step["run"])
         print(f"    $ {shown[:90]}")
         recorded.append({"show": shown, "note": step.get("note", ""), "events": run_step(step, env),
@@ -218,6 +283,13 @@ def render(scene: dict, recorded: list[dict], frames_dir: Path) -> int:
     gap = float(scene.get("gap", 0.6))
     for step in recorded:
         caption = step.get("caption", "")
+        if step.get("kind") == "media":
+            for img, count in media_frames(title, step["media"], caption):
+                for _ in range(count):
+                    img.save(frames_dir / f"{n:05d}.png")
+                    n += 1
+            lines.clear()
+            continue
         if step["note"]:
             lines.append(f"# {step['note']}")
         lines.append("$ ")
@@ -317,7 +389,10 @@ def main() -> int:
                 raw.write_text(json.dumps(recorded))
             visible = [st for st in scene["steps"] if not st.get("hidden")]
             for rec, st in zip(recorded, visible):   # wording comes from the scene file, output from the run
-                rec.update(show=st.get("show", st["run"]), note=st.get("note", ""), caption=st.get("caption", ""))
+                if "run" in st:
+                    rec.update(show=st.get("show", st["run"]), note=st.get("note", ""), caption=st.get("caption", ""))
+                else:
+                    rec.update(kind="media", media=st, caption=st.get("caption", ""))
             (out / "logs" / f"{sid}.txt").write_text("\n".join(
                 f"$ {s['show']}\n" + "\n".join(line for _, line in s["events"]) for s in recorded) + "\n")
             frames = work / f"frames-{sid}"
