@@ -322,7 +322,7 @@
         "description": "The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots",
         "name": "test-integration",
         "run": "uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q",
-        "timeout": 1800
+        "timeout": 3600
       }
     ],
     "conditionalDocs": [

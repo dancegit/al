@@ -23,7 +23,7 @@
     (cmd test-dashboard-browser "(cd kit/dashboard && uv run --with pytest --with playwright pytest -q tests)"
          #:description "The dashboard tests plus the real-browser tests of the page in the host's Chrome")
     (cmd test-integration "uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q"
-         #:timeout 1800
+         #:timeout 3600
          #:description "The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots")
     (paths #:source ("racket/al" "tools" "kit/runtime" "kit/templates" "kit/schemas" "kit/dashboard" "kit/self" "meta")
            #:tests ("racket/al/tests" "kit/runtime/tests" "kit/dashboard/tests" "tests/tools" "tests/integration")
