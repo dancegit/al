@@ -778,7 +778,8 @@ def report_text(result: dict[str, Any], changed: list[str], stale: list[str], ad
         lines.append("  nothing changed: the layer already has all of it")
     if not has_definition:
         lines.append("  agentic.rkt does not exist yet: when you author it, put (include \"adopted/codebase.rkt\") inside "
-                     "(codebase …) and (include \"adopted/layer.rkt\") at the top level (meta/commands/author-layer.md says so)")
+                     "(codebase …) and (include \"adopted/layer.rkt\") at the top level (meta/commands/author-layer.md says so), "
+                     "then run `al adopt` again: it then fits the proposals to the options the layer declares")
     elif not dry_run and (changed or added):
         lines.append("  next: al gen LAYER (and read adopted/REPORT.md)")
     return "\n".join(lines)
