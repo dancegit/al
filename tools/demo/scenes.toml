@@ -1,27 +1,78 @@
 title = "al"
-subtitle = "LLM.txt → #lang al → a compiler-checked agentic layer for any codebase"
-note = "Every scene runs real commands; waits are compressed. Recorded with tools/demo/record.py"
+subtitle = "An agentic layer for any codebase: written by an LLM, checked by a compiler"
+note = "Every scene runs real commands; waits are shortened. Recorded with tools/demo/record.py"
+
+[[intro]]
+title = "The problem"
+subtitle = "AI coding agents work far better with a setup made for your codebase"
+seconds = 10
+bullets = [
+  "They need your real commands: how to build, test and lint",
+  "They need a safe place to work, and a way to prove what they did",
+  "Building that setup by hand for every repository does not scale",
+  "Letting an AI improvise it gives you something nobody checked",
+]
+
+[[intro]]
+title = "The idea"
+diagram = true
+seconds = 12
+
+[[intro]]
+title = "What you get"
+subtitle = "The agentic layer: a folder beside your repository"
+seconds = 11
+bullets = [
+  "Prompts written for your codebase: plan a fix, implement, test, review",
+  "Workflows that chain them: plan → build → test → review → ship",
+  "A sandbox: every run in its own copy of the code and its own container",
+  "Triggers: a task file, forge issues, a webhook, or your voice",
+  "A gate that ships only when the tests pass and a reviewer agrees",
+]
+
+[outro]
+title = "Where it stands"
+subtitle = "Honest status"
+seconds = 11
+bullets = [
+  "Tried on 5 public repositories in 5 languages; every layer compiled first try",
+  "Real Claude Opus 5.5 runs on flask: 2 to 3 minutes and about $0.70 each, first attempt",
+  "250+ automated tests, including attempts to escape the container",
+  "Not yet tried: fan-out with real agents, large features, a team's private repository",
+]
+note = "README.md explains the ideas; docs/DESIGN.md has the details"
 
 [[scene]]
 id = "01-layer"
 title = "From a codebase to its agentic layer"
 subtitle = "gin (Go): scout the repo, read the LLM-authored DSL, generate the layer outside the app"
+explain = [
+  "gin is a popular Go web framework: one of five public repositories used as examples",
+  "A script reads the repository and drafts a description of it (LLM.txt)",
+  "An LLM turns that description into a short program: how agents should work here",
+  "A generator builds the whole layer in a separate folder. The repository is never changed",
+]
 steps = [
   { run = "tools/demo/prep.sh layer gin", hidden = true },
-  { run = "al scout testbeds/gin | sed -n '/^## Commands/,/^## Toolchain/p' | head -9", show = "al scout testbeds/gin        # deterministic draft of LLM.txt", note = "1. facts first: what does this codebase say about itself?" },
-  { run = "sed -n '1,22p' tests/authored/gin/agentic.rkt", show = "head -22 gin.al/agentic.rkt   # written by an LLM from LLM.txt + the DSL reference", note = "2. an LLM turns the descriptor into a small #lang al program" },
-  { run = "al gen /tmp/al-demo/gin.al && ls /tmp/al-demo/gin.al /tmp/al-demo/gin.al/commands /tmp/al-demo/gin.al/adws", show = "al gen gin.al && ls gin.al gin.al/commands gin.al/adws", note = "3. the compiler checks it; the generator does the rest" },
-  { run = "al check /tmp/al-demo/gin.al && git -C testbeds/gin status --short | wc -l", show = "al check gin.al && git -C testbeds/gin status --short | wc -l", note = "4. the layer is complete and the application is untouched" },
+  { run = "al scout testbeds/gin | sed -n '/^## Commands/,/^## Toolchain/p' | head -9", show = "al scout testbeds/gin        # deterministic draft of LLM.txt", note = "1. facts first: what does this codebase say about itself?", caption = "Step 1: a script reads the repository and lists the commands it can prove exist (build, test, lint). An LLM fills in the rest." },
+  { run = "sed -n '1,22p' tests/authored/gin/agentic.rkt", show = "head -22 gin.al/agentic.rkt   # written by an LLM from LLM.txt + the DSL reference", note = "2. an LLM turns the descriptor into a small #lang al program", caption = "Step 2: the layer definition. It names the real commands, where tasks come from, where agents work and who reviews." },
+  { run = "al gen /tmp/al-demo/gin.al && ls /tmp/al-demo/gin.al /tmp/al-demo/gin.al/commands /tmp/al-demo/gin.al/adws", show = "al gen gin.al && ls gin.al gin.al/commands gin.al/adws", note = "3. the compiler checks it; the generator does the rest", caption = "Step 3: one command checks the definition and generates the prompts (commands/), workflows (adws/) and environment." },
+  { run = "al check /tmp/al-demo/gin.al && git -C testbeds/gin status --short | wc -l", show = "al check gin.al && git -C testbeds/gin status --short | wc -l", note = "4. the layer is complete and the application is untouched", caption = "Step 4: the layer is complete and gin has zero changed files. The layer lives beside the repository, not in it." },
 ]
 
 [[scene]]
 id = "02-compiler"
 title = "The compiler is the feedback loop"
 subtitle = "Incoherent layers are rejected at the offending clause, with the alternatives listed"
+explain = [
+  "An LLM can write something that looks right but does not hang together",
+  "The compiler catches that, points at the exact line and lists the valid choices",
+  "So the LLM can fix its own mistake without a human",
+]
 steps = [
-  { run = "sed -n '5,9p' racket/al/tests/fixtures/dangling-ref.rkt; racket racket/al/tests/fixtures/dangling-ref.rkt 2>&1 | head -2", show = "racket dangling-ref.rkt", note = "a check step names a command that does not exist" },
-  { run = "mkdir -p /tmp/al-demo && sed -e 's/ podman) #:review zero-touch/) #:review zero-touch/' tests/authored/flask/agentic.rkt > /tmp/al-demo/unsafe.rkt && al compile /tmp/al-demo/unsafe.rkt 2>&1 | head -2 | cut -c1-330", show = "al compile unsafe.rkt   # zero-touch workflow with the container removed", note = "shipping without a human requires a sandbox" },
-  { run = "raco test racket/al/tests/compiler-test.rkt 2>&1 | tail -1", show = "raco test racket/al/tests", note = "the rules are tested" },
+  { run = "sed -n '5,9p' racket/al/tests/fixtures/dangling-ref.rkt; racket racket/al/tests/fixtures/dangling-ref.rkt 2>&1 | head -2", show = "racket dangling-ref.rkt", note = "a check step names a command that does not exist", caption = "A workflow uses a command called `tests`, but only `test` exists. The error names the line and what is available." },
+  { run = "mkdir -p /tmp/al-demo && sed -e 's/ podman) #:review zero-touch/) #:review zero-touch/' tests/authored/flask/agentic.rkt > /tmp/al-demo/unsafe.rkt && al compile /tmp/al-demo/unsafe.rkt 2>&1 | head -2 | cut -c1-330", show = "al compile unsafe.rkt   # zero-touch workflow with the container removed", note = "shipping without a human requires a sandbox", caption = "A safety rule: a workflow that ships without a human must run in a container. Take the container away and it will not compile." },
+  { run = "raco test racket/al/tests/compiler-test.rkt 2>&1 | tail -1", show = "raco test racket/al/tests", note = "the rules are tested", caption = "Every rule like this has a test." },
 ]
 
 [[scene]]
@@ -29,23 +80,33 @@ id = "03-five-codebases"
 title = "Five codebases, five languages"
 subtitle = "flask · ripgrep · gin · express · jq — same pipeline, codebase-specific layers"
 gap = 0.4
+explain = [
+  "Python (flask), Rust (ripgrep), Go (gin), JavaScript (express), C (jq)",
+  "Each layer was written by a fresh LLM from that repository's description. All five compiled first try",
+  "Same pipeline; different commands, tools and review rules for each repository",
+]
 steps = [
   { run = "for b in flask ripgrep gin express jq; do tools/demo/prep.sh layer $b mock; done", hidden = true },
-  { run = "for b in flask ripgrep gin express jq; do printf '%-8s ' $b; al gen /tmp/al-demo/$b.al | sed 's|/tmp/al-demo/||'; al check /tmp/al-demo/$b.al; done", show = "for b in flask ripgrep gin express jq; do al gen $b.al; al check $b.al; done" },
-  { run = "grep -E '^\\| `' /tmp/al-demo/ripgrep.al/README.md | cut -c1-108", show = "grep workflows ripgrep.al/README.md   # PITER choices per workflow" },
-  { run = "cd /tmp/al-demo/ripgrep.al && uv run -q adws/adw_plan-build.py 'Document the --hidden flag in the FAQ' | sed 's|/tmp/al-demo/||g' | cut -c1-108", show = "uv run ripgrep.al/adws/adw_plan-build.py 'Document the --hidden flag in the FAQ'", note = "a run in an isolated git worktree (mock agent here: no LLM)" },
+  { run = "for b in flask ripgrep gin express jq; do printf '%-8s ' $b; al gen /tmp/al-demo/$b.al | sed 's|/tmp/al-demo/||'; al check /tmp/al-demo/$b.al; done", show = "for b in flask ripgrep gin express jq; do al gen $b.al; al check $b.al; done", caption = "Generate and check a layer for each of the five repositories." },
+  { run = "grep -E '^\\| `' /tmp/al-demo/ripgrep.al/README.md | cut -c1-108", show = "grep workflows ripgrep.al/README.md   # PITER choices per workflow", caption = "Each workflow chooses four things: where the Prompt comes from, what Triggers it, the Environment, and the Review." },
+  { run = "cd /tmp/al-demo/ripgrep.al && uv run -q adws/adw_plan-build.py 'Document the --hidden flag in the FAQ' | sed 's|/tmp/al-demo/||g' | cut -c1-108", show = "uv run ripgrep.al/adws/adw_plan-build.py 'Document the --hidden flag in the FAQ'", note = "a run in an isolated git worktree (mock agent here: no LLM)", caption = "One workflow run: classify the task, write a plan, implement it, all in a private copy of the repository. (A stand-in agent, so no LLM cost.)" },
 ]
 
 [[scene]]
 id = "04-tasklist"
 title = "Tasklist prompt input + cron trigger"
 subtitle = "A plain tasks.md drives the agents; the trigger claims, runs and marks each task"
+explain = [
+  "You do not need a forge or a chat app to hand out work",
+  "Write tasks in a plain text file; a small poller picks them up",
+  "Each task is claimed, run by a workflow and ticked off with the id of the run that did it",
+]
 steps = [
   { run = "tools/demo/prep.sh layer flask mock && al gen /tmp/al-demo/flask.al >/dev/null && printf '\\n## readme-note\\n- [ ] Add a note to the README about running the tests {plan-build}\\n- [>] Mention tox in that note {plan-build}\\n' >> /tmp/al-demo/flask.al/tasks.md", hidden = true },
-  { run = "tail -3 /tmp/al-demo/flask.al/tasks.md", show = "tail -3 flask.al/tasks.md", note = "[ ] open · [>] waits for the task above it · {tags} pick the workflow" },
-  { run = "cd /tmp/al-demo/flask.al && uv run -q adws/triggers/trigger_cron.py --once | sed 's|/tmp/al-demo/||g' | cut -c1-108", show = "uv run flask.al/adws/triggers/trigger_cron.py --once" },
-  { run = "tail -2 /tmp/al-demo/flask.al/tasks.md | cut -c1-108", show = "tail -2 flask.al/tasks.md", note = "task 1 is done; task 2 is now unblocked" },
-  { run = "cd /tmp/al-demo/flask.al && uv run -q adws/triggers/trigger_cron.py --once | tail -2 | cut -c1-108; tail -2 tasks.md | cut -c1-108", show = "uv run flask.al/adws/triggers/trigger_cron.py --once && tail -2 flask.al/tasks.md" },
+  { run = "tail -3 /tmp/al-demo/flask.al/tasks.md", show = "tail -3 flask.al/tasks.md", note = "[ ] open · [>] waits for the task above it · {tags} pick the workflow", caption = "A task file: one open task, and one that waits for the task above it." },
+  { run = "cd /tmp/al-demo/flask.al && uv run -q adws/triggers/trigger_cron.py --once | sed 's|/tmp/al-demo/||g' | cut -c1-108", show = "uv run flask.al/adws/triggers/trigger_cron.py --once", caption = "The poller finds the open task and runs the workflow named in its tag." },
+  { run = "tail -2 /tmp/al-demo/flask.al/tasks.md | cut -c1-108", show = "tail -2 flask.al/tasks.md", note = "task 1 is done; task 2 is now unblocked", caption = "The first task is ticked off with the run id. The second is now free to start." },
+  { run = "cd /tmp/al-demo/flask.al && uv run -q adws/triggers/trigger_cron.py --once | tail -2 | cut -c1-108; tail -2 tasks.md | cut -c1-108", show = "uv run flask.al/adws/triggers/trigger_cron.py --once && tail -2 flask.al/tasks.md", caption = "A second poll runs the task that was waiting." },
 ]
 
 [[scene]]
@@ -54,8 +115,14 @@ title = "Zero-touch on flask with Claude Opus 5.5"
 subtitle = "Replay of real run d8c03973: 2 min 14 s, $0.69, one attempt — the agent itself ran inside the container"
 gap = 0.5
 hold = 2.5
+explain = [
+  "A real run with Claude Opus 5.5: no human between the prompt and the shipped change",
+  "The agent plans, writes the test and commits, inside a container",
+  "flask's own lint, type check and test suite must pass; then a second agent reviews the evidence",
+  "Only if every gate holds is the change merged",
+]
 steps = [
-  { run = "while IFS= read -r l; do printf '%s\\n' \"$l\" | cut -c1-108; sleep 0.3; done < docs/demo/logs/flask-zte-opus-inside-container-d8c03973.log", show = "uv run flask.al/adws/adw_zte.py \"Add a test asserting that Flask.testing is False on a newly created app\" --class chore", note = "REPLAY of the saved log of a real run (docs/demo/logs/flask-zte-opus-inside-container-d8c03973.log)" },
+  { run = "while IFS= read -r l; do printf '%s\\n' \"$l\" | cut -c1-108; sleep 0.3; done < docs/demo/logs/flask-zte-opus-inside-container-d8c03973.log", show = "uv run flask.al/adws/adw_zte.py \"Add a test asserting that Flask.testing is False on a newly created app\" --class chore", note = "REPLAY of the saved log of a real run (docs/demo/logs/flask-zte-opus-inside-container-d8c03973.log)", caption = "Replay of the real log. Follow the order: plan, build, three real checks, commit, review, gate, ship, clean up." },
 ]
 
 [[scene]]
@@ -63,22 +130,32 @@ id = "06-scaling"
 title = "Isolation per run: worktree, container, network, database"
 subtitle = "Three runs at once (max-runs 2): each has its own app on :8000 and its own Postgres; nothing is shared"
 gap = 0.5
+explain = [
+  "Many agents at once is only safe if they cannot step on each other",
+  "Each run gets its own copy of the code, its own container, its own network and its own database",
+  "A shared limit decides how many run at once: the third run here waits its turn",
+]
 steps = [
   { run = "tools/demo/prep.sh scale && al gen /tmp/al-demo/scale.al >/dev/null", hidden = true },
-  { run = "grep -E 'concurrency|service|podman' /tmp/al-demo/scale.al/agentic.rkt | cut -c1-108", show = "grep -E 'concurrency|service|podman' scale.al/agentic.rkt" },
-  { run = "cd /tmp/al-demo/scale.al && for i in 1 2 3; do (uv run -q adws/adw_sandboxed.py \"run $i\" 2>&1 | grep -E 'slots|sidecar ready|passed|status' | sed \"s/^/run $i | /\" | cut -c1-108) & done; sleep 9; printf 'host -> 127.0.0.1:8000: '; curl -s -m 1 http://127.0.0.1:8000/ >/dev/null && echo OPEN || echo 'closed (not published)'; printf 'host -> 127.0.0.1:5432: '; (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null && echo OPEN || echo 'closed (databases are private)'; wait", show = "for i in 1 2 3; do uv run scale.al/adws/adw_sandboxed.py \"run $i\" & done; probe host ports; wait" },
-  { run = "cat /tmp/al-demo/scale.al/agents/*/checks/serve.1.log | cut -c1-108", show = "cat scale.al/agents/*/checks/serve.1.log", note = "every run saw its own app and its own database on the same ports" },
-  { run = "echo pods=$(podman pod ps --format '{{.Name}}' | grep -c al-scale-demo) containers=$(podman ps -a --format '{{.Names}}' | grep -c al-scale-demo) app-changes=$(git -C testbeds/flask status --short | wc -l)", show = "podman pod ps | grep -c al-scale-demo; git -C testbeds/flask status --short | wc -l", note = "nothing left behind, application untouched" },
+  { run = "grep -E 'concurrency|service|podman' /tmp/al-demo/scale.al/agentic.rkt | cut -c1-108", show = "grep -E 'concurrency|service|podman' scale.al/agentic.rkt", caption = "The layer asks for at most 2 runs at a time, a Postgres database per run, and the agent itself inside the container." },
+  { run = "cd /tmp/al-demo/scale.al && for i in 1 2 3; do (uv run -q adws/adw_sandboxed.py \"run $i\" 2>&1 | grep -E 'slots|sidecar ready|passed|status' | sed \"s/^/run $i | /\" | cut -c1-108) & done; sleep 9; printf 'host -> 127.0.0.1:8000: '; curl -s -m 1 http://127.0.0.1:8000/ >/dev/null && echo OPEN || echo 'closed (not published)'; printf 'host -> 127.0.0.1:5432: '; (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null && echo OPEN || echo 'closed (databases are private)'; wait", show = "for i in 1 2 3; do uv run scale.al/adws/adw_sandboxed.py \"run $i\" & done; probe host ports; wait", caption = "Three runs start together. Two proceed, one waits. From outside, neither the app port nor the database can be reached." },
+  { run = "cat /tmp/al-demo/scale.al/agents/*/checks/serve.1.log | cut -c1-108", show = "cat scale.al/agents/*/checks/serve.1.log", note = "every run saw its own app and its own database on the same ports", caption = "Each run talked to its own app and its own database on the same port numbers. No collisions." },
+  { run = "echo pods=$(podman pod ps --format '{{.Name}}' | grep -c al-scale-demo) containers=$(podman ps -a --format '{{.Names}}' | grep -c al-scale-demo) app-changes=$(git -C testbeds/flask status --short | wc -l)", show = "podman pod ps | grep -c al-scale-demo; git -C testbeds/flask status --short | wc -l", note = "nothing left behind, application untouched", caption = "Afterwards nothing is left running and the application repository is untouched." },
 ]
 
 [[scene]]
 id = "06b-fan-out"
 title = "Fan-out: race one task across several agents"
 subtitle = "Three candidate runs, each in its own worktree; the best is merged into the parent run"
+explain = [
+  "Sometimes one attempt is not enough",
+  "Fan-out gives the same task to several agents in parallel, each fully isolated",
+  "The best result continues (fewest fixes needed, then smallest change); the others are discarded",
+]
 steps = [
   { run = "tools/demo/prep.sh fanout && al gen /tmp/al-demo/fanout.al >/dev/null", hidden = true },
-  { run = "grep -E 'adw |fan-out' /tmp/al-demo/fanout.al/agentic.rkt | cut -c1-108", show = "grep -E 'adw |fan-out' fanout.al/agentic.rkt" },
-  { run = "cd /tmp/al-demo/fanout.al && uv run -q adws/adw_race.py 'Write the attempt file' 2>&1 | grep -E 'fan-out|check|status' | sed 's/, log agents.*//' | cut -c1-108", show = "uv run fanout.al/adws/adw_race.py 'Write the attempt file'" },
+  { run = "grep -E 'adw |fan-out' /tmp/al-demo/fanout.al/agentic.rkt | cut -c1-108", show = "grep -E 'adw |fan-out' fanout.al/agentic.rkt", caption = "One line in the layer: run the `candidate` workflow three times and keep the best." },
+  { run = "cd /tmp/al-demo/fanout.al && uv run -q adws/adw_race.py 'Write the attempt file' 2>&1 | grep -E 'fan-out|check|status' | sed 's/, log agents.*//' | cut -c1-108", show = "uv run fanout.al/adws/adw_race.py 'Write the attempt file'", caption = "Three candidates run side by side. All pass; the best is merged into the parent run, which checks it again." },
 ]
 
 [[scene]]
@@ -86,10 +163,15 @@ id = "06c-verify"
 title = "al verify: is the layer true?"
 subtitle = "gin's real test suite, run in the layer's own environment. Its tests bind :8443 — busy on this host, free in the run's namespace"
 gap = 0.4
+explain = [
+  "The compiler proves a layer is consistent, not that its commands really work",
+  "`al verify` runs each declared command in the layer's own environment",
+  "gin's tests need port 8443, which is taken on this machine. They still pass: every run has its own network",
+]
 steps = [
   { run = "tools/demo/prep.sh layer gin && al gen /tmp/al-demo/gin.al >/dev/null", hidden = true },
-  { run = "(ss -ltn 2>/dev/null | grep -q ':8443 ' && echo 'port 8443 on this host: in use') || echo 'port 8443 on this host: free'", show = "ss -ltn | grep 8443" },
-  { run = "al verify /tmp/al-demo/gin.al --cmd test 2>&1 | grep -vE 'container started|^$' | sed 's|/tmp/al-demo/||g' | tail -6 | cut -c1-108", show = "al verify gin.al --cmd test    # make test, inside a per-run container" },
+  { run = "(ss -ltn 2>/dev/null | grep -q ':8443 ' && echo 'port 8443 on this host: in use') || echo 'port 8443 on this host: free'", show = "ss -ltn | grep 8443", caption = "Port 8443 is busy on this computer, and gin's tests insist on that port." },
+  { run = "al verify /tmp/al-demo/gin.al --cmd test 2>&1 | grep -vE 'container started|^$' | sed 's|/tmp/al-demo/||g' | tail -6 | cut -c1-108", show = "al verify gin.al --cmd test    # make test, inside a per-run container", caption = "gin's real test suite runs inside the run's own container and passes. In there the port is free." },
 ]
 
 [[scene]]
@@ -97,17 +179,27 @@ id = "07-forgejo"
 title = "Forge integration, live"
 subtitle = "A throwaway local Forgejo: issue → PR, zero-touch merge through the API, signed webhook → run"
 gap = 0.5
+explain = [
+  "Works with Forgejo and GitHub",
+  "This test starts a throwaway Forgejo server, files issues and watches what the layer does",
+  "An issue becomes a pull request; a zero-touch workflow merges by itself; a signed webhook starts a run",
+]
 steps = [
-  { run = "tests/forge/forgejo_live.sh 2>&1 | cut -c1-108", show = "tests/forge/forgejo_live.sh" },
+  { run = "tests/forge/forgejo_live.sh 2>&1 | cut -c1-108", show = "tests/forge/forgejo_live.sh", caption = "A real Forgejo server in a container: issues in, pull requests out, one merge without a human, and a forged webhook rejected." },
 ]
 
 [[scene]]
 id = "08-voice"
 title = "Talk to the codebase (local)"
 subtitle = "Kokoro text-to-speech and faster-whisper speech recognition, both on this machine"
+explain = [
+  "You can talk to the codebase: speech in, speech out, all on your own machine",
+  "Kokoro turns text into speech; Whisper turns speech into text",
+  "Spoken tasks land in the task file",
+]
 steps = [
-  { run = "mkdir -p /tmp/al-demo && cd kit/runtime && uv run -q voice/say.py 'Add a note to the read me about running the tests.' --out /tmp/al-demo/task.wav --no-play && ffprobe -v error -show_entries format=duration -of csv=p=0 /tmp/al-demo/task.wav | sed 's/$/ seconds of speech/'", show = "say.py 'Add a note to the read me about running the tests.' --out task.wav" },
-  { run = "cd kit/runtime && uv run -q voice/listen.py --file /tmp/al-demo/task.wav 2>/dev/null", show = "listen.py --file task.wav      # → the prompt for trigger_voice / the tasklist" },
+  { run = "mkdir -p /tmp/al-demo && cd kit/runtime && uv run -q voice/say.py 'Add a note to the read me about running the tests.' --out /tmp/al-demo/task.wav --no-play && ffprobe -v error -show_entries format=duration -of csv=p=0 /tmp/al-demo/task.wav | sed 's/$/ seconds of speech/'", show = "say.py 'Add a note to the read me about running the tests.' --out task.wav", caption = "Text to speech with Kokoro, running locally: a spoken task, 2.5 seconds of audio." },
+  { run = "cd kit/runtime && uv run -q voice/listen.py --file /tmp/al-demo/task.wav 2>/dev/null", show = "listen.py --file task.wav      # → the prompt for trigger_voice / the tasklist", caption = "Speech to text with Whisper, running locally: the audio comes back as the task text." },
 ]
 
 [[scene]]
@@ -115,9 +207,13 @@ id = "09-tests"
 title = "Tests"
 subtitle = "Compiler rules, runtime, and setup/teardown integration tests on the example codebases"
 gap = 0.3
+explain = [
+  "Language rules, runtime behaviour, attempts to break out of the container, and full runs on the five repositories",
+  "Every integration test sets up its own copy of a repository and must leave nothing behind",
+]
 steps = [
-  { run = "raco test racket/al/tests/compiler-test.rkt 2>&1 | tail -1", show = "raco test racket/al/tests" },
-  { run = "cd kit/runtime && uv run -q --with pytest pytest -q -p no:cacheprovider 2>&1 | tail -1", show = "cd kit/runtime && pytest -q" },
-  { run = "uv run -q --with pytest --with pyyaml --with jsonschema pytest tests/integration -q -p no:cacheprovider 2>&1 | tail -1 | cut -c1-108", show = "pytest tests/integration -q   # testbeds pinned; every test restores them" },
-  { run = "tools/demo/prep.sh clean; for b in flask ripgrep gin express jq; do printf '%s:%s ' $b $(git -C testbeds/$b status --short | wc -l); done; echo", show = "for b in flask ripgrep gin express jq; do git -C testbeds/$b status --short | wc -l; done", note = "after everything: all five application checkouts are clean" },
+  { run = "raco test racket/al/tests/compiler-test.rkt 2>&1 | tail -1", show = "raco test racket/al/tests", caption = "Tests of the language rules." },
+  { run = "cd kit/runtime && uv run -q --with pytest pytest -q -p no:cacheprovider 2>&1 | tail -1", show = "cd kit/runtime && pytest -q", caption = "Tests of the runtime, including real attempts to escape the container." },
+  { run = "uv run -q --with pytest --with pyyaml --with jsonschema pytest tests/integration -q -p no:cacheprovider 2>&1 | tail -1 | cut -c1-108", show = "pytest tests/integration -q   # testbeds pinned; every test restores them", caption = "End-to-end tests on the five example repositories." },
+  { run = "tools/demo/prep.sh clean; for b in flask ripgrep gin express jq; do printf '%s:%s ' $b $(git -C testbeds/$b status --short | wc -l); done; echo", show = "for b in flask ripgrep gin express jq; do git -C testbeds/$b status --short | wc -l; done", note = "after everything: all five application checkouts are clean", caption = "After all of it, none of the five repositories has a changed file." },
 ]

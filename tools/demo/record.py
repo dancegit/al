@@ -49,7 +49,9 @@ MID = ImageFont.truetype(font_path(), 19)
 CW = int(FONT.getlength("M"))
 LH = 21
 PAD = 18
-W, H = (PAD * 2 + CW * COLS) // 2 * 2, (PAD * 2 + 34 + LH * ROWS) // 2 * 2
+CAP_H = 58                                   # caption strip under the terminal
+W, H = (PAD * 2 + CW * COLS) // 2 * 2, (PAD * 2 + 34 + LH * ROWS + CAP_H) // 2 * 2
+CAPTION_FONT = ImageFont.truetype(font_path(True), 16)
 
 
 def colour(line: str) -> str:
@@ -64,7 +66,7 @@ def colour(line: str) -> str:
     return FG
 
 
-def frame(title: str, lines: list[str], cursor: bool = False) -> Image.Image:
+def frame(title: str, lines: list[str], cursor: bool = False, caption: str = "") -> Image.Image:
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
     d.rectangle([0, 0, W, 30], fill="#161b22")
@@ -79,19 +81,74 @@ def frame(title: str, lines: list[str], cursor: bool = False) -> Image.Image:
         x = PAD + CW * min(len(shown[-1]), COLS)
         y = 34 + PAD // 2 + (len(shown) - 1) * LH
         d.rectangle([x, y + 2, x + CW - 2, y + LH - 3], fill=FG)
+    if caption:                                # plain-language explanation of what is on screen
+        d.rectangle([0, H - CAP_H, W, H], fill="#1f3a5f")
+        d.rectangle([0, H - CAP_H, 6, H], fill=BLUE)
+        parts = wrap(caption, 96)[:2]
+        y = H - CAP_H + (CAP_H - 22 * len(parts)) // 2
+        for part in parts:
+            d.text((PAD + 4, y), part, font=CAPTION_FONT, fill="#ffffff")
+            y += 22
     return img
 
 
-def card(title: str, subtitle: str, note: str = "") -> Image.Image:
+def card(title: str, subtitle: str, note: str = "", bullets: list[str] | None = None) -> Image.Image:
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
-    d.text((W // 2, H // 2 - 50), title, font=BIG, fill=FG, anchor="mm")
-    y = H // 2 + 8
+    rows = [part for b in (bullets or []) for part in bullet_lines(b)]
+    top = H // 2 - 50 - (len(rows) * 30) // 2
+    d.text((W // 2, top), title, font=BIG, fill=FG, anchor="mm")
+    y = top + 56
     for part in wrap(subtitle, 78):
         d.text((W // 2, y), part, font=MID, fill=BLUE, anchor="mm")
         y += 28
+    y += 22
+    for part in rows:
+        d.text((120, y), part, font=MID, fill=FG)
+        y += 30
     if note:
-        d.text((W // 2, H - 44), note, font=FONT, fill=DIM, anchor="mm")
+        d.text((W // 2, H - 40), note, font=FONT, fill=DIM, anchor="mm")
+    return img
+
+
+def bullet_lines(text: str) -> list[str]:
+    parts = wrap(text, 68)
+    return ["• " + parts[0]] + ["  " + p for p in parts[1:]]
+
+
+def pipeline(title: str = "How it works", note: str = "") -> Image.Image:
+    """The pipeline as boxes and arrows (also saved as docs/demo/pipeline.png for the README)."""
+    img = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(img)
+    d.text((W // 2, 70), title, font=BIG, fill=FG, anchor="mm")
+    boxes = [("your codebase", "any language", DIM), ("LLM.txt", "what the codebase is:\ncommands, layout, rules", BLUE),
+             ("agentic.rkt", "how agents should work\non it, in a tiny language", BLUE),
+             ("compiler", "rejects layers that\ndo not make sense", YELLOW), ("agentic layer", "prompts, workflows,\nsandbox, triggers", GREEN)]
+    bw, bh, gap = 168, 74, 30
+    x0 = (W - (bw * len(boxes) + gap * (len(boxes) - 1))) // 2
+    y0 = 200
+    for i, (name, text, col) in enumerate(boxes):
+        x = x0 + i * (bw + gap)
+        d.rounded_rectangle([x, y0, x + bw, y0 + bh], radius=10, outline=col, width=3, fill="#161b22")
+        d.text((x + bw // 2, y0 + bh // 2), name, font=BOLD, fill=FG, anchor="mm")
+        for j, part in enumerate(wrap(text.replace("\n", " "), 18)):
+            d.text((x + bw // 2, y0 + bh + 22 + j * 20), part, font=FONT, fill=DIM, anchor="mm")
+        if i < len(boxes) - 1:
+            ax = x + bw + 4
+            d.line([ax, y0 + bh // 2, ax + gap - 10, y0 + bh // 2], fill=FG, width=3)
+            d.polygon([(ax + gap - 10, y0 + bh // 2 - 7), (ax + gap - 2, y0 + bh // 2), (ax + gap - 10, y0 + bh // 2 + 7)], fill=FG)
+    labels = [(x0 + bw + gap // 2, "a script drafts it,\nan LLM completes it"), (x0 + 2 * bw + gap + gap // 2, "an LLM writes it"),
+              (x0 + 3 * bw + 2 * gap + gap // 2, "checked, not trusted"), (x0 + 4 * bw + 3 * gap + gap // 2, "generated, same\ninput → same output")]
+    for x, text in labels:
+        for j, part in enumerate(text.split("\n")):
+            d.text((x, y0 - 62 + j * 20), part, font=FONT, fill=YELLOW, anchor="mm")
+    lines = ["The LLM writes two small files. Everything else is deterministic.",
+             "The layer lives beside your repository and never changes it.",
+             "Agents work in throwaway copies, inside containers, and prove their work with tests."]
+    for j, text in enumerate(lines):
+        d.text((W // 2, 450 + j * 36), text, font=MID, fill=FG if j == 0 else DIM, anchor="mm")
+    if note:
+        d.text((W // 2, H - 40), note, font=FONT, fill=DIM, anchor="mm")
     return img
 
 
@@ -149,15 +206,18 @@ def render(scene: dict, recorded: list[dict], frames_dir: Path) -> int:
     lines: list[str] = []
     n = 0
 
+    caption = ""
+
     def emit(count: int = 1, cursor: bool = False) -> None:
         nonlocal n
-        img = frame(title, lines, cursor)
+        img = frame(title, lines, cursor, caption)
         for _ in range(count):
             img.save(frames_dir / f"{n:05d}.png")
             n += 1
 
     gap = float(scene.get("gap", 0.6))
     for step in recorded:
+        caption = step.get("caption", "")
         if step["note"]:
             lines.append(f"# {step['note']}")
         lines.append("$ ")
@@ -229,13 +289,24 @@ def main() -> int:
             encode(d, path, None)
             return path
 
-        parts.append(clip("intro", [(card(spec["title"], spec["subtitle"], spec.get("note", "")), 3.5)]))
+        pipeline().save(out / "pipeline.png")
+        intro = [(card(spec["title"], spec["subtitle"], spec.get("note", "")), 4.0)]
+        for item in spec.get("intro", []):
+            if item.get("diagram"):
+                intro.append((pipeline(item["title"]), float(item.get("seconds", 9))))
+            else:
+                intro.append((card(item["title"], item.get("subtitle", ""), "", item.get("bullets")), float(item.get("seconds", 8))))
+        parts.append(clip("intro", intro))
+
+        def scene_card(scene: dict) -> list[tuple[Image.Image, float]]:
+            bullets = scene.get("explain")
+            return [(card(scene["title"], scene["subtitle"], "", bullets), 6.5 if bullets else 2.6)]
         for scene in spec["scene"]:
             sid = scene["id"]
             raw = out / "logs" / f"{sid}.json"
             if a.only and sid not in a.only:
                 if (out / f"{sid}.mp4").exists():
-                    parts.append(clip(f"card-{sid}", [(card(scene["title"], scene["subtitle"]), 2.6)]))
+                    parts.append(clip(f"card-{sid}", scene_card(scene)))
                     parts.append(out / f"{sid}.mp4")
                 continue
             print(f"scene {sid}: {scene['title']}")
@@ -244,6 +315,9 @@ def main() -> int:
             else:
                 recorded = capture(scene)
                 raw.write_text(json.dumps(recorded))
+            visible = [st for st in scene["steps"] if not st.get("hidden")]
+            for rec, st in zip(recorded, visible):   # wording comes from the scene file, output from the run
+                rec.update(show=st.get("show", st["run"]), note=st.get("note", ""), caption=st.get("caption", ""))
             (out / "logs" / f"{sid}.txt").write_text("\n".join(
                 f"$ {s['show']}\n" + "\n".join(line for _, line in s["events"]) for s in recorded) + "\n")
             frames = work / f"frames-{sid}"
@@ -251,8 +325,11 @@ def main() -> int:
             count = render(scene, recorded, frames)
             encode(frames, out / f"{sid}.mp4", out / f"{sid}.gif")
             print(f"    {count / FPS:.0f}s  mp4 {(out / f'{sid}.mp4').stat().st_size // 1024} KB  gif {(out / f'{sid}.gif').stat().st_size // 1024} KB")
-            parts.append(clip(f"card-{sid}", [(card(scene["title"], scene["subtitle"]), 2.6)]))
+            parts.append(clip(f"card-{sid}", scene_card(scene)))
             parts.append(out / f"{sid}.mp4")
+        if spec.get("outro"):
+            o = spec["outro"]
+            parts.append(clip("outro", [(card(o["title"], o.get("subtitle", ""), o.get("note", ""), o.get("bullets")), float(o.get("seconds", 9)))]))
         listing = work / "concat.txt"
         listing.write_text("".join(f"file '{p}'\n" for p in parts))
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
