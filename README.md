@@ -5,7 +5,7 @@ the real build and test commands, a safe place to work, a way to prove what they
 change may ship. That setup is called an **agentic layer**. `al` generates one for any repository, in any
 language, without changing the repository.
 
-**[Watch the 5½-minute tour (MP4, 4 MB)](docs/demo/tour.mp4)** — it explains the idea and shows every part
+**[Watch the 7½-minute tour (MP4, 5 MB)](docs/demo/tour.mp4)** — it explains the idea and shows every part
 running for real.
 
 ![How it works: codebase → LLM.txt → agentic.rkt → compiler → agentic layer](docs/demo/pipeline.png)
@@ -98,6 +98,66 @@ in a container; a second Opus pass reviewed the result against the plan with the
 proof; the rules passed; the change was merged. It took 2 minutes 14 seconds and cost $0.69.
 [The saved log](docs/demo/logs/flask-zte-opus-inside-container-d8c03973.log) is in the repository.
 
+## A web application, end to end: who reviews, and on what proof
+
+The five repositories above are libraries and command-line tools. To show a change you can *see*, there is
+a sixth example: a small Notes web app ([`tests/webdemo/app`](tests/webdemo/app)), hosted on a throwaway
+Forgejo. Two requests were run for real with Claude Opus 5.5 working inside a container. The difference
+between them is who reviews, and what counts as proof.
+
+### 1. A visual change, reviewed by a human
+
+*Request (filed as an issue): "Change the page background colour to dark slate and make the text light."*
+
+The agent planned and made the change. The app's unit tests had to pass, and then the app was opened in a
+real browser inside the container and screenshots were taken. The run finished by opening a pull request.
+
+| before | after (captured by the run) |
+|---|---|
+| ![before](docs/demo/webdemo/before.png) | ![after](docs/demo/webdemo/a-after.png) |
+
+The screenshots are attached to the pull request, so the person reviewing sees the result without checking
+anything out. Nothing ships until that person merges:
+
+![The pull request on Forgejo with the proof attached](docs/demo/webdemo/a-pr-proof.png)
+
+111 seconds, $0.47, three agent steps (plan, build, commit).
+
+### 2. A new feature, reviewed by two agents and shipped without a human
+
+*Request: "Add a search box above the notes list that filters the notes as you type; show 'No notes match'
+when nothing matches."*
+
+A feature needs stronger proof than a colour change. The agent built it, added tests, and extended the
+browser scenario so that the run's **video** demonstrates the feature. This is that video:
+
+![The recorded proof: the search box filtering notes](docs/demo/webdemo/b-feature.gif)
+
+Reviewers cannot watch a video, so the run cuts it into frames. Two independent reviewer agents each
+examined all of them, together with the screenshots and the test logs:
+
+![Frames from the video, as given to the reviewers](docs/demo/webdemo/b-keyframes-sheet.png)
+
+Both had to approve. Then the hard rules had to hold as well: tests and the browser run green again on the
+final result, the change small enough, no protected file touched. Only then was it merged:
+
+![Merged on Forgejo without a human, with the reviewers' reasoning on the record](docs/demo/webdemo/b-pr-merged.png)
+
+273 seconds, $1.31, five agent steps (plan, build, commit, two reviews). The reviewers' full verdicts are in
+[`b-verdicts.json`](docs/demo/webdemo/b-verdicts.json); one of them reads, in part: *"…the screenshots and
+keyframes show filtering by 'milk', case-insensitive 'WATER', the 'No notes match' state for 'xyz', and the
+full list coming back when the box is cleared."*
+
+| | Visual change | New feature |
+|---|---|---|
+| Proof | screenshots from a real browser | a video of the feature, plus screenshots and test logs |
+| Who reviews | a person, in the pull request | two independent agents; both must approve |
+| Who merges | the person | the gate, if every rule holds |
+| What a person does | reads the PR, presses merge | nothing; can audit the PR afterwards |
+
+To run both yourself: `tests/webdemo/webdemo_live.sh` (about 7 minutes and $1.80 of model usage).
+What it sets up and what each output file is: [`tests/webdemo/README.md`](tests/webdemo/README.md).
+
 ## The example repositories
 
 Five well-known public repositories, chosen to cover different languages, build tools and ways of working.
@@ -162,6 +222,8 @@ Every clip is a recording of real commands, with waiting time cut. The captured 
 ![per-run isolation](docs/demo/06-scaling.gif)
 
 More clips:
+[a visual change with human review](docs/demo/05b-ui-change-human.gif) ·
+[a feature reviewed by two agents](docs/demo/05c-feature-agents.gif) ·
 [five repositories](docs/demo/03-five-codebases.gif) ·
 [task file + poller](docs/demo/04-tasklist.gif) ·
 [fan-out: several agents race on one task](docs/demo/06b-fan-out.gif) ·
@@ -206,6 +268,7 @@ raco test racket/al/tests                                    # the language rule
 (cd kit/runtime && uv run --with pytest pytest -q)           # the runtime, including attempts to escape the container
 uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q   # full runs on the five repositories
 tests/forge/forgejo_live.sh                                  # a throwaway Forgejo: issue → PR, merge, webhook
+tests/webdemo/webdemo_live.sh                                # the web app scenarios with a real agent (costs about $1.80)
 ```
 
 The integration tests never work in your checkouts. Each session makes its own copy of every example
@@ -217,6 +280,7 @@ repository at a pinned commit, and a test fails if it leaves anything behind. De
 
 - Five repositories in five languages, each with an LLM-written layer and its real test or build commands passing.
 - Three complete runs with Claude Opus 5.5 on flask, each right on the first attempt, about 2 to 3 minutes and $0.70.
+- A web app end to end, three times over: a visual change reviewed by a person from screenshots, and a feature reviewed by two agents from a video, then merged.
 - Isolation, the shipping rules, the Forgejo integration and the voice round trip, each with tests that run the real thing.
 
 **Not yet shown**
@@ -224,7 +288,8 @@ repository at a pinned commit, and a test fails if it leaves anything behind. De
 - Large or ambiguous tasks. The real runs were small, well-defined chores.
 - Fan-out with real agents, and anything on a team's private repository.
 - GitHub end to end. The live forge test uses Forgejo; GitHub is covered by unit tests only.
-- The agent inside the container on anything but flask.
+- The agent inside the container on anything but flask and the Notes demo app.
+- Reviewers catching a real defect. In every real run so far the work was correct, so the reviewers have only ever had to approve.
 
 ## Where the ideas come from
 

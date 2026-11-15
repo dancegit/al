@@ -213,3 +213,11 @@ If anything fails *after* the gate decided to ship — the default branch moved,
 the forge refused the merge — the run falls back to the human path: a PR (or `PR.md` without a
 forge) with the reason recorded, the commits kept on the run's branch, and no deploy. A git
 integrity failure is never turned into a PR.
+
+## Proof on the pull request
+
+With a Forgejo forge the run attaches its image artefacts, and the keyframes of any video, to a "Proof"
+comment on the pull request (at most eight pictures; a video is linked). A human reviewer therefore sees
+what the checks captured without leaving the forge, and a zero-touch merge leaves the same evidence on
+the record. GitHub has no attachment API through `gh`; there the route is an S3-compatible store with a
+public base URL. The web app demo in `tests/webdemo` exercises both review styles end to end.

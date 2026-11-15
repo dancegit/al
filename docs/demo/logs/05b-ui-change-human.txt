@@ -1,0 +1,40 @@
+$ uv run notes.al/adws/dispatch.py --source issue:1 --class chore
+dispatch: ui-change <- issue:1
+[adw 0641a4a6] ui-change start: class=chore dry_run=False
+[adw 0641a4a6] step plan-chore (run) start
+[adw 0641a4a6] container started: al-notes-demo-0641a4a6
+[adw 0641a4a6] step plan-chore (run) passed: <tmp>/notes.al/specs/chore-0641a4a6-dark-slate-page-background.
+[adw 0641a4a6] step plan-feature (run) skipped: when=class-feature, class=chore
+[adw 0641a4a6] step build (run) start
+[adw 0641a4a6] step build (run) passed: The Notes page now has a dark slate background with light text. The 
+[adw 0641a4a6] step test (check) start
+[adw 0641a4a6] step test (check) passed: exit 0, log agents/0641a4a6/checks/test.1.log
+[adw 0641a4a6] step e2e (check) start
+[adw 0641a4a6] step e2e (check) passed: exit 0, log agents/0641a4a6/checks/e2e.1.log
+[adw 0641a4a6] step commit (run) start
+[adw 0641a4a6] step commit (run) passed: I committed the change, but on a detached HEAD rather than on the b
+[adw 0641a4a6] step review (review) start
+[adw 0641a4a6] step review (review) passed: ok
+[adw 0641a4a6] step ship (ship) start
+[adw 0641a4a6] gate: action pr
+[adw 0641a4a6] ship: PR #2 http://127.0.0.1:46461/adw/notes/pulls/2
+[adw 0641a4a6] ship: proof comment on PR #2 (9 file(s) attached)
+[adw 0641a4a6] step ship (ship) passed: ok
+[adw 0641a4a6] container removed: al-notes-demo-0641a4a6
+[adw 0641a4a6] worktree removed: <tmp>/notes.al/trees/0641a4a6
+=== ADW summary ===
+adw:       ui-change 0641a4a6
+status:    passed
+branch:    chore/0641a4a6-dark-theme-dark-slate-page-background
+plan:      <tmp>/notes.al/specs/chore-0641a4a6-dark-slate-page-background.md
+checks:    test=0, e2e=0
+review:    pass (human)
+ship:      pr -> http://127.0.0.1:46461/adw/notes/pulls/2 (shipped=False)
+artefacts: 5
+state:     <tmp>/notes.al/agents/0641a4a6/state.json
+$ 
+
+$ 
+
+$ 
+

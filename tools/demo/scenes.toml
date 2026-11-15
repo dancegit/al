@@ -126,6 +126,43 @@ steps = [
 ]
 
 [[scene]]
+id = "05b-ui-change-human"
+title = "A visual change, reviewed by a human"
+subtitle = "A small web app on Forgejo. Request: make the page dark. The agent does the work; a person decides, looking at screenshots"
+gap = 0.4
+explain = [
+  "The example app is a small Notes page (the five library and command-line repositories have no user interface)",
+  "Someone files an issue: change the background to dark slate",
+  "Claude Opus 5.5 plans and makes the change inside a container; the app's tests and a real-browser run must pass",
+  "The run opens a pull request with screenshots as proof. A human looks at them and merges",
+]
+steps = [
+  { run = "while IFS= read -r l; do printf '%s\\n' \"$l\" | cut -c1-108; sleep 0.25; done < docs/demo/webdemo/a-run.log", show = "uv run notes.al/adws/dispatch.py --source issue:1 --class chore", note = "REPLAY of the saved log of a real run (docs/demo/webdemo/a-run.log): 111 seconds, $0.47", caption = "Replay of the real run: plan, build, unit tests, then the app is opened in a real browser and screenshots are taken. It ends by opening a pull request." },
+  { images = ["docs/demo/webdemo/before.png", "docs/demo/webdemo/a-after.png"], labels = ["before (from the issue)", "after (captured by the run in a real browser)"], seconds = 7, caption = "The change itself: the same page before and after. These pictures were taken by the run, not by a person." },
+  { image = "docs/demo/webdemo/a-pr-summary.png", label = "the pull request on Forgejo", seconds = 7, caption = "What the reviewer sees on Forgejo: the request, the look before the change, the plan and the check results." },
+  { image = "docs/demo/webdemo/a-pr-proof.png", label = "the proof, attached to the pull request", seconds = 8, caption = "Further down: the screenshots from the run, attached as proof. A person looks at them and presses merge. Nothing ships before that." },
+]
+
+[[scene]]
+id = "05c-feature-agents"
+title = "A new feature, reviewed by two agents"
+subtitle = "Request: a search box that filters the notes. The proof is a video; two independent reviewers must both approve before it ships"
+gap = 0.4
+explain = [
+  "A feature needs stronger proof than a colour change: a video of it working",
+  "The agent builds the feature and extends the browser scenario so the video shows it",
+  "Two separate reviewer agents study frames from the video, the screenshots and the test logs",
+  "Only if both approve, and every hard rule holds, is it merged. No human in the loop",
+]
+steps = [
+  { run = "while IFS= read -r l; do printf '%s\\n' \"$l\" | cut -c1-108; sleep 0.25; done < docs/demo/webdemo/b-run.log", show = "uv run notes.al/adws/dispatch.py --source issue:3 --class feature", note = "REPLAY of the saved log of a real run (docs/demo/webdemo/b-run.log): 273 seconds, $1.31", caption = "Replay of the real run: plan, build, tests, a recorded browser session, then two reviewers, the gate, and the merge." },
+  { video = "docs/demo/webdemo/b-feature.mp4", label = "the video the run recorded as proof", speed = 1.6, hold = 2, caption = "This is the proof: the new search box filtering notes, matching regardless of case, and showing 'No notes match'." },
+  { image = "docs/demo/webdemo/b-keyframes-sheet.png", label = "frames taken from the video for the reviewers", seconds = 7, caption = "Reviewers cannot watch a video, so the run cuts it into frames. Each reviewer looks at every one of them." },
+  { run = "python3 -c \"import json; d=json.load(open('docs/demo/webdemo/b-verdicts.json')); [print(f'reviewer {i+1}: approved={r[\\\"success\\\"]}  blockers={len([x for x in r[\\\"issues\\\"] if x.get(\\\"severity\\\")==\\\"blocker\\\"])}  artefacts examined={len(r[\\\"artefacts_reviewed\\\"])}') for i,r in enumerate(d['reviewers'])]; g=d['gate']; print(f'gate: {g[\\\"action\\\"]}  changed lines={g[\\\"diff_lines\\\"]}  reasons against={len(g[\\\"reasons\\\"])}'); print('shipped to:', d['target'])\"", show = "cat b-verdicts.json   # summarised", caption = "Two independent reviewers, both approve, no blockers. Then the hard rules: tests green again, change small enough, nothing protected touched." },
+  { image = "docs/demo/webdemo/b-pr-merged.png", label = "the pull request on Forgejo: merged without a human", seconds = 8, caption = "The result on Forgejo: merged, with both reviewers' reasoning and the proof on the record for anyone to audit later." },
+]
+
+[[scene]]
 id = "06-scaling"
 title = "Isolation per run: worktree, container, network, database"
 subtitle = "Three runs at once (max-runs 2): each has its own app on :8000 and its own Postgres; nothing is shared"
