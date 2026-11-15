@@ -22,7 +22,7 @@
   (voice kokoro)
   (agent claude-code #:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:effort high)))
   (agent codex #:id second-opinion)
-  (budget limits #:run-usd 5 #:step-usd 2 #:day-usd 50)
+  (budget limits #:run-usd 5 #:step-usd 2 #:day-usd 50 #:limit-stop-percent 90 #:on-limit wait #:limit-wait-minutes 120)
 
   (prompt-input issue #:labels ("adw"))
   (prompt-input tasklist)

@@ -69,7 +69,10 @@
   "Limits on what agent calls may cost. Each is optional; an omitted one is no limit."
   [run-usd decimal #:none "Most one run may spend (the sum of its agent calls). A per-run `--max-cost USD` (or AL_MAX_COST) replaces it for that run."]
   [step-usd decimal #:none "Most one agent call may spend. With Claude Code the call is also capped natively (--max-budget-usd), so it stops early."]
-  [day-usd decimal #:none "Most this layer may spend per local calendar day, over all its runs. Once reached, no run and no agent step starts until the next day."])
+  [day-usd decimal #:none "Most this layer may spend per local calendar day, over all its runs. Once reached, no run and no agent step starts until the next day."]
+  [limit-stop-percent integer 0 "Subscription usage threshold, 1-100: once the agent CLI reports that this share of a usage window (Claude Code: the 5-hour or the weekly window) is used, no new agent step starts. 0 = off. Only applies when the CLI reports a share (a subscription login, not an API key)."]
+  [on-limit (enum stop wait) stop "What happens at the threshold: `stop` = the run is handed to a person, with the window and its reset time as the reason; `wait` = the run waits until the window resets and then continues, unless that is further away than #:limit-wait-minutes (then it is handed over)."]
+  [limit-wait-minutes integer 300 "Longest wait for a reset with #:on-limit wait, in minutes (at least 1)."])
 
 (define-family forge #:key "forge" #:letter "" #:default none
   "The code forge used for issues, PRs and CI integration.")
@@ -517,7 +520,7 @@
     "An ADW with #:changes layer must use a review option of kind `human` or `agent`: a change to how agents work always passes a person."
     "(dashboard …) is declared at most once; omitted, it is (dashboard local) on 127.0.0.1:8765. A #:bind that is not a loopback address (127.x.x.x, ::1, localhost) needs #:token-env naming the environment variable that holds the access token; #:port is 1–65535 and #:poll-ms at least 100."
     "Model tiers: an agent's tiers are `base` and `heavy` (from #:model-base / #:model-heavy, which have defaults) plus every (TIER \"MODEL\") in its #:models; a tier given both ways, or twice, is an error, and `inherit` is not a tier name. Every tier a workflow can use must be declared on the agent that runs it: run steps (their #:model-set, else their command's) on the step's #:agent or the ADW's agent; check #:resolve commands and review #:patch / #:implement commands on the ADW's agent; the review command on the review option's #:agent, else the ADW's agent. The mock agent accepts every tier. #:effort is only available for claude-code and codex (codex: not `max`)."
-    "(budget limits …) is declared at most once; every limit given is greater than 0."
+    "(budget limits …) is declared at most once; every limit given is greater than 0; #:limit-stop-percent is 0–100 (0 = off), #:on-limit wait needs a #:limit-stop-percent above 0, and #:limit-wait-minutes is at least 1."
     "A (script …) step needs a `worktree` environment in the ADW's stack, like check and ship."
     "(include \"FILE\") splices the clauses of FILE (plain s-expressions, no #lang line; a path relative to agentic.rkt) where it stands: at the top level of (agentic-layer …), or inside (codebase …) for cmd, paths and conditional-doc clauses. Errors point into FILE. An included file cannot include another. `al adopt` writes its declarations this way."
     "Kinds marked planned compile but are refused by the generator."))

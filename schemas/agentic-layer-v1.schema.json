@@ -865,6 +865,22 @@
             "kind": {
               "const": "limits"
             },
+            "limitStopPercent": {
+              "description": "Subscription usage threshold, 1-100: once the agent CLI reports that this share of a usage window (Claude Code: the 5-hour or the weekly window) is used, no new agent step starts. 0 = off. Only applies when the CLI reports a share (a subscription login, not an API key).",
+              "type": "integer"
+            },
+            "limitWaitMinutes": {
+              "description": "Longest wait for a reset with #:on-limit wait, in minutes (at least 1).",
+              "type": "integer"
+            },
+            "onLimit": {
+              "description": "What happens at the threshold: `stop` = the run is handed to a person, with the window and its reset time as the reason; `wait` = the run waits until the window resets and then continues, unless that is further away than #:limit-wait-minutes (then it is handed over).",
+              "enum": [
+                "stop",
+                "wait"
+              ],
+              "type": "string"
+            },
             "runUsd": {
               "description": "Most one run may spend (the sum of its agent calls). A per-run `--max-cost USD` (or AL_MAX_COST) replaces it for that run.",
               "minimum": 0,
@@ -889,6 +905,9 @@
             "dayUsd",
             "id",
             "kind",
+            "limitStopPercent",
+            "limitWaitMinutes",
+            "onLimit",
             "runUsd",
             "status",
             "stepUsd"

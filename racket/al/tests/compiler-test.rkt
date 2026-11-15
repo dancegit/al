@@ -407,6 +407,59 @@
   (check-rejects (layer plan simple-adw '(budget limits #:step-usd -1)) #rx"expected a number ≥ 0")
   (check-rejects (layer plan simple-adw '(budget limits) '(budget limits #:id two)) #rx"only one budget"))
 
+(test-case "budget: subscription usage threshold"
+  (define (budget-of . fields)
+    (hash-ref (compile-layer-datum (layer plan simple-adw `(budget limits ,@fields))) 'budget))
+  ;; defaults: the threshold is off
+  (define d (budget-of))
+  (check-equal? (hash-ref d 'limitStopPercent) 0)
+  (check-equal? (hash-ref d 'onLimit) "stop")
+  (check-equal? (hash-ref d 'limitWaitMinutes) 300)
+  ;; all three given, next to a dollar limit
+  (define b (budget-of '#:run-usd 5 '#:limit-stop-percent 90 '#:on-limit 'wait '#:limit-wait-minutes 120))
+  (check-equal? (hash-ref b 'limitStopPercent) 90)
+  (check-equal? (hash-ref b 'onLimit) "wait")
+  (check-equal? (hash-ref b 'limitWaitMinutes) 120)
+  (check-equal? (hash-ref b 'runUsd) 5)
+  (check-equal? (hash-ref b 'dayUsd) 'null)
+  ;; the ends of the range, and an explicit 0 with stop
+  (check-equal? (hash-ref (budget-of '#:limit-stop-percent 100 '#:on-limit 'wait '#:limit-wait-minutes 1) 'limitStopPercent) 100)
+  (check-equal? (hash-ref (budget-of '#:limit-stop-percent 0 '#:on-limit 'stop) 'limitStopPercent) 0)
+  ;; each rejection
+  (check-rejects (layer plan simple-adw '(budget limits #:limit-stop-percent 101))
+                 #rx"#:limit-stop-percent must be between 0 and 100 \\(got 101\\); 0 or leaving it out turns the threshold off")
+  (check-rejects (layer plan simple-adw '(budget limits #:limit-stop-percent -5))
+                 #rx"#:limit-stop-percent must be between 0 and 100 \\(got -5\\)")
+  (check-rejects (layer plan simple-adw '(budget limits #:limit-stop-percent 90.5)) #rx"#:limit-stop-percent: expected an integer, got 90.5")
+  (check-rejects (layer plan simple-adw '(budget limits #:limit-stop-percent "90")) #rx"#:limit-stop-percent: expected an integer")
+  (check-rejects (layer plan simple-adw '(budget limits #:on-limit wait))
+                 #rx"#:on-limit wait needs #:limit-stop-percent above 0")
+  (check-rejects (layer plan simple-adw '(budget limits #:limit-stop-percent 0 #:on-limit wait))
+                 #rx"#:on-limit wait needs #:limit-stop-percent above 0")
+  (check-rejects (layer plan simple-adw '(budget limits #:limit-stop-percent 90 #:on-limit pause))
+                 #rx"#:on-limit: expected one of: stop, wait, got pause")
+  (check-rejects (layer plan simple-adw '(budget limits #:limit-stop-percent 90 #:on-limit wait #:limit-wait-minutes 0))
+                 #rx"#:limit-wait-minutes must be at least 1 \\(got 0\\)")
+  (check-rejects (layer plan simple-adw '(budget limits #:limit-wait-minutes -10)) #rx"#:limit-wait-minutes must be at least 1")
+  (check-rejects (layer plan simple-adw '(budget limits #:limit-wait-minutes 1.5)) #rx"#:limit-wait-minutes: expected an integer")
+  ;; the error of a layer file points at the (budget …) clause
+  (define dir (make-temporary-file "al-limit-~a" 'directory))
+  (call-with-output-file (build-path dir "agentic.rkt")
+    (lambda (o) (write-string "#lang al\n(agentic-layer #:name \"x\"\n  (codebase #:root \".\" #:languages (c) (cmd test \"make\"))\n  (command plan #:template plan-chore)\n  (budget limits #:run-usd 5\n          #:limit-stop-percent 150)\n  (adw a (steps (run plan #:command plan))))\n" o)))
+  (define msg (with-handlers ([exn:fail:syntax? exn-message]) (dynamic-require (build-path dir "agentic.rkt") #f) "no error"))
+  (check-regexp-match #rx"agentic.rkt:5:2.*#:limit-stop-percent must be between 0 and 100 \\(got 150\\)" msg)
+  (delete-directory/files dir)
+  ;; the schema and the reference are generated from the same three fields
+  (define props (hash-ref (cadr (hash-ref (hash-ref (hash-ref (layer-schema) 'properties) 'budget) 'oneOf)) 'properties))
+  (check-equal? (hash-ref (hash-ref props 'limitStopPercent) 'type) "integer")
+  (check-equal? (hash-ref (hash-ref props 'onLimit) 'enum) '("stop" "wait"))
+  (check-equal? (hash-ref (hash-ref props 'limitWaitMinutes) 'type) "integer")
+  (for ([needle '("#:limit-stop-percent" "#:on-limit" "#:limit-wait-minutes" "#:on-limit wait needs a #:limit-stop-percent above 0")])
+    (check-true (string-contains? (reference-text) needle) needle))
+  ;; the full example shows the fields
+  (define full (hash-ref (dynamic-require (build-path examples "full.rkt") 'layer-spec) 'budget))
+  (check-equal? (list (hash-ref full 'limitStopPercent) (hash-ref full 'onLimit) (hash-ref full 'limitWaitMinutes)) '(90 "wait" 120)))
+
 ;; ---------------------------------------------------------------------------------------- script step
 
 (test-case "script step: runs a declared cmd, needs a worktree, is not a check"
