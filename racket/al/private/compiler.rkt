@@ -337,6 +337,17 @@
   (or (member (string-downcase s) '("localhost" "localhost.localdomain" "::1" "[::1]"))
       (regexp-match? #px"^127\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$" s)))
 
+;; --- notifiers ----------------------------------------------------------------------------
+
+;; #f when `s` is an environment variable name in capitals; else what it looks like, in words.
+;; The value itself is never put in an error message: it may be the private thing.
+(define (private-looking s)
+  (cond [(regexp-match? #px"^[A-Z][A-Z0-9_]*$" s) #f]
+        [(regexp-match? #rx"://" s) "looks like a URL"]
+        [(regexp-match? #rx"@" s) "looks like an e-mail address"]
+        [(regexp-match? #px"^[A-Za-z0-9-]+([.][A-Za-z0-9-]+)*[.]?(:[0-9]+)?$" s) "looks like a host name"]
+        [else "is not a variable name (capitals, digits and _ only, starting with a letter)"]))
+
 (define (compile-layer-datum datum)
   (parameterize ([pending-refs (box '())] [current-clause #f])
     (unless (and (pair? datum) (eq? (car datum) 'agentic-layer))
@@ -388,6 +399,7 @@
            (when (eq? (family-name fam) 'dashboard) (hash-set! clause-of 'dashboard-clause (car c)))
            (when (eq? (family-name fam) 'budget) (hash-set! clause-of 'budget-clause (car c)))
            (when (eq? (family-name fam) 'agent) (hash-set! clause-of (cons 'agent (hash-ref o 'id)) (car c)))
+           (when (eq? (family-name fam) 'notify) (hash-set! clause-of (cons 'notify (hash-ref o 'id)) (car c)))
            (hash-set! options (family-name fam) (cons o existing))]
           [(eq? (car d) 'codebase)
            (when codebase (fail "(codebase …) given twice"))
@@ -480,6 +492,19 @@
             (define v (hash-ref (car b) k))
             (when (and (real? v) (not (> v 0)))
               (fail "(budget limits): ~a must be greater than 0 (got ~a); leave it out for no limit" kw v))))))
+    (for ([n (in-list (opts 'notify))] #:unless (equal? (hash-ref n 'kind) "none"))
+      (parameterize ([current-clause (hash-ref clause-of (cons 'notify (hash-ref n 'id)) #f)])
+        (define who (format "(notify ~a)" (hash-ref n 'kind)))
+        (when (null? (hash-ref n 'events))
+          (fail "~a: #:events is empty; list at least one of needs-human, failed, passed, shipped, or remove the notifier" who))
+        (unless (<= 1 (hash-ref n 'timeout) 60)
+          (fail "~a: #:timeout must be 1–60 seconds (got ~a)" who (hash-ref n 'timeout)))
+        (when (equal? (hash-ref n 'kind) "email")
+          (for ([k '(toEnv fromEnv smtpUrlEnv)] [kw '("#:to-env" "#:from-env" "#:smtp-url-env")])
+            (define looks (private-looking (hash-ref n k)))
+            (when looks
+              (fail "~a: ~a takes the NAME of an environment variable in capitals, e.g. \"AL_NOTIFY_TO\", but the value given ~a. agentic.rkt is committed, so it must hold no private data: put the value itself in local.env in the layer directory (never committed) or in the environment, and write only the variable's name here"
+                    who kw looks))))))
     (for ([ag (in-list (opts 'agent))] #:when (hash-has-key? ag 'models))
       (parameterize ([current-clause (hash-ref clause-of (cons 'agent (hash-ref ag 'id)) #f)])
         (define who (format "(agent ~a)" (hash-ref ag 'kind)))
@@ -672,6 +697,7 @@
                'concurrency (single 'concurrency)
                'dashboard (single 'dashboard)
                'budget (single 'budget)
+               'notifiers (opts 'notify)
                'agents (opts 'agent)
                'promptInputs (opts 'prompt-input)
                'triggers (opts 'trigger)

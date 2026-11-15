@@ -407,6 +407,58 @@
   (check-rejects (layer plan simple-adw '(budget limits #:step-usd -1)) #rx"expected a number ≥ 0")
   (check-rejects (layer plan simple-adw '(budget limits) '(budget limits #:id two)) #rx"only one budget"))
 
+;; ---------------------------------------------------------------------------------------- notify
+
+(test-case "notify: none by default; email and command compile; several need ids"
+  (define (notifiers . clauses) (hash-ref (compile-layer-datum (apply layer plan simple-adw clauses)) 'notifiers))
+  (check-equal? (map (lambda (n) (hash-ref n 'kind)) (notifiers)) '("none"))
+  (define mail (car (notifiers '(notify email))))
+  (check-equal? (hash-ref mail 'events) '("needs-human" "failed"))
+  (check-equal? (hash-ref mail 'toEnv) "AL_NOTIFY_TO")
+  (check-equal? (hash-ref mail 'fromEnv) "AL_NOTIFY_FROM")
+  (check-equal? (hash-ref mail 'smtpUrlEnv) "AL_NOTIFY_SMTP_URL")
+  (check-equal? (hash-ref mail 'timeout) 10)
+  (define two (notifiers '(notify email #:to-env "OPS_MAIL" #:events (shipped))
+                         '(notify email #:id second #:events (needs-human failed passed shipped))
+                         '(notify command #:run "ntfy publish \"$NTFY_TOPIC\"" #:events (needs-human))))
+  (check-equal? (map (lambda (n) (hash-ref n 'id)) two) '("email" "second" "command"))
+  (check-equal? (hash-ref (car two) 'toEnv) "OPS_MAIL")
+  (check-equal? (hash-ref (caddr two) 'run) "ntfy publish \"$NTFY_TOPIC\"")
+  (check-rejects (layer plan simple-adw '(notify email) '(notify email)) #rx"id email already used; add #:id")
+  (check-rejects (layer plan simple-adw '(notify command)) #rx"missing required field #:run")
+  (check-rejects (layer plan simple-adw '(notify email #:events (done))) #rx"one of: needs-human, failed, passed, shipped")
+  (check-rejects (layer plan simple-adw '(notify email #:events ())) #rx"#:events is empty")
+  (check-rejects (layer plan simple-adw '(notify command #:run "true" #:timeout 0)) #rx"#:timeout must be 1–60")
+  (check-rejects (layer plan simple-adw '(notify slack)) #rx"unknown notify kind; kinds are: none, email, command"))
+
+(test-case "notify: a private value in the layer file is rejected, and never echoed"
+  (define (rejected-as value kw rx)
+    (define message
+      (with-handlers ([exn:al? exn-message])
+        (compile-layer-datum (layer plan simple-adw `(notify email ,kw ,value)))
+        "compiled"))
+    (check-regexp-match rx message)
+    (check-false (string-contains? message value) (format "the message repeats ~s" value)))
+  (rejected-as "ops@example.org" '#:to-env #rx"#:to-env takes the NAME of an environment variable.*looks like an e-mail address")
+  (rejected-as "Ops <ops@example.org>" '#:from-env #rx"#:from-env takes the NAME.*looks like an e-mail address")
+  (rejected-as "smtps://user:secret@mail.example.org:465" '#:smtp-url-env #rx"#:smtp-url-env takes the NAME.*looks like a URL")
+  (rejected-as "smtp://127.0.0.1:1025" '#:smtp-url-env #rx"looks like a URL")
+  (rejected-as "mail.example.org" '#:smtp-url-env #rx"looks like a host name")
+  (rejected-as "mail.example.org:587" '#:smtp-url-env #rx"looks like a host name")
+  (rejected-as "localhost" '#:smtp-url-env #rx"looks like a host name")
+  (rejected-as "my variable" '#:to-env #rx"is not a variable name")
+  (check-rejects (layer plan simple-adw '(notify email #:to-env "ops@example.org")) #rx"local.env")
+  (check-true (hash? (compile-layer-datum (layer plan simple-adw '(notify email #:to-env "TEAM_2_MAIL"))))))
+
+(test-case "notify: schema and reference"
+  (define items (hash-ref (hash-ref (hash-ref (layer-schema) 'properties) 'notifiers) 'items))
+  (check-equal? (sort (map (lambda (s) (hash-ref (hash-ref (hash-ref s 'properties) 'kind) 'const)) (hash-ref items 'oneOf)) string<?)
+                '("command" "email" "none"))
+  (define ref (reference-text))
+  (for ([needle '("### `notify`" "(notify email …)" "(notify command …)" "(notify none …)" "`#:smtp-url-env`"
+                  "Default when omitted: `(notify none)`" "?insecure=plaintext")])
+    (check-true (string-contains? ref needle) needle)))
+
 ;; ---------------------------------------------------------------------------------------- script step
 
 (test-case "script step: runs a declared cmd, needs a worktree, is not a check"

@@ -36,6 +36,7 @@ TYPES = (
     "budget.stop",
     "limit.status", "limit.stop", "limit.wait",
     "review.round", "gate.decision", "ship.result", "handoff",
+    "notify.sent", "notify.failed",
     "fanout.candidate",
 )
 

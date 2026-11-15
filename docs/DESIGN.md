@@ -90,10 +90,10 @@ Adding a PITER alternative is one `define-kind` plus its runtime support. Kinds 
 
 Supporting families: `agent` (claude-code, codex, custom, mock), `forge` (none, github, forgejo),
 `storage` (local, s3-compatible), `artefact` (log, junit, coverage, image, video, audio, trace,
-html, file), `voice` (Kokoro TTS + faster-whisper), `layer` placement.
+html, file), `voice` (Kokoro TTS + faster-whisper), `notify` (none, email, command), `layer` placement.
 
 Defaults when a family is omitted: cli prompt, manual trigger, worktree, human review, Claude Code,
-no forge, local storage. The smallest layer is 12 lines (`racket/al/examples/minimal.rkt`).
+no forge, local storage, no notifications. The smallest layer is 12 lines (`racket/al/examples/minimal.rkt`).
 
 ## Automatic review and shipping (the "R" that removes the human)
 
@@ -350,6 +350,95 @@ reports, including the code block each one introduces. The run still counts as f
 and the task list see a failure; the difference is that a person is pointed at the work and told
 what it needs. A tampered sandbox is never handed over, and nothing is merged or deployed.
 
+## Telling a person
+
+Runs happen while nobody is watching, so a layer can declare notifiers: `(notify email)` sends a
+short e-mail over SMTP (standard library only), `(notify command #:run "…")` runs a command of the
+person's choice, and `(notify none)`, the default, sends nothing. Several may be declared.
+
+**Events.** Each notifier lists the events it reports (`#:events`, default `(needs-human failed)`),
+and a run reports exactly one:
+
+| Event | The run |
+|---|---|
+| `needs-human` | failed and was handed over (see above), or was stopped by a spending or usage limit |
+| `failed` | failed otherwise (nothing was handed over, or the handover itself failed) |
+| `shipped` | passed and its change was merged or deployed |
+| `passed` | passed otherwise; this includes a pull request or `PR.md` that waits for a person's review |
+
+**When.** Right after the handover (only `needs-human`) and at the end of the run. `state.json`
+records every attempt (`notified`: notifier id → events) before it is made, so there is at most one
+attempt per run, event and notifier; a resumed run (`--resume`) that stops again the same way does
+not send again. A fan-out candidate never notifies: its parent reports. A `--dry-run` sends nothing
+unless `--notify` is given. A notifier can never fail a run or change its result: each attempt is
+bounded by the notifier's `#:timeout` (1–60 seconds, default 10), a failure is recorded as a
+`notify.failed` event with a reason from a fixed list, and the run goes on. There is no retry.
+
+**The message.** The subject is `[al] <layer>: <event in words> — <title>`, with `needs a person`,
+`failed`, `finished` or `shipped`, and the title of the run's pull request (at most 72 characters).
+The body is plain text; a line appears only when it has a value:
+
+```
+Workflow: change
+Run: 1a2b3c4d
+
+The run stopped at step `test` and was handed to a person. Why: check test exited 2 after 2 attempt(s); log agents/1a2b3c4d/checks/test.2.log
+
+Where to look:
+- branch: chore/1a2b3c4d-add-a-pay-band
+- pull request: https://forge.example.org/acme/webshop/pulls/7
+- description: agents/1a2b3c4d/PR.md
+- dashboard: http://127.0.0.1:8765/
+```
+
+The reason is the first line of the handover reason, the limit's reason or the failed step's
+detail, with machine paths removed and at most 300 characters. Nothing else is in a message: no
+prompt text beyond the title, no log tail, no environment, no path of the machine and no host name
+(the SMTP greeting says `localhost`, the `Message-ID` uses the sender's domain, the date is UTC).
+The dashboard line is the value of `AL_DASHBOARD_URL` as given, when it is set.
+
+**No private data in the repository.** A layer file is committed, so it holds only the NAMES of
+environment variables: `#:to-env`, `#:from-env` and `#:smtp-url-env` default to `AL_NOTIFY_TO`,
+`AL_NOTIFY_FROM` and `AL_NOTIFY_SMTP_URL`, and the compiler rejects a value that looks like an
+address, a URL or a host name (its error never repeats the value). The values come from, highest
+precedence first:
+
+1. the process environment (a non-empty value);
+2. `local.env` in the layer directory: `KEY=VALUE` lines, ignored by git through the generated
+   `.gitignore` of every placement; `al check` fails when git tracks it;
+3. `$XDG_CONFIG_HOME/al/<layer name>.env` (default `~/.config/al/<layer name>.env`).
+
+```
+AL_NOTIFY_TO=ops@example.org
+AL_NOTIFY_FROM=al@example.org
+AL_NOTIFY_SMTP_URL=smtp+starttls://USER:PASSWORD@mail.example.org:587
+```
+
+Values read from the two files are never put into the process environment, so agents, checks and
+containers do not inherit them, and they are never written to state, events, logs, PR text or
+anything the dashboard reads. Events, `run.log` and `al notify-test` show the notifier's id, its
+kind, the event and a reason from a fixed list (`variable AL_NOTIFY_TO is not set`, `timed out
+after 10 s`, `login refused (SMTP 535)`, …); an exception's text is never printed.
+
+**SMTP.** Three URL forms: `smtp://host[:port]` (plain, port 25), `smtp+starttls://[user:pass@]host[:port]`
+(port 587) and `smtps://[user:pass@]host[:port]` (port 465); user and password are percent-decoded.
+Plain `smtp://` is accepted only to a loopback host (`localhost`, `::1`, `127.x.x.x`, compared as
+text), e.g. a mail bridge on the same machine; to any other host it is refused with the reason,
+because the message and any password would travel unencrypted, unless the URL ends in
+`?insecure=plaintext`. Certificates are verified with the system's defaults, except for a loopback
+host (where plain would be accepted anyway), so a local bridge with a self-signed certificate works.
+STARTTLS is never downgraded: a server that does not offer it is a failure.
+
+**The `command` kind** is the generic way out (a chat webhook, a desktop notification, a pager). The
+command runs with `sh -c` in the layer directory and gets the message on standard input, the
+subject on the first line. Its environment has the variables of `local.env`, plus `AL_NOTIFY_EVENT`
+and `AL_NOTIFY_SUBJECT`. Exit code 0 means accepted; its output is discarded; after `#:timeout` its
+process group is killed.
+
+**Checking the setup.** `al notify-test LAYER [--event E]` sends one clearly marked test message
+through every declared notifier, whether or not it lists the event, and prints per notifier
+`accepted` or `FAILED: <reason>`. No run is started and nothing is recorded.
+
 ## Run events
 
 Besides `state.json` (the current picture, rewritten as it changes) and `run.log` (progress lines for
@@ -387,6 +476,8 @@ to its check, a re-check and the reviewers to the review step).
 | `gate.decision` | `action` (pr / merge / deploy / none), `ship`, `reasons` |
 | `ship.result` | `action`, `shipped`, `target`, `pr_url`, `reasons` |
 | `handoff` | `status` (opened / skipped / failed), `reason`, `stopped_at`, `target`, `pr_url` |
+| `notify.sent` | `notifier` (the option id), `kind` (email / command), `event` (needs-human / failed / passed / shipped), `seconds`; never a recipient, a server or a variable's value |
+| `notify.failed` | as `notify.sent`, plus `reason` (one of a fixed list, e.g. `variable AL_NOTIFY_TO is not set`, `timed out after 10 s`, `login refused (SMTP 535)`, `exit 3`) |
 | `fanout.candidate` | `step`, `id`, `index`, `status` (running / passed / failed / stopped), and when finished `exit`, `seconds`, `reason` |
 
 Two more things make a run observable from outside. A check's log file grows while the check runs

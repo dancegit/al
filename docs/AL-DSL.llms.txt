@@ -48,6 +48,7 @@ pairs, e.g. `#:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:eff
 - (dashboard …) is declared at most once; omitted, it is (dashboard local) on 127.0.0.1:8765. A #:bind that is not a loopback address (127.x.x.x, ::1, localhost) needs #:token-env naming the environment variable that holds the access token; #:port is 1–65535 and #:poll-ms at least 100.
 - Model tiers: an agent's tiers are `base` and `heavy` (from #:model-base / #:model-heavy, which have defaults) plus every (TIER "MODEL") in its #:models; a tier given both ways, or twice, is an error, and `inherit` is not a tier name. Every tier a workflow can use must be declared on the agent that runs it: run steps (their #:model-set, else their command's) on the step's #:agent or the ADW's agent; check #:resolve commands and review #:patch / #:implement commands on the ADW's agent; the review command on the review option's #:agent, else the ADW's agent. The mock agent accepts every tier. #:effort is only available for claude-code and codex (codex: not `max`).
 - (budget limits …) is declared at most once; every limit given is greater than 0.
+- (notify …): #:to-env, #:from-env and #:smtp-url-env of `email` take the NAME of an environment variable in capitals (A–Z, 0–9, _); a value that looks like an e-mail address, a URL or a host name is rejected, because the layer file is committed. #:events lists at least one event and #:timeout is 1–60. Two notifiers of the same kind need #:id.
 - A (script …) step needs a `worktree` environment in the ADW's stack, like check and ship.
 - (include "FILE") splices the clauses of FILE (plain s-expressions, no #lang line; a path relative to agentic.rkt) where it stands: at the top level of (agentic-layer …), or inside (codebase …) for cmd, paths and conditional-doc clauses. Errors point into FILE. An included file cannot include another. `al adopt` writes its declarations this way.
 - Kinds marked planned compile but are refused by the generator.
@@ -208,6 +209,25 @@ Declare at most one. Default when omitted: `(dashboard local)`.
   - `#:podman-socket` (boolean; default #f) — Mount the user's podman API socket so the page can show container state, CPU and memory. Off by default for a reason: a podman socket gives the container full control of your podman (start, stop, exec into any container), read-only mount or not.
 
 - **`(dashboard none …)`** — No dashboard is generated.
+
+### `notify`
+
+Tell a person when a run needs them or has ended. Each notifier lists the events it reports: `needs-human` (the run stopped and was handed to a person, including a spending or usage limit stop), `failed` (the run failed and nothing was handed over), `passed` (the run finished; nothing was merged by al), `shipped` (the run finished and its change was merged or deployed). A run reports exactly one of them, at most once per notifier, and a notifier that fails never fails the run. Nothing private is written here: an address, a server or a password is given as the NAME of an environment variable, whose value comes from the environment, from `local.env` in the layer directory (git-ignored, never committed) or from `$XDG_CONFIG_HOME/al/<layer name>.env`. `al notify-test LAYER` sends a test message through every notifier.
+Declare any number. Default when omitted: `(notify none)`.
+
+- **`(notify none …)`** — Nothing is sent.
+
+- **`(notify email …)`** — An e-mail over SMTP (standard library only). The message is short: workflow, run id, what happened, where to look.
+  - `#:events` (list of needs-human | failed | passed | shipped; default (needs-human failed)) — Events this notifier reports.
+  - `#:to-env` (string; default "AL_NOTIFY_TO") — NAME of the environment variable holding the recipient address (several: separated by commas). Never the address itself.
+  - `#:from-env` (string; default "AL_NOTIFY_FROM") — NAME of the environment variable holding the sender address. Never the address itself.
+  - `#:smtp-url-env` (string; default "AL_NOTIFY_SMTP_URL") — NAME of the environment variable holding the SMTP URL: `smtp://host:port` (plain; only to a loopback host, e.g. a local mail bridge, unless the URL ends in `?insecure=plaintext`), `smtp+starttls://user:pass@host:port` or `smtps://user:pass@host:port`. Never the URL itself.
+  - `#:timeout` (integer; default 10) — Seconds one attempt may take, 1–60; after that the run goes on without it.
+
+- **`(notify command …)`** — Run a shell command with the message on standard input (first line: the subject). The generic way out: a chat webhook, a desktop notification, a pager. It runs in the layer directory with the variables of `local.env` in its environment, plus AL_NOTIFY_EVENT and AL_NOTIFY_SUBJECT; exit code 0 means accepted. Its output is discarded.
+  - `#:run` (string; default REQUIRED) — Shell command (sh -c). Refer to anything private as $VARIABLE; never write an address, a URL with a token or a password here.
+  - `#:events` (list of needs-human | failed | passed | shipped; default (needs-human failed)) — Events this notifier reports.
+  - `#:timeout` (integer; default 10) — Seconds one attempt may take, 1–60; after that the command is killed and the run goes on.
 
 ### `prompt-input` — PITER letter P
 
@@ -559,7 +579,7 @@ One model tier of an agent, written (TIER "MODEL-ID" [#:effort LEVEL]) inside #:
 ;; A layer that uses most of the vocabulary: several prompt inputs and triggers,
 ;; a stacked environment, artefacts on S3, and a zero-touch (auto review → merge) ADW
 ;; next to a human-reviewed one, model tiers, a second vendor as reviewer, spending limits, and a
-;; script step that runs one of the team's own scripts.
+;; script step that runs one of the team's own scripts, and notifications when a run needs a person.
 (agentic-layer #:name "webshop" #:description "Agentic layer for the webshop monorepo"
   (codebase #:root "../webshop" #:languages (typescript python) #:default-branch "main"
             #:description "Vue storefront + FastAPI backend" #:package-manager "bun add / uv add"
@@ -580,6 +600,8 @@ One model tier of an agent, written (TIER "MODEL-ID" [#:effort LEVEL]) inside #:
   (agent claude-code #:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:effort high)))
   (agent codex #:id second-opinion)
   (budget limits #:run-usd 5 #:step-usd 2 #:day-usd 50)
+  (notify email #:events (needs-human failed shipped))   ; addresses and the server: variables in local.env, never here
+  (notify command #:id desktop #:run "notify-send \"$AL_NOTIFY_SUBJECT\"" #:events (needs-human))
 
   (prompt-input issue #:labels ("adw"))
   (prompt-input tasklist)

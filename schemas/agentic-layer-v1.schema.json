@@ -2016,6 +2016,135 @@
       "pattern": "^[a-z0-9][a-z0-9._-]*$",
       "type": "string"
     },
+    "notifiers": {
+      "description": "Tell a person when a run needs them or has ended. Each notifier lists the events it reports: `needs-human` (the run stopped and was handed to a person, including a spending or usage limit stop), `failed` (the run failed and nothing was handed over), `passed` (the run finished; nothing was merged by al), `shipped` (the run finished and its change was merged or deployed). A run reports exactly one of them, at most once per notifier, and a notifier that fails never fails the run. Nothing private is written here: an address, a server or a password is given as the NAME of an environment variable, whose value comes from the environment, from `local.env` in the layer directory (git-ignored, never committed) or from `$XDG_CONFIG_HOME/al/<layer name>.env`. `al notify-test LAYER` sends a test message through every notifier.",
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "Nothing is sent.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "none"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "An e-mail over SMTP (standard library only). The message is short: workflow, run id, what happened, where to look.",
+            "properties": {
+              "events": {
+                "description": "Events this notifier reports.",
+                "items": {
+                  "enum": [
+                    "needs-human",
+                    "failed",
+                    "passed",
+                    "shipped"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "fromEnv": {
+                "description": "NAME of the environment variable holding the sender address. Never the address itself.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "email"
+              },
+              "smtpUrlEnv": {
+                "description": "NAME of the environment variable holding the SMTP URL: `smtp://host:port` (plain; only to a loopback host, e.g. a local mail bridge, unless the URL ends in `?insecure=plaintext`), `smtp+starttls://user:pass@host:port` or `smtps://user:pass@host:port`. Never the URL itself.",
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              },
+              "timeout": {
+                "description": "Seconds one attempt may take, 1–60; after that the run goes on without it.",
+                "type": "integer"
+              },
+              "toEnv": {
+                "description": "NAME of the environment variable holding the recipient address (several: separated by commas). Never the address itself.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "events",
+              "fromEnv",
+              "id",
+              "kind",
+              "smtpUrlEnv",
+              "status",
+              "timeout",
+              "toEnv"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Run a shell command with the message on standard input (first line: the subject). The generic way out: a chat webhook, a desktop notification, a pager. It runs in the layer directory with the variables of `local.env` in its environment, plus AL_NOTIFY_EVENT and AL_NOTIFY_SUBJECT; exit code 0 means accepted. Its output is discarded.",
+            "properties": {
+              "events": {
+                "description": "Events this notifier reports.",
+                "items": {
+                  "enum": [
+                    "needs-human",
+                    "failed",
+                    "passed",
+                    "shipped"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "command"
+              },
+              "run": {
+                "description": "Shell command (sh -c). Refer to anything private as $VARIABLE; never write an address, a URL with a token or a password here.",
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              },
+              "timeout": {
+                "description": "Seconds one attempt may take, 1–60; after that the command is killed and the run goes on.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "events",
+              "id",
+              "kind",
+              "run",
+              "status",
+              "timeout"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "array"
+    },
     "promptInputs": {
       "description": "PITER · Prompt input: where the high-level prompt for a run comes from.",
       "items": {
@@ -2992,6 +3121,7 @@
     "layer",
     "llmTxt",
     "name",
+    "notifiers",
     "promptInputs",
     "reviews",
     "schemaVersion",
