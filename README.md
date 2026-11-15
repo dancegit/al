@@ -5,7 +5,7 @@ the real build and test commands, a safe place to work, a way to prove what they
 change may ship. That setup is called an **agentic layer**. `al` generates one for any repository, in any
 language, without changing the repository.
 
-**[Watch the 11-minute tour (MP4, 8 MB)](docs/demo/tour.mp4)** — it explains the idea and shows every part
+**[Watch the 12-minute tour (MP4, 8 MB)](docs/demo/tour.mp4)** — it explains the idea and shows every part
 running for real.
 
 ![How it works: codebase → LLM.txt → agentic.rkt → compiler → agentic layer](docs/demo/pipeline.png)
@@ -364,6 +364,7 @@ Every clip is a recording of real commands, with waiting time cut. The captured 
 ![per-run isolation](docs/demo/06-scaling.gif)
 
 More clips:
+[the live dashboard](docs/demo/06d-dashboard.gif) ·
 [changing the layer by asking in words](docs/demo/05g-layer-change.gif) ·
 [healthcare: a safety rule shipped on proof](docs/demo/05d-rota-feature.gif) ·
 [healthcare: the review catches a planted defect](docs/demo/05e-rota-defect.gif) ·

@@ -1,0 +1,14 @@
+$ (dashboard local)   # on by default in every layer; then:
+45:- (dashboard …) is declared at most once; omitted, it is (dashboard local) on 127.0.0.1:8765. A #:bind th
+171:Declare at most one. Default when omitted: `(dashboard local)`.
+173:- **`(dashboard local …)`** — A local process: `uv run adws/dashboard.py` serves the page (standard libr
+
+uv run adws/dashboard.py --open     # http://127.0.0.1:8765/
+$ 
+
+$ 
+
+$ 
+
+$ 
+

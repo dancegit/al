@@ -291,6 +291,25 @@ steps = [
 ]
 
 [[scene]]
+id = "06d-dashboard"
+title = "Watching the agents work"
+subtitle = "A live, read-only dashboard generated with every layer"
+gap = 0.4
+explain = [
+  "Agents working out of sight are hard to trust. Every layer comes with a live dashboard",
+  "It shows runs in flight, each workflow as a graph that fills in, and where time and money went",
+  "Each agent step's transcript is formatted for reading, with filters and search",
+  "It only reads: it cannot start, stop or change anything",
+]
+steps = [
+  { run = "grep -n 'dashboard' docs/AL-DSL.llms.txt | grep -m3 -E 'dashboard (local|podman|none)' | cut -c1-108; echo; echo 'uv run adws/dashboard.py --open     # http://127.0.0.1:8765/'", show = "(dashboard local)   # on by default in every layer; then:", caption = "One clause in the layer, on by default. The generator writes the dashboard and a launcher into the layer." },
+  { video = "docs/demo/dashboard/live.mp4", label = "the dashboard while three runs execute (recorded in a real browser)", speed = 1.5, hold = 2, caption = "Live: runs appear, the workflow graph colours in step by step, one run waits for a free slot, and a check's log grows as it runs." },
+  { image = "docs/demo/dashboard/step-transcript.png", label = "a real run opened afterwards: Claude Opus 5.5 adding a test to flask", seconds = 9, caption = "A real run: 3 minutes, $0.68. The graph shows the path taken; below it, the build step's transcript, filtered for one word." },
+  { image = "docs/demo/dashboard/timeline-costs.png", label = "where the time and the money went", seconds = 8, caption = "The timeline shows agent time, check time and waiting. The table shows cost, turns and tokens for every step." },
+  { image = "docs/demo/dashboard/artefacts.png", label = "the proof a run produced", seconds = 7, caption = "Screenshots, recordings and logs from the run's checks, in the page, next to the step that produced them." },
+]
+
+[[scene]]
 id = "07-forgejo"
 title = "Forge integration, live"
 subtitle = "A throwaway local Forgejo: issue → PR, zero-touch merge through the API, signed webhook → run"
