@@ -72,7 +72,8 @@ class Scheduler:
         self.seq = 0
 
     def day_limit_reached(self) -> str | None:
-        """The layer's day limit (#:day-usd) is reached: no run would start, so nothing is claimed."""
+        """The layer's day limit (#:day-usd) or its subscription usage threshold is reached: no run
+        would start, so nothing is claimed."""
         from adw_modules import budget, models
         try:
             limits = budget.limits(self.layer, models.overrides(None, None, None))

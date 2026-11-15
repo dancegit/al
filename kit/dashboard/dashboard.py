@@ -62,6 +62,10 @@ TEXT_CAP = 400_000
 POOLS = ("runs", "agents", "checks")
 POOL_DEFAULTS = {"runs": ("maxRuns", 4), "agents": ("maxAgents", 2), "checks": ("maxChecks", 2)}
 EVENTS_FILE = "events.jsonl"
+USAGE_FILE = "subscription-usage.json"   # agents/subscription-usage.json: what the agent CLI last reported
+WINDOW_LABELS = {"five_hour": "5-hour", "seven_day": "weekly"}
+WINDOW_ORDER = ("five_hour", "seven_day")
+API_KEY_SOURCES = ("ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key")
 # Liveness (state.json pid / host / heartbeat, refreshed every ~5 s by a running run):
 HEARTBEAT_STALE = 20.0      # older than this and its process is gone: the run died
 HEARTBEAT_UNSEEN = 300.0    # its process cannot be checked (other host, container): died after this long
@@ -180,6 +184,33 @@ def read_json(path: Path) -> Any:
 
 def clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def billing_of(source: Any) -> str:
+    """The billing mode an init event's `apiKeySource` names: subscription / api-key / "" (not said).
+    The same mapping as the runtime's usage.billing_of; the dashboard is a separate standard-library
+    script and imports nothing from the runtime."""
+    if source == "none":
+        return "subscription"
+    if isinstance(source, str) and source in API_KEY_SOURCES:
+        return "api-key"
+    return ""
+
+
+def window_label(window: str) -> str:
+    return WINDOW_LABELS.get(window) or window.replace("_", " ")
+
+
+def _share(value: Any) -> float | None:
+    """A share used, 0..1, or None for anything else."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+        return None
+    return float(value)
+
+
+def collapse_billing(values: Iterable[str]) -> str:
+    known = sorted({v for v in values if v})
+    return "" if not known else (known[0] if len(known) == 1 else "mixed")
 
 
 def is_loopback(host: str) -> bool:
@@ -590,6 +621,7 @@ class TranscriptAgg:
     first_ts: float | None = None
     last_ts: float | None = None
     thinking_tokens: int = 0
+    billing: str = ""            # subscription | api-key | "" (what the init event's apiKeySource says)
     _message_usage: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -597,7 +629,7 @@ class TranscriptAgg:
                 "duration_ms": self.duration_ms, "tokens": dict(self.tokens), "final": self.final,
                 "is_error": self.is_error, "events": self.events, "tools": self.tools, "errors": self.errors,
                 "action": self.action, "first_ts": self.first_ts, "last_ts": self.last_ts,
-                "thinking_tokens": self.thinking_tokens}
+                "thinking_tokens": self.thinking_tokens, "billing": self.billing}
 
     def usage_from_messages(self) -> None:
         if self.final:
@@ -706,6 +738,7 @@ class Transcript:
             subtype = obj.get("subtype")
             if subtype == "init":
                 agg.model = str(obj.get("model") or "")
+                agg.billing = billing_of(obj.get("apiKeySource"))
                 if obj.get("cwd"):
                     short.add(str(obj["cwd"]), "")
                 agg.action = "starting"
@@ -966,6 +999,18 @@ class Layer:
         return {name: (float(option[key]) if isinstance(option.get(key), (int, float)) else None)
                 for name, key in (("run", "runUsd"), ("step", "stepUsd"), ("day", "dayUsd"))}
 
+    def usage_threshold(self) -> dict[str, Any] | None:
+        """The declared subscription usage threshold (#:limit-stop-percent …), or None when it is off."""
+        option = self.ir.get("budget")
+        if not isinstance(option, dict):
+            return None
+        percent = option.get("limitStopPercent")
+        if isinstance(percent, bool) or not isinstance(percent, int) or percent <= 0:
+            return None
+        minutes = option.get("limitWaitMinutes")
+        return {"percent": percent, "on_limit": "wait" if option.get("onLimit") == "wait" else "stop",
+                "wait_minutes": minutes if isinstance(minutes, int) and not isinstance(minutes, bool) and minutes > 0 else 300}
+
     def shortener(self, state: Any = None) -> Shortener:
         """Absolute paths a run recorded, made relative for reading: the run's worktree is the
         repository; the layer is `layer:` beside the repository, or its directory in the repository
@@ -1194,6 +1239,23 @@ def budget_view(state: dict[str, Any]) -> dict[str, Any] | None:
             "stopped": {k: stopped.get(k) for k in ("limit", "spent", "of", "step", "reason")} if stopped else None}
 
 
+def usage_view(state: dict[str, Any]) -> dict[str, Any] | None:
+    """What a run recorded about subscription usage: its billing mode, the limit that stopped it and
+    how often it waited for a reset; None for a run that recorded nothing."""
+    record = state.get("usage")
+    if not isinstance(record, dict) or not record:
+        return None
+    stopped = record.get("stopped") if isinstance(record.get("stopped"), dict) else None
+    waits = record.get("waits") if isinstance(record.get("waits"), list) else []
+    return {"billing": str(record.get("billing") or ""),
+            "stopped": {"window": str(stopped.get("window") or ""), "cause": str(stopped.get("cause") or ""),
+                        "status": str(stopped.get("status") or ""), "used": _share(stopped.get("used")),
+                        "percent": stopped.get("percent") if isinstance(stopped.get("percent"), int) else None,
+                        "resets_at": parse_time(stopped.get("resets_at")), "step": str(stopped.get("step") or ""),
+                        "reason": str(stopped.get("reason") or "")} if stopped else None,
+            "waits": len(waits)}
+
+
 def local_day(stamp: float | None) -> str:
     return datetime.fromtimestamp(stamp).date().isoformat() if stamp else ""
 
@@ -1201,13 +1263,14 @@ def local_day(stamp: float | None) -> str:
 def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Exact spans from a run's events (see docs/DESIGN.md, "Run events"): agent calls, check
     attempts (with re-checks), gate / deploy commands, slot waits, the container, the check that is
-    running now. Later events of the same agent directory or log file win (a resumed run)."""
+    running now, and what was recorded about subscription usage (limit.status / limit.stop / limit.wait). Later events of the same agent directory or log file win (a resumed run)."""
     agents: dict[str, dict[str, Any]] = {}
     attempts: dict[str, list[dict[str, Any]]] = {}
     gates: dict[str, dict[str, Any]] = {}
     waits: list[dict[str, Any]] = []
     open_waits: dict[tuple[str, str], dict[str, Any]] = {}
     container: dict[str, Any] | None = None
+    limits: list[dict[str, Any]] = []
     current = ""
     for event in events:
         kind, at = event["type"], event["_t"]
@@ -1229,7 +1292,17 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
             span.update(end=at, status="failed" if event.get("status") == "failed" else "passed",
                         cost=event.get("cost") if isinstance(event.get("cost"), (int, float)) else None,
                         turns=event.get("turns") if isinstance(event.get("turns"), int) else None,
-                        error=str(event.get("error") or ""))
+                        error=str(event.get("error") or ""), billing=str(event.get("billing") or ""))
+        elif kind in {"limit.status", "limit.stop", "limit.wait"}:
+            seconds = event.get("seconds")
+            limits.append({"type": kind, "at": at,
+                           "step": str(event.get("owner") or current or event.get("step") or ""),
+                           "call": str(event.get("step") or ""), "window": str(event.get("window") or ""),
+                           "status": str(event.get("status") or ""), "used": _share(event.get("used")),
+                           "resets_at": parse_time(event.get("resets_at")), "cause": str(event.get("cause") or ""),
+                           "reason": str(event.get("reason") or ""),
+                           "seconds": float(seconds) if isinstance(seconds, (int, float)) and not isinstance(seconds, bool)
+                           else None})
         elif kind in {"check.start", "check.end"}:
             file = os.path.basename(str(event.get("log") or ""))
             if not file:
@@ -1280,7 +1353,7 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
             if item.get("running") and (live is None or item["start"] > live["start"]):
                 live = {"check": step, "attempt": item["attempt"], "start": item["start"], "file": item["file"]}
     return {"agents": agents, "attempts": attempts, "gates": list(gates.values()), "waits": waits,
-            "container": container, "live_check": live}
+            "container": container, "live_check": live, "limits": limits}
 
 
 class RunModel:
@@ -1361,6 +1434,8 @@ class RunModel:
                 info.update(tier_fields(call))
             if info["cost"] is None and span and span.get("cost") is not None:
                 info["cost"] = span["cost"]
+            # how the call was billed: its transcript says so (also for runs from before this was recorded)
+            info["billing"] = agg.billing or str((span or {}).get("billing") or "") or str(call.get("billing") or "")
             agents.append(info)
             activities.append(Activity(directory.name, "agent", step, role, directory.name, start, end, astatus,
                                        {"cost": info["cost"]}))
@@ -1580,6 +1655,7 @@ class RunModel:
             container = {"name": facts["container"], "state": "removed" if facts["container_removed"] else
                          ("running" if data["running"] else "unknown"), "source": "run.log"}
         prompt = str(state.get("prompt") or "")
+        cost_record = state.get("cost") if isinstance(state.get("cost"), dict) else {}
         parent = state.get("fanout_parent") if isinstance(state.get("fanout_parent"), dict) else {}
         return {
             "key": f"{self.layer.key}/{self.id}", "layer": self.layer.key, "id": self.id, "adw": data["adw"].get("name"),
@@ -1607,6 +1683,8 @@ class RunModel:
             "artefacts": len(state.get("artefacts") or []),
             "agents": len(agents),
             "budget": budget_view(state),
+            "billing": str(cost_record.get("billing") or "") or collapse_billing(a["billing"] for a in agents),
+            "usage": usage_view(state),
             "timing": "events" if spans is not None else "files",
             "last_seen": data["last_seen"],
             "mtime": max([mtime(self.files.dir / "state.json") or 0, mtime(self.files.dir / "run.log") or 0]),
@@ -1706,6 +1784,24 @@ class RunModel:
                              "label": f"waiting for a {wait['pool']} slot", "start": wait["start"], "end": end,
                              "status": "waiting" if end is None else "done"})
                 wait_time += (end or now) - wait["start"]
+            # what the agent CLI said about subscription usage, a limit stop, a wait for a reset
+            for index, entry in enumerate(data["spans"]["limits"]):
+                name = window_label(entry["window"])
+                at, end, status = entry["at"], entry["at"], "done"
+                if entry["type"] == "limit.stop":
+                    label, status = f"stopped: {name} limit", "failed"
+                elif entry["type"] == "limit.wait":
+                    label = f"waiting for the {name} limit to reset"
+                    cutoff = data["run_end"] or now
+                    end = min(at + (entry["seconds"] or 0.0), cutoff)
+                    if data["running"] and at + (entry["seconds"] or 0.0) > now:
+                        status = "waiting"
+                elif entry["used"] is not None:
+                    label = f"{name} limit: {round(entry['used'] * 100)}% used · {entry['status']}"
+                else:
+                    label = f"{name} limit: {entry['status']}"
+                bars.append({"id": f"limit:{index}", "step": entry["step"], "level": 1, "kind": "limit", "label": label,
+                             "start": at, "end": end, "status": status, "ref": entry["call"]})
         elif "runs" in (data["facts"].get("waited") or []) and data["run_start"]:
             first = min((b["start"] for b in bars if b["level"] == 0 and b["start"]), default=None)
             wait_end = first if first else (None if data["running"] else data["run_end"])
@@ -1799,6 +1895,7 @@ class RunModel:
             "ship": {k: (short(v) if isinstance(v, str) else v) for k, v in ship.items() if k != "gate"},
             "gate": gate, "handoff": handoff, "fanout": fanout, "artefacts": artefacts,
             "budget": budget_view(state),
+            "usage": usage_view(state),
             "scripts": {name: {k: (short(v) if isinstance(v, str) else v) for k, v in rec.items()}
                         for name, rec in (state.get("scripts") or {}).items() if isinstance(rec, dict)},
             "runlog": [short(line) for line in runlog_tail],
@@ -2079,6 +2176,7 @@ class Model:
         self.parents: dict[str, str] = {}
         self._parents_size, self._parents_dirty = -1, True
         self.liveness_checked: dict[str, float] = {}
+        self.usage_sigs: dict[str, tuple | None] = {}
 
     # ---------------------------------------------------------------- discovery
     def discover(self) -> bool:
@@ -2139,8 +2237,34 @@ class Model:
                             "adws": [a.get("name") for a in layer.ir.get("adws") or [] if isinstance(a, dict)],
                             "runs": len(runs), "running": sum(1 for r in runs if r["status"] == "running"),
                             "explain": layer.explain_file(), "limits": layer.limits(),
-                            "budget": self.layer_budget(layer, runs)})
+                            "budget": self.layer_budget(layer, runs),
+                            "usage": self.layer_usage(layer, time.time())})
             return out
+
+    @staticmethod
+    def layer_usage(layer: Layer, now: float) -> dict[str, Any]:
+        """What the agent CLI last reported about the subscription's usage windows in this layer
+        (agents/subscription-usage.json, written by the runtime). Read-only; every value is data."""
+        data = read_json(layer.path / "agents" / USAGE_FILE)
+        threshold = layer.usage_threshold()
+        if not isinstance(data, dict):
+            return {"state": "none", "billing": "", "windows": [], "threshold": threshold}
+        listed = data.get("windows") if isinstance(data.get("windows"), dict) else {}
+        windows = []
+        for name, item in listed.items():
+            if not isinstance(item, dict):
+                continue
+            resets = parse_time(item.get("resets_at"))
+            run = item.get("run")
+            windows.append({"window": str(name), "label": window_label(str(name)), "status": str(item.get("status") or ""),
+                            "used": _share(item.get("used")), "resets_at": resets, "at": parse_time(item.get("at")),
+                            "run": run if isinstance(run, str) and RUN_ID.match(run) else "",
+                            "step": str(item.get("step") or ""), "expired": resets is not None and resets <= now})
+        windows.sort(key=lambda w: (WINDOW_ORDER.index(w["window"]) if w["window"] in WINDOW_ORDER else len(WINDOW_ORDER),
+                                    w["window"]))
+        billing = str(data.get("billing") or "")
+        return {"state": "api-key" if billing == "api-key" else ("known" if windows else "none"), "billing": billing,
+                "api_key_source": str(data.get("api_key_source") or "")[:40], "windows": windows, "threshold": threshold}
 
     @staticmethod
     def layer_budget(layer: Layer, runs: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -2175,6 +2299,16 @@ class Model:
         locks = None
         with self.lock:
             layers = list(self.layers.values())
+        usage_changed = False
+        for layer in layers:   # the subscription usage file is layer-level: a change republishes the layers
+            sig = stat_sig(layer.path / "agents" / USAGE_FILE)
+            if layer.key not in self.usage_sigs:
+                self.usage_sigs[layer.key] = sig
+            elif self.usage_sigs[layer.key] != sig:
+                self.usage_sigs[layer.key] = sig
+                usage_changed = True
+        if usage_changed:
+            self.hub.publish("layers", self.layer_list())
         any_running = False
         for layer in layers:
             seen = set()

@@ -369,14 +369,31 @@ def models_text(ir: dict) -> tuple[str, str, list[str]]:
 
 def budget_text(ir: dict) -> tuple[str, str, list[str]]:
     b = ir.get("budget")
+    subscription = ("On a subscription login the dollar figures are API-equivalent estimates, not what you pay; a run "
+                    "that the subscription's limit stops is handed to a person with the window and its reset time")
     if not isinstance(b, dict):
-        return ("What it may cost", "No spending limits. `--max-cost USD` (or AL_MAX_COST) still limits a single run.", [])
+        return ("What it may cost", "No spending limits. `--max-cost USD` (or AL_MAX_COST) still limits a single run.",
+                [subscription])
     parts = [f"${b[key]:g} {label}" for key, label in (("runUsd", "per run"), ("stepUsd", "per agent call"),
                                                         ("dayUsd", "a day for the whole layer")) if b.get(key) is not None]
-    text = (f"At most {listing(parts) or 'no limit'}. A run that goes over is stopped after the agent call that crossed "
-            "the limit and handed to a person, with the reason. Once the day's limit is reached, nothing new starts.")
+    if parts:
+        text = (f"At most {listing(parts)}. A run that goes over is stopped after the agent call that crossed "
+                "the limit and handed to a person, with the reason. Once the day's limit is reached, nothing new starts.")
+    else:
+        text = "No spending limit in dollars."
+    p = b.get("limitStopPercent")
+    if isinstance(p, int) and not isinstance(p, bool) and p > 0:
+        # the subscription usage threshold: #:limit-stop-percent, #:on-limit, #:limit-wait-minutes
+        window = (f" When the agent CLI reports that {p}% of a subscription usage window is used (for Claude Code: the "
+                  "5-hour or the weekly window), no new agent step starts")
+        if b.get("onLimit") == "wait":
+            m = b.get("limitWaitMinutes") or 300
+            text += (f"{window}: the run waits until that window resets, at most {m} minutes, and then continues; "
+                     "if the reset is further away, the run is handed to a person.")
+        else:
+            text += f"{window} and the run is handed to a person, with the window and its reset time as the reason."
     return ("What it may cost", text, ["Costs are what the agents report; codex and custom agents report none and count as $0",
-                                       "`--max-cost USD` replaces the per-run limit for one run"])
+                                       "`--max-cost USD` replaces the per-run limit for one run", subscription])
 
 
 def dashboard_text(ir: dict) -> tuple[str, str, list[str]]:

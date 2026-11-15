@@ -262,7 +262,8 @@ def test_max_cost_flag_replaces_the_layer_run_limit(make_layer, monkeypatch):
     monkeypatch.setenv("AL_MAX_COST", "5")
     assert main("demo", layer_dir, ["x", "--adw-id", ADW_ID, "--max-cost", "1"]) == 1
     data = _state(layer_dir)
-    assert data["budget"]["limits"] == {"run": 1.0, "step": None, "day": None, "run_from": "--max-cost"}
+    assert data["budget"]["limits"] == {"run": 1.0, "step": None, "day": None, "run_from": "--max-cost",
+                                        "limit_percent": 0, "on_limit": "stop", "wait_minutes": 300}
     assert data["budget"]["stopped"]["reason"] == "budget:run: spent $1.50 of $1.00"
 
 

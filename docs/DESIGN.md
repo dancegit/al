@@ -295,6 +295,42 @@ gets `--max-budget-usd` with what is left under the tightest limit, so a single 
 call the CLI ends at that cap is reported as the limit that set it. A run does not start at all once
 the day limit is reached (exit code 3), and the cron trigger claims nothing while it is.
 
+Subscription usage. When the agent CLI runs on a subscription login, the dollars above are an estimate
+at API prices, and what stops work is a usage window (for Claude Code the 5-hour and the weekly one).
+The runtime (`usage.py`) reads only two events of each call's stream-json transcript, after the call:
+`system`/`init` (`apiKeySource`: `none` = subscription; `ANTHROPIC_API_KEY`, `apiKeyHelper`,
+`/login managed key` = API key; anything else = not said) and `rate_limit_event` (`rate_limit_info`
+with `status`, `resetsAt`, `rateLimitType` and `unifiedWindows`, one entry per window with
+`utilization`, `resetsAt`, `status`). No credential file, network endpoint or private CLI state is
+read. Each call records its billing mode (`agent_calls[].billing`, `agent.end`); a run with
+subscription calls has `cost.billing` (subscription / api-key / mixed) and `cost.api_equivalent`,
+and its summary labels the dollars "API-equivalent" (the dollar limits keep counting them). Every
+report becomes `limit.status` events, `state.usage`, and the latest report per window in the
+layer-level file `agents/subscription-usage.json` (written atomically under an flock on
+`agents/subscription-usage.lock`):
+
+```json
+{"version": 1, "billing": "subscription", "api_key_source": "none", "billing_at": "…", "billing_run": "1a2b3c4d",
+ "windows": {"seven_day": {"window": "seven_day", "status": "allowed", "used": 0.57,
+                           "resets_at": "2026-11-19T14:00:00+00:00", "at": "2026-11-15T18:57:41.294Z",
+                           "run": "1a2b3c4d", "step": "build"}}}
+```
+
+A call that failed and whose transcript has a `rejected` report is a limit stop
+(`limit:<window>: the <label> subscription limit is reached (the CLI refused the call); resets …`):
+like a budget stop it is never retried and goes through the ordinary handoff. `(budget limits
+#:limit-stop-percent N)` adds a threshold: before an agent call, when the file says that N% or more of
+a window is used and that window's reset has not passed, no call starts. With `#:on-limit stop` (the
+default) the run is handed over, and a new run does not start at all (exit code 3; the cron trigger
+claims nothing). With `#:on-limit wait` the run sleeps until the reset and continues, unless the reset
+is further away than `#:limit-wait-minutes` (default 300) or unknown, in which case it is handed over;
+a waiting run keeps its `runs` slot and holds no `agents` slot. The threshold is off while the last
+call ran on an API key. What is not known: usage is only as of the last agent call of this layer (the
+CLI offers no way to ask without a call, so use by other tools on the same account shows at the next
+call); the event carries no time of its own; when the CLI gives no share, only status and reset time
+are recorded; a refusal that leaves no `rejected` report stays an ordinary agent error; codex and
+custom agents report nothing.
+
 ## Proof on the pull request
 
 With a Forgejo forge the run attaches its image artefacts, and the keyframes of any video, to a "Proof"
@@ -330,7 +366,7 @@ to its check, a re-check and the reviewers to the review step).
 
 | `type` | Fields |
 |---|---|
-| `run.start` | `adw`, `adw_id`, `klass`, `dry_run`, `resumed`, `pid`, `host`, `fanout_parent` (`{run, step, index}` or null), `overrides` (`{tier, models, max_cost, from}` or null), `limits` (`{run, step, day, run_from}` or null) |
+| `run.start` | `adw`, `adw_id`, `klass`, `dry_run`, `resumed`, `pid`, `host`, `fanout_parent` (`{run, step, index}` or null), `overrides` (`{tier, models, max_cost, from}` or null), `limits` (`{run, step, day, run_from, limit_percent, on_limit, wait_minutes}` or null) |
 | `run.end` | `status` (passed / failed), `exit` |
 | `slot.wait` | `pool` (runs / agents / checks), `limit`, `who` |
 | `slot.acquire` | `pool`, `slot`, `waited` (seconds), `who` |
@@ -339,11 +375,14 @@ to its check, a re-check and the reviewers to the review step).
 | `step.start` | `step`, `kind`, `attempt` |
 | `step.end` | `step`, `kind`, `status` (passed / failed / skipped), `detail`, `seconds` |
 | `agent.start` | `step` (the agent's directory: `build`, `test-resolve-1`, `review-2-1`, `patch-1`, …), `owner`, `agent` (option id), `agent_kind` (claude-code / codex / custom / mock), `model`, `model_set` (= `tier`), `tier`, `tier_from` (override / request / step / command), `model_from` (agent / override), `effort`; emitted before the call waits for an `agents` slot (a `slot.wait` / `slot.acquire` with `who` = `adw <id> step <dir>` follows) |
-| `agent.end` | as `agent.start`, plus `status` (passed / failed), `seconds`, and when the transcript says so `cost` (USD), `turns`, `duration_ms`; `error` on failure |
+| `agent.end` | as `agent.start`, plus `status` (passed / failed), `seconds`, and when the transcript says so `cost` (USD), `turns`, `duration_ms`; `billing` (subscription / api-key, when the transcript's init event says so; else empty); `error` on failure |
 | `check.start` | `step` (check step, or `gate` / `deploy`), `owner`, `phase` (check / recheck / gate / deploy), `cmd` (codebase cmd name), `attempt`, `log` (layer-relative) |
 | `check.end` | as `check.start`, plus `exit`, `seconds` |
 | `script.start` / `script.end` | `step`, `owner`, `cmd` (codebase cmd name), `log` (layer-relative); `script.end` adds `exit`, `seconds` |
 | `budget.stop` | `step` (the agent call that crossed the limit, or the one refused), `limit` (run / step / day), `spent`, `of`, `reason` (`budget:<limit>: spent $X of $Y`) |
+| `limit.status` | `step` (the agent call's directory), `owner`, `window` (the CLI's name: `five_hour`, `seven_day`, …), `status` (allowed / allowed_warning / rejected), `used` (0–1, or null when the CLI gave no share), `resets_at` (ISO-8601 UTC or null), `at` (time of the nearest transcript line that has one, or null), `billing`, `raw` (the CLI's `rate_limit_info`, unchanged); one per window and call, more only when a value changed during the call |
+| `limit.stop` | `step`, `window`, `cause` (reached = the CLI refused or cut off the call / threshold), `status`, `used`, `percent` (the threshold, or null), `resets_at`, `reason` (`limit:<window>: …; resets …`) |
+| `limit.wait` | `step` (the call that waits), `window`, `used`, `percent`, `resets_at`, `seconds` |
 | `review.round` | `step`, `round`, `success`, `reviewers`, `issues` (`{blocker, tech_debt, skippable}` counts), `summary` |
 | `gate.decision` | `action` (pr / merge / deploy / none), `ship`, `reasons` |
 | `ship.result` | `action`, `shipped`, `target`, `pr_url`, `reasons` |

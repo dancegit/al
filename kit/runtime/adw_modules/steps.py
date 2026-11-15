@@ -18,6 +18,7 @@ from .agents import run_agent
 from .budget import BudgetExceeded
 from .errors import LayerError, StepFailed
 from .templates import render_step_arg
+from .usage import LimitReached
 
 
 def _timestamp() -> str:
@@ -172,8 +173,8 @@ def run_run(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> Non
             output = run_agent(layer, state, name, command_name, args, model_set, env_stack,
                                str(step.get("agent") or ""), tier_from)
             break
-        except BudgetExceeded:
-            raise  # a spending limit is never retried
+        except (BudgetExceeded, LimitReached):
+            raise  # a spending or usage limit is never retried
         except StepFailed as exc:
             if attempt == retries:
                 raise

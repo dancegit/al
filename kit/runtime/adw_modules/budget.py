@@ -13,6 +13,10 @@ count as $0, and the run summary says so.
     The runner then hands the work to a person through the usual handoff path.
   * a run does not start at all when the day limit is already reached (exit code EXIT_REFUSED).
 
+On a subscription login the dollars are an estimate at API prices ("API-equivalent"), not what the
+user pays; what stops work there is a usage window. (budget limits) therefore also carries the
+subscription usage threshold (#:limit-stop-percent, #:on-limit, #:limit-wait-minutes): see usage.py.
+
 Claude Code also gets a native cap (--max-budget-usd) of what is left under the tightest limit,
 so a single call stops early instead of only being judged afterwards.
 """
@@ -24,9 +28,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from . import usage
 from .errors import StepFailed
 
-EXIT_REFUSED = 3          # the run did not start: the day limit is reached
+EXIT_REFUSED = 3          # the run did not start: the day limit or the usage threshold is reached
 LIMITS = ("run", "step", "day")
 
 
@@ -47,14 +52,22 @@ def usd(value: float | None) -> str:
 
 
 def limits(layer: Any, over: Mapping[str, Any] | None) -> dict[str, Any]:
-    """{"run", "step", "day": float | None, "run_from": "layer" | "--max-cost" | "AL_MAX_COST" | ""}."""
+    """{"run", "step", "day": float | None, "run_from": "layer" | "--max-cost" | "AL_MAX_COST" | "",
+    "limit_percent": int (0 = off), "on_limit": "stop" | "wait", "wait_minutes": int}."""
     declared = layer.ir.get("budget") if isinstance(layer.ir.get("budget"), dict) else {}
 
     def number(key: str) -> float | None:
         value = declared.get(key)
         return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
-    out = {"run": number("runUsd"), "step": number("stepUsd"), "day": number("dayUsd"), "run_from": ""}
+    def whole(key: str, default: int) -> int:
+        value = declared.get(key)
+        return int(value) if isinstance(value, int) and not isinstance(value, bool) and value else default
+
+    out = {"run": number("runUsd"), "step": number("stepUsd"), "day": number("dayUsd"), "run_from": "",
+           "limit_percent": whole("limitStopPercent", 0),
+           "on_limit": "wait" if declared.get("onLimit") == "wait" else "stop",
+           "wait_minutes": whole("limitWaitMinutes", usage.DEFAULT_WAIT_MINUTES)}
     if out["run"] is not None:
         out["run_from"] = "layer"
     over = over or {}
@@ -135,14 +148,13 @@ def spent(state: Any) -> float:
 
 
 def refuse_start(layer: Any, lim: Mapping[str, Any], adw_id: str = "") -> str | None:
-    """The reason a run may not start (day limit reached), or None."""
-    if lim.get("day") is None:
-        return None
-    used = day_spent(layer.layer_dir, exclude=adw_id)
-    if used >= float(lim["day"]):
-        return (f"{reason('day', used, float(lim['day']))} today ({today()}) in this layer; no run starts until "
-                "tomorrow, or raise #:day-usd in (budget limits …)")
-    return None
+    """The reason a run may not start (the day limit or the subscription usage threshold is reached), or None."""
+    if lim.get("day") is not None:
+        used = day_spent(layer.layer_dir, exclude=adw_id)
+        if used >= float(lim["day"]):
+            return (f"{reason('day', used, float(lim['day']))} today ({today()}) in this layer; no run starts until "
+                    "tomorrow, or raise #:day-usd in (budget limits …)")
+    return usage.refuse_start(layer, lim)
 
 
 def before_call(layer: Any, state: Any, step: str) -> float | None:
@@ -162,11 +174,16 @@ def before_call(layer: Any, state: Any, step: str) -> float | None:
     return round(min(caps), 4) if caps else None
 
 
-def after_call(state: Any, step: str, agent: Mapping[str, Any], cost: float | None, failed: bool = False,
-               native_stop: bool = False) -> None:
-    """Add the call's cost to the run and stop the run when a limit is crossed."""
+def add_cost(state: Any, agent: Mapping[str, Any], cost: float | None, billing: str = "") -> None:
+    """Add the call's cost to the run (accounting only). `billing` is what the call's transcript
+    said (subscription / api-key / ""): a subscription call's dollars are API-equivalent."""
     record = state.cost if isinstance(state.cost, dict) else {}
     record["total"] = round(float(record.get("total") or 0.0) + float(cost or 0.0), 6)
+    if billing == usage.SUBSCRIPTION:
+        record["api_equivalent"] = round(float(record.get("api_equivalent") or 0.0) + float(cost or 0.0), 6)
+    known = sorted({str(c.get("billing")) for c in state.agent_calls if c.get("billing")})
+    if known:
+        record["billing"] = known[0] if len(known) == 1 else "mixed"
     record["calls"] = int(record.get("calls") or 0) + 1
     if cost is None:
         unreported = list(record.get("unreported") or [])
@@ -175,6 +192,12 @@ def after_call(state: Any, step: str, agent: Mapping[str, Any], cost: float | No
             unreported.append(name)
         record["unreported"] = unreported
     state.cost = record
+
+
+def after_call(state: Any, step: str, agent: Mapping[str, Any], cost: float | None, failed: bool = False,
+               native_stop: bool = False, billing: str = "") -> None:
+    """Add the call's cost to the run and stop the run when a limit is crossed."""
+    add_cost(state, agent, cost, billing)
     lim = state.budget.get("limits") or {}
     if lim.get("step") is not None and (cost or 0.0) > float(lim["step"]):
         raise _stop(state, step, "step", float(cost or 0.0), float(lim["step"]))
@@ -214,6 +237,11 @@ def summary(state: Any) -> str:
     record = state.cost or {}
     lim = state.budget.get("limits") or {}
     text = usd(spent(state))
+    billing = record.get("billing")
+    if billing == usage.SUBSCRIPTION:
+        text += " API-equivalent"
+    elif billing == "mixed":
+        text += f" ({usd(float(record.get('api_equivalent') or 0.0))} of it API-equivalent)"
     if lim.get("run") is not None:
         text += f" of run limit {usd(lim['run'])}" + (f" ({lim.get('run_from')})" if lim.get("run_from") not in ("", "layer") else "")
     extra = [f"step limit {usd(lim['step'])}"] if lim.get("step") is not None else []
@@ -226,4 +254,9 @@ def summary(state: Any) -> str:
     stopped = state.budget.get("stopped")
     if stopped:
         text += f"; STOPPED by {stopped['reason']}"
+    if billing in (usage.SUBSCRIPTION, "mixed"):
+        text += "; subscription calls: an estimate at API prices, not what you pay"
+    limit_stop = (getattr(state, "usage", None) or {}).get("stopped")
+    if limit_stop:
+        text += f"; STOPPED by {limit_stop['reason']}"
     return text

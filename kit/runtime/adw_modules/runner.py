@@ -82,7 +82,7 @@ which tier an agent step runs on (first match wins):
   state.json (agent_calls) and the run's events record the tier, model and reason of every call.
 
 exit codes: 0 passed, 1 failed (handed to a person where the workflow ships),
-            2 usage error, 3 refused: the layer's day limit (#:day-usd) is reached
+            2 usage error, 3 refused: the layer's day limit (#:day-usd) or its subscription usage threshold (#:limit-stop-percent) is reached
 """
 
 
@@ -168,6 +168,7 @@ def _resumed_state(layer: Any, adw_name: str, args: argparse.Namespace) -> state
     if args.klass:
         state.klass, state.class_fixed = args.klass, True
     state.budget.pop("stopped", None)  # the resumed run is judged afresh against its limits
+    state.usage.pop("stopped", None)
     return state
 
 
