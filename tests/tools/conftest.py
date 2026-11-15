@@ -33,6 +33,16 @@ LAYER_TEMPLATE = """#lang al
            (check test #:cmd test) (run commit #:command commit) (review) (ship))))
 """
 
+# LAYER_TEMPLATE plus what `al deploy` keeps running: a poller, a webhook and a forge that needs a token.
+DEPLOY_LAYER = (LAYER_TEMPLATE
+                .replace("  {placement}\n", "  {placement}\n"
+                         '  (forge forgejo #:host "https://forge.example.org" #:repo "acme/notes")\n'
+                         "  (prompt-input tasklist)\n  (trigger cron)\n  (trigger webhook #:port 8001)\n")
+                .replace('(adw change #:description "Plan, build, test; a person reviews"',
+                         '(adw change #:description "Plan, build, test; a person reviews"\n'
+                         "    #:input (tasklist) #:trigger (cron webhook)"))
+assert DEPLOY_LAYER.count("(trigger ") == 2 and "#:trigger (cron webhook)" in DEPLOY_LAYER
+
 
 def sh(argv, cwd=None, env=None, timeout=900) -> subprocess.CompletedProcess:
     return subprocess.run([str(a) for a in argv], cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
@@ -80,6 +90,19 @@ def in_repo(app: Path) -> Path:
     al("init", app, "--in-repo")
     layer = app / "agentic"
     (layer / "agentic.rkt").write_text(LAYER_TEMPLATE.format(root="..", placement='(layer in-repo #:dir "agentic")'))
+    al("gen", layer)
+    commit(app, "the agentic layer", "agentic")
+    assert status(app) == ""
+    return layer
+
+
+@pytest.fixture
+def deployable(app: Path) -> Path:
+    """<app>/agentic: an in-repo layer with a cron trigger, a webhook trigger and a forgejo forge,
+    generated and committed with the app (what `al deploy` puts on a host)."""
+    al("init", app, "--in-repo")
+    layer = app / "agentic"
+    (layer / "agentic.rkt").write_text(DEPLOY_LAYER.format(root="..", placement='(layer in-repo #:dir "agentic")'))
     al("gen", layer)
     commit(app, "the agentic layer", "agentic")
     assert status(app) == ""
