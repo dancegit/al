@@ -46,13 +46,10 @@ PATCH_FILE: ${specs_dir}/patch-${adw_id}-<descriptive-name>.md
 
 Protected paths (do not plan changes here):
 
-- `racket/al/private`
 - `kit/runtime/adw_modules/review.py`
 - `kit/runtime/adw_modules/ship.py`
 - `kit/runtime/adw_modules/gitsafe.py`
 - `kit/runtime/adw_modules/envs.py`
-- `docs/AL-DSL.llms.txt`
-- `schemas/agentic-layer-v1.schema.json`
 - `docs/demo`
 - `tests/authored`
 - `tests/integration/testbeds.toml`

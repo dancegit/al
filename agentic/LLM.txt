@@ -72,13 +72,14 @@
 
 ## Protected paths
 
-- `racket/al/private` — the language's vocabulary and compiler; every layer and both generated files derive from it
+The language core (`racket/al/private`) is deliberately not protected: every workflow ends with a person's
+review. `docs/AL-DSL.llms.txt` and `schemas/agentic-layer-v1.schema.json` are generated from the vocabulary
+and must be regenerated, never edited by hand, whenever it changes.
+
 - `kit/runtime/adw_modules/review.py` — the review and shipping gate
 - `kit/runtime/adw_modules/ship.py` — the shipping gate (merge, deploy, pull request fallback)
 - `kit/runtime/adw_modules/gitsafe.py` — git integrity checks around the sandbox
 - `kit/runtime/adw_modules/envs.py` — the sandbox (worktree, nix, podman environments)
-- `docs/AL-DSL.llms.txt` — generated from the vocabulary; do not edit
-- `schemas/agentic-layer-v1.schema.json` — generated from the vocabulary; do not edit
 - `docs/demo` — recorded outputs of real runs
 - `tests/authored` — LLM-authored example layers, kept exactly as written
 - `tests/integration/testbeds.toml` — the pinned commits of the example repositories

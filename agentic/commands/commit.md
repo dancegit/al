@@ -43,13 +43,10 @@ The layer's own instructions for this command (`#:focus` in `agentic.rkt`), if a
 
 Protected paths (never staged by this command):
 
-- `racket/al/private`
 - `kit/runtime/adw_modules/review.py`
 - `kit/runtime/adw_modules/ship.py`
 - `kit/runtime/adw_modules/gitsafe.py`
 - `kit/runtime/adw_modules/envs.py`
-- `docs/AL-DSL.llms.txt`
-- `schemas/agentic-layer-v1.schema.json`
 - `docs/demo`
 - `tests/authored`
 - `tests/integration/testbeds.toml`

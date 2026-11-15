@@ -28,13 +28,13 @@
     (paths #:source ("racket/al" "tools" "kit/runtime" "kit/templates" "kit/schemas" "kit/dashboard" "kit/self" "meta")
            #:tests ("racket/al/tests" "kit/runtime/tests" "kit/dashboard/tests" "tests/tools" "tests/integration")
            #:docs ("docs" "README.md" "tests/README.md" "kit/dashboard/README.md" "meta/README.md")
-           #:protected ("racket/al/private"
-                        "kit/runtime/adw_modules/review.py"
+           ;; The language core (racket/al/private) and the two files generated from it are NOT
+           ;; protected: every workflow here ends with a person's review, and agents must be able
+           ;; to change the vocabulary and regenerate. The shipping gate and the sandbox stay protected.
+           #:protected ("kit/runtime/adw_modules/review.py"
                         "kit/runtime/adw_modules/ship.py"
                         "kit/runtime/adw_modules/gitsafe.py"
                         "kit/runtime/adw_modules/envs.py"
-                        "docs/AL-DSL.llms.txt"
-                        "schemas/agentic-layer-v1.schema.json"
                         "docs/demo"
                         "tests/authored"
                         "tests/integration/testbeds.toml"))

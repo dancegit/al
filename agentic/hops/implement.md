@@ -48,13 +48,10 @@ The file's own list of relevant files takes precedence; these are the codebase d
 
 Protected paths:
 
-- `racket/al/private`
 - `kit/runtime/adw_modules/review.py`
 - `kit/runtime/adw_modules/ship.py`
 - `kit/runtime/adw_modules/gitsafe.py`
 - `kit/runtime/adw_modules/envs.py`
-- `docs/AL-DSL.llms.txt`
-- `schemas/agentic-layer-v1.schema.json`
 - `docs/demo`
 - `tests/authored`
 - `tests/integration/testbeds.toml`
