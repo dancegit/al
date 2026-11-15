@@ -1,0 +1,21 @@
+dispatch: feature <- issue:3
+[adw ae333fca] feature start: class=feature dry_run=False
+[adw ae333fca] step plan (run) start
+[adw ae333fca] container started: al-rota-demo-ae333fca
+[adw ae333fca] step plan (run) passed: <tmp>/rota.al/specs/feature-ae333fca-worker-pay-band-column.md
+[adw ae333fca] step build (run) start
+[adw ae333fca] step build (run) passed: # Pay band column: code done, but tests fail until a person adds migration 003
+[adw ae333fca] step test (check) start
+[adw ae333fca] step test (check) failed: test: check test exited 2 after 3 attempt(s); log agents/ae333fca/checks/test.3.log
+[adw ae333fca] run failed: test: check test exited 2 after 3 attempt(s); log agents/ae333fca/checks/test.3.log
+[adw ae333fca] container removed: al-rota-demo-ae333fca
+=== ADW summary ===
+adw:       feature ae333fca
+status:    failed
+branch:    feature/ae333fca-record-each-workers-pay-band-and
+plan:      <tmp>/rota.al/specs/feature-ae333fca-worker-pay-band-column.md
+checks:    test=2
+review:    none
+ship:      none
+artefacts: 3
+state:     <tmp>/rota.al/agents/ae333fca/state.json

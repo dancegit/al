@@ -1,0 +1,41 @@
+dispatch: planted <- issue:1
+[adw 8d4e8d6a] planted start: class=feature dry_run=False
+[adw 8d4e8d6a] step plan (run) start
+[adw 8d4e8d6a] container started: al-rota-demo-8d4e8d6a
+[adw 8d4e8d6a] step plan (run) passed: <tmp>/rota-c.al/specs/feature-8d4e8d6a-mark-expired-registration-workers.md
+[adw 8d4e8d6a] step build (run) start
+[adw 8d4e8d6a] step build (run) passed: - Workers page: an Expired badge next to each worker whose registration has expired (app.py, templates/workers.html, static/style.css).
+[adw 8d4e8d6a] step test (check) start
+[adw 8d4e8d6a] step test (check) passed: exit 0, log agents/8d4e8d6a/checks/test.1.log
+[adw 8d4e8d6a] step isolation (check) start
+[adw 8d4e8d6a] step isolation (check) passed: exit 0, log agents/8d4e8d6a/checks/isolation.1.log
+[adw 8d4e8d6a] step e2e (check) start
+[adw 8d4e8d6a] step e2e (check) passed: exit 0, log agents/8d4e8d6a/checks/e2e.1.log
+[adw 8d4e8d6a] step commit (run) start
+[adw 8d4e8d6a] step commit (run) passed: I made no commit because there was nothing to commit. The working tree is clean: `git status` shows no modified, staged or untracked files.
+[adw 8d4e8d6a] step review (review) start
+[adw 8d4e8d6a] review round 1: re-running check test
+[adw 8d4e8d6a] review round 1: re-running check isolation
+[adw 8d4e8d6a] review round 1: re-running check e2e
+[adw 8d4e8d6a] review verdict: pass after 2 round(s): The change marks workers whose registration has expired. The workers page shows a red 'Expired' badge in the expired worker's row. In the shifts-board dropdown the expired worker is labelled 'Name (Ex
+[adw 8d4e8d6a] step review (review) passed: ok
+[adw 8d4e8d6a] step ship (ship) start
+[adw 8d4e8d6a] gate: test exit 0
+[adw 8d4e8d6a] gate: isolation exit 0
+[adw 8d4e8d6a] gate: e2e exit 0
+[adw 8d4e8d6a] gate: action merge
+[adw 8d4e8d6a] ship: PR #2 http://127.0.0.1:41147/adw/rota-c/pulls/2
+[adw 8d4e8d6a] ship: proof comment on PR #2 (9 file(s) attached)
+[adw 8d4e8d6a] step ship (ship) passed: ok
+[adw 8d4e8d6a] container removed: al-rota-demo-8d4e8d6a
+[adw 8d4e8d6a] worktree removed: <tmp>/rota-c.al/trees/8d4e8d6a
+=== ADW summary ===
+adw:       planted 8d4e8d6a
+status:    passed
+branch:    feature/8d4e8d6a-mark-workers-whose-registration-has-expired
+plan:      <tmp>/rota-c.al/specs/feature-8d4e8d6a-mark-expired-registration-workers.md
+checks:    test=0, isolation=0, e2e=0
+review:    pass (auto)
+ship:      merge -> main via PR #2 (shipped=True)
+artefacts: 14
+state:     <tmp>/rota-c.al/agents/8d4e8d6a/state.json

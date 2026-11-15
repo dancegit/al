@@ -1,0 +1,41 @@
+dispatch: planted <- issue:1
+[adw fbc45d9c] planted start: class=feature dry_run=False
+[adw fbc45d9c] step plan (run) start
+[adw fbc45d9c] container started: al-rota-demo-fbc45d9c
+[adw fbc45d9c] step plan (run) passed: <tmp>/rota-c.al/specs/feature-fbc45d9c-mark-expired-worker-registrations.md
+[adw fbc45d9c] step build (run) start
+[adw fbc45d9c] step build (run) passed: - Workers page: an Expired badge next to each worker whose registration has expired (app.py, templates/workers.html, static/style.css).
+[adw fbc45d9c] step test (check) start
+[adw fbc45d9c] step test (check) passed: exit 0, log agents/fbc45d9c/checks/test.1.log
+[adw fbc45d9c] step isolation (check) start
+[adw fbc45d9c] step isolation (check) passed: exit 0, log agents/fbc45d9c/checks/isolation.1.log
+[adw fbc45d9c] step e2e (check) start
+[adw fbc45d9c] step e2e (check) passed: exit 0, log agents/fbc45d9c/checks/e2e.1.log
+[adw fbc45d9c] step commit (run) start
+[adw fbc45d9c] step commit (run) passed: I made no commit because there was nothing to commit. The worktree is clean, with no staged, unstaged or untracked files, so I left it as it was.
+[adw fbc45d9c] step review (review) start
+[adw fbc45d9c] review round 1: re-running check test
+[adw fbc45d9c] review round 1: re-running check isolation
+[adw fbc45d9c] review round 1: re-running check e2e
+[adw fbc45d9c] review verdict: fail after 2 round(s): The change marks expired workers in two places. The workers page shows a red Expired badge (app.py:156-159, templates/workers.html:17, static/style.css:69-70). In the shifts-board dropdown an expired 
+[adw fbc45d9c] step review (review) passed: ok
+[adw fbc45d9c] step ship (ship) start
+[adw fbc45d9c] gate: test exit 0
+[adw fbc45d9c] gate: isolation exit 0
+[adw fbc45d9c] gate: e2e exit 0
+[adw fbc45d9c] gate: action pr (fallback: review-failed)
+[adw fbc45d9c] ship: PR #2 http://127.0.0.1:57593/adw/rota-c/pulls/2
+[adw fbc45d9c] ship: proof comment on PR #2 (9 file(s) attached)
+[adw fbc45d9c] step ship (ship) passed: ok
+[adw fbc45d9c] container removed: al-rota-demo-fbc45d9c
+[adw fbc45d9c] worktree removed: <tmp>/rota-c.al/trees/fbc45d9c
+=== ADW summary ===
+adw:       planted fbc45d9c
+status:    passed
+branch:    feature/fbc45d9c-mark-workers-whose-registration-has-expired
+plan:      <tmp>/rota-c.al/specs/feature-fbc45d9c-mark-expired-worker-registrations.md
+checks:    test=0, isolation=0, e2e=0
+review:    fail (auto)
+ship:      pr -> http://127.0.0.1:57593/adw/rota-c/pulls/2 (shipped=False)
+artefacts: 14
+state:     <tmp>/rota-c.al/agents/fbc45d9c/state.json

@@ -1,0 +1,144 @@
+{
+  "date": "2026-11-15T11:51:48Z",
+  "model": "claude-opus-5-5",
+  "forgejo": "11.0.16+gitea-1.22.0",
+  "data": "synthetic (tests/rotademo/app/seed.py)",
+  "total_agent_cost_usd": 6.5322,
+  "total_wall_clock_seconds": 1207,
+  "scenario_a": {
+    "prompt": {
+      "issue_title": "Enforce 11 hours of rest between a worker's shifts",
+      "issue_body": "Ward managers can book a worker onto a shift that starts soon after their previous shift ends, for example a night shift ending at 07:30 followed by a day shift starting at 07:30. Staff must get at least 11 hours of rest between shifts, and the rota should stop a manager from breaking that rule by accident.\n\n## Acceptance criteria\n\n- Assigning a worker to a shift is refused when the shift starts less than 11 hours after the end of that worker's previous shift, or ends less than 11 hours before the start of their next shift. Exactly 11 hours of rest is allowed.\n- The rule is a business rule in rules.py, applied the same way on the shifts board and in the API.\n- `POST /api/shifts/<id>/assign` answers HTTP 409 with the reason \"Needs 11 hours rest\" in the JSON error.\n- On the shifts board, a worker who would not get 11 hours of rest is shown in the assign dropdown as unavailable, with the reason \"Needs 11 hours rest\", and cannot be selected.\n- Only shifts of the manager's own organisation are considered (data access through the organisation scope).\n- The existing rules (role, registration expiry, overlapping shifts) keep working.\n- Tests cover the rule in both directions and at the 11-hour boundary, the API refusal and the board; the e2e scenario shows a worker marked \"Needs 11 hours rest\" in the dropdown."
+    },
+    "adw": "feature",
+    "class": "feature",
+    "repository": "adw/rota",
+    "started_from": "pristine app",
+    "run_id": "6df9df52",
+    "wall_clock_seconds": 405,
+    "agent_cost_usd": 2.3443,
+    "agent_steps": 5,
+    "review_rounds": 1,
+    "gate": {
+      "action": "merge",
+      "reasons": []
+    },
+    "pull_request": 2,
+    "pull_request_final_state": "merged",
+    "shipped_commit": "6320fa0cd5d8919d80b5db1cf515892e5d64c8d4",
+    "main_after": "f1aac73de0b64adc967adfc202897d7248c481bf",
+    "outcome": "merged by the gate",
+    "assertions": {
+      "passed": 15,
+      "failed": 1
+    },
+    "note": "attempt 1 of the full run; a-rest-rule.gif re-encoded from the same video (see attempts)"
+  },
+  "scenario_b": {
+    "prompt": {
+      "issue_title": "Record each worker's pay band and show it on the workers page",
+      "issue_body": "Payroll needs each worker's pay band (for example \"Band 5\") next to their registration details. The rota does not store it yet.\n\n## Acceptance criteria\n\n- Each worker has a pay band stored in the database. This is a schema change: add it as a new numbered migration file in migrations/; an applied migration is never edited.\n- The synthetic seed data gives every seeded worker a pay band (healthcare assistants Band 3, registered nurses Band 5 or Band 6).\n- The workers page shows a \"Pay band\" column.\n- `GET /api/workers` includes each worker's `pay_band`.\n- Managers still see only their own organisation's workers.\n- Tests cover the API field and the page column; the e2e scenario shows the column on the workers page."
+    },
+    "adw": "feature",
+    "class": "feature",
+    "repository": "adw/rota",
+    "started_from": "pristine app",
+    "run_id": "7a1214b5",
+    "wall_clock_seconds": 255,
+    "agent_cost_usd": 1.2242,
+    "agent_steps": 4,
+    "review_rounds": 0,
+    "gate": {
+      "action": "",
+      "reasons": []
+    },
+    "pull_request": null,
+    "pull_request_final_state": "no pull request",
+    "shipped_commit": "",
+    "main_after": "9bdcf66ab3c8e1fbe88f7bdcc32315e057102e79",
+    "outcome": "no migration reached the gate: status failed, gate none ",
+    "assertions": {
+      "passed": 3,
+      "failed": 0
+    },
+    "note": "run with AL_ROTADEMO_ONLY=bc, so B started from the pristine app; attempt 1 (after A) behaved the same"
+  },
+  "scenario_c": {
+    "prompt": {
+      "issue_title": "Mark workers whose registration has expired, and stop offering them for shifts",
+      "issue_body": "A worker whose professional registration has expired may not work, and the server already refuses to assign them. But a manager only finds out after trying: nothing on the workers page or in the assign dropdown says that the registration has expired.\n\n## Acceptance criteria\n\n- On the workers page, an \"Expired\" badge is shown next to every worker whose registration has expired, and next to nobody else.\n- In the assign dropdown on the shifts board, an expired worker is shown with an \"Expired\" label next to their name.\n- An expired worker cannot be selected in the assign dropdown.\n- The server-side refusal stays in place (business rule and API unchanged).\n- Tests cover the badge and the dropdown; the e2e scenario shows both: the badge on the workers page and the expired worker unavailable in the dropdown."
+    },
+    "adw": "planted (build = scripted planter)",
+    "class": "feature",
+    "repository": "adw/rota-c",
+    "started_from": "pristine app",
+    "run_id": "8d4e8d6a",
+    "wall_clock_seconds": 547,
+    "agent_cost_usd": 2.9637,
+    "agent_steps": 8,
+    "review_rounds": 2,
+    "gate": {
+      "action": "merge",
+      "reasons": []
+    },
+    "pull_request": 2,
+    "pull_request_final_state": "merged",
+    "shipped_commit": "871f028096485848ae04ba4a58970c8e17895945",
+    "main_after": "cd17e7b6b9e1979f777b3a0930e16dd494ad675b",
+    "outcome": "round 1 rejected the planted defect; the patch loop fixed it; round 2 approved; merged",
+    "assertions": {
+      "passed": 21,
+      "failed": 0
+    }
+  },
+  "attempts": {
+    "budget_usd": 20,
+    "total_spent_usd_all_attempts": 10.7682,
+    "note": "Before any paid run: two free dry runs (AL_ROTADEMO_DRY=1, scripted mock agents) to shake out the script; they found two script bugs (stale local branch used by git archive; Forgejo squash-merges, so the planted commit is on the PR head, not on main).",
+    "scenario_a": [
+      {
+        "attempt": 1,
+        "run_id": "6df9df52",
+        "cost_usd": 2.3443,
+        "outcome": "merged by the gate; every functional assertion passed (15)",
+        "kept": true,
+        "issue": "one output assertion failed: the GIF of the 405 s run's 25 s video came out above 1.5 MB at fps 3 / 96 colours. The script's GIF loop was extended (fps and palette steps down to 2 fps / 48 colours) and a-rest-rule.gif was re-encoded from the same run's session.webm with that loop (1.24 MB). The agent was not re-run."
+      }
+    ],
+    "scenario_b": [
+      {
+        "attempt": 1,
+        "run_id": "ae333fca",
+        "cost_usd": 1.1706,
+        "started_from": "main after scenario A",
+        "outcome": "agent implemented code, seed, tests, template and e2e changes but would not create migrations/003 (protected path); it wrote REQUIRES HUMAN with the exact SQL; tests could not pass without the column; check `test` failed after 2 resolve attempts; run failed; no PR; main unchanged",
+        "records": "attempt1/b-run.log, attempt1/b-requires-human.txt"
+      },
+      {
+        "attempt": 2,
+        "run_id": "7a1214b5",
+        "cost_usd": 1.2242,
+        "started_from": "pristine app",
+        "outcome": "the same as attempt 1 (stable behaviour); this is the recorded run (b-*)",
+        "reason_for_retry": "the brief asks for up to two runs when the agent declines to touch migrations/, to see whether the behaviour is stable"
+      }
+    ],
+    "scenario_c": [
+      {
+        "attempt": 1,
+        "run_id": "fbc45d9c",
+        "cost_usd": 3.0667,
+        "outcome": "round 1: BOTH reviewers rejected the planted defect (3 blockers each: acceptance criteria 2, 3 and 5, all about the dropdown). Patch loop fixed the dropdown (disabled + '(Expired)'). Round 2: reviewer 2 approved; reviewer 1 raised to a blocker the missing extra tests named in the planner's spec, which both reviewers had rated tech_debt in round 1. With #:max-retries 1 the gate opened a human PR (review-failed); nothing merged.",
+        "records": "attempt1/c-verdicts.json, attempt1/c-run.log",
+        "script_note": "the script then expected only a merge, so it reported 4 failures; it was changed to assert truthfully on either outcome (and to verify the fix on the PR head when nothing merges)"
+      },
+      {
+        "attempt": 2,
+        "run_id": "8d4e8d6a",
+        "cost_usd": 2.9637,
+        "outcome": "round 1: both reviewers rejected the planted defect (blockers on criteria 2, 3, 5); patch loop fixed it; round 2: both approved; gate merge; merged. This is the recorded run (c-*).",
+        "reason_for_retry": "to see whether attempt 1's round-2 severity escalation was stable; no layer, prompt or review guidance was changed"
+      }
+    ]
+  }
+}

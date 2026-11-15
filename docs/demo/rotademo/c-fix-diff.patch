@@ -1,0 +1,144 @@
+diff --git a/app.py b/app.py
+index 29be3c7..e32a06b 100644
+--- a/app.py
++++ b/app.py
+@@ -119,8 +119,9 @@ def create_app(db_path: str | Path | None = None) -> Flask:
+         scope, user = auth.scope(), auth.current_user()
+         if user["role"] != auth.MANAGER:
+             return render_template("my_shifts.html", shifts=scope.shifts_of_worker(user["worker_id"]))
+-        rows = scope.shifts(from_day=clock.today())
+-        options = {shift["id"]: assignments.candidates(scope, shift) for shift in rows if shift["worker_id"] is None}
++        today = clock.today()
++        rows = scope.shifts(from_day=today)
++        options = {shift["id"]: assignments.candidates(scope, shift, today) for shift in rows if shift["worker_id"] is None}
+         return render_template("shifts.html", shifts=rows, options=options, organisation=scope.organisation())
+ 
+     @app.post("/shifts/<int:shift_id>/assign")
+diff --git a/assignments.py b/assignments.py
+index 099af72..6aae0d9 100644
+--- a/assignments.py
++++ b/assignments.py
+@@ -33,9 +33,18 @@ def problem_for(scope: Scope, worker: dict[str, Any], shift: dict[str, Any], tod
+     return rules.assignment_problem(to_rule_worker(worker), to_rule_shift(shift), others, today)
+ 
+ 
+-def candidates(scope: Scope, shift: dict[str, Any]) -> list[dict[str, Any]]:
+-    """Workers offered in the shift's assign dropdown: the organisation's workers with the right role."""
+-    return scope.workers_with_role(shift["role_required"])
++def with_registration_status(workers: list[dict[str, Any]], today: date) -> list[dict[str, Any]]:
++    """Copies of the workers with a registration_expired flag, for the pages (not part of the API)."""
++    return [{**worker, "registration_expired": rules.registration_expired(to_rule_worker(worker), today)}
++            for worker in workers]
++
++
++def candidates(scope: Scope, shift: dict[str, Any], today: date) -> list[dict[str, Any]]:
++    """Workers offered in the shift's assign dropdown: the organisation's workers with the right role.
++
++    Expired workers are still listed, marked registration_expired, so the page can show them as unavailable.
++    """
++    return with_registration_status(scope.workers_with_role(shift["role_required"]), today)
+ 
+ 
+ def assign(scope: Scope, shift_id: int, worker_id: int, today: date) -> Outcome:
+diff --git a/e2e/scenario.py b/e2e/scenario.py
+index 6fe8bb2..a6e64e6 100644
+--- a/e2e/scenario.py
++++ b/e2e/scenario.py
+@@ -40,7 +40,7 @@ happen. Never loosen an expectation to make the scenario pass; fix the app inste
+ 
+ Seed data used below (Northfield Hospital): open shifts 3 (Ash Ward, Tue 07:30-19:30, Registered
+ nurse), 5, 7 and 8; workers Amara Jones (1), Ben Clarke (2), Chloe Martin (3, registration expired
+-2026-02-14), Daniel Reyes (4), Sam Okafor (5, agency).
++2026-02-14; shown as 'Chloe Martin (Expired)' and disabled in RN dropdowns), Daniel Reyes (4), Sam Okafor (5, agency).
+ """
+ 
+ STEPS = [
+@@ -57,11 +57,11 @@ STEPS = [
+      "expect": {"text": ["Assigned Daniel Reyes to Ash Ward, Tue 3 Mar 07:30–19:30.", "3 open of 8"],
+                 "visible": "#shift-3 .status-filled"},
+      "screenshot": "assigned"},
+-    {"select": "#assign-8", "label": "Chloe Martin", "say": "try Chloe Martin, whose registration expired, for the Wednesday night shift"},
+-    {"click": "#assign-button-8", "say": "the assignment is refused",
+-     "expect": {"text": ["Cannot assign Chloe Martin: Registration expired.", "3 open of 8"],
+-                "visible": "#shift-8 .status-open"},
+-     "screenshot": "expired-refused"},
++    {"reveal": "#assign-8", "say": "Chloe Martin, whose registration expired, is shown as Expired and cannot be chosen for the Wednesday night shift",
++     "expect": {"options": {"selector": "#assign-8", "enabled": ["Amara Jones", "Daniel Reyes", "Sam Okafor"],
++                            "disabled": ["Chloe Martin (Expired)"]},
++                "text": ["3 open of 8"]},
++     "screenshot": "expired-unavailable"},
+     {"click": "#unassign-button-3", "say": "unassign Daniel again",
+      "expect": {"text": ["Shift is open again.", "4 open of 8"]}},
+     {"click": ".nav a[href='/workers']", "say": "open the workers page",
+diff --git a/templates/shifts.html b/templates/shifts.html
+index 31219c8..48a5ebc 100644
+--- a/templates/shifts.html
++++ b/templates/shifts.html
+@@ -23,7 +23,7 @@
+           <select id="assign-{{ shift.id }}" name="worker_id">
+             <option value="">Choose a worker…</option>
+             {% for worker in options[shift.id] %}
+-            <option value="{{ worker.id }}">{{ worker.name }}</option>
++            <option value="{{ worker.id }}"{% if worker.registration_expired %} disabled{% endif %}>{{ worker.name }}{% if worker.registration_expired %} (Expired){% endif %}</option>
+             {% endfor %}
+           </select>
+           <button id="assign-button-{{ shift.id }}" type="submit">Assign</button>
+diff --git a/tests/test_api.py b/tests/test_api.py
+index abf4db0..64b0000 100644
+--- a/tests/test_api.py
++++ b/tests/test_api.py
+@@ -24,6 +24,11 @@ def test_manager_lists_workers_with_registration_expiry(manager):
+     assert workers["Sam Okafor"]["employment"] == "agency"
+ 
+ 
++def test_workers_api_shape_is_unchanged(manager):
++    for worker in manager.get("/api/workers").get_json()["workers"]:
++        assert set(worker) == {"id", "name", "role", "employment", "registration_number", "registration_expires"}
++
++
+ def test_worker_sees_only_own_shifts(worker):
+     assert set(shifts_by_id(worker)) == {6}
+ 
+diff --git a/tests/test_journeys.py b/tests/test_journeys.py
+index f60ae43..24e6500 100644
+--- a/tests/test_journeys.py
++++ b/tests/test_journeys.py
+@@ -1,4 +1,5 @@
+ """Key user journeys through the pages, with the Flask test client (no browser)."""
++from conftest import RIVERSIDE_MANAGER, sign_in
+ 
+ 
+ def page(response):
+@@ -57,6 +58,32 @@ def test_workers_page_marks_expired_registrations(manager):
+         assert "Expired" not in text.split(f'id="worker-{worker_id}"', 1)[1].split("</tr>", 1)[0]
+ 
+ 
++def test_expired_worker_is_labelled_and_disabled_in_the_dropdown(manager):
++    board = page(manager.get("/shifts"))
++    assert '<option value="3" disabled>Chloe Martin (Expired)</option>' in board
++    for option in ('<option value="1">Amara Jones</option>', '<option value="4">Daniel Reyes</option>',
++                   '<option value="5">Sam Okafor</option>', '<option value="2">Ben Clarke</option>'):
++        assert option in board
++    assert '<option value="3">Chloe Martin</option>' not in board
++
++
++def test_workers_page_badge_is_valid_on_expiry_day(manager, monkeypatch):
++    monkeypatch.setenv("ROTA_TODAY", "2026-02-14")
++    assert "badge-expired" not in page(manager.get("/workers"))
++    monkeypatch.setenv("ROTA_TODAY", "2026-02-15")
++    text = page(manager.get("/workers"))
++    assert text.count('<span class="badge badge-expired">Expired</span>') == 1
++    assert "badge-expired" in text.split('id="worker-3"', 1)[1].split("</tr>", 1)[0]
++
++
++def test_riverside_workers_page_marks_its_own_expired_worker(client):
++    sign_in(client, RIVERSIDE_MANAGER)
++    text = page(client.get("/workers"))
++    assert text.count('<span class="badge badge-expired">Expired</span>') == 1
++    assert "badge-expired" in text.split('id="worker-103"', 1)[1].split("</tr>", 1)[0]   # George Mensah
++    assert "Chloe Martin" not in text
++
++
+ def test_worker_sees_my_shifts_and_cannot_open_workers(worker):
+     text = page(worker.get("/shifts"))
+     assert "My shifts" in text and "Birch Ward" in text

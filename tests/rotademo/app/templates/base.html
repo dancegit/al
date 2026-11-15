@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Rota{% endblock %} · Rota</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <p class="demo-banner">Demo app · synthetic data · demo-grade sign-in, not for real use</p>
+  <header class="top">
+    <a class="brand" href="{{ url_for('home') }}">Rota</a>
+    {% if user %}
+    <nav class="nav">
+      <a href="{{ url_for('shifts') }}" class="{{ 'active' if request.endpoint == 'shifts' }}">Shifts</a>
+      {% if user.role == 'manager' %}
+      <a href="{{ url_for('workers') }}" class="{{ 'active' if request.endpoint == 'workers' }}">Workers</a>
+      {% endif %}
+    </nav>
+    <div class="who">
+      <span id="signed-in-as">{{ user.name }} · {{ 'Ward manager' if user.role == 'manager' else 'Worker' }} · {{ user.org_name }}</span>
+      <form method="post" action="{{ url_for('signout') }}"><button class="link" id="signout" type="submit">Sign out</button></form>
+    </div>
+    {% endif %}
+  </header>
+  <main class="page">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+      <p class="flash flash-{{ category }}" role="status">{{ message }}</p>
+      {% endfor %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

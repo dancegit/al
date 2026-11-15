@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Workers{% endblock %}
+{% block content %}
+<h1>Workers · {{ organisation.name }}</h1>
+<p class="subtitle">{{ workers|length }} workers · a worker whose professional registration has expired cannot be assigned to a shift</p>
+<table class="board" id="workers">
+  <thead>
+    <tr><th>Name</th><th>Role</th><th>Employment</th><th>Registration number</th><th>Registration expires</th></tr>
+  </thead>
+  <tbody>
+    {% for worker in workers %}
+    <tr class="worker" id="worker-{{ worker.id }}">
+      <td>{{ worker.name }}</td>
+      <td>{{ worker.role }}</td>
+      <td>{{ 'Agency' if worker.employment == 'agency' else 'Staff' }}</td>
+      <td class="mono">{{ worker.registration_number }}</td>
+      <td class="expiry">{{ worker.registration_expires }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

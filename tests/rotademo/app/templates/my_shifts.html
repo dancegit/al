@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}My shifts{% endblock %}
+{% block content %}
+<h1>My shifts</h1>
+<p class="subtitle">Shifts you are booked on. Only ward managers assign shifts.</p>
+<table class="board" id="my-shifts">
+  <thead>
+    <tr><th>Date</th><th>Ward</th><th>Role</th><th>Time</th></tr>
+  </thead>
+  <tbody>
+    {% for shift in shifts %}
+    <tr class="shift" id="shift-{{ shift.id }}">
+      <td>{{ shift.starts_at|day }}</td>
+      <td>{{ shift.ward_name }}</td>
+      <td>{{ shift.role_required }}</td>
+      <td class="time">{{ shift|hours }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4">No shifts booked.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

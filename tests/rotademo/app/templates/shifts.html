@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Shifts{% endblock %}
+{% block content %}
+<h1>Shifts · {{ organisation.name }}</h1>
+<p class="subtitle">From {{ today.strftime('%A') }} {{ today.day }} {{ today.strftime('%B %Y') }} ·
+  {{ shifts|selectattr('worker_id', 'none')|list|length }} open of {{ shifts|length }}</p>
+<table class="board" id="shifts">
+  <thead>
+    <tr><th>Date</th><th>Ward</th><th>Role required</th><th>Time</th><th>Status</th><th>Worker</th></tr>
+  </thead>
+  <tbody>
+    {% for shift in shifts %}
+    <tr class="shift {{ 'open' if shift.worker_id is none else 'filled' }}" id="shift-{{ shift.id }}">
+      <td>{{ shift.starts_at|day }}</td>
+      <td>{{ shift.ward_name }}</td>
+      <td>{{ shift.role_required }}</td>
+      <td class="time">{{ shift|hours }}</td>
+      <td><span class="status status-{{ 'open' if shift.worker_id is none else 'filled' }}">{{ 'Open' if shift.worker_id is none else 'Filled' }}</span></td>
+      <td class="worker-cell">
+        {% if shift.worker_id is none %}
+        <form class="assign" method="post" action="{{ url_for('assign', shift_id=shift.id) }}">
+          <label class="visually-hidden" for="assign-{{ shift.id }}">Worker for shift {{ shift.id }}</label>
+          <select id="assign-{{ shift.id }}" name="worker_id">
+            <option value="">Choose a worker…</option>
+            {% for worker in options[shift.id] %}
+            <option value="{{ worker.id }}">{{ worker.name }}</option>
+            {% endfor %}
+          </select>
+          <button id="assign-button-{{ shift.id }}" type="submit">Assign</button>
+        </form>
+        {% else %}
+        <span class="assigned">{{ shift.worker_name }}</span>
+        <form class="unassign" method="post" action="{{ url_for('unassign', shift_id=shift.id) }}">
+          <button id="unassign-button-{{ shift.id }}" class="secondary" type="submit">Unassign</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

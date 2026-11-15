@@ -1,0 +1,83 @@
+diff --git a/app.py b/app.py
+index e92fd9c..29be3c7 100644
+--- a/app.py
++++ b/app.py
+@@ -21,6 +21,7 @@ import auth
+ import clock
+ import data
+ import db
++import rules
+ import seed
+ 
+ ROOT = Path(__file__).resolve().parent
+@@ -151,7 +152,10 @@ def create_app(db_path: str | Path | None = None) -> Flask:
+     @auth.manager_only
+     def workers():
+         scope = auth.scope()
+-        return render_template("workers.html", workers=scope.workers(), organisation=scope.organisation())
++        rows = scope.workers()
++        expired = {worker["id"] for worker in rows
++                   if rules.registration_expired(data.to_rule_worker(worker), clock.today())}
++        return render_template("workers.html", workers=rows, expired=expired, organisation=scope.organisation())
+ 
+     # ---------------------------------------------------------------- JSON API (mirrors the UI)
+ 
+diff --git a/e2e/scenario.py b/e2e/scenario.py
+index c0ec2c2..6fe8bb2 100644
+--- a/e2e/scenario.py
++++ b/e2e/scenario.py
+@@ -69,5 +69,8 @@ STEPS = [
+                 "no_text": ["Elena Novak"],
+                 "count": {"selector": "#workers tr.worker", "visible": 5}},
+      "screenshot": "workers"},
++    {"wait": 400, "say": "Chloe Martin's expired registration carries an Expired badge; nobody else's does",
++     "expect": {"visible": "#worker-3 .badge-expired", "count": {"selector": ".badge-expired", "visible": 1}},
++     "screenshot": "workers-expired-badge"},
+     {"wait": 1200},
+ ]
+diff --git a/static/style.css b/static/style.css
+index 15ed632..b6f2b12 100644
+--- a/static/style.css
++++ b/static/style.css
+@@ -66,6 +66,8 @@ h1 { font-size: 22px; margin: 4px 0 2px; }
+ .status { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+ .status-open { color: var(--open); background: var(--open-bg); }
+ .status-filled { color: var(--filled); background: var(--filled-bg); }
++.badge { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
++.badge-expired { color: var(--error); background: var(--error-bg); }
+ 
+ .assign, .unassign { display: inline-flex; gap: 6px; margin: 0; align-items: center; }
+ .assigned { margin-right: 8px; }
+diff --git a/templates/workers.html b/templates/workers.html
+index a9d4bf7..2fc10f4 100644
+--- a/templates/workers.html
++++ b/templates/workers.html
+@@ -14,7 +14,7 @@
+       <td>{{ worker.role }}</td>
+       <td>{{ 'Agency' if worker.employment == 'agency' else 'Staff' }}</td>
+       <td class="mono">{{ worker.registration_number }}</td>
+-      <td class="expiry">{{ worker.registration_expires }}</td>
++      <td class="expiry">{{ worker.registration_expires }}{% if worker.id in expired %} <span class="badge badge-expired">Expired</span>{% endif %}</td>
+     </tr>
+     {% endfor %}
+   </tbody>
+diff --git a/tests/test_journeys.py b/tests/test_journeys.py
+index f9b5534..f60ae43 100644
+--- a/tests/test_journeys.py
++++ b/tests/test_journeys.py
+@@ -48,6 +48,15 @@ def test_workers_page_shows_registration_expiry(manager):
+     assert "Chloe Martin" in text and "2026-02-14" in text and "NF-RN-3915" in text
+ 
+ 
++def test_workers_page_marks_expired_registrations(manager):
++    text = page(manager.get("/workers"))
++    assert text.count('<span class="badge badge-expired">Expired</span>') == 1
++    row = text.split('id="worker-3"', 1)[1].split("</tr>", 1)[0]
++    assert "Expired" in row   # Chloe Martin, registration expired 2026-02-14
++    for worker_id in (1, 2, 4, 5):
++        assert "Expired" not in text.split(f'id="worker-{worker_id}"', 1)[1].split("</tr>", 1)[0]
++
++
+ def test_worker_sees_my_shifts_and_cannot_open_workers(worker):
+     text = page(worker.get("/shifts"))
+     assert "My shifts" in text and "Birch Ward" in text

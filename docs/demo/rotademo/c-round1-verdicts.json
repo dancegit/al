@@ -1,0 +1,229 @@
+{
+  "round": 1,
+  "combined_verdict": {
+    "issues": [
+      {
+        "artefact": "artefacts/8d4e8d6a/screenshots/e2e-results/04-expired-refused.png",
+        "description": "Acceptance criterion 2 is not met. In the assign dropdown on the shifts board, an expired worker has no \"Expired\" label. templates/shifts.html:26 still renders `<option value=\"{{ worker.id }}\">{{ worker.name }}</option>` for every candidate, and assignments.candidates (assignments.py:36-38) still returns workers without any registration status. The diff touches neither file.",
+        "resolution": "In assignments.py add `with_registration_status(workers, today)`, which returns copies of the worker dicts with `registration_expired = rules.registration_expired(to_rule_worker(w), today)`. Change `candidates(scope, shift, today)` to return its workers through that helper. In app.py `shifts()`, pass `clock.today()` to candidates. In templates/shifts.html render `<option value=\"{{ worker.id }}\"{% if worker.registration_expired %} disabled{% endif %}>{{ worker.name }}{% if worker.registration_expired %} (Expired){% endif %}</option>`.",
+        "severity": "blocker"
+      },
+      {
+        "artefact": "artefacts/8d4e8d6a/log/e2e.1.log",
+        "description": "Acceptance criterion 3 is not met. An expired worker can still be selected in the assign dropdown: no `disabled` attribute is rendered (templates/shifts.html:26). The e2e run proves this. Step 5 \"try Chloe Martin\" selects her, and step 6 is refused by the server only after submission, which is exactly the problem the issue describes.",
+        "resolution": "Render the `disabled` attribute on the option of an expired candidate (see the previous issue). In e2e/scenario.py, replace the select/click steps for Chloe Martin on #assign-8 with a reveal step on #assign-8. That step should expect options with enabled [\"Amara Jones\", \"Daniel Reyes\", \"Sam Okafor\"] and disabled [\"Chloe Martin (Expired)\"], and take the screenshot `expired-unavailable`.",
+        "severity": "blocker"
+      },
+      {
+        "artefact": "",
+        "description": "Acceptance criterion 5 is only half met. No test covers the dropdown: tests/test_journeys.py adds only test_workers_page_marks_expired_registrations. No e2e step or screenshot shows the expired worker unavailable in the dropdown: there is no expired-unavailable.png, and no keyframe shows an open dropdown. The spec's tests test_expired_worker_is_labelled_and_disabled_in_the_dropdown, test_workers_page_badge_is_valid_on_expiry_day, test_riverside_workers_page_marks_its_own_expired_worker and tests/test_api.py::test_workers_api_shape_is_unchanged are also missing.",
+        "resolution": "Add to tests/test_journeys.py: test_expired_worker_is_labelled_and_disabled_in_the_dropdown (asserts `<option value=\"3\" disabled>Chloe Martin (Expired)</option>` and that the options for Amara, Daniel, Sam and Ben stay unchanged), test_workers_page_badge_is_valid_on_expiry_day (ROTA_TODAY 2026-02-14 gives no badge, 2026-02-15 gives one) and test_riverside_workers_page_marks_its_own_expired_worker (worker-103 only). Add test_workers_api_shape_is_unchanged to tests/test_api.py. Add the e2e reveal step with the `expired-unavailable` screenshot, and re-run capture.",
+        "severity": "blocker"
+      },
+      {
+        "artefact": "artefacts/8d4e8d6a/screenshots/e2e-results/05-workers.png",
+        "description": "The badge is placed in the \"Registration expires\" cell (templates/workers.html:17), not after the worker's name as the spec asks. It also uses a new `.badge`/`.badge-expired` style (static/style.css:69-70) that duplicates the existing `.status` pill rules, instead of `status status-expired`.",
+        "resolution": "Move the badge into the name <td> after `{{ worker.name }}` as `<span class=\"status status-expired\">Expired</span>`. Replace the `.badge` rules with `.status-expired { color: var(--error); background: var(--error-bg); margin-left: 6px; }`, and update the test and e2e selectors to match.",
+        "severity": "tech_debt"
+      },
+      {
+        "artefact": "",
+        "description": "The expiry computation is inlined in the app.py workers() route (app.py:155-158, adds `import rules`), instead of in assignments.py as the spec's solution requires. The dropdown will need the same logic, so it would be duplicated.",
+        "resolution": "Move the computation into assignments.with_registration_status(workers, today). Call it from both workers() and candidates(), and remove `import rules` from app.py.",
+        "severity": "tech_debt"
+      },
+      {
+        "artefact": "",
+        "description": "README.md \"Pages and API\" was not updated to mention the Expired badge on GET /workers or the Expired/disabled options on GET /shifts, as the spec requires.",
+        "resolution": "Update the GET /shifts (manager) and GET /workers rows in README.md as described in the spec.",
+        "severity": "tech_debt"
+      },
+      {
+        "artefact": "artefacts/8d4e8d6a/screenshots/e2e-results/06-workers-expired-badge.png",
+        "description": "The new e2e step's screenshot 06-workers-expired-badge.png is byte-identical to 05-workers.png (same sha256), so it adds no evidence.",
+        "resolution": "Fold the badge expectations into the existing workers step, or drop the duplicate screenshot.",
+        "severity": "skippable"
+      },
+      {
+        "artefact": "artefacts/8d4e8d6a/screenshots/e2e-results/04-expired-refused.png",
+        "description": "Criterion 2 is not met: the assign dropdown does not label an expired worker \"Expired\". templates/shifts.html:26 still renders `<option value=\"{{ worker.id }}\">{{ worker.name }}</option>` for every candidate. assignments.py:36-38 `candidates(scope, shift)` is unchanged and marks nothing. The shifts() route in app.py is untouched.",
+        "resolution": "Add `assignments.with_registration_status(workers, today)`, which returns copies of the worker dicts with a `registration_expired` flag computed through data.to_rule_worker and rules.registration_expired. Change `candidates(scope, shift, today)` to return its workers through that helper, and pass `clock.today()` from the shifts() route in app.py. In templates/shifts.html:26 render `{{ worker.name }}{% if worker.registration_expired %} (Expired){% endif %}`.",
+        "severity": "blocker"
+      },
+      {
+        "artefact": "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-04.png",
+        "description": "Criterion 3 is not met: an expired worker can still be selected in the assign dropdown. templates/shifts.html:26 has no `disabled` attribute. The e2e log (artefacts/8d4e8d6a/log/e2e.1.log, steps 5-6) shows Chloe Martin selected in #assign-8 and submitted, and the 04-expired-refused.png screenshot and keyframe session-04 show the resulting \"Cannot assign Chloe Martin: Registration expired.\" error. That is exactly the after-the-fact discovery the issue asks to remove.",
+        "resolution": "In templates/shifts.html:26 add `{% if worker.registration_expired %} disabled{% endif %}` to the `<option>`. Keep the markup `<option value=\"N\">Name</option>` unchanged for valid workers.",
+        "severity": "blocker"
+      },
+      {
+        "artefact": "artefacts/8d4e8d6a/log/e2e.1.log",
+        "description": "Criterion 5 is not met: the tests and e2e scenario do not cover the dropdown. tests/test_journeys.py adds only test_workers_page_marks_expired_registrations. There is no test asserting `<option value=\"3\" disabled>Chloe Martin (Expired)</option>`. The spec's other planned tests are also missing: test_workers_page_badge_is_valid_on_expiry_day, test_riverside_workers_page_marks_its_own_expired_worker and tests/test_api.py::test_workers_api_shape_is_unchanged. e2e/scenario.py keeps the old select-Chloe/assign steps and has no `reveal \"#assign-8\"` step with an `options` expectation, so no screenshot or keyframe shows the expired worker unavailable in the dropdown.",
+        "resolution": "Add tests/test_journeys.py::test_expired_worker_is_labelled_and_disabled_in_the_dropdown, test_workers_page_badge_is_valid_on_expiry_day (ROTA_TODAY 2026-02-14 shows no badge, 2026-02-15 shows one) and test_riverside_workers_page_marks_its_own_expired_worker. Add tests/test_api.py::test_workers_api_shape_is_unchanged. In e2e/scenario.py replace the select-Chloe-Martin and assign steps with `{\"reveal\": \"#assign-8\", \"expect\": {\"options\": {\"selector\": \"#assign-8\", \"enabled\": [\"Amara Jones\", \"Daniel Reyes\", \"Sam Okafor\"], \"disabled\": [\"Chloe Martin (Expired)\"]}}, \"screenshot\": \"expired-unavailable\"}`. Then re-run `python e2e/capture.py` so NN-expired-unavailable.png shows the greyed-out option.",
+        "severity": "blocker"
+      },
+      {
+        "artefact": "artefacts/8d4e8d6a/screenshots/e2e-results/05-workers.png",
+        "description": "The badge is placed in the expiry cell (templates/workers.html:17), not the name cell, and uses a new `.badge`/`.badge-expired` style (static/style.css:69-70) that duplicates the pill rules of `.status`. The spec asks for `<span class=\"status status-expired\">` after `{{ worker.name }}`. The expired check is also inlined in the app.py:155-158 route instead of a shared assignments helper, so the dropdown fix would duplicate it.",
+        "resolution": "Move the badge into the name `<td>` as `<span class=\"status status-expired\">Expired</span>` and replace `.badge`/`.badge-expired` with `.status-expired { color: var(--error); background: var(--error-bg); margin-left: 6px; }`. Compute the flag through assignments.with_registration_status in both the workers() and shifts() routes, and update the test and e2e selectors to match.",
+        "severity": "tech_debt"
+      },
+      {
+        "artefact": "",
+        "description": "README.md is not updated: the spec asks the \"Pages and API\" rows for GET /shifts and GET /workers to mention the Expired label and badge.",
+        "resolution": "Update the README.md \"Pages and API\" table rows for GET /shifts (manager) and GET /workers as the spec describes.",
+        "severity": "tech_debt"
+      },
+      {
+        "artefact": "artefacts/8d4e8d6a/screenshots/e2e-results/06-workers-expired-badge.png",
+        "description": "The screenshots 05-workers.png and 06-workers-expired-badge.png are byte-identical (same sha256), so the extra e2e step adds no visual proof beyond its count expectation.",
+        "resolution": "Drop the screenshot from the extra badge step, or fold its expectations into the existing workers step as the spec suggests.",
+        "severity": "skippable"
+      }
+    ],
+    "mode": "auto",
+    "success": false,
+    "summary": "Only the workers-page half of the feature was built. The workers page now shows a red \"Expired\" badge next to Chloe Martin only, computed in app.py:155-158 with the existing rules.registration_expired; this is tested and shown in 05-workers.png, 06-workers-expired-badge.png and keyframes session-06 to session-08. The assign dropdown was not changed at all: templates/shifts.html and assignments.candidates are untouched. An expired worker still has no \"Expired\" label and can still be selected, and the e2e scenario still selects Chloe Martin and gets refused (04-expired-refused.png, e2e.1.log steps 5-6). pytest passes (47 passed, 16 isolation passed, 0 failed, 0 skipped), and the server-side refusal is unchanged. | The branch adds only the workers-page \"Expired\" badge: app.py:155-158 computes the set of expired workers with rules.registration_expired, templates/workers.html:17 renders the badge, static/style.css:69-70 styles it, and there is one journey test. The 05-workers.png screenshot and keyframes session-06/07/08 show the badge next to Chloe Martin and nobody else. The assign-dropdown half of the issue is missing: there is no change to templates/shifts.html, assignments.candidates or the shifts() route, so expired workers are neither labelled nor disabled. Instead the e2e run still selects Chloe Martin and shows the server refusing her (04-expired-refused.png, keyframe session-04). pytest passes (47 passed; isolation 16 passed) and no protected path is touched."
+  },
+  "reviewers": [
+    {
+      "artefacts_reviewed": [
+        "artefacts/8d4e8d6a/log/e2e.1.log",
+        "artefacts/8d4e8d6a/log/isolation.1.log",
+        "artefacts/8d4e8d6a/log/test.1.log",
+        "artefacts/8d4e8d6a/screenshots/e2e-results/01-signin.png",
+        "artefacts/8d4e8d6a/screenshots/e2e-results/02-shifts-board.png",
+        "artefacts/8d4e8d6a/screenshots/e2e-results/03-assigned.png",
+        "artefacts/8d4e8d6a/screenshots/e2e-results/04-expired-refused.png",
+        "artefacts/8d4e8d6a/screenshots/e2e-results/05-workers.png",
+        "artefacts/8d4e8d6a/screenshots/e2e-results/06-workers-expired-badge.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.webm",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-01.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-02.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-03.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-04.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-05.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-06.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-07.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-08.png"
+      ],
+      "issues": [
+        {
+          "artefact": "artefacts/8d4e8d6a/screenshots/e2e-results/04-expired-refused.png",
+          "description": "Acceptance criterion 2 is not met. In the assign dropdown on the shifts board, an expired worker has no \"Expired\" label. templates/shifts.html:26 still renders `<option value=\"{{ worker.id }}\">{{ worker.name }}</option>` for every candidate, and assignments.candidates (assignments.py:36-38) still returns workers without any registration status. The diff touches neither file.",
+          "resolution": "In assignments.py add `with_registration_status(workers, today)`, which returns copies of the worker dicts with `registration_expired = rules.registration_expired(to_rule_worker(w), today)`. Change `candidates(scope, shift, today)` to return its workers through that helper. In app.py `shifts()`, pass `clock.today()` to candidates. In templates/shifts.html render `<option value=\"{{ worker.id }}\"{% if worker.registration_expired %} disabled{% endif %}>{{ worker.name }}{% if worker.registration_expired %} (Expired){% endif %}</option>`.",
+          "severity": "blocker"
+        },
+        {
+          "artefact": "artefacts/8d4e8d6a/log/e2e.1.log",
+          "description": "Acceptance criterion 3 is not met. An expired worker can still be selected in the assign dropdown: no `disabled` attribute is rendered (templates/shifts.html:26). The e2e run proves this. Step 5 \"try Chloe Martin\" selects her, and step 6 is refused by the server only after submission, which is exactly the problem the issue describes.",
+          "resolution": "Render the `disabled` attribute on the option of an expired candidate (see the previous issue). In e2e/scenario.py, replace the select/click steps for Chloe Martin on #assign-8 with a reveal step on #assign-8. That step should expect options with enabled [\"Amara Jones\", \"Daniel Reyes\", \"Sam Okafor\"] and disabled [\"Chloe Martin (Expired)\"], and take the screenshot `expired-unavailable`.",
+          "severity": "blocker"
+        },
+        {
+          "artefact": "",
+          "description": "Acceptance criterion 5 is only half met. No test covers the dropdown: tests/test_journeys.py adds only test_workers_page_marks_expired_registrations. No e2e step or screenshot shows the expired worker unavailable in the dropdown: there is no expired-unavailable.png, and no keyframe shows an open dropdown. The spec's tests test_expired_worker_is_labelled_and_disabled_in_the_dropdown, test_workers_page_badge_is_valid_on_expiry_day, test_riverside_workers_page_marks_its_own_expired_worker and tests/test_api.py::test_workers_api_shape_is_unchanged are also missing.",
+          "resolution": "Add to tests/test_journeys.py: test_expired_worker_is_labelled_and_disabled_in_the_dropdown (asserts `<option value=\"3\" disabled>Chloe Martin (Expired)</option>` and that the options for Amara, Daniel, Sam and Ben stay unchanged), test_workers_page_badge_is_valid_on_expiry_day (ROTA_TODAY 2026-02-14 gives no badge, 2026-02-15 gives one) and test_riverside_workers_page_marks_its_own_expired_worker (worker-103 only). Add test_workers_api_shape_is_unchanged to tests/test_api.py. Add the e2e reveal step with the `expired-unavailable` screenshot, and re-run capture.",
+          "severity": "blocker"
+        },
+        {
+          "artefact": "artefacts/8d4e8d6a/screenshots/e2e-results/05-workers.png",
+          "description": "The badge is placed in the \"Registration expires\" cell (templates/workers.html:17), not after the worker's name as the spec asks. It also uses a new `.badge`/`.badge-expired` style (static/style.css:69-70) that duplicates the existing `.status` pill rules, instead of `status status-expired`.",
+          "resolution": "Move the badge into the name <td> after `{{ worker.name }}` as `<span class=\"status status-expired\">Expired</span>`. Replace the `.badge` rules with `.status-expired { color: var(--error); background: var(--error-bg); margin-left: 6px; }`, and update the test and e2e selectors to match.",
+          "severity": "tech_debt"
+        },
+        {
+          "artefact": "",
+          "description": "The expiry computation is inlined in the app.py workers() route (app.py:155-158, adds `import rules`), instead of in assignments.py as the spec's solution requires. The dropdown will need the same logic, so it would be duplicated.",
+          "resolution": "Move the computation into assignments.with_registration_status(workers, today). Call it from both workers() and candidates(), and remove `import rules` from app.py.",
+          "severity": "tech_debt"
+        },
+        {
+          "artefact": "",
+          "description": "README.md \"Pages and API\" was not updated to mention the Expired badge on GET /workers or the Expired/disabled options on GET /shifts, as the spec requires.",
+          "resolution": "Update the GET /shifts (manager) and GET /workers rows in README.md as described in the spec.",
+          "severity": "tech_debt"
+        },
+        {
+          "artefact": "artefacts/8d4e8d6a/screenshots/e2e-results/06-workers-expired-badge.png",
+          "description": "The new e2e step's screenshot 06-workers-expired-badge.png is byte-identical to 05-workers.png (same sha256), so it adds no evidence.",
+          "resolution": "Fold the badge expectations into the existing workers step, or drop the duplicate screenshot.",
+          "severity": "skippable"
+        }
+      ],
+      "success": false,
+      "summary": "Only the workers-page half of the feature was built. The workers page now shows a red \"Expired\" badge next to Chloe Martin only, computed in app.py:155-158 with the existing rules.registration_expired; this is tested and shown in 05-workers.png, 06-workers-expired-badge.png and keyframes session-06 to session-08. The assign dropdown was not changed at all: templates/shifts.html and assignments.candidates are untouched. An expired worker still has no \"Expired\" label and can still be selected, and the e2e scenario still selects Chloe Martin and gets refused (04-expired-refused.png, e2e.1.log steps 5-6). pytest passes (47 passed, 16 isolation passed, 0 failed, 0 skipped), and the server-side refusal is unchanged."
+    },
+    {
+      "artefacts_reviewed": [
+        "artefacts/8d4e8d6a/log/e2e.1.log",
+        "artefacts/8d4e8d6a/log/isolation.1.log",
+        "artefacts/8d4e8d6a/log/test.1.log",
+        "artefacts/8d4e8d6a/screenshots/e2e-results/01-signin.png",
+        "artefacts/8d4e8d6a/screenshots/e2e-results/02-shifts-board.png",
+        "artefacts/8d4e8d6a/screenshots/e2e-results/03-assigned.png",
+        "artefacts/8d4e8d6a/screenshots/e2e-results/04-expired-refused.png",
+        "artefacts/8d4e8d6a/screenshots/e2e-results/05-workers.png",
+        "artefacts/8d4e8d6a/screenshots/e2e-results/06-workers-expired-badge.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.webm",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-01.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-02.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-03.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-04.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-05.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-06.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-07.png",
+        "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-08.png"
+      ],
+      "issues": [
+        {
+          "artefact": "artefacts/8d4e8d6a/screenshots/e2e-results/04-expired-refused.png",
+          "description": "Criterion 2 is not met: the assign dropdown does not label an expired worker \"Expired\". templates/shifts.html:26 still renders `<option value=\"{{ worker.id }}\">{{ worker.name }}</option>` for every candidate. assignments.py:36-38 `candidates(scope, shift)` is unchanged and marks nothing. The shifts() route in app.py is untouched.",
+          "resolution": "Add `assignments.with_registration_status(workers, today)`, which returns copies of the worker dicts with a `registration_expired` flag computed through data.to_rule_worker and rules.registration_expired. Change `candidates(scope, shift, today)` to return its workers through that helper, and pass `clock.today()` from the shifts() route in app.py. In templates/shifts.html:26 render `{{ worker.name }}{% if worker.registration_expired %} (Expired){% endif %}`.",
+          "severity": "blocker"
+        },
+        {
+          "artefact": "artefacts/8d4e8d6a/recording/e2e-results/session.keyframes/session-04.png",
+          "description": "Criterion 3 is not met: an expired worker can still be selected in the assign dropdown. templates/shifts.html:26 has no `disabled` attribute. The e2e log (artefacts/8d4e8d6a/log/e2e.1.log, steps 5-6) shows Chloe Martin selected in #assign-8 and submitted, and the 04-expired-refused.png screenshot and keyframe session-04 show the resulting \"Cannot assign Chloe Martin: Registration expired.\" error. That is exactly the after-the-fact discovery the issue asks to remove.",
+          "resolution": "In templates/shifts.html:26 add `{% if worker.registration_expired %} disabled{% endif %}` to the `<option>`. Keep the markup `<option value=\"N\">Name</option>` unchanged for valid workers.",
+          "severity": "blocker"
+        },
+        {
+          "artefact": "artefacts/8d4e8d6a/log/e2e.1.log",
+          "description": "Criterion 5 is not met: the tests and e2e scenario do not cover the dropdown. tests/test_journeys.py adds only test_workers_page_marks_expired_registrations. There is no test asserting `<option value=\"3\" disabled>Chloe Martin (Expired)</option>`. The spec's other planned tests are also missing: test_workers_page_badge_is_valid_on_expiry_day, test_riverside_workers_page_marks_its_own_expired_worker and tests/test_api.py::test_workers_api_shape_is_unchanged. e2e/scenario.py keeps the old select-Chloe/assign steps and has no `reveal \"#assign-8\"` step with an `options` expectation, so no screenshot or keyframe shows the expired worker unavailable in the dropdown.",
+          "resolution": "Add tests/test_journeys.py::test_expired_worker_is_labelled_and_disabled_in_the_dropdown, test_workers_page_badge_is_valid_on_expiry_day (ROTA_TODAY 2026-02-14 shows no badge, 2026-02-15 shows one) and test_riverside_workers_page_marks_its_own_expired_worker. Add tests/test_api.py::test_workers_api_shape_is_unchanged. In e2e/scenario.py replace the select-Chloe-Martin and assign steps with `{\"reveal\": \"#assign-8\", \"expect\": {\"options\": {\"selector\": \"#assign-8\", \"enabled\": [\"Amara Jones\", \"Daniel Reyes\", \"Sam Okafor\"], \"disabled\": [\"Chloe Martin (Expired)\"]}}, \"screenshot\": \"expired-unavailable\"}`. Then re-run `python e2e/capture.py` so NN-expired-unavailable.png shows the greyed-out option.",
+          "severity": "blocker"
+        },
+        {
+          "artefact": "artefacts/8d4e8d6a/screenshots/e2e-results/05-workers.png",
+          "description": "The badge is placed in the expiry cell (templates/workers.html:17), not the name cell, and uses a new `.badge`/`.badge-expired` style (static/style.css:69-70) that duplicates the pill rules of `.status`. The spec asks for `<span class=\"status status-expired\">` after `{{ worker.name }}`. The expired check is also inlined in the app.py:155-158 route instead of a shared assignments helper, so the dropdown fix would duplicate it.",
+          "resolution": "Move the badge into the name `<td>` as `<span class=\"status status-expired\">Expired</span>` and replace `.badge`/`.badge-expired` with `.status-expired { color: var(--error); background: var(--error-bg); margin-left: 6px; }`. Compute the flag through assignments.with_registration_status in both the workers() and shifts() routes, and update the test and e2e selectors to match.",
+          "severity": "tech_debt"
+        },
+        {
+          "artefact": "",
+          "description": "README.md is not updated: the spec asks the \"Pages and API\" rows for GET /shifts and GET /workers to mention the Expired label and badge.",
+          "resolution": "Update the README.md \"Pages and API\" table rows for GET /shifts (manager) and GET /workers as the spec describes.",
+          "severity": "tech_debt"
+        },
+        {
+          "artefact": "artefacts/8d4e8d6a/screenshots/e2e-results/06-workers-expired-badge.png",
+          "description": "The screenshots 05-workers.png and 06-workers-expired-badge.png are byte-identical (same sha256), so the extra e2e step adds no visual proof beyond its count expectation.",
+          "resolution": "Drop the screenshot from the extra badge step, or fold its expectations into the existing workers step as the spec suggests.",
+          "severity": "skippable"
+        }
+      ],
+      "success": false,
+      "summary": "The branch adds only the workers-page \"Expired\" badge: app.py:155-158 computes the set of expired workers with rules.registration_expired, templates/workers.html:17 renders the badge, static/style.css:69-70 styles it, and there is one journey test. The 05-workers.png screenshot and keyframes session-06/07/08 show the badge next to Chloe Martin and nobody else. The assign-dropdown half of the issue is missing: there is no change to templates/shifts.html, assignments.candidates or the shifts() route, so expired workers are neither labelled nor disabled. Instead the e2e run still selects Chloe Martin and shows the server refusing her (04-expired-refused.png, keyframe session-04). pytest passes (47 passed; isolation 16 passed) and no protected path is touched."
+    }
+  ],
+  "patch": {
+    "checks_rerun": [
+      "test",
+      "isolation",
+      "e2e"
+    ],
+    "implement_output": "In the assign dropdown, Chloe Martin is now shown as \"Chloe Martin (Expired)\" and can't be selected. Everyone else's option is unchanged, and the tests and the browser scenario all pass.\n\n## Work done, by step\n1. **`assignments.py`**: added `with_registration_status(workers, today)` above `candidates`. `candidates` now takes `today` and returns the role-matched workers with a `registration_expired` flag on each. Its docstring says expired workers are still listed, marked so the page can show them as unavailable.\n2. **`app.py` `shifts()`**: sets `today = clock.today()` once and uses it for both the board rows and the dropdown candidates. Nothing else in `app.py` changed; the workers page, `worker_json()` and the API are as they were.\n3. **`templates/shifts.html`**: an expired worker's option now has `disabled` and the \"(Expired)\" suffix. Valid workers still get exactly `<option value=\"N\">Name</option>`.\n4. **`tests/test_journeys.py`**: added the `conftest` import and three tests:\n   - `test_expired_worker_is_labelled_and_disabled_in_the_dropdown`\n   - `test_workers_page_badge_is_valid_on_expiry_day`\n   - `test_riverside_workers_page_marks_its_own_expired_worker`\n\n   The two existing tests the plan said to keep are unchanged.\n5. **`tests/test_api.py`**: added `test_workers_api_shape_is_unchanged`.\n6. **`e2e/scenario.py`**: the two steps that selected and tried to assign Chloe are replaced by one `reveal` step on `#assign-8`, saving the screenshot `expired-unavailable`. Chloe's line in the seed note is updated, and the workers-page steps are unchanged.\n7. **Validation**: everything passed on the first run.\n\nThere were no deviations and no `REQUIRES HUMAN` items. Nothing was committed, because the plan doesn't ask for a commit.\n\n## Validation results\n| Command | Result |\n|---|---|\n| `python -m pytest -q tests` | PASS (51 passed) |\n| `python -m pytest -q tests/test_isolation.py` | PASS (16 passed) |\n| `python e2e/capture.py` | PASS (9 steps, 6 screenshots, video) |\n| `py",
+    "patch_plan": "<tmp>/rota-c.al/specs/patch-8d4e8d6a-disable-expired-workers-in-dropdown.md"
+  }
+}

@@ -1,0 +1,132 @@
+{
+  "gate": {
+    "action": "merge",
+    "changed_files": [
+      "README.md",
+      "assignments.py",
+      "e2e/scenario.py",
+      "rules.py",
+      "templates/shifts.html",
+      "tests/test_api.py",
+      "tests/test_journeys.py",
+      "tests/test_rules.py"
+    ],
+    "diff_lines": 138,
+    "reasons": [],
+    "ship": true
+  },
+  "shipped": true,
+  "target": "main via PR #2",
+  "combined_verdict": {
+    "issues": [
+      {
+        "artefact": "artefacts/6df9df52/log/test.1.log",
+        "description": "The organisation-scope test (tests/test_api.py:97, test_rest_rule_counts_only_own_organisations_shifts) cannot fail on a scope regression. Riverside worker 101 has no shifts in Northfield, so the test still gets 200 even if shifts_of_worker stopped filtering on org_id. In practice the scope is enforced by the code (assignments.py:30-32 calls Scope.shifts_of_worker, and data.py:68 filters on org_id) and by tests/test_isolation.py, not by this test.",
+        "resolution": "Add a test whose result depends on the org filter. For example, insert a shift for worker 101 with a Northfield org_id that would leave under 11 hours of rest before Riverside shift 102 (a test fixture, not a schema change), then assert the Riverside manager's assign still returns 200. Or unit-test assignments.candidates()/problem_for() with a Scope for one organisation and a shift that belongs to another organisation.",
+        "severity": "tech_debt"
+      },
+      {
+        "artefact": "",
+        "description": "assignments.candidates() (assignments.py:42-47) runs one shifts_of_worker query per candidate for every open shift each time the board renders (N×M queries). The spec notes this is acceptable at demo scale.",
+        "resolution": "Load the organisation's assigned shifts once per board render (one scoped query grouped by worker_id) and pass them into candidates().",
+        "severity": "tech_debt"
+      },
+      {
+        "artefact": "artefacts/6df9df52/log/test.1.log",
+        "description": "tests/test_api.py:97 test_rest_rule_counts_only_own_organisations_shifts cannot fail if organisation scoping breaks. Riverside worker 101 (Elena Novak) is never assigned to any Northfield shift in seed.py, so an unscoped shifts_of_worker() would return the same rows and the test would still get 200. The code is correctly scoped (assignments.py:30-32 calls Scope.shifts_of_worker, data.py:67-70 filters org_id), so only the test is weak.",
+        "resolution": "Make the test fail without org scoping. One way: insert, in the test only, a Northfield-org shift row with worker_id=101 that ends less than 11 hours before Riverside shift 102 starts, then assert the Riverside manager still gets 200. Another way: call assignments.candidates(Scope(riverside), shift_102) and assert Elena Novak's unavailable is None in that setup.",
+        "severity": "tech_debt"
+      },
+      {
+        "artefact": "",
+        "description": "assignments.py:45-47 candidates() runs one organisation-scoped shifts_of_worker query per role-matching worker for every open shift on the board (N×M queries). The spec notes this is acceptable at demo scale.",
+        "resolution": "If the board grows, load the organisation's assigned shifts once in app.shifts() (through Scope) and pass them, grouped by worker_id, into candidates().",
+        "severity": "skippable"
+      }
+    ],
+    "mode": "auto",
+    "success": true,
+    "summary": "The change adds an 11-hour rest rule to rules.py (MIN_REST, NEEDS_REST, too_little_rest, lacks_rest), checked last in assignment_problem(). Because both the board and the API go through assignments.assign(), they refuse the same way, and the API answers 409 with {\"error\": \"Needs 11 hours rest\"}. assignments.candidates() reads each worker's shifts only through the organisation-scoped Scope.shifts_of_worker(), and templates/shifts.html shows unavailable workers as disabled options labelled \"Name — Needs 11 hours rest\". Every acceptance criterion is met: the logs show pytest at 58 passed and isolation at 16 passed, the e2e run passed all 11 steps, and screenshots 03/04 and keyframes 02/03 show Amara Jones and Sam Okafor greyed out with the reason. No protected path changed and no existing test expectation was loosened. | The change adds a pure 11-hour rest rule to rules.py (MIN_REST, NEEDS_REST, too_little_rest, lacks_rest), checked after the overlap rule in assignment_problem. Because assignments.assign() already serves both the board form and POST /api/shifts/<id>/assign, the two refuse in the same way (409, \"Needs 11 hours rest\"). assignments.candidates() uses the same rule on organisation-scoped shifts to mark workers unavailable, and templates/shifts.html shows them as disabled options with the reason. It matches every acceptance criterion and touches no protected path. The logs show 58/58 pytest, 16/16 isolation tests and a passing 11-step e2e run. Screenshots 03 and 04 and keyframes session-02 and session-03 show 'Amara Jones — Needs 11 hours rest' and 'Sam Okafor — Needs 11 hours rest' greyed out in the dropdowns, and the existing assign and expired-registration flows still work."
+  },
+  "rounds": 1,
+  "reviewers": [
+    {
+      "artefacts_reviewed": [
+        "artefacts/6df9df52/log/e2e.1.log",
+        "artefacts/6df9df52/log/isolation.1.log",
+        "artefacts/6df9df52/log/test.1.log",
+        "artefacts/6df9df52/screenshots/e2e-results/01-signin.png",
+        "artefacts/6df9df52/screenshots/e2e-results/02-shifts-board.png",
+        "artefacts/6df9df52/screenshots/e2e-results/03-rest-after-previous-shift.png",
+        "artefacts/6df9df52/screenshots/e2e-results/04-rest-before-next-shift.png",
+        "artefacts/6df9df52/screenshots/e2e-results/05-assigned.png",
+        "artefacts/6df9df52/screenshots/e2e-results/06-expired-refused.png",
+        "artefacts/6df9df52/screenshots/e2e-results/07-workers.png",
+        "artefacts/6df9df52/recording/e2e-results/session.webm",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-01.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-02.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-03.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-04.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-05.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-06.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-07.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-08.png"
+      ],
+      "issues": [
+        {
+          "artefact": "artefacts/6df9df52/log/test.1.log",
+          "description": "The organisation-scope test (tests/test_api.py:97, test_rest_rule_counts_only_own_organisations_shifts) cannot fail on a scope regression. Riverside worker 101 has no shifts in Northfield, so the test still gets 200 even if shifts_of_worker stopped filtering on org_id. In practice the scope is enforced by the code (assignments.py:30-32 calls Scope.shifts_of_worker, and data.py:68 filters on org_id) and by tests/test_isolation.py, not by this test.",
+          "resolution": "Add a test whose result depends on the org filter. For example, insert a shift for worker 101 with a Northfield org_id that would leave under 11 hours of rest before Riverside shift 102 (a test fixture, not a schema change), then assert the Riverside manager's assign still returns 200. Or unit-test assignments.candidates()/problem_for() with a Scope for one organisation and a shift that belongs to another organisation.",
+          "severity": "tech_debt"
+        },
+        {
+          "artefact": "",
+          "description": "assignments.candidates() (assignments.py:42-47) runs one shifts_of_worker query per candidate for every open shift each time the board renders (N×M queries). The spec notes this is acceptable at demo scale.",
+          "resolution": "Load the organisation's assigned shifts once per board render (one scoped query grouped by worker_id) and pass them into candidates().",
+          "severity": "tech_debt"
+        }
+      ],
+      "success": true,
+      "summary": "The change adds an 11-hour rest rule to rules.py (MIN_REST, NEEDS_REST, too_little_rest, lacks_rest), checked last in assignment_problem(). Because both the board and the API go through assignments.assign(), they refuse the same way, and the API answers 409 with {\"error\": \"Needs 11 hours rest\"}. assignments.candidates() reads each worker's shifts only through the organisation-scoped Scope.shifts_of_worker(), and templates/shifts.html shows unavailable workers as disabled options labelled \"Name — Needs 11 hours rest\". Every acceptance criterion is met: the logs show pytest at 58 passed and isolation at 16 passed, the e2e run passed all 11 steps, and screenshots 03/04 and keyframes 02/03 show Amara Jones and Sam Okafor greyed out with the reason. No protected path changed and no existing test expectation was loosened."
+    },
+    {
+      "artefacts_reviewed": [
+        "artefacts/6df9df52/log/e2e.1.log",
+        "artefacts/6df9df52/log/isolation.1.log",
+        "artefacts/6df9df52/log/test.1.log",
+        "artefacts/6df9df52/screenshots/e2e-results/01-signin.png",
+        "artefacts/6df9df52/screenshots/e2e-results/02-shifts-board.png",
+        "artefacts/6df9df52/screenshots/e2e-results/03-rest-after-previous-shift.png",
+        "artefacts/6df9df52/screenshots/e2e-results/04-rest-before-next-shift.png",
+        "artefacts/6df9df52/screenshots/e2e-results/05-assigned.png",
+        "artefacts/6df9df52/screenshots/e2e-results/06-expired-refused.png",
+        "artefacts/6df9df52/screenshots/e2e-results/07-workers.png",
+        "artefacts/6df9df52/recording/e2e-results/session.webm",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-01.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-02.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-03.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-04.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-05.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-06.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-07.png",
+        "artefacts/6df9df52/recording/e2e-results/session.keyframes/session-08.png"
+      ],
+      "issues": [
+        {
+          "artefact": "artefacts/6df9df52/log/test.1.log",
+          "description": "tests/test_api.py:97 test_rest_rule_counts_only_own_organisations_shifts cannot fail if organisation scoping breaks. Riverside worker 101 (Elena Novak) is never assigned to any Northfield shift in seed.py, so an unscoped shifts_of_worker() would return the same rows and the test would still get 200. The code is correctly scoped (assignments.py:30-32 calls Scope.shifts_of_worker, data.py:67-70 filters org_id), so only the test is weak.",
+          "resolution": "Make the test fail without org scoping. One way: insert, in the test only, a Northfield-org shift row with worker_id=101 that ends less than 11 hours before Riverside shift 102 starts, then assert the Riverside manager still gets 200. Another way: call assignments.candidates(Scope(riverside), shift_102) and assert Elena Novak's unavailable is None in that setup.",
+          "severity": "tech_debt"
+        },
+        {
+          "artefact": "",
+          "description": "assignments.py:45-47 candidates() runs one organisation-scoped shifts_of_worker query per role-matching worker for every open shift on the board (N×M queries). The spec notes this is acceptable at demo scale.",
+          "resolution": "If the board grows, load the organisation's assigned shifts once in app.shifts() (through Scope) and pass them, grouped by worker_id, into candidates().",
+          "severity": "skippable"
+        }
+      ],
+      "success": true,
+      "summary": "The change adds a pure 11-hour rest rule to rules.py (MIN_REST, NEEDS_REST, too_little_rest, lacks_rest), checked after the overlap rule in assignment_problem. Because assignments.assign() already serves both the board form and POST /api/shifts/<id>/assign, the two refuse in the same way (409, \"Needs 11 hours rest\"). assignments.candidates() uses the same rule on organisation-scoped shifts to mark workers unavailable, and templates/shifts.html shows them as disabled options with the reason. It matches every acceptance criterion and touches no protected path. The logs show 58/58 pytest, 16/16 isolation tests and a passing 11-step e2e run. Screenshots 03 and 04 and keyframes session-02 and session-03 show 'Amara Jones — Needs 11 hours rest' and 'Sam Okafor — Needs 11 hours rest' greyed out in the dropdowns, and the existing assign and expired-registration flows still work."
+    }
+  ]
+}

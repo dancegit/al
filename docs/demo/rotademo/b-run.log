@@ -1,0 +1,21 @@
+dispatch: feature <- issue:1
+[adw 7a1214b5] feature start: class=feature dry_run=False
+[adw 7a1214b5] step plan (run) start
+[adw 7a1214b5] container started: al-rota-demo-7a1214b5
+[adw 7a1214b5] step plan (run) passed: <tmp>/rota.al/specs/feature-7a1214b5-worker-pay-band-column.md
+[adw 7a1214b5] step build (run) start
+[adw 7a1214b5] step build (run) passed: # Report: worker pay band (7a1214b5)
+[adw 7a1214b5] step test (check) start
+[adw 7a1214b5] step test (check) failed: test: check test exited 2 after 3 attempt(s); log agents/7a1214b5/checks/test.3.log
+[adw 7a1214b5] run failed: test: check test exited 2 after 3 attempt(s); log agents/7a1214b5/checks/test.3.log
+[adw 7a1214b5] container removed: al-rota-demo-7a1214b5
+=== ADW summary ===
+adw:       feature 7a1214b5
+status:    failed
+branch:    feature/7a1214b5-record-each-workers-pay-band-and
+plan:      <tmp>/rota.al/specs/feature-7a1214b5-worker-pay-band-column.md
+checks:    test=2
+review:    none
+ship:      none
+artefacts: 3
+state:     <tmp>/rota.al/agents/7a1214b5/state.json
