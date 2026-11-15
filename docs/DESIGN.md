@@ -171,7 +171,10 @@ default environment and what makes N agents on one repository safe. On top of th
 - Worktree hygiene: `#:sparse` for monorepos, `#:gc-days` for kept worktrees of old runs, and
   branches that hold nothing unshipped are deleted with their worktree.
 
-Not built yet: `(parallel …)` steps that fan one task out to several agents in sibling worktrees.
+- `(fan-out NAME #:adw CHILD #:count N #:pick best|first|all)` — race one task across N independent
+  runs of a child ADW. Each candidate is a full run with its own worktree, container, port lease and
+  slots; the winner (fewest resolve attempts, then smallest diff) is merged into the parent run, which
+  goes on to check, review and ship it. Losers' branches are removed and their ids recorded.
 
 ## What the sandbox guarantees
 

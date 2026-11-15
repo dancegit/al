@@ -21,7 +21,8 @@ uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q
 
 The default tier is everything not marked `slow` or `llm` (about three minutes). It is LLM-free:
 every agent step runs on the mock agent, either through `--dry-run` or because the fixture copy of
-the layer declares `(agent mock)`. It needs no network once the testbeds are cloned.
+the layer declares `(agent mock)`. It needs no network when `testbeds/<name>` holds the pinned
+commits (see below); without that local cache every session fetches the five pins from GitHub.
 
 A `-m` on the command line replaces the default selection:
 
@@ -59,7 +60,7 @@ container that carries cargo / autoconf + make).
 | `test_tasklist_cron` | flask | `tasks.md` + `trigger_cron.py --once`: open task done with its `adw:<id>`, blocked task runs on the next poll |
 | `test_concurrency_soak` | flask | 8 simultaneous runs under `#:max-runs 2`: never more than 2 hold a slot; no port lease, worktree or branch left |
 | `test_killed_run_leaks_nothing_permanent` | flask | a run SIGKILLed inside a check holds no slot afterwards: the next runs start at once and pass |
-| `test_killed_run_port_lease_is_reclaimed` | flask | **xfail (strict)**: the killed run's port lease is never dropped — a runtime bug, see the reason on the test |
+| `test_killed_run_port_lease_is_reclaimed` | flask | the killed run's port lease is dropped when the next run leases its ports |
 | `test_gate.py` (6 scenarios) | flask | the zero-touch gate: clean change → `merge` on `al/ship/main`; protected path, oversized diff, review blocker, disallowed class → `pr` with the reason; failing check → run fails, nothing shipped |
 | `test_verify_reports_true_and_false`, `test_verify_timeout_kills_the_cmd` | flask | `al verify` exit code, report, logs, skip rule, `--cmd`, `--json`, `--timeout`, and that nothing is left behind |
 | `test_verify` (`slow`, `nix`, `network`) | flask | the authored flask layer's `typecheck` and `test` cmds are true |
@@ -67,16 +68,36 @@ container that carries cargo / autoconf + make).
 
 ### Setup and teardown guarantees
 
-Testbeds (`testbeds/<name>`, git-ignored) are pinned in `tests/integration/testbeds.toml`.
+Testbeds are pinned (URL, commit, default branch) in `tests/integration/testbeds.toml`.
 
-- `testbed(name)` (session fixture) returns the checkout. If it is missing it is fetched with
-  `--depth 1` at the pinned commit; when that needs the network and there is none, the test is
-  skipped and says so. If the checkout exists it must be at the pinned commit with a clean working
-  tree and have the layer's default branch; otherwise the test **fails with instructions**. The suite
-  never resets, stashes or checks out anything in a testbed.
+**The suite never works in `testbeds/<name>`.** Every pytest session makes its own clone of each
+testbed it needs, under the session's temp directory (`<basetemp>/testbeds0/<name>`), and every
+layer a test builds is rooted at that private clone: worktrees, branches, `al/ship/*` refs and
+everything else a run creates land there and disappear with the temp directory.
+
+- `testbed(name)` (session fixture) returns the private clone, with the default branch checked out
+  at the pinned commit and a clean working tree.
+  - When `testbeds/<name>` (git-ignored) is a git checkout that contains the pinned commit, it is
+    used as an object cache: `git clone --no-hardlinks --no-checkout testbeds/<name>`, so no object
+    file is shared, and the clone's `origin` is then re-pointed at the pinned URL so nothing can
+    push or fetch into your checkout. Which branch is checked out there, whether its tree is dirty
+    and which other branches or worktrees it has does not matter.
+  - Otherwise (no checkout, or one without the pin) the pin is fetched with `--depth 1` from the
+    pinned URL straight into the temp directory; when there is no network, the test is skipped and
+    says so. The suite never creates or repairs `testbeds/<name>`; to have a cache, make one
+    yourself: `git clone <url> testbeds/<name>` (any clone that contains the pinned commit will do).
+  - `testbeds/<name>` is only ever read (`git cat-file`, `git clone` as the source, and
+    `git --no-optional-locks status`, which does not refresh the index). Its fingerprint — `HEAD`,
+    current branch, `git status --porcelain` and every ref with its commit — is taken before the
+    first read and **asserted unchanged when the session ends**. Because the suite does not write
+    there, you can keep working in `testbeds/` while it runs, with one consequence: a change you
+    make there during a session (a commit, a new branch, an edited file) trips that assertion and
+    is reported as an error on the session's last test.
+  - Sessions do not share anything, so several can run at the same time (e.g. a `-m slow` real
+    check next to the default tier).
 - `layer(name, *edits)` (function fixture) builds a fresh layer per test in pytest's tmp directory
   from the committed sources `tests/authored/<name>/{LLM.txt,agentic.rkt}`: `#:root` becomes the
-  absolute testbed path, `#:name` becomes a unique `it-<name>-<random>` (so worktree branches and
+  absolute path of the private clone, `#:name` becomes a unique `it-<name>-<random>` (so worktree branches and
   podman container / image names cannot collide with a real layer or another test), the test's
   edits are applied (mock agent, concurrency limits, extra cmds or ADWs — helpers in
   `tests/integration/alit.py`, each of which fails loudly when the authored text it expects is
@@ -84,25 +105,28 @@ Testbeds (`testbeds/<name>`, git-ignored) are pinned in `tests/integration/testb
   exactly those codebase cmds instead.
 - Teardown runs always, also after a failed test, in this order:
   1. kill processes whose working directory is inside the layer (orphans of killed runs);
-  2. remove podman containers named `al-it-*`, volumes named `al-it-*` / `al-cache-*` and images
-     named `al-it-*` that did not exist before the test (nothing happens when podman is absent);
-  3. `git worktree remove --force` every worktree of the testbed that lives under the layer
+  2. remove the podman containers, volumes and images of this test's layers (`al-<layer name>…`)
+     that did not exist before the test, and new `al-cache-*` volumes that no container uses
+     (nothing happens when podman is absent);
+  3. `git worktree remove --force` every worktree of the private clone that lives under the layer
      directory, then `git worktree prune`;
   4. delete every branch that did not exist before the test (`refs/heads` is snapshotted in
      setup), and put a pre-existing `al/ship/*` ref back when one of the test's runs moved it;
-  5. **assert** that the testbed fingerprint — `HEAD`, current branch, `git status --porcelain`
-     and the sorted `refs/heads` with their commits — equals the snapshot taken in setup.
+  5. **assert** that the private clone's fingerprint — `HEAD`, current branch,
+     `git status --porcelain` and the sorted `refs/heads` with their commits — equals the snapshot
+     taken in setup, so the next test of the session starts from the pin again.
 
-  A test that leaves anything behind that steps 1–4 cannot take away (a file in the testbed, a moved
+  A test that leaves anything behind that steps 1–4 cannot take away (a file in the clone, a moved
   `HEAD` or branch, a branch that cannot be deleted) fails in teardown, even if its body passed.
+  Only the session's own tests ever use the clone, so anything found there was made by them.
 
-The suite assumes it is the only thing using `testbeds/` while it runs. A branch created in a
-testbed by something else during a test is seen as a leak: it is deleted, or — when git refuses
-because it is checked out elsewhere — the test fails.
+The private clones and the layers live under pytest's base temp directory (usually `/tmp`). The
+real checks build there (a Rust `target/`, `node_modules`, …); pass `--basetemp /var/tmp/al-it` to
+put them on a disk when `/tmp` is a small tmpfs (pytest empties that directory first).
 
 ### Adding a testbed
 
-1. Clone it into `testbeds/<name>`, run `tools/al init testbeds/<name> --layer layers/<name>` and
+1. Clone it into `testbeds/<name>` (your working copy, and the suite's read-only cache), run `tools/al init testbeds/<name> --layer layers/<name>` and
    author `LLM.txt` and `agentic.rkt` with the meta commands (see the top-level README).
 2. Commit the authored sources as `tests/authored/<name>/LLM.txt` and
    `tests/authored/<name>/agentic.rkt`. The fixture expects the literal clauses

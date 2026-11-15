@@ -4,8 +4,8 @@
   (codebase #:root "../../testbeds/jq" #:languages (c shell python) #:default-branch "master"
             #:description "jq is a command-line JSON processor and the C library libjq, written in portable C with no runtime dependencies. It is built with GNU autotools (autoconf, automake, libtool) and optionally links the vendored Oniguruma regex library (git submodule). The manual and website are generated from YAML with Python."
             #:readme "README.md"
-    (cmd install "git submodule update --init && autoreconf -i && ./configure --disable-docs --with-oniguruma=builtin --enable-static"
-         #:description "The Oniguruma submodule is fetched and the build system is generated and configured; must run once in a fresh checkout before build or test")
+    (cmd install "autoreconf -i && ./configure --disable-docs --with-oniguruma=yes --enable-static"
+         #:description "The build system is generated and configured against the system Oniguruma (libonig-dev); the vendor/oniguruma submodule is not fetched, because a run's container mounts the repository's .git read-only and git submodule update cannot register it; must run once in a fresh checkout before build or test")
     (cmd build "make -j\"$(nproc)\""
          #:description "libjq and the jq binary compile and link with -Wextra -Wall")
     (cmd test "make check VERBOSE=yes"
@@ -35,7 +35,7 @@
   (trigger manual)
 
   (environment worktree)
-  (environment podman #:packages ("build-essential" "autoconf" "automake" "libtool" "git") #:network slirp)
+  (environment podman #:packages ("build-essential" "autoconf" "automake" "libtool" "git" "libonig-dev") #:network slirp)
 
   (artefact log)
   (artefact file #:id test-suite-log #:glob "test-suite.log")

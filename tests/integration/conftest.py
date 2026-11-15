@@ -1,9 +1,11 @@
 """Fixtures of the al integration suite. See tests/README.md.
 
-  testbed(name)            session: testbeds/<name> at its pinned commit (cloned only when missing)
-  layer(name, *edits)      function: a fresh generated layer in a tmp dir; teardown removes every
-                           worktree, branch, container, volume and image the test made and then
-                           asserts that the testbed is exactly as it was
+  testbed(name)            session: a private clone of the testbed at its pinned commit, in the
+                           session's tmp dir. testbeds/<name> is only read (optional object cache)
+                           and asserted unchanged when the session ends
+  layer(name, *edits)      function: a fresh generated layer in a tmp dir, rooted at that private
+                           clone; teardown removes every worktree, branch, container, volume and
+                           image the test made and then asserts that the clone is exactly as it was
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ import secrets
 import shutil
 import socket
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 import pytest
 
@@ -52,61 +54,81 @@ def update_golden(request: pytest.FixtureRequest) -> bool:
 
 # ------------------------------------------------------------------------------ testbeds
 
-def _clone(name: str, target: Path) -> None:
+def _fetch(name: str, target: Path) -> None:
+    """Make `target` a shallow checkout of the pinned commit, fetched from the pinned URL."""
     spec = alit.TESTBEDS[name]
     if not online():
-        pytest.skip(f"testbed `{name}` is not cloned at {target} and github.com is unreachable: "
-                    f"needs network once to fetch {spec['url']} @ {spec['commit'][:7]}")
+        pytest.skip(f"testbed `{name}`: no local cache at {alit.TESTBED_DIR / name} that contains the pin and "
+                    f"github.com is unreachable: needs network to fetch {spec['url']} @ {spec['commit'][:7]}")
     target.mkdir(parents=True)
-    try:
-        alit.sh(["git", "init", "-q", "-b", spec["branch"], target], check=True)
-        alit.git(target, "remote", "add", "origin", spec["url"])
-        alit.sh(["git", "-C", target, "fetch", "-q", "--depth", "1", "origin", spec["commit"]], check=True, timeout=900)
-        alit.git(target, "checkout", "-q", "-B", spec["branch"], "FETCH_HEAD")
-    except BaseException:
-        shutil.rmtree(target, ignore_errors=True)  # a half-made clone would fail the pin check forever
-        raise
+    alit.sh(["git", "init", "-q", "-b", spec["branch"], target], check=True)
+    alit.git(target, "remote", "add", "origin", spec["url"])
+    alit.sh(["git", "-C", target, "fetch", "-q", "--depth", "1", "origin", spec["commit"]], check=True, timeout=900)
 
 
-def _check_pin(name: str, target: Path) -> None:
+def _copy(name: str, cache: Path, target: Path) -> bool:
+    """Clone the local cache into `target` (objects copied, never linked). False when git cannot."""
+    cp = alit.sh(["git", "clone", "-q", "--no-hardlinks", "--no-checkout", cache, target], timeout=900)
+    if cp.returncode != 0:
+        shutil.rmtree(target, ignore_errors=True)
+        return False
+    # The clone's `origin` would be the user's checkout: a `git push origin` of the runtime must never
+    # be able to reach it. Point origin at the pinned URL instead (this also drops the tracking refs).
+    alit.git(target, "remote", "remove", "origin")
+    alit.git(target, "remote", "add", "origin", alit.TESTBEDS[name]["url"])
+    return True
+
+
+def _private_clone(name: str, cache: Path, target: Path) -> None:
     spec = alit.TESTBEDS[name]
+    try:
+        if not (alit.cache_has(cache, spec["commit"]) and _copy(name, cache, target)):
+            _fetch(name, target)
+        alit.git(target, "checkout", "-q", "-B", spec["branch"], spec["commit"])
+        for other in set(alit.heads(target)) - {spec["branch"]}:  # the branch the cache had checked out
+            alit.git(target, "branch", "-q", "-D", other)
+    except BaseException:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
     problems = []
-    head = alit.git(target, "rev-parse", "HEAD", check=False)
-    if head != spec["commit"]:
-        problems.append(f"HEAD is {head[:12] or 'unreadable'}, the pin in testbeds.toml is {spec['commit'][:12]}")
-    status = alit.git(target, "status", "--porcelain", check=False)
-    if status:
-        problems.append("the working tree is not clean:\n" + status)
-    if spec["branch"] not in alit.heads(target):
-        problems.append(f"local branch `{spec['branch']}` (the layer's default branch) does not exist")
-    if problems:
-        pytest.fail(
-            f"testbed {target} is not usable:\n  - " + "\n  - ".join(problems) + "\n"
-            "The suite never resets a checkout on its own. Either restore it yourself\n"
-            f"  git -C {target} stash -u   # if you have changes to keep\n"
-            f"  git -C {target} checkout {spec['branch']} && git -C {target} reset --hard {spec['commit']}\n"
-            f"or move it away and let the suite clone a fresh one (rm -rf {target}).", pytrace=False)
+    if alit.git(target, "rev-parse", "HEAD", check=False) != spec["commit"]:
+        problems.append("HEAD is not the pinned commit")
+    if alit.git(target, "branch", "--show-current", check=False) != spec["branch"]:
+        problems.append(f"`{spec['branch']}` is not checked out")
+    if alit.git(target, "status", "--porcelain", check=False):
+        problems.append("the working tree is not clean")
+    assert not problems, f"private clone of testbed `{name}` at {target} is unusable: {problems}"
 
 
 @pytest.fixture(scope="session")
-def testbed() -> Callable[[str], Path]:
-    """testbed(name) -> path of testbeds/<name>, guaranteed to be at the pinned commit and clean."""
+def testbed(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Callable[[str], Path]]:
+    """testbed(name) -> a clone of the testbed that belongs to this session only: default branch
+    checked out at the pinned commit, clean. `testbeds/<name>` is at most read (as an object cache)."""
+    home = tmp_path_factory.mktemp("testbeds")
     ready: dict[str, Path] = {}
+    caches: dict[Path, dict[str, object]] = {}
 
     def get(name: str) -> Path:
         if name not in ready:
-            target = alit.TESTBED_DIR / name
-            if not (target / ".git").exists():
-                if target.exists() and any(target.iterdir()):
-                    pytest.fail(f"{target} exists but is not a git checkout; remove it so the suite can clone it", pytrace=False)
-                if target.exists():
-                    target.rmdir()
-                _clone(name, target)
-            _check_pin(name, target)
-            ready[name] = target
+            cache = alit.TESTBED_DIR / name
+            if cache not in caches and (cache / ".git").exists():
+                caches[cache] = alit.cache_fingerprint(cache)
+            _private_clone(name, cache, home / name)
+            ready[name] = home / name
         return ready[name]
 
-    return get
+    yield get
+
+    changed = []
+    for cache, snapshot in caches.items():
+        after = alit.cache_fingerprint(cache)
+        diff = {key: (snapshot[key], after[key]) for key in snapshot if snapshot[key] != after[key]}
+        if diff:
+            changed.append(f"{cache}: (at session start, at session end) {diff}")
+    assert not changed, ("a local testbed checkout changed while the suite ran. The suite only reads these "
+                         "(git clone / cat-file / status without index refresh), so either something else "
+                         "worked in it at the same time or a test escaped its private clone:\n  "
+                         + "\n  ".join(changed))
 
 
 # ------------------------------------------------------------------------------ layers
@@ -169,7 +191,7 @@ def layer(testbed: Callable[[str], Path], tmp_path: Path):
     leaks: list[str] = []
     for handle in made:
         alit.kill_processes_under(handle.dir)
-    alit.podman_cleanup(podman_before)
+    alit.podman_cleanup(podman_before, [handle.name for handle in made])
     for app, snapshot in before.items():
         for handle in made:
             if handle.app != app:
@@ -192,7 +214,7 @@ def layer(testbed: Callable[[str], Path], tmp_path: Path):
         after = alit.fingerprint(app)
         if after != snapshot:
             diff = {key: (snapshot[key], after[key]) for key in snapshot if snapshot[key] != after[key]}
-            leaks.append(f"{app.name}: the testbed is not as the test found it (before, after): {diff}")
+            leaks.append(f"{app.name}: the private testbed clone is not as the test found it (before, after): {diff}")
         left = [str(tree) for handle in made if handle.app == app for tree in alit.worktrees_under(app, handle.dir)]
         if left:
             leaks.append(f"{app.name}: worktrees still registered: {left}")

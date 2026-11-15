@@ -44,7 +44,7 @@
   (p "  (hop NAME #:template T …) …")
   (p "  (expert NAME …) …")
   (p "  (adw NAME #:input (…) #:trigger (…) #:environment (…) #:review ID #:agent ID")
-  (p "    (steps (run NAME …) (check NAME …) (review) (ship) (compose ADW) …)) …)")
+  (p "    (steps (run NAME …) (check NAME …) (fan-out NAME …) (review) (ship) (compose ADW) …)) …)")
   (p "```")
   (p)
   (p "Syntax notes: strings use double quotes; names are bare symbols; lists are parenthesised without")

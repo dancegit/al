@@ -14,7 +14,7 @@
   (hop NAME #:template T …) …
   (expert NAME …) …
   (adw NAME #:input (…) #:trigger (…) #:environment (…) #:review ID #:agent ID
-    (steps (run NAME …) (check NAME …) (review) (ship) (compose ADW) …)) …)
+    (steps (run NAME …) (check NAME …) (fan-out NAME …) (review) (ship) (compose ADW) …)) …)
 ```
 
 Syntax notes: strings use double quotes; names are bare symbols; lists are parenthesised without

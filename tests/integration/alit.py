@@ -60,6 +60,26 @@ def fingerprint(app: Path) -> dict[str, object]:
     }
 
 
+def cache_has(cache: Path, commit: str) -> bool:
+    """`cache` is a git checkout that holds `commit`. Reads only."""
+    return (cache / ".git").exists() and sh(["git", "-C", cache, "cat-file", "-e", f"{commit}^{{commit}}"], timeout=120).returncode == 0
+
+
+def cache_fingerprint(cache: Path) -> dict[str, object]:
+    """State of a checkout the suite must not change: HEAD, branch, status, every ref.
+
+    Unlike `fingerprint` this never writes: `--no-optional-locks` stops `git status` from refreshing the index.
+    """
+    def read(*args: str) -> str:
+        return sh(["git", "--no-optional-locks", "-C", cache, *args], check=True, timeout=120).stdout.rstrip("\n")
+    return {
+        "head": read("rev-parse", "HEAD"),
+        "branch": read("branch", "--show-current"),
+        "status": read("status", "--porcelain"),
+        "refs": read("for-each-ref", "--format=%(refname) %(objectname)").splitlines(),
+    }
+
+
 def worktrees(app: Path) -> list[Path]:
     out = git(app, "worktree", "list", "--porcelain")
     return [Path(line.split(" ", 1)[1]) for line in out.splitlines() if line.startswith("worktree ")]
@@ -91,21 +111,29 @@ def podman_snapshot() -> dict[str, set[str]]:
     return {kind: podman_names(kind) for kind in ("containers", "volumes", "images")}
 
 
-def podman_cleanup(before: dict[str, set[str]]) -> dict[str, list[str]]:
-    """Remove what appeared since `before` under the suite's names; returns what was removed."""
+def podman_cleanup(before: dict[str, set[str]], layers: list[str]) -> dict[str, list[str]]:
+    """Remove what appeared since `before` and belongs to one of `layers` (names of this test's layers).
+
+    The runtime names a layer's image `al-<layer>` and its containers `al-<layer>-<run>`; layer names
+    are unique per test, so another pytest session running at the same time is never touched. Cache
+    volumes (`al-cache-<kind>`) are shared by name: a new one is removed only when no container uses it.
+    """
     removed: dict[str, list[str]] = {"containers": [], "volumes": [], "images": []}
     if not have("podman"):
         return removed
+    prefixes = tuple(f"al-{name}" for name in layers)
     for name in sorted(podman_names("containers") - before["containers"]):
-        if name.startswith("al-it-"):
+        if name.startswith(prefixes):
             sh(["podman", "rm", "-f", name], timeout=120)
             removed["containers"].append(name)
     for name in sorted(podman_names("volumes") - before["volumes"]):
-        if name.startswith(("al-it-", "al-cache-")):
+        if name.startswith(prefixes):
             sh(["podman", "volume", "rm", "-f", name], timeout=120)
             removed["volumes"].append(name)
+        elif name.startswith("al-cache-") and sh(["podman", "volume", "rm", name], timeout=120).returncode == 0:
+            removed["volumes"].append(name)
     for name in sorted(podman_names("images") - before["images"]):
-        if name.removeprefix("localhost/").startswith("al-it-"):
+        if name.removeprefix("localhost/").startswith(prefixes):
             sh(["podman", "rmi", "-f", name], timeout=120)
             removed["images"].append(name)
     return removed
