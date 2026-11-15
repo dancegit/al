@@ -6,7 +6,7 @@ Source: `tests/authored/gin/agentic.rkt` (103 lines). This walkthrough is genera
 
 ## In one paragraph
 
-`gin` is Agentic layer for the Gin HTTP web framework (Go library). It declares 3 codebase commands, 11 prompts and 2 workflows (`plan-build` and `sdlc`).
+The `gin` layer: Agentic layer for the Gin HTTP web framework (Go library). It declares 3 codebase commands, 11 prompts and 2 workflows (`plan-build` and `sdlc`).
 
 ## Block by block
 
@@ -136,7 +136,7 @@ Lines 42–42. Review: a person, through a pull request.
 
 ### The prompts
 
-Lines 44–74. 11 prompts written for this codebase, each for one kind of job: `prime`, `classify`, `plan-chore`, `plan-bug`, `plan-feature`, `plan-patch`, `resolve-test`, `review`, `document`, `commit` and `pull-request`. 20 of their instructions are specific to this codebase.
+Lines 44–74. 11 prompts written for this codebase, each for one kind of job: `prime`, `classify`, `plan-chore`, `plan-bug`, `plan-feature`, `plan-patch`, `resolve-test`, `review`, `document`, `commit` and `pull-request`. 20 of their instructions are specific to this codebase; the first 6:
 
 - `prime`: the prime template
 - `classify`: the classify template
@@ -213,7 +213,7 @@ Lines 79–82. Areas where an agent keeps its own notes and updates them after e
 
 ### Workflow: plan-build
 
-Lines 84–92. The `plan-build` workflow: Classify the issue, plan by class, implement the plan. Steps: classify → plan-chore → plan-bug → plan-feature → plan-patch → build. A person reviews the pull request.
+Lines 84–92. The `plan-build` workflow: Classify the issue, plan by class, implement the plan. Steps: classify → plan-chore → plan-bug → plan-feature → plan-patch → build. No ship step: nothing is reviewed or published; the result stays with the run.
 
 - Work from issue; started by forge-actions or manual; runs in worktree; agent `codex`
 - 1. agent step `classify` using the `classify` prompt

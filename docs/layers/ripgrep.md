@@ -6,7 +6,7 @@ Source: `tests/authored/ripgrep/agentic.rkt` (130 lines). This walkthrough is ge
 
 ## In one paragraph
 
-`ripgrep` is Agentic layer for ripgrep: issue-driven plan, build, check and agent review on Forgejo; a human merges. It declares 5 codebase commands, 12 prompts and 2 workflows (`plan-build` and `sdlc`).
+The `ripgrep` layer: Agentic layer for ripgrep: issue-driven plan, build, check and agent review on Forgejo; a human merges. It declares 5 codebase commands, 12 prompts and 2 workflows (`plan-build` and `sdlc`).
 
 ## Block by block
 
@@ -146,7 +146,7 @@ Lines 51–51. Review: an agent that reviews on evidence, with a person merging.
 
 ### The prompts
 
-Lines 53–100. 12 prompts written for this codebase, each for one kind of job: `prime`, `classify`, `plan-chore`, `plan-bug`, `plan-feature`, `plan-patch`, `resolve-test`, `e2e-test`, `review`, `document`, `commit` and `pull-request`. 36 of their instructions are specific to this codebase.
+Lines 53–100. 12 prompts written for this codebase, each for one kind of job: `prime`, `classify`, `plan-chore`, `plan-bug`, `plan-feature`, `plan-patch`, `resolve-test`, `e2e-test`, `review`, `document`, `commit` and `pull-request`. 36 of their instructions are specific to this codebase; the first 6:
 
 - `prime`: the prime template
 - `classify`: the classify template
@@ -240,7 +240,7 @@ Lines 106–108. Areas where an agent keeps its own notes and updates them after
 
 ### Workflow: plan-build
 
-Lines 110–117. The `plan-build` workflow: Classify the issue, plan by work class, implement the plan. Steps: classify → plan-chore → plan-bug → plan-feature → build. An agent reviews on evidence; a person merges.
+Lines 110–117. The `plan-build` workflow: Classify the issue, plan by work class, implement the plan. Steps: classify → plan-chore → plan-bug → plan-feature → build. No ship step: nothing is reviewed or published; the result stays with the run.
 
 - Work from issue; started by webhook or manual; runs in worktree and podman; agent `claude-code`
 - 1. agent step `classify` using the `classify` prompt
@@ -262,7 +262,7 @@ Lines 110–117. The `plan-build` workflow: Classify the issue, plan by work cla
 
 ### Workflow: sdlc
 
-Lines 119–130. The `sdlc` workflow: Plan, build, check, document, commit, agent review with the logs as proof; a human merges. Steps: classify → plan-chore → plan-bug → plan-feature → build → format → test → e2e → docs → document → commit → review → ship. An agent reviews on evidence; a person merges.
+Lines 119–130. The `sdlc` workflow: Plan, build, check, document, commit, agent review with the logs as proof; a human merges. Steps: classify → plan-chore → plan-bug → plan-feature → build → format → test → e2e → docs → document → commit → review → ship. An agent reviews on evidence; a person merges (the pull request).
 
 - Work from issue; started by webhook or manual; runs in worktree and podman; agent `claude-code`
 - 1. agent step `classify` using the `classify` prompt

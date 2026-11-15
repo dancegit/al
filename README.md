@@ -425,7 +425,7 @@ Then give two prompts to an LLM agent (for example Claude Code), in this reposit
 tools/al gen    ~/code/myapp.al       # compile and generate; errors say what to fix
 tools/al verify ~/code/myapp.al       # run every declared command for real: is the description true?
 tools/al explain ~/code/myapp.al      # read the layer back in plain language
-tools/al check  ~/code/myapp.al       # the layer is complete and your repository is untouched
+tools/al check  ~/code/myapp.al       # the layer is complete and nothing leaked into your repository
 
 cd ~/code/myapp.al
 uv run adws/adw_plan-build.py "Add request-id logging" --dry-run    # a stand-in agent: no LLM, no cost

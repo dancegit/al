@@ -135,6 +135,10 @@ first frame.
 of `main` than this branch, so a merge would also have brought that unrelated commit in (G2).
 **Not merged:** the line the run added to `agentic/conditional_docs.md` (T4); the file was restored.
 
+> **Status of these findings:** every correction below has been applied to the guide, and every tool defect
+> listed further down has been fixed and has a test. G3 no longer applies: runs leave `git status` clean.
+> This file is kept as the record of the walk-through.
+
 ## Corrections to `docs/GUIDE.md`, most important first
 
 **G1. Say at step 1 that the layer can live in the repository.** A reader who wants that (the guide says

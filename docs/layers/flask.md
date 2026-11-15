@@ -6,7 +6,7 @@ Source: `tests/authored/flask/agentic.rkt` (121 lines). This walkthrough is gene
 
 ## In one paragraph
 
-`flask` is Agentic layer for the Flask WSGI web framework library. It declares 5 codebase commands, 11 prompts and 3 workflows (`plan-build`, `sdlc` and `zte`).
+The `flask` layer: Agentic layer for the Flask WSGI web framework library. It declares 5 codebase commands, 11 prompts and 3 workflows (`plan-build`, `sdlc` and `zte`).
 
 ## Block by block
 
@@ -117,10 +117,10 @@ Lines 41–42. Artefacts collected after the checks and shown to whoever reviews
 
 ### Who decides it is done
 
-Lines 44–47. Review: a person, through a pull request or reviewer agents plus hard rules, with no person.
+Lines 44–47. Review: a person, through a branch and a description file (`PR.md`) or reviewer agents plus hard rules, with no person.
 
-- `human`: open a pull request and stop; a person reads it and merges
-- `zero-touch`: 1 reviewer agent(s) must approve, and then every rule must hold: the commands `lint`, `typecheck` and `test` pass again on the final result; the work is a chore or bug; the change is at most 400 lines; no protected path was touched. If so it ships by `merge`; otherwise a person decides
+- `human`: keep the work on a branch, write `PR.md` and stop; a person reads it and merges
+- `zero-touch`: 1 reviewer agent(s) must approve, and then every rule must hold: the commands `lint`, `typecheck` and `test` pass again on the final result; the work is a chore or bug; the change is at most 400 lines; no protected path was touched. If so it ships by `merge` (merging into the default branch (a remote, or locally)); otherwise a person decides, through a branch and a description file (`PR.md`)
 
 ```racket
   (review human)
@@ -131,7 +131,7 @@ Lines 44–47. Review: a person, through a pull request or reviewer agents plus 
 
 ### The prompts
 
-Lines 49–80. 11 prompts written for this codebase, each for one kind of job: `prime`, `classify`, `plan-chore`, `plan-bug`, `plan-feature`, `plan-patch`, `resolve-test`, `review`, `document`, `commit` and `pull-request`. 21 of their instructions are specific to this codebase.
+Lines 49–80. 11 prompts written for this codebase, each for one kind of job: `prime`, `classify`, `plan-chore`, `plan-bug`, `plan-feature`, `plan-patch`, `resolve-test`, `review`, `document`, `commit` and `pull-request`. 21 of their instructions are specific to this codebase; the first 6:
 
 - `prime`: the prime template
 - `classify`: the classify template
@@ -207,7 +207,7 @@ Lines 85–86. Areas where an agent keeps its own notes and updates them after e
 
 ### Workflow: plan-build
 
-Lines 88–96. The `plan-build` workflow: Classify, plan by work class and implement the plan. Steps: classify → plan-chore → plan-bug → plan-feature → build. A person reviews the pull request.
+Lines 88–96. The `plan-build` workflow: Classify, plan by work class and implement the plan. Steps: classify → plan-chore → plan-bug → plan-feature → build. No ship step: nothing is reviewed or published; the result stays with the run.
 
 - Work from tasklist or cli; started by cron or manual; runs in worktree and nix-devshell; agent `claude-code`
 - 1. agent step `classify` using the `classify` prompt
@@ -230,7 +230,7 @@ Lines 88–96. The `plan-build` workflow: Classify, plan by work class and imple
 
 ### Workflow: sdlc
 
-Lines 98–109. The `sdlc` workflow: Plan, build, lint, typecheck, test, document, commit; a human reviews the result. Steps: classify → plan-chore → plan-bug → plan-feature → build → lint → typecheck → test → document → commit → review → ship. A person reviews the pull request.
+Lines 98–109. The `sdlc` workflow: Plan, build, lint, typecheck, test, document, commit; a human reviews the result. Steps: classify → plan-chore → plan-bug → plan-feature → build → lint → typecheck → test → document → commit → review → ship. A person reviews the branch and its description file (`PR.md`).
 
 - Work from tasklist or cli; started by cron or manual; runs in worktree and nix-devshell; agent `claude-code`
 - 1. agent step `classify` using the `classify` prompt
@@ -263,7 +263,7 @@ Lines 98–109. The `sdlc` workflow: Plan, build, lint, typecheck, test, documen
 
 ### Workflow: zte
 
-Lines 111–121. The `zte` workflow: Zero-touch: merges chores and bugs when lint, typecheck and test all pass. Steps: classify → plan-chore → plan-bug → plan-feature → build → lint → typecheck → test → commit → review → ship. No person is involved if every rule holds; it ships by merge.
+Lines 111–121. The `zte` workflow: Zero-touch: merges chores and bugs when lint, typecheck and test all pass. Steps: classify → plan-chore → plan-bug → plan-feature → build → lint → typecheck → test → commit → review → ship. No person is involved if every rule holds; it ships by merging into the default branch (a remote, or locally).
 
 - Work from tasklist or cli; started by cron or manual; runs in worktree, nix-devshell and podman; agent `claude-code`
 - 1. agent step `classify` using the `classify` prompt

@@ -6,7 +6,7 @@ Source: `tests/webdemo/layer.rkt.in` (86 lines). This walkthrough is generated b
 
 ## In one paragraph
 
-`notes` is Agentic layer for the Notes demo web app. It declares 2 codebase commands, 5 prompts and 2 workflows (`ui-change` and `feature`).
+The `notes` layer: Agentic layer for the Notes demo web app. It declares 2 codebase commands, 5 prompts and 2 workflows (`ui-change` and `feature`).
 
 ## Block by block
 
@@ -115,7 +115,7 @@ Lines 29–31. Artefacts collected after the checks and shown to whoever reviews
 Lines 33–36. Review: a person, through a pull request or reviewer agents plus hard rules, with no person.
 
 - `human`: open a pull request and stop; a person reads it and merges
-- `zero-touch`: 2 reviewer agent(s) must approve, and then every rule must hold: the commands `test` and `e2e` pass again on the final result; the work is a chore, bug or feature; the change is at most 600 lines; no protected path was touched. If so it ships by `merge`; otherwise a person decides
+- `zero-touch`: 2 reviewer agent(s) must approve, and then every rule must hold: the commands `test` and `e2e` pass again on the final result; the work is a chore, bug or feature; the change is at most 600 lines; no protected path was touched. If so it ships by `merge` (merging the pull request); otherwise a person decides, through a pull request
 
 ```racket
   (review human)
@@ -126,7 +126,7 @@ Lines 33–36. Review: a person, through a pull request or reviewer agents plus 
 
 ### The prompts
 
-Lines 38–60. 5 prompts written for this codebase, each for one kind of job: `plan-chore`, `plan-feature`, `resolve-test`, `review` and `commit`. 18 of their instructions are specific to this codebase.
+Lines 38–60. 5 prompts written for this codebase, each for one kind of job: `plan-chore`, `plan-feature`, `resolve-test`, `review` and `commit`. 18 of their instructions are specific to this codebase; the first 6:
 
 - `plan-chore`: the plan-chore template
 - `plan-feature`: the plan-feature template
@@ -204,7 +204,7 @@ Lines 63–73. The `ui-change` workflow: Plan, build, unit tests, e2e capture, c
 
 ### Workflow: feature
 
-Lines 75–86. The `feature` workflow: Zero-touch: plan, build, unit tests, e2e capture, two agent reviewers with screenshots and video keyframes, merge. Steps: plan-chore → plan-feature → build → test → e2e → commit → review → ship. No person is involved if every rule holds; it ships by merge.
+Lines 75–86. The `feature` workflow: Zero-touch: plan, build, unit tests, e2e capture, two agent reviewers with screenshots and video keyframes, merge. Steps: plan-chore → plan-feature → build → test → e2e → commit → review → ship. No person is involved if every rule holds; it ships by merging the pull request.
 
 - Work from issue; started by manual; runs in worktree and podman; agent `claude-sandboxed`
 - 1. agent step `plan-chore` using the `plan-chore` prompt (only for chore work)

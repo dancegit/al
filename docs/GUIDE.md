@@ -53,7 +53,7 @@ You should see the path of the new folder, `~/code/myapp.al`, containing two fil
 
 The command also prints the relative path from the layer to your codebase. You need it in step 4.
 
-The draft records your git remote URL. If the layer will be committed and the remote is private, remove that line.
+The draft records your repository's web address, without any user name or token.
 
 ## Step 2 — Describe the codebase
 
@@ -172,7 +172,8 @@ README.md   a table of your workflows and how to run them
 ```
 
 Also: `experts/` (if you declared any), `templates/` (your own prompt templates, step 14),
-`agentic-layer.json` (the compiled definition), `conditional_docs.md`, and a live dashboard under `adws/`.
+`agentic-layer.json` (the compiled definition), `conditional_docs.md` (generated from the documents you
+told agents to read), and a live dashboard under `adws/`.
 
 Open one prompt, for example `commands/plan-chore.md`, and read it as if you were the agent. It should
 mention your real commands and paths. If it reads as generic, your `LLM.txt` conventions were thin; add
@@ -210,7 +211,7 @@ mistakes in layers that compiled perfectly.
 ## Step 8 — Check, then rehearse for free
 
 ```bash
-al check ~/code/myapp.al                      # the layer is complete and your repository is untouched
+al check ~/code/myapp.al                      # the layer is complete; your own uncommitted work is only noted
 cd ~/code/myapp.al
 uv run adws/adw_plan-build.py "Add a note to the README about running the tests" --dry-run
 ```
@@ -262,10 +263,9 @@ merge after your branch has caught up. At the end:
 - **Without one:** a branch in your repository and `agents/<run id>/PR.md` with the same text.
   Look at the change with `git -C ~/code/myapp log -p <branch>`.
 
-Your checkout is as you left it (`git -C ~/code/myapp status`). One known exception: with the layer in
-your repository, a workflow that has a `document` step adds a line to the committed file
-`agentic/conditional_docs.md`; review that line with the change, or restore the file. Merge the branch
-or the pull request if you are happy.
+Your checkout is as you left it (`git -C ~/code/myapp status`). Merge the branch or the pull request if
+you are happy. If the workflow has a `document` step, what it wrote appears in the pull request (or
+`PR.md`) under "Documentation".
 
 **If the run stops** (a check will not go green, or the agent says something needs a person), it does
 not just fail: it opens a pull request marked `[needs human]` (or writes `PR.md`) saying why it stopped
@@ -443,7 +443,9 @@ A template in the layer's `templates/` folder wins over the built-in one and sur
 regeneration. Keep its `{{…}}` placeholders; they are how your commands and paths get filled in.
 `--list` tells you when the built-in version has changed since you took your copy. For a one-line
 instruction, a `#:focus` line on the command in `agentic.rkt` is simpler than a template. A focus line
-adds to the template; to change something the template already prescribes, eject it.
+now takes precedence over the format a template prescribes (a commit message, a pull request body, a
+plan's sections). It cannot change what the tool itself reads back, such as a path or a JSON answer; for
+anything beyond that, eject the template.
 
 ### If you edited a generated file by mistake
 
@@ -498,7 +500,7 @@ In `agentic.rkt`, the codebase root is then `".."` and the layer says where it l
 Then `al gen ~/code/myapp/agentic`, commit the `agentic` folder, and run workflows from the repository:
 `uv run agentic/adws/adw_sdlc.py "…"`. What is committed: the definition, your templates and the
 generated prompts and workflows. What is ignored: everything a run produces (working copies, logs,
-proof, the task list). Runs leave `git status` clean, with the one exception named in step 9.
+proof, the task list). Runs leave `git status` clean.
 
 One rule comes with this. An ordinary workflow that changes anything under `agentic/` is stopped and
 handed to a person, whatever its review setting: agents do not get to rewrite their own instructions

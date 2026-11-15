@@ -6,7 +6,7 @@ Source: `tests/rotademo/layer.rkt.in` (97 lines). This walkthrough is generated 
 
 ## In one paragraph
 
-`rota` is Agentic layer for the Rota demo web app (healthcare staffing, synthetic data). It declares 3 codebase commands, 5 prompts and 2 workflows (`feature` and `planted`).
+The `rota` layer: Agentic layer for the Rota demo web app (healthcare staffing, synthetic data). It declares 3 codebase commands, 5 prompts and 2 workflows (`feature` and `planted`).
 
 ## Block by block
 
@@ -125,7 +125,7 @@ Lines 37–39. Artefacts collected after the checks and shown to whoever reviews
 Lines 41–44. Review: a person, through a pull request or reviewer agents plus hard rules, with no person.
 
 - `human`: open a pull request and stop; a person reads it and merges
-- `zero-touch`: 2 reviewer agent(s) must approve, and then every rule must hold: the commands `test`, `isolation` and `e2e` pass again on the final result; the work is a chore, bug or feature; the change is at most 900 lines; no protected path was touched. If so it ships by `merge`; otherwise a person decides
+- `zero-touch`: 2 reviewer agent(s) must approve, and then every rule must hold: the commands `test`, `isolation` and `e2e` pass again on the final result; the work is a chore, bug or feature; the change is at most 900 lines; no protected path was touched. If so it ships by `merge` (merging the pull request); otherwise a person decides, through a pull request
 
 ```racket
   (review human)
@@ -136,7 +136,7 @@ Lines 41–44. Review: a person, through a pull request or reviewer agents plus 
 
 ### The prompts
 
-Lines 46–67. 5 prompts written for this codebase, each for one kind of job: `plan-feature`, `plan-patch`, `resolve-test`, `review` and `commit`. 17 of their instructions are specific to this codebase.
+Lines 46–67. 5 prompts written for this codebase, each for one kind of job: `plan-feature`, `plan-patch`, `resolve-test`, `review` and `commit`. 17 of their instructions are specific to this codebase; the first 6:
 
 - `plan-feature`: the plan-feature template
 - `plan-patch`: the plan-patch template
@@ -185,7 +185,7 @@ Lines 68–68. Higher-order prompts: `implement` (takes a plan). For example, on
 
 ### Workflow: feature
 
-Lines 70–81. The `feature` workflow: Zero-touch: plan, build, tests, tenant isolation, e2e capture, commit, two agent reviewers with screenshots and video keyframes (patch loop on blockers), gate, merge. Steps: plan → build → test → isolation → e2e → commit → review → ship. No person is involved if every rule holds; it ships by merge.
+Lines 70–81. The `feature` workflow: Zero-touch: plan, build, tests, tenant isolation, e2e capture, commit, two agent reviewers with screenshots and video keyframes (patch loop on blockers), gate, merge. Steps: plan → build → test → isolation → e2e → commit → review → ship. No person is involved if every rule holds; it ships by merging the pull request.
 
 - Work from issue; started by manual; runs in worktree and podman; agent `claude-sandboxed`
 - 1. agent step `plan` using the `plan-feature` prompt
@@ -214,7 +214,7 @@ Lines 70–81. The `feature` workflow: Zero-touch: plan, build, tests, tenant is
 
 ### Workflow: planted
 
-Lines 83–97. The `planted` workflow: Like feature, but the build step is a scripted, deliberately flawed change (planted defect) to test the reviewers. Steps: plan → build → test → isolation → e2e → commit → review → ship. No person is involved if every rule holds; it ships by merge.
+Lines 83–97. The `planted` workflow: Like feature, but the build step is a scripted, deliberately flawed change (planted defect) to test the reviewers. Steps: plan → build → test → isolation → e2e → commit → review → ship. No person is involved if every rule holds; it ships by merging the pull request.
 
 - Work from issue; started by manual; runs in worktree and podman; agent `claude-sandboxed`
 - 1. agent step `plan` using the `plan-feature` prompt

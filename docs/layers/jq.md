@@ -6,7 +6,7 @@ Source: `tests/authored/jq/agentic.rkt` (106 lines). This walkthrough is generat
 
 ## In one paragraph
 
-`jq` is Agentic layer for the jq command-line JSON processor and libjq. It declares 4 codebase commands, 11 prompts and 2 workflows (`plan-build` and `sdlc`).
+The `jq` layer: Agentic layer for the jq command-line JSON processor and libjq. It declares 4 codebase commands, 11 prompts and 2 workflows (`plan-build` and `sdlc`).
 
 ## Block by block
 
@@ -141,7 +141,7 @@ Lines 40–42. Artefacts collected after the checks and shown to whoever reviews
 
 Lines 44–45. Review: reviewer agents plus hard rules, with no person.
 
-- `auto`: 1 reviewer agent(s) must approve, and then every rule must hold: the commands `build` and `test` pass again on the final result; the work is a chore, bug, feature or patch; the change is at most 400 lines; no protected path was touched. If so it ships by `pr`; otherwise a person decides
+- `auto`: 1 reviewer agent(s) must approve, and then every rule must hold: the commands `build` and `test` pass again on the final result; the work is a chore, bug, feature or patch; the change is at most 400 lines; no protected path was touched. If so it ships by `pr` (a branch and a description file (`PR.md`)); otherwise a person decides, through a branch and a description file (`PR.md`)
 
 ```racket
   (review auto #:artefacts (log test-suite-log test-logs) #:ship pr #:require-checks (build test)
@@ -150,7 +150,7 @@ Lines 44–45. Review: reviewer agents plus hard rules, with no person.
 
 ### The prompts
 
-Lines 47–81. 11 prompts written for this codebase, each for one kind of job: `prime`, `classify`, `plan-chore`, `plan-bug`, `plan-feature`, `plan-patch`, `resolve-test`, `review`, `document`, `commit` and `pull-request`. 24 of their instructions are specific to this codebase.
+Lines 47–81. 11 prompts written for this codebase, each for one kind of job: `prime`, `classify`, `plan-chore`, `plan-bug`, `plan-feature`, `plan-patch`, `resolve-test`, `review`, `document`, `commit` and `pull-request`. 24 of their instructions are specific to this codebase; the first 6:
 
 - `prime`: the prime template
 - `classify`: the classify template
@@ -220,7 +220,7 @@ Lines 82–84. Higher-order prompts: `implement` (takes a plan), `new-command` (
 
 ### Workflow: plan-build
 
-Lines 86–94. The `plan-build` workflow: Classify, plan by class and implement the plan. Steps: classify → plan-chore → plan-bug → plan-feature → plan-patch → implement. No person is involved if every rule holds; it ships by pr.
+Lines 86–94. The `plan-build` workflow: Classify, plan by class and implement the plan. Steps: classify → plan-chore → plan-bug → plan-feature → plan-patch → implement. No ship step: nothing is reviewed or published; the result stays with the run.
 
 - Work from cli or spec-file; started by manual; runs in worktree and podman; agent `claude-code`
 - 1. agent step `classify` using the `classify` prompt
@@ -244,7 +244,7 @@ Lines 86–94. The `plan-build` workflow: Classify, plan by class and implement 
 
 ### Workflow: sdlc
 
-Lines 96–106. The `sdlc` workflow: Plan, build, test, document, commit, agent review with deterministic gates; opens a PR only. Steps: classify → plan-chore → plan-bug → plan-feature → plan-patch → implement → install → build → test → document → commit → review → ship. No person is involved if every rule holds; it ships by pr.
+Lines 96–106. The `sdlc` workflow: Plan, build, test, document, commit, agent review with deterministic gates; opens a PR only. Steps: classify → plan-chore → plan-bug → plan-feature → plan-patch → implement → install → build → test → document → commit → review → ship. No person is involved if every rule holds; it ships by a branch and a description file (`PR.md`).
 
 - Work from cli or spec-file; started by manual; runs in worktree and podman; agent `claude-code`
 - 1. agent step `classify` using the `classify` prompt

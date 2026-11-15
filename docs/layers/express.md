@@ -6,7 +6,7 @@ Source: `tests/authored/express/agentic.rkt` (96 lines). This walkthrough is gen
 
 ## In one paragraph
 
-`express` is Agentic layer for the express Node.js web framework library. It declares 4 codebase commands, 12 prompts and 3 workflows (`plan-build`, `sdlc` and `ask`).
+The `express` layer: Agentic layer for the express Node.js web framework library. It declares 4 codebase commands, 12 prompts and 3 workflows (`plan-build`, `sdlc` and `ask`).
 
 ## Block by block
 
@@ -119,7 +119,7 @@ Lines 38–38. Review: an agent that reviews on evidence, with a person merging.
 
 ### The prompts
 
-Lines 40–65. 12 prompts written for this codebase, each for one kind of job: `prime`, `classify`, `plan-chore`, `plan-bug`, `plan-feature`, `plan-patch`, `resolve-test`, `review`, `document`, `commit`, `pull-request` and `question`. 13 of their instructions are specific to this codebase.
+Lines 40–65. 12 prompts written for this codebase, each for one kind of job: `prime`, `classify`, `plan-chore`, `plan-bug`, `plan-feature`, `plan-patch`, `resolve-test`, `review`, `document`, `commit`, `pull-request` and `question`. 13 of their instructions are specific to this codebase; the first 6:
 
 - `prime`: the prime template
 - `classify`: the classify template
@@ -181,7 +181,7 @@ Lines 66–68. Higher-order prompts: `implement` (takes a plan), `meta-command` 
 
 ### Workflow: plan-build
 
-Lines 70–78. The `plan-build` workflow: Classify, plan by class and implement the plan. Steps: classify → plan-chore → plan-bug → plan-feature → build. An agent reviews on evidence; a person merges.
+Lines 70–78. The `plan-build` workflow: Classify, plan by class and implement the plan. Steps: classify → plan-chore → plan-bug → plan-feature → build. No ship step: nothing is reviewed or published; the result stays with the run.
 
 - Work from tasklist or voice; started by voice, file-watch or manual; runs in worktree and home-manager; agent `claude-code`
 - 1. agent step `classify` using the `classify` prompt
@@ -204,7 +204,7 @@ Lines 70–78. The `plan-build` workflow: Classify, plan by class and implement 
 
 ### Workflow: sdlc
 
-Lines 80–90. The `sdlc` workflow: Plan, build, lint, test, document, commit, agent review; a human merges. Steps: classify → plan-chore → plan-bug → plan-feature → build → lint → test → document → commit → review → ship. An agent reviews on evidence; a person merges.
+Lines 80–90. The `sdlc` workflow: Plan, build, lint, test, document, commit, agent review; a human merges. Steps: classify → plan-chore → plan-bug → plan-feature → build → lint → test → document → commit → review → ship. An agent reviews on evidence; a person merges (the branch and its description file (`PR.md`)).
 
 - Work from tasklist or voice; started by voice, file-watch or manual; runs in worktree and home-manager; agent `claude-code`
 - 1. agent step `classify` using the `classify` prompt
@@ -235,7 +235,7 @@ Lines 80–90. The `sdlc` workflow: Plan, build, lint, test, document, commit, a
 
 ### Workflow: ask
 
-Lines 92–96. The `ask` workflow: Read-only: answer a spoken question about the codebase. Steps: answer. An agent reviews on evidence; a person merges.
+Lines 92–96. The `ask` workflow: Read-only: answer a spoken question about the codebase. Steps: answer. No ship step: nothing is reviewed or published; the result stays with the run.
 
 - Work from voice; started by voice or manual; runs in host; agent `claude-code`
 - 1. agent step `answer` using the `question` prompt
