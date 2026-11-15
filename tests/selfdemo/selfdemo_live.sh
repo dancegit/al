@@ -230,7 +230,7 @@ change_json() { local n="$1"
       pull_request: ($pr | tonumber? // null), check_attempts: $att, resolve_steps: ($res | split(",") | map(select(. != ""))),
       source_files_changed: ($src | split(" ") | map(select(. != "")))}'; }
 ATTEMPTS="$( [ -n "${AL_SELFDEMO_ATTEMPTS:-}" ] && cat "$AL_SELFDEMO_ATTEMPTS" || echo '[]')"
-jq -n --arg model "claude-opus-5-5" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg forgejo "$(api GET /version | jq -r .version)" \
+jq -n --arg model "claude-opus-5-5 (base) / claude-fable-5-2 (heavy)" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg forgejo "$(api GET /version | jq -r .version)" \
   --argjson c1 "$(change_json 1)" --argjson c2 "$(change_json 2)" --argjson plan "$PLAN_RUN" --argjson task "$TASK_RUN" \
   --argjson protection "$PROTECTION" --argjson attempts "$ATTEMPTS" --argjson dry "$([ "$DRY" = 1 ] && echo true || echo false)" \
   '{date: $date, model: $model, forgejo: $forgejo, dry_run: $dry, change_1: $c1, change_2: $c2, plan_step_after_change_2: $plan,

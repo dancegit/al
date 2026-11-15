@@ -526,7 +526,7 @@ ran=(); for l in a b c; do [[ "$ONLY" == *$l* ]] && ran+=("$l"); done
 } | jq -s 'add' > "$TMP/scenarios.json"
 jq --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg forgejo "$(api GET /version | jq -r .version)" \
   --slurpfile attempts <(cat "${AL_ROTADEMO_ATTEMPTS:-/dev/null}" 2>/dev/null; echo 'null') \
-  '{date: $date, model: "claude-opus-5-5", forgejo: $forgejo, data: "synthetic (tests/rotademo/app/seed.py)"} + .
+  '{date: $date, model: "claude-opus-5-5 (base) / claude-fable-5-2 (heavy)", forgejo: $forgejo, data: "synthetic (tests/rotademo/app/seed.py)"} + .
    | if $attempts[0] != null then .attempts = $attempts[0] else . end' "$TMP/scenarios.json" > "$OUT/summary.json"
 for png in "$OUT"/*-pr-page.png; do   # keep the committed outputs small: PR pages at 1000 px wide
   [ -f "$png" ] && [ "$(stat -c %s "$png")" -gt 600000 ] && ffmpeg -loglevel error -y -i "$png" -vf scale=1000:-1 "$png.small.png" && mv "$png.small.png" "$png"

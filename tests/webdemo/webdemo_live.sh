@@ -210,7 +210,7 @@ scenario_json() { local l="$1" title="$2" body="$3" adw="$4" klass="$5" review="
     '{prompt: {issue_title: $title, issue_body: $body}, adw: $adw, class: $klass, review: $review, run_id: $id,
       wall_clock_seconds: $seconds, agent_cost_usd: ($cost * 10000 | round / 10000), agent_steps: $steps,
       pull_request: ($pr | tonumber? // null), shipped_commit: $commit, main_after: $main}'; }
-jq -n --arg model "claude-opus-5-5" --argjson a "$(scenario_json a "$PROMPT_A_TITLE" "$PROMPT_A_BODY" ui-change chore human)" \
+jq -n --arg model "claude-opus-5-5 (base) / claude-fable-5-2 (heavy)" --argjson a "$(scenario_json a "$PROMPT_A_TITLE" "$PROMPT_A_BODY" ui-change chore human)" \
   --argjson b "$(scenario_json b "$PROMPT_B_TITLE" "$PROMPT_B_BODY" feature feature "auto, 2 reviewers, ship merge")" \
   --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg forgejo "$(api GET /version | jq -r .version)" \
   '{date: $date, model: $model, forgejo: $forgejo, scenario_a: $a, scenario_b: $b,
