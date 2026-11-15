@@ -1,5 +1,5 @@
-testbeds/
-layers/
+/testbeds/
+/layers/
 __pycache__/
 compiled/
 .pytest_cache/
