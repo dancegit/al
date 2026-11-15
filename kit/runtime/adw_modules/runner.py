@@ -105,6 +105,8 @@ def _resumed_state(layer: Any, adw_name: str, args: argparse.Namespace) -> state
     if state.adw != adw_name:
         raise LayerError(f"run {args.adw_id} belongs to ADW {state.adw!r}, not {adw_name!r}")
     state.status, state.ended = "running", ""
+    if state.ship.get("action") == "handoff" or "handoff_skipped" in state.ship or "handoff_error" in state.ship:
+        state.ship = {"previous_handoff": dict(state.ship)}  # the resumed run decides afresh
     state.dry_run = state.dry_run or args.dry_run
     if args.klass:
         state.klass, state.class_fixed = args.klass, True
@@ -118,6 +120,7 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
     ship = state.ship.get("action", "none")
     if state.ship.get("action"):
         ship += f" -> {state.ship.get('target', '')} (shipped={state.ship.get('shipped')})"
+    handoff = _handoff_line(state)
     return [
         "=== ADW summary ===",
         f"adw:       {state.adw} {state.adw_id}",
@@ -127,6 +130,7 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"checks:    {checks}",
         f"review:    {review}",
         f"ship:      {ship}",
+        *([handoff] if handoff else []),
         f"artefacts: {len(state.artefacts)}",
         f"state:     {state_module.run_dir(layer.layer_dir, state.adw_id) / 'state.json'}",
     ]
@@ -151,6 +155,36 @@ def _execute(layer: Any, state: state_module.ADWState, adw: dict[str, Any], stac
         steps.run_step(layer, state, adw, step, stack)
 
 
+def _hand_off(layer: Any, state: state_module.ADWState, adw: dict[str, Any], stack: envs.EnvStack,
+              failure: BaseException) -> None:
+    """A stopped run hands its work to a human (see ship.handoff) while its worktree and
+    container still exist, i.e. before teardown. The run stays failed whatever happens here."""
+    from . import ship  # imported only when a run fails
+
+    try:
+        ship.handoff(layer, state, adw, stack, failure)
+    except Exception as exc:  # ship.handoff never raises by contract; this keeps the failure intact if it does
+        state.ship["handoff_error"] = f"{type(exc).__name__}: {exc}"[:2000]
+        print(f"[adw {state.adw_id}] warning: handoff failed: {type(exc).__name__}: {exc}")
+    if state.ship.get("action") == "handoff" and state.ship.get("target") and not state.ship.get("handoff_error"):
+        # read by the task-list source's on_finish as the failed task's reason
+        state.error = f"needs a human: {state.ship['target']} (stopped at {state.ship.get('stopped_at')})"
+    state.save(layer.layer_dir)
+
+
+def _handoff_line(state: state_module.ADWState) -> str | None:
+    ship = state.ship
+    if ship.get("handoff_error"):
+        return (f"handoff:   FAILED ({ship['handoff_error'][:160]}); the work stays on branch "
+                f"{state.branch or 'none'}")
+    if ship.get("action") == "handoff":
+        return (f"handoff:   stopped at {ship.get('stopped_at')}; the work needs a human: {ship.get('target')} "
+                f"(branch {ship.get('branch') or state.branch})")
+    if ship.get("handoff_skipped"):
+        return f"handoff:   none ({ship['handoff_skipped']})"
+    return None
+
+
 def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: argparse.Namespace,
          request: Request | None) -> int:
     exit_code = 1
@@ -169,10 +203,12 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
     except (StepFailed, LayerError) as exc:
         state.status = "failed"
         print(f"[adw {state.adw_id}] run failed: {exc}")
+        _hand_off(layer, state, adw, stack, exc)
     except Exception as exc:  # last-resort boundary: record the crash in state instead of leaving it "running"
         state.status = "failed"
         print(f"[adw {state.adw_id}] run crashed: {type(exc).__name__}: {exc}")
         traceback.print_exc()
+        _hand_off(layer, state, adw, stack, exc)
     finally:
         try:
             stack.teardown(state.status == "passed")

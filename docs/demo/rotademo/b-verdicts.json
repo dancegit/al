@@ -1,7 +1,7 @@
 {
   "gate": null,
-  "shipped": null,
-  "target": null,
+  "shipped": false,
+  "target": "http://127.0.0.1:41829/adw/rota/pulls/2",
   "combined_verdict": null,
   "rounds": 0,
   "reviewers": null
