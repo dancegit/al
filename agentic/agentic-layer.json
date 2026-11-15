@@ -587,9 +587,9 @@
   "concurrency": {
     "id": "slots",
     "kind": "slots",
-    "maxAgents": 2,
+    "maxAgents": 5,
     "maxChecks": 2,
-    "maxRuns": 4,
+    "maxRuns": 5,
     "status": "stable",
     "waitSeconds": 3600
   },

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from . import budget, events, gitsafe, models, slots, storage
+from . import budget, events, gitsafe, models, slots, storage, usage
 from .errors import LayerError, StepFailed
 from .templates import render
 
@@ -19,7 +19,7 @@ CLASSES = ("chore", "bug", "feature", "patch")
 SEVERITIES = ("blocker", "tech_debt", "skippable")
 GIT_TIMEOUT = 120
 _STRIPPED_ENV = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
-_MOCK_KEYS = {"output", "files", "raw_files", "layer_files", "delete", "commit", "cost", "fail"}
+_MOCK_KEYS = {"output", "files", "raw_files", "layer_files", "delete", "commit", "cost", "fail", "events"}
 _FENCED_JSON = re.compile(r"```json\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 
 
@@ -205,6 +205,9 @@ def _load_mock_script(script: Path, step: str) -> dict[str, Any]:
         raise StepFailed(step, "mock cost must be a number of US dollars >= 0")
     if not isinstance(data.get("fail", ""), str):
         raise StepFailed(step, "mock fail must be a string (the failure reason)")
+    replay = data.get("events", [])
+    if not isinstance(replay, list) or not all(isinstance(item, dict) for item in replay):
+        raise StepFailed(step, "mock events must be a list of JSON objects (stream-json events)")
     return data
 
 
@@ -291,7 +294,9 @@ def _run_mock(layer: Any, state: Any, agent: dict[str, Any], step: str, command:
         raw_path.write_text(json.dumps({"synthesised": True, "output": output}) + "\n", encoding="utf-8")
         return output
     data = _load_mock_script(script, step)
-    lines = [json.dumps({"script": str(script), **data})]
+    lines = [json.dumps({"script": str(script), **{k: v for k, v in data.items() if k != "events"}})]
+    # scripted stream-json events (e.g. the CLI's init and rate_limit_event lines) go in as they are
+    lines += [json.dumps(event) for event in data.get("events", [])]
     if data.get("cost") is not None:
         # a scripted cost is reported the way Claude Code reports it: in a final `result` event
         lines.append(json.dumps({"type": "result", "subtype": "success", "is_error": False,
@@ -391,7 +396,7 @@ def run_agent(layer: Any, state: Any, step_name: str, command_name: str, args: l
 
     `model_set` is the tier the call asks for and `tier_from` why (step / request / command); the
     run's overrides may replace both (see models.py). Spending limits are checked before and after
-    the call (see budget.py)."""
+    the call (see budget.py), and so is what the CLI says about subscription usage (see usage.py)."""
     command = layer.command(command_name)
     prompt = _render_prompt(layer, state, command_name, command, args)
     directory = step_dir(layer, state, step_name)
@@ -409,6 +414,7 @@ def run_agent(layer: Any, state: Any, step_name: str, command_name: str, args: l
     if owner is not None:
         owner.update(used, **why)  # the step record names the agent, the tier and the model actually used
     span = {"step": step_name, "owner": str(owner.get("name")) if owner else "", **used, "model_set": choice.tier, **why}
+    usage.before_call(layer, state, step_name)  # stops or waits at the layer's subscription usage threshold
     cap = budget.before_call(layer, state, step_name)  # raises when today's limit is reached: no call starts
     state.budget["cap_from"] = budget.cap_source(state, layer) if cap is not None else ""
     call = {"step": step_name, "owner": span["owner"], **used, **why, "status": "running", "cost": None}
@@ -420,19 +426,28 @@ def run_agent(layer: Any, state: Any, step_name: str, command_name: str, args: l
                              raw_path, directory, cap)
     except BaseException as exc:
         totals = transcript_totals(raw_path)
-        call.update(status="failed", cost=totals.get("cost"))
+        found = usage.record(layer, state, step_name, span["owner"], raw_path)
+        call.update(status="failed", cost=totals.get("cost"), billing=found["billing"])
         events.emit("agent.end", **span, status="failed", seconds=round(time.monotonic() - started, 3),
-                    error=str(exc)[:500], **totals)
+                    error=str(exc)[:500], billing=found["billing"], **totals)
         if isinstance(exc, (StepFailed, LayerError)):
+            hit = usage.rejection(found)
+            if hit is not None:
+                # the CLI refused the call or cut it off at a subscription limit: that, not the
+                # agent error it ended with, is the reason a person needs to see
+                budget.add_cost(state, agent, totals.get("cost"), found["billing"])
+                raise usage.reached(state, step_name, hit) from exc
             # a call stopped by the CLI's own budget cap, or one that went over a limit and then
             # failed, is a budget stop: that is the reason a person needs to see
             budget.after_call(state, step_name, agent, totals.get("cost"), failed=True,
-                              native_stop=_stopped_by_cap(raw_path, cap))
+                              native_stop=_stopped_by_cap(raw_path, cap), billing=found["billing"])
         raise
     totals = transcript_totals(raw_path)
-    call.update(status="passed", cost=totals.get("cost"))
-    events.emit("agent.end", **span, status="passed", seconds=round(time.monotonic() - started, 3), **totals)
-    budget.after_call(state, step_name, agent, totals.get("cost"))
+    found = usage.record(layer, state, step_name, span["owner"], raw_path)
+    call.update(status="passed", cost=totals.get("cost"), billing=found["billing"])
+    events.emit("agent.end", **span, status="passed", seconds=round(time.monotonic() - started, 3),
+                billing=found["billing"], **totals)
+    budget.after_call(state, step_name, agent, totals.get("cost"), billing=found["billing"])
     return result
 
 

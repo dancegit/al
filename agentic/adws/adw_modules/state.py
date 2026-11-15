@@ -54,12 +54,15 @@ class ADWState:
     fanout_parent: dict[str, Any] = field(default_factory=dict)  # {run, step, index} of a fan-out candidate
     # --model-set / --model / --max-cost and their environment variables: {tier, models, max_cost, from}
     overrides: dict[str, Any] = field(default_factory=dict)
-    # every agent call: {step, owner, agent, agent_kind, tier, tier_from, model, model_from, effort, status, cost}
+    # every agent call: {step, owner, agent, agent_kind, tier, tier_from, model, model_from, effort, status, cost, billing}
     agent_calls: list[dict[str, Any]] = field(default_factory=list)
-    # what the agent calls cost: {total, calls, unreported: ["id (kind)" of agents that report no cost]}
+    # what the agent calls cost: {total, calls, unreported: ["id (kind)" of agents that report no cost],
+    # billing: subscription | api-key | mixed (when a transcript said so), api_equivalent: dollars of subscription calls}
     cost: dict[str, Any] = field(default_factory=dict)
     # spending limits of this run: {limits: {run, step, day, run_from}, stopped: {limit, spent, of, step, reason}}
     budget: dict[str, Any] = field(default_factory=dict)
+    # subscription usage seen by this run: {billing, windows: {name: {window, status, used, resets_at, at, step}}, stopped: {window, cause, status, used, percent, resets_at, step, reason}, waits: [{step, window, seconds, until}]}
+    usage: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
