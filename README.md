@@ -76,6 +76,10 @@ From that, an LLM wrote [`agentic.rkt`](tests/authored/flask/agentic.rkt). Abrid
            (ship))))                                   ; merge only if every rule holds
 ```
 
+Every example layer has a page that explains its file block by block, with an animation: [`docs/layers`](docs/layers/README.md). This is flask's:
+
+![The flask layer, block by block](docs/layers/flask.gif)
+
 `al gen` turns that into a folder **beside** the repository:
 
 ```

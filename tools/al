@@ -9,6 +9,7 @@
   al scout   APP [-o LLM.txt]      deterministic LLM.txt draft (an LLM completes it: meta/commands/scout-codebase.md)
   al compile LAYER                 agentic.rkt -> agentic-layer.json (validated against the schema)
   al gen     LAYER                 compile + generate commands, HOPs, ADWs, env, triggers, forge files
+  al explain LAYER [--md F] [--gif F]  explain the layer definition in plain language, block by block
   al check   LAYER                 verify a generated layer and that the application tree is untouched
   al verify  LAYER [--cmd NAME …] [--timeout S] [--json]
                                    run the layer's codebase cmds on a throwaway worktree, in the ADWs' environment
@@ -945,6 +946,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init"); p.add_argument("app", type=Path); p.add_argument("--layer", type=Path)
     p = sub.add_parser("scout"); p.add_argument("app", type=Path); p.add_argument("-o", "--out", type=Path); p.add_argument("--json", action="store_true")
+    p = sub.add_parser("explain", help="explain a layer definition in plain language, block by block")
+    p.add_argument("layer", type=Path); p.add_argument("--md", type=Path); p.add_argument("--gif", type=Path)
     for name in ("compile", "gen", "check"):
         p = sub.add_parser(name); p.add_argument("layer", type=Path)
     p = sub.add_parser("verify", help="run the layer's codebase cmds on a throwaway worktree")
@@ -954,6 +957,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true", help="print the report as JSON on stdout (progress goes to stderr)")
     a = ap.parse_args(argv)
     try:
+        if a.cmd == "explain":
+            extra = (["--md", str(a.md)] if a.md else []) + (["--gif", str(a.gif)] if a.gif else [])
+            return subprocess.call([str(ROOT / "tools" / "explain.py"), str(a.layer), *extra])
         if a.cmd == "scout":
             facts = scout(a.app)
             text = json.dumps(facts, indent=2) if a.json else render_llm_txt(facts)
