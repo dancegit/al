@@ -8,13 +8,14 @@
 ```racket
 #lang al
 (agentic-layer #:name "repo-name" #:description "…" #:llm-txt "LLM.txt"
-  (codebase #:root "…" #:languages (…) (cmd NAME "shell") … (paths …) (conditional-doc "path" "when") …)
+  (codebase #:root "…" #:languages (…) (cmd NAME "shell") … (paths …) (conditional-doc "path" "when") … (include "FILE") …)
   (FAMILY KIND #:id ID #:field value …) …   ; options, see families below
   (command NAME #:template T …) …
   (hop NAME #:template T …) …
   (expert NAME …) …
   (adw NAME #:input (…) #:trigger (…) #:environment (…) #:review ID #:agent ID
-    (steps (run NAME …) (check NAME …) (fan-out NAME …) (review) (ship) (compose ADW) …)) …)
+    (steps (run NAME …) (check NAME …) (script NAME …) (fan-out NAME …) (review) (ship) (compose ADW) …)) …
+  (include "FILE") …)                       ; more clauses from FILE, e.g. what `al adopt` wrote
 ```
 
 Syntax notes: strings use double quotes; names are bare symbols; lists are parenthesised without
@@ -22,6 +23,8 @@ quotes or commas, e.g. `(python rust)` or `("src" "tests")`; booleans are `#t` /
 `(agentic-layer …)` form per file. Every field is `#:keyword value`. Omitted fields take the default.
 Families with a default kind may be omitted entirely. `(cmd NAME "shell" …)` and
 `(conditional-doc "path" "when")` take their first values positionally, exactly as shown.
+A record type such as `model-tier` is written as a small list: its positional values, then `#:keyword value`
+pairs, e.g. `#:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:effort high))`.
 
 ## Rules the compiler enforces
 
@@ -43,6 +46,10 @@ Families with a default kind may be omitted entirely. `(cmd NAME "shell" …)` a
 - (layer in-repo #:dir D): D is a relative path inside the repository (no `..`, no leading `/`), and (codebase #:root …) is the way back up from D to the repository root: ".." for a top-level directory, "../.." for D = "tools/agentic".
 - An ADW with #:changes layer must use a review option of kind `human` or `agent`: a change to how agents work always passes a person.
 - (dashboard …) is declared at most once; omitted, it is (dashboard local) on 127.0.0.1:8765. A #:bind that is not a loopback address (127.x.x.x, ::1, localhost) needs #:token-env naming the environment variable that holds the access token; #:port is 1–65535 and #:poll-ms at least 100.
+- Model tiers: an agent's tiers are `base` and `heavy` (from #:model-base / #:model-heavy, which have defaults) plus every (TIER "MODEL") in its #:models; a tier given both ways, or twice, is an error, and `inherit` is not a tier name. Every tier a workflow can use must be declared on the agent that runs it: run steps (their #:model-set, else their command's) on the step's #:agent or the ADW's agent; check #:resolve commands and review #:patch / #:implement commands on the ADW's agent; the review command on the review option's #:agent, else the ADW's agent. The mock agent accepts every tier. #:effort is only available for claude-code and codex (codex: not `max`).
+- (budget limits …) is declared at most once; every limit given is greater than 0.
+- A (script …) step needs a `worktree` environment in the ADW's stack, like check and ship.
+- (include "FILE") splices the clauses of FILE (plain s-expressions, no #lang line; a path relative to agentic.rkt) where it stands: at the top level of (agentic-layer …), or inside (codebase …) for cmd, paths and conditional-doc clauses. Errors point into FILE. An included file cannot include another. `al adopt` writes its declarations this way.
 - Kinds marked planned compile but are refused by the generator.
 
 ## Option families
@@ -69,33 +76,46 @@ Declare at most one. Default when omitted: `(layer sibling)`.
 
 ### `agent`
 
-The coding agent a step runs on. ADWs name one; the runtime shells out to it headlessly.
+The coding agent a step runs on. ADWs name one; the runtime shells out to it headlessly. An agent offers named model tiers: `base` and `heavy` always exist (see #:model-base / #:model-heavy), and #:models adds any others. Commands, hops and run steps pick a tier with #:model-set.
 Declare any number. Default when omitted: `(agent claude-code)`.
 
 - **`(agent claude-code …)`** — Claude Code in programmable mode (`claude -p`), stream-json output.
-  - `#:model-base` (string; default "claude-sonnet-5-5") — Model for the `base` model set (cheap steps: classify, commit, branch name).
-  - `#:model-heavy` (string; default "claude-opus-5-5") — Model for the `heavy` model set (plan, implement, review).
+  - `#:models` (list of (TIER MODEL [#:field value …]), see record `model-tier`; default ()) — Named model tiers, e.g. ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:effort high)). `base` and `heavy` may be given here instead of with #:model-base / #:model-heavy, but not both ways.
+  - `#:model-base` (string; shorthand for the `base` entry of #:models; default "claude-opus-5-5") — Model of the `base` tier (routine steps: classify, commit, branch name, document).
+  - `#:model-heavy` (string; shorthand for the `heavy` entry of #:models; default "claude-fable-5-2") — Model of the `heavy` tier (planning, building, review).
   - `#:permission-mode` (acceptEdits | bypassPermissions | plan | default; default acceptEdits) — Headless permission mode. bypassPermissions only inside a podman environment.
   - `#:safe-mode` (boolean; default #t) — Run with --safe-mode so user CLAUDE.md, hooks, plugins and skills are not loaded.
   - `#:allowed-tools` (list of string; default ("Read" "Glob" "Grep" "Edit" "Write" "Bash")) — Tools the headless agent may use without asking (passed as --allowedTools). Narrow it for read-only workflows.
   - `#:max-turns` (integer; default 60) — Turn cap per step.
   - `#:timeout` (integer; default 1800) — Wall-clock seconds per step.
 
-- **`(agent codex …)`** — OpenAI Codex CLI (`codex exec`).
-  - `#:model-base` (string; default "gpt-5.4-mini") — Model for the base set.
-  - `#:model-heavy` (string; default "gpt-5.4") — Model for the heavy set.
+- **`(agent codex …)`** — OpenAI Codex CLI (`codex exec`). It reports no cost, so spending limits count its calls as $0.
+  - `#:models` (list of (TIER MODEL [#:field value …]), see record `model-tier`; default ()) — Named model tiers (see claude-code).
+  - `#:model-base` (string; shorthand for the `base` entry of #:models; default "gpt-5.4-mini") — Model of the `base` tier.
+  - `#:model-heavy` (string; shorthand for the `heavy` entry of #:models; default "gpt-5.4") — Model of the `heavy` tier.
   - `#:sandbox` (read-only | workspace-write | danger-full-access; default workspace-write) — Codex sandbox mode.
   - `#:timeout` (integer; default 1800) — Wall-clock seconds per step.
 
-- **`(agent custom …)`** — Any CLI agent. The command receives the rendered prompt on stdin.
+- **`(agent custom …)`** — Any CLI agent. The command receives the rendered prompt on stdin. It reports no cost, so spending limits count its calls as $0.
   - `#:command` (string; default REQUIRED) — Shell command; {model} and {cwd} are substituted.
-  - `#:model-base` (string; default "") — Model for the base set.
-  - `#:model-heavy` (string; default "") — Model for the heavy set.
+  - `#:models` (list of (TIER MODEL [#:field value …]), see record `model-tier`; default ()) — Named model tiers (see claude-code); #:effort is not available.
+  - `#:model-base` (string; shorthand for the `base` entry of #:models; default "") — Model of the `base` tier.
+  - `#:model-heavy` (string; shorthand for the `heavy` entry of #:models; default "") — Model of the `heavy` tier.
   - `#:timeout` (integer; default 1800) — Wall-clock seconds per step.
 
-- **`(agent mock …)`** — Deterministic stand-in used by tests and dry runs: no LLM, replays scripted responses.
+- **`(agent mock …)`** — Deterministic stand-in used by tests and dry runs: no LLM, replays scripted responses. It accepts every tier name.
   - `#:script-dir` (string; default "mock") — Directory (in the layer) holding <step>.json scripted responses and optional <step>.patch files.
   - `#:timeout` (integer; default 60) — Wall-clock seconds per step.
+
+### `budget`
+
+Spending limits for agent work, in US dollars, counted from the cost each agent call reports (Claude Code reports it; codex and custom agents do not and count as $0). Omitted: no limits. A run that crosses a limit is stopped after the agent call that crossed it, never in the middle of one, and handed to a person like any other stopped run.
+Declare at most one. Default when omitted: none.
+
+- **`(budget limits …)`** — Limits on what agent calls may cost. Each is optional; an omitted one is no limit.
+  - `#:run-usd` (number ≥ 0, e.g. 5 or 2.5; default none) — Most one run may spend (the sum of its agent calls). A per-run `--max-cost USD` (or AL_MAX_COST) replaces it for that run.
+  - `#:step-usd` (number ≥ 0, e.g. 5 or 2.5; default none) — Most one agent call may spend. With Claude Code the call is also capped natively (--max-budget-usd), so it stops early.
+  - `#:day-usd` (number ≥ 0, e.g. 5 or 2.5; default none) — Most this layer may spend per local calendar day, over all its runs. Once reached, no run and no agent step starts until the next day.
 
 ### `forge`
 
@@ -335,6 +355,7 @@ Declare any number. Default when omitted: `(review human)`.
   - `#:command` (name of a declared command; default review) — Review command.
   - `#:artefacts` (list of name of a declared artefact; default ()) — Artefacts attached as proof.
   - `#:reviewers` (integer; default 1) — Independent review agents; all must pass ('double agent check').
+  - `#:agent` (name of a declared agent, or ""; default "") — Agent the reviewer steps run on; empty = the workflow's agent. A different agent here (another vendor or model) reviews the first one's work. The patch and implement steps of a review round stay on the workflow's agent.
   - `#:max-retries` (integer; default 3) — Patch-and-re-review attempts on blockers before stopping for a human.
   - `#:body-cmd` (name of a declared cmd, or ""; default "") — Codebase command whose standard output opens the PR description (see review human).
 
@@ -342,6 +363,7 @@ Declare any number. Default when omitted: `(review human)`.
   - `#:command` (name of a declared command; default review) — Review command.
   - `#:artefacts` (list of name of a declared artefact; default ()) — Artefacts collected, stored and given to the reviewer as proof.
   - `#:reviewers` (integer; default 1) — Independent review agents; all must pass.
+  - `#:agent` (name of a declared agent, or ""; default "") — Agent the reviewer steps run on; empty = the workflow's agent (see review agent).
   - `#:max-retries` (integer; default 3) — Patch-and-re-review attempts on blockers.
   - `#:ship` (pr | merge | deploy; default merge) — On pass: open PR only, merge to the default branch, or merge and run the deploy command.
   - `#:deploy-cmd` (name of a declared cmd, or ""; default "") — Codebase command run after merge when ship = deploy.
@@ -424,7 +446,7 @@ Where things are: (paths #:source (…) #:tests (…) …).
   - `#:template` (prime | install | start | plan-feature | plan-bug | plan-chore | plan-patch | plan-layer-change | implement | build | test | resolve-test | e2e-test | review | document | commit | pull-request | classify | branch-name | summarize | question | self-improve | track-kpis | custom; default REQUIRED) — Kit template to instantiate.
   - `#:description` (string; default "") — One-line purpose.
   - `#:file` (string; default "") — For template custom: path of a hand-written template relative to the layer.
-  - `#:model-set` (base | heavy; default base) — Model set the step runs on.
+  - `#:model-set` (tier name: base | heavy | a tier from the agent's #:models; default base) — Model tier the command runs on: a tier declared on the agent that runs it (base, heavy, or one from #:models).
   - `#:output` (text | json | path; default text) — What the command must return: free text, JSON per its schema, or a file path.
   - `#:focus` (list of string; default ()) — Codebase-specific instructions injected into the template's Instructions section.
   - `#:relevant` (list of string; default ()) — Codebase paths listed under Relevant Files; empty = codebase source+tests paths.
@@ -438,7 +460,7 @@ Where things are: (paths #:source (…) #:tests (…) …).
   - `#:description` (string; default "") — One-line purpose.
   - `#:takes` (prompt | plan | command | spec; default prompt) — What the argument is.
   - `#:produces` (changes | command | adw | expert | plan; default changes) — What comes out.
-  - `#:model-set` (base | heavy; default heavy) — Model set.
+  - `#:model-set` (tier name: base | heavy | a tier from the agent's #:models; default heavy) — Model tier the HOP runs on (see command).
 
 ### `expert`
 
@@ -459,12 +481,19 @@ Where things are: (paths #:source (…) #:tests (…) …).
   - `#:classes` (list of chore | bug | feature | patch; default ()) — Work classes routed to this ADW by classification; empty = any.
   - `#:changes` (codebase | layer; default codebase) — What the ADW changes. `codebase`: the application. `layer`: an agentic layer (its codebase is the repository that holds a layer, as in the workflow `al improve` runs); such an ADW never ships without a person and is exempt from the in-repo layer protection.
 
+### `model-tier`
+
+One model tier of an agent, written (TIER "MODEL-ID" [#:effort LEVEL]) inside #:models.
+  - `#:tier` (tier name: base | heavy | a tier from the agent's #:models; default REQUIRED) — Tier name: lowercase letters, digits and dashes (not `inherit`).
+  - `#:model` (string; default REQUIRED) — Model id passed to the agent CLI.
+  - `#:effort` (default | low | medium | high | xhigh | max; default default) — Reasoning effort for this tier: `default` leaves it to the CLI. Claude Code: passed as --effort (low…max). codex: passed as -c model_reasoning_effort=LEVEL (low…xhigh; codex has no flag of its own for it). Not available for custom agents.
+
 ### `step-run`
 
 (run NAME #:command C …): one agent, one prompt, one purpose.
   - `#:command` (name of a declared command-or-hop; default REQUIRED) — Command or HOP to execute.
   - `#:args` (list of string; default ()) — Arguments; $prompt, $plan, $adw_id, $class, $branch and $out.<step> are substituted.
-  - `#:model-set` (inherit | base | heavy; default inherit) — Override the command's model set.
+  - `#:model-set` (tier name: base | heavy | a tier from the agent's #:models; default inherit) — Model tier for this step; `inherit` = the command's, unless the request names a tier (a task-file tag or issue keyword).
   - `#:retries` (integer; default 0) — Re-run on failure.
   - `#:when` (always | class-feature | class-bug | class-chore | class-patch; default always) — Run only for this work class.
   - `#:agent` (name of a declared agent, or ""; default "") — Agent for this step only; empty = the ADW's agent. Use it for a cheaper model on routine steps or a different vendor for an independent step.
@@ -476,6 +505,13 @@ Where things are: (paths #:source (…) #:tests (…) …).
   - `#:resolve` (name of a declared command, or ""; default "") — Command given the failing output; empty = fail the run immediately.
   - `#:retries` (integer; default 3) — Resolve attempts.
   - `#:collect` (list of name of a declared artefact; default ()) — Artefacts collected after the command.
+
+### `step-script`
+
+(script NAME #:cmd C …): run a declared codebase cmd as a workflow step, e.g. a workflow script the team already has. It runs in the run's environment (worktree, container), gets the run context in environment variables (ADW_ID, ADW_PROMPT, ADW_CLASS, ADW_PLAN, ADW_BRANCH, ADW_WORKTREE, ADW_LAYER_DIR), its output becomes the step's output ($out.NAME), and a non-zero exit fails the run. It is not a check: no resolve loop, and the gate does not count it as verification.
+  - `#:cmd` (name of a declared cmd; default REQUIRED) — Codebase command to run.
+  - `#:args` (list of string; default ()) — Arguments appended to the command, each shell-quoted; $prompt, $plan, $adw_id, $class, $branch and $out.<step> are substituted.
+  - `#:timeout` (integer; default 0) — Seconds; 0 = the cmd's own #:timeout.
 
 ### `step-review`
 
@@ -522,7 +558,8 @@ Where things are: (paths #:source (…) #:tests (…) …).
 #lang al
 ;; A layer that uses most of the vocabulary: several prompt inputs and triggers,
 ;; a stacked environment, artefacts on S3, and a zero-touch (auto review → merge) ADW
-;; next to a human-reviewed one.
+;; next to a human-reviewed one, model tiers, a second vendor as reviewer, spending limits, and a
+;; script step that runs one of the team's own scripts.
 (agentic-layer #:name "webshop" #:description "Agentic layer for the webshop monorepo"
   (codebase #:root "../webshop" #:languages (typescript python) #:default-branch "main"
             #:description "Vue storefront + FastAPI backend" #:package-manager "bun add / uv add"
@@ -531,6 +568,7 @@ Where things are: (paths #:source (…) #:tests (…) …).
     (cmd test "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)")
     (cmd e2e "bun run e2e" #:timeout 1800 #:description "Playwright; writes e2e-results/")
     (cmd deploy "./scripts/deploy.sh staging")
+    (cmd changelog "./scripts/changelog.sh" #:description "the team's own script: appends the change to CHANGELOG.md")
     (paths #:source ("web/src" "api/app") #:tests ("web/tests" "api/tests") #:docs ("docs")
            #:protected (".github" "api/migrations" "scripts/deploy.sh"))
     (conditional-doc "docs/payments.md" "When touching anything under api/app/payments"))
@@ -539,7 +577,9 @@ Where things are: (paths #:source (…) #:tests (…) …).
   (forge forgejo #:host "https://forgejo.example.org" #:repo "acme/webshop")
   (storage s3 #:bucket "webshop-adw" #:endpoint "https://s3.example.org")
   (voice kokoro)
-  (agent claude-code)
+  (agent claude-code #:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:effort high)))
+  (agent codex #:id second-opinion)
+  (budget limits #:run-usd 5 #:step-usd 2 #:day-usd 50)
 
   (prompt-input issue #:labels ("adw"))
   (prompt-input tasklist)
@@ -561,12 +601,12 @@ Where things are: (paths #:source (…) #:tests (…) …).
   (review human)
   (concurrency slots #:max-runs 4 #:max-agents 2)
   (dashboard local #:port 8765 #:also ("../storefront.al") #:systemd #t)
-  (review auto #:id zero-touch #:artefacts (log junit screenshots recordings)
+  (review auto #:id zero-touch #:artefacts (log junit screenshots recordings) #:agent second-opinion
           #:ship deploy #:deploy-cmd deploy #:require-checks (lint test e2e)
           #:allowed-classes (chore bug) #:max-diff-lines 300)
 
   (command prime #:template prime)
-  (command classify #:template classify #:output json)
+  (command classify #:template classify #:model-set fast #:output json)
   (command chore #:template plan-chore #:model-set heavy #:output path #:validation (lint test))
   (command bug #:template plan-bug #:model-set heavy #:output path #:validation (lint test e2e))
   (command feature #:template plan-feature #:model-set heavy #:output path #:validation (lint test e2e)
@@ -576,7 +616,7 @@ Where things are: (paths #:source (…) #:tests (…) …).
   (command review #:template review #:model-set heavy #:output json #:fabric (review_code))
   (command patch #:template plan-patch #:model-set heavy #:output path)
   (command document #:template document)
-  (command commit #:template commit #:fabric (create_git_diff_commit))
+  (command commit #:template commit #:model-set fast #:fabric (create_git_diff_commit))
   (command pull-request #:template pull-request #:fabric (write_pull-request))
   (hop implement #:template run-plan #:takes plan)
   (hop new-command #:template meta-command #:produces command)
@@ -600,6 +640,7 @@ Where things are: (paths #:source (…) #:tests (…) …).
       (check lint #:cmd lint #:resolve resolve-test)
       (check test #:cmd test #:resolve resolve-test #:collect (junit))
       (run document #:command document #:args ("$plan"))
+      (script changelog #:cmd changelog #:args ("$prompt"))
       (run commit #:command commit)
       (review)
       (ship)))

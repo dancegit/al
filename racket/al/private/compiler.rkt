@@ -10,7 +10,8 @@
 
 (provide compile-layer-datum (struct-out exn:al))
 
-;; clause-index: index into (cdr datum) of the clause being compiled, or #f.
+;; clause-index: index into (cdr datum) of the clause being compiled, or #f; or a pair
+;; (INDEX . SUB) for a sub-clause of (codebase …): SUB indexes (cdr <the codebase form>).
 (struct exn:al exn:fail (clause-index))
 
 (define current-clause (make-parameter #f))
@@ -39,22 +40,42 @@
         [(string? v) v]
         [else (fail "~a: expected a name, got ~s" who v)]))
 
+(define tier-rx #px"^[a-z][a-z0-9-]*$")
+
 (define (coerce type v who)
   (define (bad what) (fail "~a: expected ~a, got ~s" who what v))
   (cond
+    [(eq? v '#:none) 'null]
     [(eq? type 'string) (if (string? v) v (bad "a string in double quotes"))]
     [(eq? type 'integer) (if (exact-integer? v) v (bad "an integer"))]
+    [(eq? type 'decimal)
+     (if (and (real? v) (>= v 0) (not (eqv? v +inf.0)))
+         (if (and (exact? v) (not (integer? v))) (exact->inexact v) v)
+         (bad "a number ≥ 0, e.g. 5 or 2.5"))]
     [(eq? type 'boolean) (if (boolean? v) v (bad "#t or #f"))]
     [(eq? type 'symbol) (name->string v who)]
+    [(eq? type 'tier)
+     (define s (name->string v who))
+     (unless (regexp-match? tier-rx s)
+       (bad "a tier name: lowercase letters, digits and dashes, e.g. base, heavy, fast"))
+     s]
     [(and (pair? type) (eq? (car type) 'enum))
      (define s (cond [(symbol? v) v] [(string? v) (string->symbol v)] [else #f]))
      (if (and s (memq s (cdr type)))
          (symbol->string s)
          (bad (format "one of: ~a" (names (cdr type)))))]
     [(and (pair? type) (eq? (car type) 'list-of))
-     (if (list? v)
-         (for/list ([x (in-list v)]) (coerce (cadr type) x who))
-         (bad "a parenthesised list, e.g. (a b)"))]
+     (unless (list? v) (bad "a parenthesised list, e.g. (a b)"))
+     (define items (for/list ([x (in-list v)]) (coerce (cadr type) x who)))
+     (define item-type (cadr type))
+     (when (and (pair? item-type) (eq? (car item-type) 'record))
+       (define key (record-key (cadr item-type)))
+       (when key
+         (define dup (check-duplicates (map (lambda (h) (hash-ref h key)) items)))
+         (when dup (fail "~a: `~a` is given twice" who dup))))
+     items]
+    [(and (pair? type) (eq? (car type) 'record)) (compile-item (cadr type) v who)]
+    [(and (pair? type) (eq? (car type) 'shorthand)) (if (string? v) v (bad "a string in double quotes"))]
     [(and (pair? type) (memq (car type) '(ref optional-ref)))
      (define s (name->string v who))
      (unless (and (eq? (car type) 'optional-ref) (string=? s ""))
@@ -62,20 +83,68 @@
      s]
     [else (error 'al "vocabulary bug: unknown field type ~s" type)]))
 
+;; JSON key of the first positional field of an item record (its key within a list), or #f.
+(define (record-key name)
+  (define r (find-record name))
+  (and (pair? (record-positional r))
+       (kebab->camel (car (record-positional r)))))
+
+;; (POS … #:field value …) → hash, for a (record R) field.
+(define (compile-item name v who)
+  (define r (find-record name))
+  (define pos-names (record-positional r))
+  (define shape (string-join (append (map (lambda (p) (string-upcase (symbol->string p))) pos-names)
+                                     (list "[#:field value …]")) " "))
+  (unless (list? v) (fail "~a: expected (~a), got ~s" who shape v))
+  (define-values (pos kws) (split-kwargs v who))
+  (unless (= (length pos) (length pos-names))
+    (fail "~a: expected (~a), got ~s" who shape v))
+  (define iwho (format "~a (~a …)" who (car v)))
+  (compile-fields (record-fields r)
+                  (append (for/list ([p (in-list pos-names)] [x (in-list pos)])
+                            (cons (string->keyword (symbol->string p)) x))
+                          kws)
+                  iwho))
+
 (define (compile-fields fields kws who #:init [init (hasheq)] #:extra [extra '()])
   (for ([p (in-list kws)])
     (unless (or (memq (car p) extra)
                 (findf (lambda (f) (eq? (field-keyword f) (car p))) fields))
       (fail "~a: unknown field ~a; fields are: ~a" who (car p)
             (string-join (map (lambda (f) (format "~a" (field-keyword f))) fields) " "))))
-  (for/fold ([h init]) ([f (in-list fields)])
-    (define p (assq (field-keyword f) kws))
-    (define fwho (format "~a ~a" who (field-keyword f)))
-    (hash-set h (field-json-key f)
-              (cond [p (coerce (field-type f) (cdr p) fwho)]
-                    [(field-required? f)
-                     (fail "~a: missing required field ~a — ~a" who (field-keyword f) (field-doc f))]
-                    [else (coerce (field-type f) (field-default f) fwho)]))))
+  (define h
+    (for/fold ([h init]) ([f (in-list fields)])
+      (define p (assq (field-keyword f) kws))
+      (define fwho (format "~a ~a" who (field-keyword f)))
+      (hash-set h (field-json-key f)
+                (cond [p (coerce (field-type f) (cdr p) fwho)]
+                      [(field-required? f)
+                       (fail "~a: missing required field ~a — ~a" who (field-keyword f) (field-doc f))]
+                      [else (coerce (field-type f) (field-default f) fwho)]))))
+  (fold-shorthands fields kws h who))
+
+;; A (shorthand F KEY) field is folded into the list field F as the item KEY: given explicitly
+;; while F also lists KEY → error; F without KEY → the shorthand's value (given or default) is
+;; added in front. The shorthand itself is not emitted.
+(define (fold-shorthands fields kws h who)
+  (for/fold ([h h]) ([f (in-list (reverse fields))] #:when (field-shorthand? f))
+    (define target (cadr (field-type f)))
+    (define key (symbol->string (caddr (field-type f))))
+    (define tf (findf (lambda (x) (eq? (field-name x) target)) fields))
+    (define item-type (cadr (field-type tf)))
+    (define rkey (record-key (cadr item-type)))
+    (define items (hash-ref h (field-json-key tf)))
+    (define listed? (findf (lambda (i) (equal? (hash-ref i rkey) key)) items))
+    (define given? (assq (field-keyword f) kws))
+    (when (and listed? given?)
+      (fail "~a: tier `~a` is given twice: by ~a and in ~a; keep one" who key (field-keyword f) (field-keyword tf)))
+    (define h* (hash-remove h (field-json-key f)))
+    (if listed?
+        h*
+        (hash-set h* (field-json-key tf)
+                  (cons (compile-item (cadr item-type) (list (string->symbol key) (hash-ref h (field-json-key f)))
+                                      (format "~a ~a" who (field-keyword f)))
+                        items)))))
 
 (define (rec-fields name) (record-fields (find-record name)))
 
@@ -111,40 +180,52 @@
 (define (compile-codebase datum)
   (define-values (subs kws) (split-kwargs (cdr datum) "(codebase)"))
   (define base (compile-fields (rec-fields 'codebase) kws "(codebase)"))
+  ;; position of each sub-clause in (cdr datum), so an error points at the sub-clause itself
+  (define positions
+    (let loop ([l (cdr datum)] [i 0] [acc '()])
+      (cond [(null? l) (reverse acc)]
+            [(keyword? (car l)) (loop (if (pair? (cdr l)) (cddr l) '()) (+ i 2) acc)]
+            [else (loop (cdr l) (add1 i) (cons i acc))])))
+  (define top (current-clause))
   (define cmds '())
   (define docs '())
   (define paths #f)
-  (for ([s (in-list subs)])
-    (unless (and (pair? s) (symbol? (car s)))
-      (fail "(codebase): unexpected ~s; expected (cmd …), (paths …) or (conditional-doc …)" s))
-    (case (car s)
-      [(cmd)
-       (unless (and (>= (length s) 3) (symbol? (cadr s)) (string? (caddr s)))
-         (fail "(cmd …): expected (cmd NAME \"shell command\" …), got ~s" s))
-       (define who (format "(cmd ~a)" (cadr s)))
-       (define-values (pos k) (split-kwargs (cdddr s) who))
-       (unless (null? pos) (fail "~a: unexpected ~s" who (car pos)))
-       (when (findf (lambda (c) (equal? (hash-ref c 'name) (symbol->string (cadr s)))) cmds)
-         (fail "~a: declared twice" who))
-       (set! cmds (cons (compile-fields (rec-fields 'cmd) (cons (cons '#:run (caddr s)) k) who
-                                        #:init (hasheq 'name (symbol->string (cadr s))))
-                        cmds))]
-      [(paths)
-       (when paths (fail "(codebase): (paths …) given twice"))
-       (define-values (pos k) (split-kwargs (cdr s) "(paths)"))
-       (unless (null? pos) (fail "(paths): unexpected ~s" (car pos)))
-       (set! paths (compile-fields (rec-fields 'paths) k "(paths)"))]
-      [(conditional-doc)
-       (unless (and (= (length s) 3) (string? (cadr s)) (string? (caddr s)))
-         (fail "(conditional-doc …): expected (conditional-doc \"path\" \"when …\"), got ~s" s))
-       (set! docs (cons (hasheq 'path (cadr s) 'when (caddr s)) docs))]
-      [else (fail "(codebase): unknown sub-clause ~a; expected cmd, paths or conditional-doc" (car s))]))
+  (for ([s (in-list subs)] [pos (in-list positions)])
+    (parameterize ([current-clause (if (exact-integer? top) (cons top pos) top)])
+      (unless (and (pair? s) (symbol? (car s)))
+        (fail "(codebase): unexpected ~s; expected (cmd …), (paths …) or (conditional-doc …)" s))
+      (case (car s)
+        [(cmd)
+         (unless (and (>= (length s) 3) (symbol? (cadr s)) (string? (caddr s)))
+           (fail "(cmd …): expected (cmd NAME \"shell command\" …), got ~s" s))
+         (define who (format "(cmd ~a)" (cadr s)))
+         (define-values (pos k) (split-kwargs (cdddr s) who))
+         (unless (null? pos) (fail "~a: unexpected ~s" who (car pos)))
+         (when (findf (lambda (c) (equal? (hash-ref c 'name) (symbol->string (cadr s)))) cmds)
+           (fail "~a: declared twice" who))
+         (set! cmds (cons (compile-fields (rec-fields 'cmd) (cons (cons '#:run (caddr s)) k) who
+                                          #:init (hasheq 'name (symbol->string (cadr s))))
+                          cmds))]
+        [(paths)
+         (when paths (fail "(codebase): (paths …) given twice"))
+         (define-values (pos k) (split-kwargs (cdr s) "(paths)"))
+         (unless (null? pos) (fail "(paths): unexpected ~s" (car pos)))
+         (set! paths (compile-fields (rec-fields 'paths) k "(paths)"))]
+        [(conditional-doc)
+         (unless (and (= (length s) 3) (string? (cadr s)) (string? (caddr s)))
+           (fail "(conditional-doc …): expected (conditional-doc \"path\" \"when …\"), got ~s" s))
+         (set! docs (cons (hasheq 'path (cadr s) 'when (caddr s)) docs))]
+        [(include) (fail include-unexpanded)]
+        [else (fail "(codebase): unknown sub-clause ~a; expected cmd, paths, conditional-doc or include" (car s))])))
   (when (null? cmds)
     (fail "(codebase): declare at least one (cmd NAME \"…\"), typically install, test, lint, build"))
   (hash-set* base
              'commands (reverse cmds)
              'paths (or paths (compile-fields (rec-fields 'paths) '() "(paths)"))
              'conditionalDocs (reverse docs)))
+
+(define include-unexpanded
+  "(include \"FILE\") is resolved by `#lang al` when the file is compiled; compile agentic.rkt itself (racket agentic.rkt or al compile), not its datum")
 
 ;; --- named records: command, hop, expert ------------------------------------------------
 
@@ -159,7 +240,7 @@
 
 ;; --- adw --------------------------------------------------------------------------------
 
-(define step-kinds "run, check, review, ship, compose, fan-out")
+(define step-kinds "run, check, script, review, ship, compose, fan-out")
 
 (define (compile-fan-out s adw-name named)
   (define f (named 'step-fan-out 'fan-out #f))
@@ -189,6 +270,7 @@
   (case (car s)
     [(run) (named 'step-run 'run #f)]
     [(check) (named 'step-check 'check #f)]
+    [(script) (named 'step-script 'script #f)]
     [(review) (named 'step-review 'review "review")]
     [(ship) (named 'step-ship 'ship "ship")]
     [(compose)
@@ -285,7 +367,7 @@
     (define adw-clauses '())
     (define layer-clause #f)
     (define clause-heads
-      (append (map family-name (all-families)) '(codebase command hop expert adw)))
+      (append (map family-name (all-families)) '(codebase command hop expert adw include)))
 
     (for ([c (in-list clauses)])
       (parameterize ([current-clause (car c)])
@@ -304,6 +386,8 @@
              (fail "(~a …): only one ~a may be declared" (family-name fam) (family-name fam)))
            (when (eq? (family-name fam) 'layer) (set! layer-clause (car c)))
            (when (eq? (family-name fam) 'dashboard) (hash-set! clause-of 'dashboard-clause (car c)))
+           (when (eq? (family-name fam) 'budget) (hash-set! clause-of 'budget-clause (car c)))
+           (when (eq? (family-name fam) 'agent) (hash-set! clause-of (cons 'agent (hash-ref o 'id)) (car c)))
            (hash-set! options (family-name fam) (cons o existing))]
           [(eq? (car d) 'codebase)
            (when codebase (fail "(codebase …) given twice"))
@@ -313,6 +397,8 @@
            (when (findf (lambda (x) (equal? (hash-ref x 'name) (hash-ref r 'name)))
                         (append commands hops))
              (fail "(~a ~a): name already used by another command or hop" (car d) (hash-ref r 'name)))
+           (when (equal? (hash-ref r 'modelSet) "inherit")
+             (fail "(~a ~a): #:model-set inherit is only for run steps; name a tier, e.g. base or heavy" (car d) (hash-ref r 'name)))
            (when (and (eq? (car d) 'command)
                       (equal? (hash-ref r 'template) "custom")
                       (string=? (hash-ref r 'file) ""))
@@ -320,6 +406,7 @@
            (if (eq? (car d) 'command) (set! commands (cons r commands)) (set! hops (cons r hops)))]
           [(eq? (car d) 'expert) (set! experts (cons (compile-named 'expert d) experts))]
           [(eq? (car d) 'adw) (set! adw-clauses (cons c adw-clauses))]
+          [(eq? (car d) 'include) (fail include-unexpanded)]
           [else (fail "unknown clause (~a …); clauses are: ~a" (car d) (names clause-heads))])))
 
     (unless codebase (fail "missing (codebase #:root \"…\" #:languages (…) (cmd …) …)"))
@@ -386,6 +473,27 @@
                   who bind))
           (unless (regexp-match? #px"^([A-Za-z_][A-Za-z0-9_]*)?$" (hash-ref d 'tokenEnv))
             (fail "~a: #:token-env must be an environment variable name (got ~s)" who (hash-ref d 'tokenEnv))))))
+    (let ([b (opts 'budget)])
+      (when (pair? b)
+        (parameterize ([current-clause (hash-ref clause-of 'budget-clause #f)])
+          (for ([k '(runUsd stepUsd dayUsd)] [kw '("#:run-usd" "#:step-usd" "#:day-usd")])
+            (define v (hash-ref (car b) k))
+            (when (and (real? v) (not (> v 0)))
+              (fail "(budget limits): ~a must be greater than 0 (got ~a); leave it out for no limit" kw v))))))
+    (for ([ag (in-list (opts 'agent))] #:when (hash-has-key? ag 'models))
+      (parameterize ([current-clause (hash-ref clause-of (cons 'agent (hash-ref ag 'id)) #f)])
+        (define who (format "(agent ~a)" (hash-ref ag 'kind)))
+        (for ([m (in-list (hash-ref ag 'models))])
+          (define t (hash-ref m 'tier))
+          (when (equal? t "inherit")
+            (fail "~a #:models: `inherit` is not a tier name (on a run step it means \"the command's tier\")" who))
+          (define e (hash-ref m 'effort))
+          (unless (equal? e "default")
+            (case (hash-ref ag 'kind)
+              [("claude-code") (void)]
+              [("codex") (when (equal? e "max")
+                           (fail "~a #:models: tier `~a` has #:effort max, which codex does not offer; use low, medium, high or xhigh" who t))]
+              [else (fail "~a #:models: tier `~a` has #:effort ~a, but a ~a agent has no way to pass it; remove #:effort" who t e (hash-ref ag 'kind))])))))
     (define forge (car (opts 'forge)))
     (define no-forge? (equal? (hash-ref forge 'kind) "none"))
     (define voice (let ([v (opts 'voice)]) (and (pair? v) (car v))))
@@ -426,6 +534,47 @@
         (when (or (and review-i (< review-i i)) (and ship-i (< ship-i i)))
           (fail "~a must come before the ADW's (review) and (ship) steps: they judge and ship the merged winner"
                 fwho))))
+
+    (define (command-tier name)
+      (define c (findf (lambda (x) (equal? (hash-ref x 'name) name)) (append commands hops)))
+      (if c (hash-ref c 'modelSet) "base"))
+    (define (hop? name) (findf (lambda (x) (equal? (hash-ref x 'name) name)) hops))
+    (define (agent-tiers agent)
+      (and (hash-has-key? agent 'models) (map (lambda (m) (hash-ref m 'tier)) (hash-ref agent 'models))))
+    ;; every tier a workflow can use must be declared on the agent that runs it
+    (define (check-tiers who ag rv steps)
+      (define (use agent-id tier why)
+        (define agent (opt 'agent agent-id))
+        (define tiers (agent-tiers agent))
+        (when (and tiers (not (member tier tiers)))
+          (fail "~a: ~a uses model tier `~a`, but agent `~a` declares the tiers: ~a; declare it, e.g. (agent ~a #:models ((~a \"MODEL-ID\")) …), or use one of those"
+                who why tier agent-id (names tiers) (hash-ref agent 'kind) tier)))
+      (define adw-agent (hash-ref ag 'id))
+      (for ([st (in-list steps)])
+        (define name (hash-ref st 'name))
+        (case (hash-ref st 'kind)
+          [("run")
+           (define step-tier (hash-ref st 'modelSet))
+           (define agent-id (if (string=? (hash-ref st 'agent) "") adw-agent (hash-ref st 'agent)))
+           (if (equal? step-tier "inherit")
+               (use agent-id (command-tier (hash-ref st 'command))
+                    (format "step `~a` (the #:model-set of ~a `~a`)" name
+                            (if (hop? (hash-ref st 'command)) "hop" "command") (hash-ref st 'command)))
+               (use agent-id step-tier (format "step `~a` (its #:model-set)" name)))]
+          [("check")
+           (unless (string=? (hash-ref st 'resolve) "")
+             (use adw-agent (command-tier (hash-ref st 'resolve))
+                  (format "check `~a` (the #:model-set of its resolve command `~a`)" name (hash-ref st 'resolve))))]
+          [("review")
+           (when (member (hash-ref rv 'kind) '("agent" "auto"))
+             (use (if (string=? (hash-ref rv 'agent "") "") adw-agent (hash-ref rv 'agent))
+                  (command-tier (hash-ref rv 'command))
+                  (format "review `~a` (the #:model-set of review command `~a`)" (hash-ref rv 'id) (hash-ref rv 'command)))
+             (for ([k '(patch implement)])
+               (unless (string=? (hash-ref st k) "")
+                 (use adw-agent (command-tier (hash-ref st k))
+                      (format "step `~a` (the #:model-set of its #:~a command `~a`)" name k (hash-ref st k))))))]
+          [else (void)])))
 
     (for ([a (in-list adws)])
       (parameterize ([current-clause (hash-ref clause-of (hash-ref a 'name))])
@@ -477,8 +626,8 @@
         (when (and (member "host" env-kinds) (member "worktree" env-kinds))
           (fail "~a: `host` and `worktree` environments cannot be combined" who))
         (when (and (not (member "worktree" env-kinds))
-                   (ormap (lambda (k) (member k '("check" "ship"))) kinds))
-          (fail "~a: check/ship steps need a `worktree` environment in the stack so the application checkout is never touched" who))
+                   (ormap (lambda (k) (member k '("check" "ship" "script"))) kinds))
+          (fail "~a: check, script and ship steps need a `worktree` environment in the stack so the application checkout is never touched" who))
         (check-fan-outs a who steps review-i ship-i env-kinds)
         (when (and (equal? (hash-ref a 'changes) "layer")
                    (not (member (hash-ref rv 'kind) '("human" "agent"))))
@@ -495,12 +644,18 @@
                      #:when (and (equal? (hash-ref st 'kind) "run")
                                  (not (string=? (hash-ref st 'agent "") ""))))
             (hash-ref st 'agent)))
-        (for ([agent-id (in-list (remove-duplicates (cons (hash-ref ag 'id) step-agent-ids)))])
+        (define reviewer-ids
+          (if (and (member (hash-ref rv 'kind) '("agent" "auto")) review-i
+                   (not (string=? (hash-ref rv 'agent "") "")))
+              (list (hash-ref rv 'agent))
+              '()))
+        (for ([agent-id (in-list (remove-duplicates (append (list (hash-ref ag 'id)) step-agent-ids reviewer-ids)))])
           (define used (opt 'agent agent-id))
           (when (and (equal? (hash-ref used 'kind) "claude-code")
                      (equal? (hash-ref used 'permissionMode) "bypassPermissions")
                      (not (and podman (hash-ref podman 'agentInside))))
             (fail "~a: agent `~a` uses bypassPermissions, which is only accepted when the agent itself runs inside a podman environment: add (environment podman #:agent-inside #t …) to the ADW's #:environment" who agent-id)))
+        (check-tiers who ag rv steps)
         (when (and (equal? (hash-ref rv 'kind) "auto")
                    (member (hash-ref rv 'ship) '("merge" "deploy"))
                    (not podman))
@@ -516,6 +671,7 @@
                'voice (single 'voice)
                'concurrency (single 'concurrency)
                'dashboard (single 'dashboard)
+               'budget (single 'budget)
                'agents (opts 'agent)
                'promptInputs (opts 'prompt-input)
                'triggers (opts 'trigger)

@@ -30,11 +30,13 @@
   [dir string "agentic" "Layer directory relative to the repository root (no `..`, no leading `/`)."])
 
 (define-family agent #:key "agents" #:letter "" #:default claude-code
-  "The coding agent a step runs on. ADWs name one; the runtime shells out to it headlessly.")
+  "The coding agent a step runs on. ADWs name one; the runtime shells out to it headlessly. An agent offers named model tiers: `base` and `heavy` always exist (see #:model-base / #:model-heavy), and #:models adds any others. Commands, hops and run steps pick a tier with #:model-set.")
 (define-kind agent claude-code
   "Claude Code in programmable mode (`claude -p`), stream-json output."
-  [model-base string "claude-sonnet-5-5" "Model for the `base` model set (cheap steps: classify, commit, branch name)."]
-  [model-heavy string "claude-opus-5-5" "Model for the `heavy` model set (plan, implement, review)."]
+  [models (list-of (record model-tier)) ()
+   "Named model tiers, e.g. ((fast \"claude-haiku-5-5\") (heavy \"claude-fable-5-2\" #:effort high)). `base` and `heavy` may be given here instead of with #:model-base / #:model-heavy, but not both ways."]
+  [model-base (shorthand models base) "claude-opus-5-5" "Model of the `base` tier (routine steps: classify, commit, branch name, document)."]
+  [model-heavy (shorthand models heavy) "claude-fable-5-2" "Model of the `heavy` tier (planning, building, review)."]
   [permission-mode (enum acceptEdits bypassPermissions plan default) acceptEdits
    "Headless permission mode. bypassPermissions only inside a podman environment."]
   [safe-mode boolean #t "Run with --safe-mode so user CLAUDE.md, hooks, plugins and skills are not loaded."]
@@ -43,21 +45,31 @@
   [max-turns integer 60 "Turn cap per step."]
   [timeout integer 1800 "Wall-clock seconds per step."])
 (define-kind agent codex
-  "OpenAI Codex CLI (`codex exec`)."
-  [model-base string "gpt-5.4-mini" "Model for the base set."]
-  [model-heavy string "gpt-5.4" "Model for the heavy set."]
+  "OpenAI Codex CLI (`codex exec`). It reports no cost, so spending limits count its calls as $0."
+  [models (list-of (record model-tier)) () "Named model tiers (see claude-code)."]
+  [model-base (shorthand models base) "gpt-5.4-mini" "Model of the `base` tier."]
+  [model-heavy (shorthand models heavy) "gpt-5.4" "Model of the `heavy` tier."]
   [sandbox (enum read-only workspace-write danger-full-access) workspace-write "Codex sandbox mode."]
   [timeout integer 1800 "Wall-clock seconds per step."])
 (define-kind agent custom
-  "Any CLI agent. The command receives the rendered prompt on stdin."
+  "Any CLI agent. The command receives the rendered prompt on stdin. It reports no cost, so spending limits count its calls as $0."
   [command string #:required "Shell command; {model} and {cwd} are substituted."]
-  [model-base string "" "Model for the base set."]
-  [model-heavy string "" "Model for the heavy set."]
+  [models (list-of (record model-tier)) () "Named model tiers (see claude-code); #:effort is not available."]
+  [model-base (shorthand models base) "" "Model of the `base` tier."]
+  [model-heavy (shorthand models heavy) "" "Model of the `heavy` tier."]
   [timeout integer 1800 "Wall-clock seconds per step."])
 (define-kind agent mock
-  "Deterministic stand-in used by tests and dry runs: no LLM, replays scripted responses."
+  "Deterministic stand-in used by tests and dry runs: no LLM, replays scripted responses. It accepts every tier name."
   [script-dir string "mock" "Directory (in the layer) holding <step>.json scripted responses and optional <step>.patch files."]
   [timeout integer 60 "Wall-clock seconds per step."])
+
+(define-family budget #:key "budget" #:letter "" #:default #f
+  "Spending limits for agent work, in US dollars, counted from the cost each agent call reports (Claude Code reports it; codex and custom agents do not and count as $0). Omitted: no limits. A run that crosses a limit is stopped after the agent call that crossed it, never in the middle of one, and handed to a person like any other stopped run.")
+(define-kind budget limits
+  "Limits on what agent calls may cost. Each is optional; an omitted one is no limit."
+  [run-usd decimal #:none "Most one run may spend (the sum of its agent calls). A per-run `--max-cost USD` (or AL_MAX_COST) replaces it for that run."]
+  [step-usd decimal #:none "Most one agent call may spend. With Claude Code the call is also capped natively (--max-budget-usd), so it stops early."]
+  [day-usd decimal #:none "Most this layer may spend per local calendar day, over all its runs. Once reached, no run and no agent step starts until the next day."])
 
 (define-family forge #:key "forge" #:letter "" #:default none
   "The code forge used for issues, PRs and CI integration.")
@@ -296,6 +308,7 @@
   [command (ref command) review "Review command."]
   [artefacts (list-of (ref artefact)) () "Artefacts attached as proof."]
   [reviewers integer 1 "Independent review agents; all must pass ('double agent check')."]
+  [agent (optional-ref agent) "" "Agent the reviewer steps run on; empty = the workflow's agent. A different agent here (another vendor or model) reviews the first one's work. The patch and implement steps of a review round stay on the workflow's agent."]
   [max-retries integer 3 "Patch-and-re-review attempts on blockers before stopping for a human."]
   [body-cmd (optional-ref cmd) "" "Codebase command whose standard output opens the PR description (see review human)."])
 (define-kind review auto
@@ -303,6 +316,7 @@
   [command (ref command) review "Review command."]
   [artefacts (list-of (ref artefact)) () "Artefacts collected, stored and given to the reviewer as proof."]
   [reviewers integer 1 "Independent review agents; all must pass."]
+  [agent (optional-ref agent) "" "Agent the reviewer steps run on; empty = the workflow's agent (see review agent)."]
   [max-retries integer 3 "Patch-and-re-review attempts on blockers."]
   [ship (enum pr merge deploy) merge "On pass: open PR only, merge to the default branch, or merge and run the deploy command."]
   [deploy-cmd (optional-ref cmd) "" "Codebase command run after merge when ship = deploy."]
@@ -388,7 +402,7 @@
             #:required "Kit template to instantiate."]
   [description string "" "One-line purpose."]
   [file string "" "For template custom: path of a hand-written template relative to the layer."]
-  [model-set (enum base heavy) base "Model set the step runs on."]
+  [model-set tier base "Model tier the command runs on: a tier declared on the agent that runs it (base, heavy, or one from #:models)."]
   [output (enum text json path) text "What the command must return: free text, JSON per its schema, or a file path."]
   [focus (list-of string) () "Codebase-specific instructions injected into the template's Instructions section."]
   [relevant (list-of string) () "Codebase paths listed under Relevant Files; empty = codebase source+tests paths."]
@@ -401,7 +415,7 @@
   [description string "" "One-line purpose."]
   [takes (enum prompt plan command spec) prompt "What the argument is."]
   [produces (enum changes command adw expert plan) changes "What comes out."]
-  [model-set (enum base heavy) heavy "Model set."])
+  [model-set tier heavy "Model tier the HOP runs on (see command)."])
 
 (define-record expert
   "(expert NAME …): an agent expert — an expertise file the agent maintains itself (act → learn → reuse)."
@@ -420,11 +434,18 @@
   [classes (list-of (enum chore bug feature patch)) () "Work classes routed to this ADW by classification; empty = any."]
   [changes (enum codebase layer) codebase "What the ADW changes. `codebase`: the application. `layer`: an agentic layer (its codebase is the repository that holds a layer, as in the workflow `al improve` runs); such an ADW never ships without a person and is exempt from the in-repo layer protection."])
 
+(define-record model-tier #:positional (tier model)
+  "One model tier of an agent, written (TIER \"MODEL-ID\" [#:effort LEVEL]) inside #:models."
+  [tier tier #:required "Tier name: lowercase letters, digits and dashes (not `inherit`)."]
+  [model string #:required "Model id passed to the agent CLI."]
+  [effort (enum default low medium high xhigh max) default
+   "Reasoning effort for this tier: `default` leaves it to the CLI. Claude Code: passed as --effort (low…max). codex: passed as -c model_reasoning_effort=LEVEL (low…xhigh; codex has no flag of its own for it). Not available for custom agents."])
+
 (define-record step-run
   "(run NAME #:command C …): one agent, one prompt, one purpose."
   [command (ref command-or-hop) #:required "Command or HOP to execute."]
   [args (list-of string) () "Arguments; $prompt, $plan, $adw_id, $class, $branch and $out.<step> are substituted."]
-  [model-set (enum inherit base heavy) inherit "Override the command's model set."]
+  [model-set tier inherit "Model tier for this step; `inherit` = the command's, unless the request names a tier (a task-file tag or issue keyword)."]
   [retries integer 0 "Re-run on failure."]
   [when (enum always class-feature class-bug class-chore class-patch) always "Run only for this work class."]
   [agent (optional-ref agent) "" "Agent for this step only; empty = the ADW's agent. Use it for a cheaper model on routine steps or a different vendor for an independent step."])
@@ -435,6 +456,12 @@
   [resolve (optional-ref command) "" "Command given the failing output; empty = fail the run immediately."]
   [retries integer 3 "Resolve attempts."]
   [collect (list-of (ref artefact)) () "Artefacts collected after the command."])
+
+(define-record step-script
+  "(script NAME #:cmd C …): run a declared codebase cmd as a workflow step, e.g. a workflow script the team already has. It runs in the run's environment (worktree, container), gets the run context in environment variables (ADW_ID, ADW_PROMPT, ADW_CLASS, ADW_PLAN, ADW_BRANCH, ADW_WORKTREE, ADW_LAYER_DIR), its output becomes the step's output ($out.NAME), and a non-zero exit fails the run. It is not a check: no resolve loop, and the gate does not count it as verification."
+  [cmd (ref cmd) #:required "Codebase command to run."]
+  [args (list-of string) () "Arguments appended to the command, each shell-quoted; $prompt, $plan, $adw_id, $class, $branch and $out.<step> are substituted."]
+  [timeout integer 0 "Seconds; 0 = the cmd's own #:timeout."])
 
 (define-record step-review
   "(review [NAME] …): run the ADW's review option here."
@@ -468,7 +495,7 @@
 (define artefact-types (map kind-name (family-kinds (find-family 'artefact))))
 
 ;; Families that hold exactly one option (emitted as an object, not an array).
-(define singleton-families '(layer forge storage voice concurrency dashboard))
+(define singleton-families '(layer forge storage voice concurrency dashboard budget))
 
 (define semantic-rules
   '("Exactly one (codebase …) clause and at least one (adw …) clause."
@@ -489,4 +516,8 @@
     "(layer in-repo #:dir D): D is a relative path inside the repository (no `..`, no leading `/`), and (codebase #:root …) is the way back up from D to the repository root: \"..\" for a top-level directory, \"../..\" for D = \"tools/agentic\"."
     "An ADW with #:changes layer must use a review option of kind `human` or `agent`: a change to how agents work always passes a person."
     "(dashboard …) is declared at most once; omitted, it is (dashboard local) on 127.0.0.1:8765. A #:bind that is not a loopback address (127.x.x.x, ::1, localhost) needs #:token-env naming the environment variable that holds the access token; #:port is 1–65535 and #:poll-ms at least 100."
+    "Model tiers: an agent's tiers are `base` and `heavy` (from #:model-base / #:model-heavy, which have defaults) plus every (TIER \"MODEL\") in its #:models; a tier given both ways, or twice, is an error, and `inherit` is not a tier name. Every tier a workflow can use must be declared on the agent that runs it: run steps (their #:model-set, else their command's) on the step's #:agent or the ADW's agent; check #:resolve commands and review #:patch / #:implement commands on the ADW's agent; the review command on the review option's #:agent, else the ADW's agent. The mock agent accepts every tier. #:effort is only available for claude-code and codex (codex: not `max`)."
+    "(budget limits …) is declared at most once; every limit given is greater than 0."
+    "A (script …) step needs a `worktree` environment in the ADW's stack, like check and ship."
+    "(include \"FILE\") splices the clauses of FILE (plain s-expressions, no #lang line; a path relative to agentic.rkt) where it stands: at the top level of (agentic-layer …), or inside (codebase …) for cmd, paths and conditional-doc clauses. Errors point into FILE. An included file cannot include another. `al adopt` writes its declarations this way."
     "Kinds marked planned compile but are refused by the generator."))

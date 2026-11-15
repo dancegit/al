@@ -6,3 +6,4 @@
 (define deps '("base"))
 (define build-deps '("rackunit-lib"))
 (define compile-omit-paths '("tests/fixtures"))
+(define test-omit-paths '("tests/fixtures"))

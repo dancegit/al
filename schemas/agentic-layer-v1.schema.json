@@ -85,12 +85,8 @@
                       "const": "run"
                     },
                     "modelSet": {
-                      "description": "Override the command's model set.",
-                      "enum": [
-                        "inherit",
-                        "base",
-                        "heavy"
-                      ],
+                      "description": "Model tier for this step; `inherit` = the command's, unless the request names a tier (a task-file tag or issue keyword).",
+                      "pattern": "^[a-z][a-z0-9-]*$",
                       "type": "string"
                     },
                     "name": {
@@ -161,6 +157,41 @@
                     "name",
                     "resolve",
                     "retries"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "(script NAME #:cmd C …): run a declared codebase cmd as a workflow step, e.g. a workflow script the team already has. It runs in the run's environment (worktree, container), gets the run context in environment variables (ADW_ID, ADW_PROMPT, ADW_CLASS, ADW_PLAN, ADW_BRANCH, ADW_WORKTREE, ADW_LAYER_DIR), its output becomes the step's output ($out.NAME), and a non-zero exit fails the run. It is not a check: no resolve loop, and the gate does not count it as verification.",
+                  "properties": {
+                    "args": {
+                      "description": "Arguments appended to the command, each shell-quoted; $prompt, $plan, $adw_id, $class, $branch and $out.<step> are substituted.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "cmd": {
+                      "description": "Codebase command to run.",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "script"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "timeout": {
+                      "description": "Seconds; 0 = the cmd's own #:timeout.",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "args",
+                    "cmd",
+                    "kind",
+                    "name",
+                    "timeout"
                   ],
                   "type": "object"
                 },
@@ -284,7 +315,7 @@
       "type": "array"
     },
     "agents": {
-      "description": "The coding agent a step runs on. ADWs name one; the runtime shells out to it headlessly.",
+      "description": "The coding agent a step runs on. ADWs name one; the runtime shells out to it headlessly. An agent offers named model tiers: `base` and `heavy` always exist (see #:model-base / #:model-heavy), and #:models adds any others. Commands, hops and run steps pick a tier with #:model-set.",
       "items": {
         "oneOf": [
           {
@@ -308,13 +339,42 @@
                 "description": "Turn cap per step.",
                 "type": "integer"
               },
-              "modelBase": {
-                "description": "Model for the `base` model set (cheap steps: classify, commit, branch name).",
-                "type": "string"
-              },
-              "modelHeavy": {
-                "description": "Model for the `heavy` model set (plan, implement, review).",
-                "type": "string"
+              "models": {
+                "description": "Named model tiers, e.g. ((fast \"claude-haiku-5-5\") (heavy \"claude-fable-5-2\" #:effort high)). `base` and `heavy` may be given here instead of with #:model-base / #:model-heavy, but not both ways.",
+                "items": {
+                  "additionalProperties": false,
+                  "description": "One model tier of an agent, written (TIER \"MODEL-ID\" [#:effort LEVEL]) inside #:models.",
+                  "properties": {
+                    "effort": {
+                      "description": "Reasoning effort for this tier: `default` leaves it to the CLI. Claude Code: passed as --effort (low…max). codex: passed as -c model_reasoning_effort=LEVEL (low…xhigh; codex has no flag of its own for it). Not available for custom agents.",
+                      "enum": [
+                        "default",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                      ],
+                      "type": "string"
+                    },
+                    "model": {
+                      "description": "Model id passed to the agent CLI.",
+                      "type": "string"
+                    },
+                    "tier": {
+                      "description": "Tier name: lowercase letters, digits and dashes (not `inherit`).",
+                      "pattern": "^[a-z][a-z0-9-]*$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "effort",
+                    "model",
+                    "tier"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
               },
               "permissionMode": {
                 "description": "Headless permission mode. bypassPermissions only inside a podman environment.",
@@ -343,8 +403,7 @@
               "id",
               "kind",
               "maxTurns",
-              "modelBase",
-              "modelHeavy",
+              "models",
               "permissionMode",
               "safeMode",
               "status",
@@ -354,7 +413,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "OpenAI Codex CLI (`codex exec`).",
+            "description": "OpenAI Codex CLI (`codex exec`). It reports no cost, so spending limits count its calls as $0.",
             "properties": {
               "id": {
                 "type": "string"
@@ -362,13 +421,42 @@
               "kind": {
                 "const": "codex"
               },
-              "modelBase": {
-                "description": "Model for the base set.",
-                "type": "string"
-              },
-              "modelHeavy": {
-                "description": "Model for the heavy set.",
-                "type": "string"
+              "models": {
+                "description": "Named model tiers (see claude-code).",
+                "items": {
+                  "additionalProperties": false,
+                  "description": "One model tier of an agent, written (TIER \"MODEL-ID\" [#:effort LEVEL]) inside #:models.",
+                  "properties": {
+                    "effort": {
+                      "description": "Reasoning effort for this tier: `default` leaves it to the CLI. Claude Code: passed as --effort (low…max). codex: passed as -c model_reasoning_effort=LEVEL (low…xhigh; codex has no flag of its own for it). Not available for custom agents.",
+                      "enum": [
+                        "default",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                      ],
+                      "type": "string"
+                    },
+                    "model": {
+                      "description": "Model id passed to the agent CLI.",
+                      "type": "string"
+                    },
+                    "tier": {
+                      "description": "Tier name: lowercase letters, digits and dashes (not `inherit`).",
+                      "pattern": "^[a-z][a-z0-9-]*$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "effort",
+                    "model",
+                    "tier"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
               },
               "sandbox": {
                 "description": "Codex sandbox mode.",
@@ -390,8 +478,7 @@
             "required": [
               "id",
               "kind",
-              "modelBase",
-              "modelHeavy",
+              "models",
               "sandbox",
               "status",
               "timeout"
@@ -400,7 +487,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Any CLI agent. The command receives the rendered prompt on stdin.",
+            "description": "Any CLI agent. The command receives the rendered prompt on stdin. It reports no cost, so spending limits count its calls as $0.",
             "properties": {
               "command": {
                 "description": "Shell command; {model} and {cwd} are substituted.",
@@ -412,13 +499,42 @@
               "kind": {
                 "const": "custom"
               },
-              "modelBase": {
-                "description": "Model for the base set.",
-                "type": "string"
-              },
-              "modelHeavy": {
-                "description": "Model for the heavy set.",
-                "type": "string"
+              "models": {
+                "description": "Named model tiers (see claude-code); #:effort is not available.",
+                "items": {
+                  "additionalProperties": false,
+                  "description": "One model tier of an agent, written (TIER \"MODEL-ID\" [#:effort LEVEL]) inside #:models.",
+                  "properties": {
+                    "effort": {
+                      "description": "Reasoning effort for this tier: `default` leaves it to the CLI. Claude Code: passed as --effort (low…max). codex: passed as -c model_reasoning_effort=LEVEL (low…xhigh; codex has no flag of its own for it). Not available for custom agents.",
+                      "enum": [
+                        "default",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                      ],
+                      "type": "string"
+                    },
+                    "model": {
+                      "description": "Model id passed to the agent CLI.",
+                      "type": "string"
+                    },
+                    "tier": {
+                      "description": "Tier name: lowercase letters, digits and dashes (not `inherit`).",
+                      "pattern": "^[a-z][a-z0-9-]*$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "effort",
+                    "model",
+                    "tier"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
               },
               "status": {
                 "const": "stable"
@@ -432,8 +548,7 @@
               "command",
               "id",
               "kind",
-              "modelBase",
-              "modelHeavy",
+              "models",
               "status",
               "timeout"
             ],
@@ -441,7 +556,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Deterministic stand-in used by tests and dry runs: no LLM, replays scripted responses.",
+            "description": "Deterministic stand-in used by tests and dry runs: no LLM, replays scripted responses. It accepts every tier name.",
             "properties": {
               "id": {
                 "type": "string"
@@ -726,6 +841,62 @@
       },
       "type": "array"
     },
+    "budget": {
+      "description": "Spending limits for agent work, in US dollars, counted from the cost each agent call reports (Claude Code reports it; codex and custom agents do not and count as $0). Omitted: no limits. A run that crosses a limit is stopped after the agent call that crossed it, never in the middle of one, and handed to a person like any other stopped run.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Limits on what agent calls may cost. Each is optional; an omitted one is no limit.",
+          "properties": {
+            "dayUsd": {
+              "description": "Most this layer may spend per local calendar day, over all its runs. Once reached, no run and no agent step starts until the next day.",
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "limits"
+            },
+            "runUsd": {
+              "description": "Most one run may spend (the sum of its agent calls). A per-run `--max-cost USD` (or AL_MAX_COST) replaces it for that run.",
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "status": {
+              "const": "stable"
+            },
+            "stepUsd": {
+              "description": "Most one agent call may spend. With Claude Code the call is also capped natively (--max-budget-usd), so it stops early.",
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "dayUsd",
+            "id",
+            "kind",
+            "runUsd",
+            "status",
+            "stepUsd"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "codebase": {
       "additionalProperties": false,
       "description": "The application the layer wraps. Everything codebase-specific that templates need lives here.",
@@ -893,11 +1064,8 @@
             "type": "array"
           },
           "modelSet": {
-            "description": "Model set the step runs on.",
-            "enum": [
-              "base",
-              "heavy"
-            ],
+            "description": "Model tier the command runs on: a tier declared on the agent that runs it (base, heavy, or one from #:models).",
+            "pattern": "^[a-z][a-z0-9-]*$",
             "type": "string"
           },
           "name": {
@@ -1665,11 +1833,8 @@
             "type": "string"
           },
           "modelSet": {
-            "description": "Model set.",
-            "enum": [
-              "base",
-              "heavy"
-            ],
+            "description": "Model tier the HOP runs on (see command).",
+            "pattern": "^[a-z][a-z0-9-]*$",
             "type": "string"
           },
           "name": {
@@ -2205,6 +2370,10 @@
             "additionalProperties": false,
             "description": "An agent reviews the diff against the spec, with artefacts as proof, and posts a structured verdict. A human still merges.",
             "properties": {
+              "agent": {
+                "description": "Agent the reviewer steps run on; empty = the workflow's agent. A different agent here (another vendor or model) reviews the first one's work. The patch and implement steps of a review round stay on the workflow's agent.",
+                "type": "string"
+              },
               "artefacts": {
                 "description": "Artefacts attached as proof.",
                 "items": {
@@ -2239,6 +2408,7 @@
               }
             },
             "required": [
+              "agent",
               "artefacts",
               "bodyCmd",
               "command",
@@ -2254,6 +2424,10 @@
             "additionalProperties": false,
             "description": "Zero-touch: agent review + deterministic gates; if everything passes the change ships without a human.",
             "properties": {
+              "agent": {
+                "description": "Agent the reviewer steps run on; empty = the workflow's agent (see review agent).",
+                "type": "string"
+              },
               "allowedClasses": {
                 "description": "Work classes allowed to ship untouched; others fall back to a human PR.",
                 "items": {
@@ -2329,6 +2503,7 @@
               }
             },
             "required": [
+              "agent",
               "allowedClasses",
               "artefacts",
               "blockProtectedPaths",
@@ -2804,6 +2979,7 @@
     "adws",
     "agents",
     "artefacts",
+    "budget",
     "codebase",
     "commands",
     "concurrency",

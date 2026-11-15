@@ -8,16 +8,23 @@
 (define (type->schema type)
   (cond
     [(memq type '(string symbol)) (hasheq 'type "string")]
+    [(eq? type 'tier) (hasheq 'type "string" 'pattern "^[a-z][a-z0-9-]*$")]
     [(eq? type 'integer) (hasheq 'type "integer")]
+    [(eq? type 'decimal) (hasheq 'type "number" 'minimum 0)]
     [(eq? type 'boolean) (hasheq 'type "boolean")]
     [(eq? (car type) 'enum) (hasheq 'type "string" 'enum (map symbol->string (cdr type)))]
     [(eq? (car type) 'list-of) (hasheq 'type "array" 'items (type->schema (cadr type)))]
+    [(eq? (car type) 'record) (rec (cadr type))]
     [(memq (car type) '(ref optional-ref)) (hasheq 'type "string")]))
+
+(define (field-schema f)
+  (define s (hash-set (type->schema (field-type f)) 'description (field-doc f)))
+  (if (field-none? f) (hash-set s 'type (list (hash-ref s 'type) "null")) s))
 
 (define (object doc fields #:extra [extra (hasheq)])
   (define props
-    (for/fold ([h extra]) ([f (in-list fields)])
-      (hash-set h (field-json-key f) (hash-set (type->schema (field-type f)) 'description (field-doc f)))))
+    (for/fold ([h extra]) ([f (in-list (emitted-fields fields))])
+      (hash-set h (field-json-key f) (field-schema f))))
   (hasheq 'type "object"
           'description doc
           'additionalProperties #f
@@ -67,6 +74,7 @@
                          #:extra (hash-set name-prop 'steps
                                            (array-of (hasheq 'oneOf (list (step 'step-run "run")
                                                                           (step 'step-check "check")
+                                                                          (step 'step-script "script")
                                                                           (step 'step-review "review")
                                                                           (step 'step-ship "ship")
                                                                           (step 'step-fan-out "fan-out"))))))))])

@@ -188,6 +188,15 @@
           "when": "always"
         },
         {
+          "args": [
+            "$prompt"
+          ],
+          "cmd": "changelog",
+          "kind": "script",
+          "name": "changelog",
+          "timeout": 0
+        },
+        {
           "agent": "",
           "args": [],
           "command": "commit",
@@ -520,10 +529,44 @@
       "id": "claude-code",
       "kind": "claude-code",
       "maxTurns": 60,
-      "modelBase": "claude-sonnet-5-5",
-      "modelHeavy": "claude-opus-5-5",
+      "models": [
+        {
+          "effort": "default",
+          "model": "claude-opus-5-5",
+          "tier": "base"
+        },
+        {
+          "effort": "default",
+          "model": "claude-haiku-5-5",
+          "tier": "fast"
+        },
+        {
+          "effort": "high",
+          "model": "claude-fable-5-2",
+          "tier": "heavy"
+        }
+      ],
       "permissionMode": "acceptEdits",
       "safeMode": true,
+      "status": "stable",
+      "timeout": 1800
+    },
+    {
+      "id": "second-opinion",
+      "kind": "codex",
+      "models": [
+        {
+          "effort": "default",
+          "model": "gpt-5.4-mini",
+          "tier": "base"
+        },
+        {
+          "effort": "default",
+          "model": "gpt-5.4",
+          "tier": "heavy"
+        }
+      ],
+      "sandbox": "workspace-write",
       "status": "stable",
       "timeout": 1800
     }
@@ -556,6 +599,14 @@
       "status": "stable"
     }
   ],
+  "budget": {
+    "dayUsd": 50,
+    "id": "limits",
+    "kind": "limits",
+    "runUsd": 5,
+    "status": "stable",
+    "stepUsd": 2
+  },
   "codebase": {
     "commands": [
       {
@@ -586,6 +637,12 @@
         "description": "",
         "name": "deploy",
         "run": "./scripts/deploy.sh staging",
+        "timeout": 900
+      },
+      {
+        "description": "the team's own script: appends the change to CHANGELOG.md",
+        "name": "changelog",
+        "run": "./scripts/changelog.sh",
         "timeout": 900
       }
     ],
@@ -641,7 +698,7 @@
       "fabric": [],
       "file": "",
       "focus": [],
-      "modelSet": "base",
+      "modelSet": "fast",
       "name": "classify",
       "output": "json",
       "relevant": [],
@@ -756,7 +813,7 @@
       ],
       "file": "",
       "focus": [],
-      "modelSet": "base",
+      "modelSet": "fast",
       "name": "commit",
       "output": "text",
       "relevant": [],
@@ -954,6 +1011,7 @@
       "status": "stable"
     },
     {
+      "agent": "second-opinion",
       "allowedClasses": [
         "chore",
         "bug"
