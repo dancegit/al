@@ -1,0 +1,39 @@
+{
+  "date": "2026-11-15T10:23:59Z",
+  "model": "claude-opus-5-5",
+  "forgejo": "11.0.16+gitea-1.22.0",
+  "scenario_a": {
+    "prompt": {
+      "issue_title": "Dark theme: dark slate page background",
+      "issue_body": "Change the page background colour to dark slate (#1e293b) and make the text light so it stays readable.",
+      "issue_attachment": "before.png, embedded at the end of the issue body as \"Current look, before the change\""
+    },
+    "adw": "ui-change",
+    "class": "chore",
+    "review": "human",
+    "run_id": "0641a4a6",
+    "wall_clock_seconds": 111,
+    "agent_cost_usd": 0.4656,
+    "agent_steps": 3,
+    "pull_request": 2,
+    "shipped_commit": "c984f4a80fbc8cda08e3b159a1ac235170151b73",
+    "main_after": "d9d077550499bd76938fec2285c4db1057d0912a"
+  },
+  "scenario_b": {
+    "prompt": {
+      "issue_title": "Search box that filters the notes",
+      "issue_body": "Add a search box above the notes list that filters the notes as you type; show 'No notes match' when nothing matches."
+    },
+    "adw": "feature",
+    "class": "feature",
+    "review": "auto, 2 reviewers, ship merge",
+    "run_id": "3e23886c",
+    "wall_clock_seconds": 273,
+    "agent_cost_usd": 1.3111,
+    "agent_steps": 5,
+    "pull_request": 4,
+    "shipped_commit": "79a6158fa4a7ebb53e3c2c583f88ebbb2b82580c",
+    "main_after": "0a043d1f5c5f8a97983c498fba1b8da940bab922"
+  },
+  "total_agent_cost_usd": 1.7767
+}

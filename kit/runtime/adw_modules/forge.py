@@ -15,8 +15,10 @@ can recognise (and ignore) the layer's own comments.
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import re
+import secrets
 import subprocess
 import time
 import urllib.error
@@ -122,6 +124,27 @@ class ForgeClient:
 
     def merge_pr(self, number: int, method: str = "squash") -> None:
         raise NotImplementedError
+
+    can_attach = False  # True when attach() really uploads (see ship.post_proof)
+
+    def attach(self, n: int, path: Path, name: str | None = None, comment_id: Any = None) -> str:
+        """Attach a file to issue / pull request `n` (or to one of its comments); return a URL
+        usable in markdown (an image reference renders inline). "" = this forge cannot host
+        files, callers leave the text as is."""
+        return ""
+
+    def edit_comment(self, comment_id: Any, body: str) -> None:
+        raise ForgeError(f"forge {self.kind} cannot edit comments")
+
+
+def multipart_file(field: str, filename: str, data: bytes) -> tuple[bytes, str]:
+    """(body, content type) of a multipart/form-data request carrying one file."""
+    boundary = f"al-{secrets.token_hex(12)}"
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    quoted = filename.replace("\\", "\\\\").replace('"', '\\"')
+    head = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{quoted}\"\r\n"
+            f"Content-Type: {content_type}\r\n\r\n").encode("utf-8")
+    return head + data + f"\r\n--{boundary}--\r\n".encode("utf-8"), f"multipart/form-data; boundary={boundary}"
 
 
 def _has_all_labels(issue: Mapping[str, Any], labels: Iterable[str]) -> bool:
@@ -242,6 +265,10 @@ class GitHubForge(ForgeClient):
             raise ForgeError(f"unknown merge method {method!r}")
         self.gh("pr", "merge", str(number), f"--{method}")
 
+    def attach(self, n, path, name=None, comment_id=None):
+        # GitHub has no API (nor `gh` command) for uploading files to issues or pull requests.
+        return ""
+
 
 # --------------------------------------------------------------------------- forgejo
 
@@ -304,7 +331,12 @@ class ForgejoForge(ForgeClient):
                  "user": (c.get("user") or {}).get("login", "")} for c in data]
 
     def comment(self, n, body):
-        self.request("POST", f"/issues/{int(n)}/comments", {"body": self.mark(body)})
+        """Post a comment; returns its id (needed to attach files to it or edit it)."""
+        data = self.request("POST", f"/issues/{int(n)}/comments", {"body": self.mark(body)})
+        return data.get("id") if isinstance(data, dict) else None
+
+    def edit_comment(self, comment_id, body):
+        self.request("PATCH", f"/issues/comments/{int(comment_id)}", {"body": self.mark(body)})
 
     def create_pr(self, branch, base, title, body, draft=False, reviewers=()):
         # The Forgejo API has no draft flag; a "WIP: " title prefix is the forge's draft convention.
@@ -321,6 +353,25 @@ class ForgejoForge(ForgeClient):
         if method not in ("squash", "merge", "rebase"):
             raise ForgeError(f"unknown merge method {method!r}")
         self.request("POST", f"/pulls/{int(number)}/merge", {"Do": method})
+
+    can_attach = True
+
+    def attach(self, n, path, name=None, comment_id=None):
+        """POST …/issues/{n}/assets (pull requests are issues too), or …/issues/comments/{id}/assets
+        to attach to one comment (the file is then listed with that comment, not the description).
+        The returned browser_download_url is public for a public repository."""
+        path = Path(path)
+        name = name or path.name
+        body, content_type = multipart_file("attachment", name, path.read_bytes())
+        headers = {**self.headers(), "Content-Type": content_type}
+        target = f"/issues/comments/{int(comment_id)}" if comment_id is not None else f"/issues/{int(n)}"
+        url = f"{self.base}{target}/assets?" + urllib.parse.urlencode({"name": name})
+        http = self._http or http_request
+        _status, data = http("POST", url, headers, body)
+        link = (data or {}).get("browser_download_url") if isinstance(data, dict) else None
+        if not link:
+            raise ForgeError(f"attachment upload for #{n} returned no browser_download_url: {str(data)[:200]}")
+        return str(link)
 
 
 # --------------------------------------------------------------------------- factory
