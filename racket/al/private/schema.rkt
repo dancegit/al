@@ -68,7 +68,8 @@
                                            (array-of (hasheq 'oneOf (list (step 'step-run "run")
                                                                           (step 'step-check "check")
                                                                           (step 'step-review "review")
-                                                                          (step 'step-ship "ship"))))))))])
+                                                                          (step 'step-ship "ship")
+                                                                          (step 'step-fan-out "fan-out"))))))))])
               ([fam (in-list (all-families))])
       (hash-set h (string->symbol (family-key fam)) (family-schema fam))))
   (hasheq '$schema "https://json-schema.org/draft/2020-12/schema"

@@ -159,9 +159,22 @@
 
 ;; --- adw --------------------------------------------------------------------------------
 
+(define step-kinds "run, check, review, ship, compose, fan-out")
+
+(define (compile-fan-out s adw-name named)
+  (define f (named 'step-fan-out 'fan-out #f))
+  (define who (format "(adw ~a) step (fan-out ~a)" adw-name (hash-ref f 'name)))
+  (define n (hash-ref f 'count))
+  (unless (<= 2 n 8)
+    (fail "~a: #:count must be between 2 and 8 (got ~a)" who n))
+  (unless (<= 0 (hash-ref f 'maxParallel) n)
+    (fail "~a: #:max-parallel must be between 0 (= #:count) and #:count ~a (got ~a)"
+          who n (hash-ref f 'maxParallel)))
+  f)
+
 (define (compile-step s adw-name)
   (unless (and (pair? s) (symbol? (car s)))
-    (fail "(adw ~a): bad step ~s; steps are run, check, review, ship, compose" adw-name s))
+    (fail "(adw ~a): bad step ~s; steps are ~a" adw-name s step-kinds))
   (define (named record kind default-name)
     (define rest (cdr s))
     (define has-name? (and (pair? rest) (symbol? (car rest))))
@@ -183,8 +196,8 @@
        (fail "(adw ~a): expected (compose ADW-NAME), got ~s" adw-name s))
      (note-ref! 'adw (symbol->string (cadr s)) (format "(adw ~a) (compose ~a)" adw-name (cadr s)))
      (hasheq 'kind "compose" 'adw (symbol->string (cadr s)))]
-    [else (fail "(adw ~a): unknown step ~a; steps are run, check, review, ship, compose"
-                adw-name (car s))]))
+    [(fan-out) (compile-fan-out s adw-name named)]
+    [else (fail "(adw ~a): unknown step ~a; steps are ~a" adw-name (car s) step-kinds)]))
 
 (define (compile-adw datum firsts)
   (unless (and (>= (length datum) 2) (symbol? (cadr datum)))
@@ -334,6 +347,43 @@
     (define forge (car (opts 'forge)))
     (define no-forge? (equal? (hash-ref forge 'kind) "none"))
     (define voice (let ([v (opts 'voice)]) (and (pair? v) (car v))))
+    (define adw-by-name (for/hash ([x (in-list adws)]) (values (hash-ref x 'name) x)))
+    (define (env-kinds-of x)
+      (map (lambda (id) (hash-ref (opt 'environment id) 'kind)) (hash-ref x 'environment)))
+    (define (steps-of-kind x k)
+      (filter (lambda (s) (equal? (hash-ref s 'kind) k)) (hash-ref x 'steps)))
+    ;; First fan-out cycle reachable from `start` (path is newest-first), as a list of names, or #f.
+    (define (fan-out-cycle start path)
+      (for/or ([s (in-list (steps-of-kind (hash-ref adw-by-name start) "fan-out"))])
+        (define t (hash-ref s 'adw))
+        (if (member t path) (reverse (cons t path)) (fan-out-cycle t (cons t path)))))
+    (define (check-fan-outs a who steps review-i ship-i env-kinds)
+      (for ([s (in-list steps)] [i (in-naturals)] #:when (equal? (hash-ref s 'kind) "fan-out"))
+        (define parent (hash-ref a 'name))
+        (define child-name (hash-ref s 'adw))
+        (define fwho (format "~a: fan-out ~a" who (hash-ref s 'name)))
+        (unless (member "worktree" env-kinds)
+          (fail "~a needs a `worktree` environment in the parent's stack: the winner's commits are merged into the run's worktree" fwho))
+        (when (equal? child-name parent)
+          (fail "~a: #:adw must name another ADW, not `~a` itself; declare a separate child ADW (plan → build → check → commit)"
+                fwho parent))
+        (define cycle (fan-out-cycle child-name (list child-name parent)))
+        (when cycle
+          (fail "~a: cycle ~a through fan-out/compose; a child ADW must not fan out back into its parent"
+                fwho (string-join cycle " → ")))
+        (define child (hash-ref adw-by-name child-name))
+        (unless (null? (steps-of-kind child "ship"))
+          (fail "~a: child ADW `~a` contains a (ship) step; candidates must not ship — remove (review)/(ship) from `~a` and let the parent review and ship the winner"
+                fwho child-name child-name))
+        (unless (null? (steps-of-kind child "fan-out"))
+          (fail "~a: child ADW `~a` contains a (fan-out) step; fan-out does not nest — use a child ADW without (fan-out)"
+                fwho child-name))
+        (unless (member "worktree" (env-kinds-of child))
+          (fail "~a: child ADW `~a` needs a `worktree` environment so each candidate commits on its own branch; add it to `~a`'s #:environment"
+                fwho child-name child-name))
+        (when (or (and review-i (< review-i i)) (and ship-i (< ship-i i)))
+          (fail "~a must come before the ADW's (review) and (ship) steps: they judge and ship the merged winner"
+                fwho))))
 
     (for ([a (in-list adws)])
       (parameterize ([current-clause (hash-ref clause-of (hash-ref a 'name))])
@@ -387,6 +437,7 @@
         (when (and (not (member "worktree" env-kinds))
                    (ormap (lambda (k) (member k '("check" "ship"))) kinds))
           (fail "~a: check/ship steps need a `worktree` environment in the stack so the application checkout is never touched" who))
+        (check-fan-outs a who steps review-i ship-i env-kinds)
         (define ag (opt 'agent (hash-ref a 'agent)))
         (define podman
           (for/first ([id (in-list (hash-ref a 'environment))]

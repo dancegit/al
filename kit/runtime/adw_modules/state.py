@@ -36,6 +36,7 @@ class ADWState:
     artefacts: list[dict[str, Any]] = field(default_factory=list)
     review: dict[str, Any] = field(default_factory=dict)
     ship: dict[str, Any] = field(default_factory=dict)
+    fanout: dict[str, dict[str, Any]] = field(default_factory=dict)  # (fan-out NAME …) → candidates, picked, pick
     status: str = "running"
     started: str = field(default_factory=now)
     ended: str = ""

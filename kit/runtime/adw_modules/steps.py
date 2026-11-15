@@ -145,6 +145,10 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
         from . import ship
 
         ship.ship(layer, state, adw, step, env_stack)
+    elif kind == "fan-out":
+        from . import fanout
+
+        fanout.run_fan_out(layer, state, step, env_stack)
     else:
         raise LayerError(f"Unknown ADW step kind: {kind!r}")
 
