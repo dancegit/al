@@ -183,7 +183,7 @@ def test_help_documents_the_overrides(make_layer, capsys):
     assert main("demo", layer_dir, ["--help"]) == 0
     out = capsys.readouterr().out
     for needle in ("--model-set TIER", "--model TIER=MODEL_ID", "--max-cost USD", "AL_MODEL_SET", "AL_MODELS",
-                   "AL_MAX_COST", "Flags win", "3 refused"):
+                   "AL_MAX_COST", "Flags win", "3 refused", "local setting", "agents/settings/models.json"):
         assert needle in out
 
 

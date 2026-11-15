@@ -3,8 +3,10 @@ language reference are regenerated from racket/al (cli.rkt), and the runtime's f
 recompiled from racket/al/examples/full.rkt; each must equal the committed file byte for byte."""
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import sys
 
 import pytest
 
@@ -31,3 +33,37 @@ def test_the_runtime_s_full_example_ir_equals_the_compiled_full_example(tmp_path
     assert compiled == committed, ("kit/runtime/tests/full.layer.json is stale; regenerate it: copy "
                                    "racket/al/examples/full.rkt to DIR/agentic.rkt, then tools/al compile DIR > "
                                    "kit/runtime/tests/full.layer.json")
+
+
+VOCABULARY_LAYER = """#lang al
+(agentic-layer #:name "defaults"
+  (codebase #:root "../app" #:languages (python) (cmd test "true"))
+  (agent claude-code)
+  (agent codex #:id cx)
+  (command plan #:template plan-chore #:model-set heavy #:output path)
+  (adw plan (steps (run plan #:command plan #:args ("$prompt")))))
+"""
+
+
+def _builtin_tiers() -> list[tuple[str, str, str]]:
+    if str(ROOT / "kit" / "runtime") not in sys.path:
+        sys.path.insert(0, str(ROOT / "kit" / "runtime"))
+    from adw_modules import models
+    return [(kind, tier, model) for kind, tiers in models.BUILTIN_TIERS.items() for tier, model in tiers.items()]
+
+
+@pytest.mark.parametrize("kind, tier, model", [
+    pytest.param(*case, marks=pytest.mark.xfail(
+        strict=True, reason="the vocabulary default changes with the REQUIRES HUMAN edit of "
+                            "racket/al/private/vocab.rkt; remove this mark with that edit"))
+    if case[:2] == ("claude-code", "heavy") else case
+    for case in _builtin_tiers()])
+def test_runtime_builtin_tiers_equal_the_vocabulary_defaults(tmp_path, kind, tier, model) -> None:
+    """The runtime tells `built-in default` from `layer` by comparing with BUILTIN_TIERS, so it must
+    equal what the vocabulary gives an agent that names no models."""
+    (tmp_path / "agentic.rkt").write_text(VOCABULARY_LAYER)
+    ir = json.loads(al("compile", tmp_path).stdout)
+    agent = next(a for a in ir["agents"] if a["kind"] == kind)
+    compiled = {m["tier"]: m["model"] for m in agent["models"]}
+    assert compiled[tier] == model, (f"{kind} {tier}: the vocabulary says {compiled[tier]!r}, "
+                                     f"kit/runtime/adw_modules/models.py BUILTIN_TIERS says {model!r}")

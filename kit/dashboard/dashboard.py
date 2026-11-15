@@ -3,14 +3,15 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""al work dashboard: a live, read-only view of what the agents of one or more layers are doing.
+"""al work dashboard: a live view of what the agents of one or more layers are doing.
 
   dashboard.py --layer path/to/app.al [--layer …] [--scan DIR …] [--port 8765] [--bind 127.0.0.1]
-               [--token T] [--open]
+               [--token T] [--open] [--read-only]
 
 It watches each layer's `agents/` (run state, run.log, step transcripts, check logs, slot locks,
 port leases) and `artefacts/` by polling mtimes and sizes, and serves one page that updates over
-Server-Sent Events. Standard library only; nothing is ever written to a layer.
+Server-Sent Events. Standard library only. It writes one thing: a layer's local model setting
+(agents/settings/models.json), from the Models panel; --read-only turns that off.
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -63,6 +65,16 @@ POOLS = ("runs", "agents", "checks")
 POOL_DEFAULTS = {"runs": ("maxRuns", 4), "agents": ("maxAgents", 2), "checks": ("maxChecks", 2)}
 EVENTS_FILE = "events.jsonl"
 USAGE_FILE = "subscription-usage.json"   # agents/subscription-usage.json: what the agent CLI last reported
+# mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal
+SETTINGS_FILE = "agents/settings/models.json"   # the layer's local model setting, never committed
+KNOWN_MODELS = ("claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5", "gpt-5.4",
+                "gpt-5.4-mini")
+BUILTIN_TIERS = {"claude-code": {"base": "claude-opus-5-5", "heavy": "claude-opus-5-5"},
+                 "codex": {"base": "gpt-5.4-mini", "heavy": "gpt-5.4"}}
+TIER_RX = re.compile(r"^[a-z][a-z0-9-]*$")
+MODEL_ID_RX = re.compile(r"^[^\s\x00-\x1f\x7f]{1,200}$")   # non-empty, no whitespace, no control characters
+WRITE_HEADER = "X-AL-Dashboard"   # a plain HTML form cannot send it: POST /api/models requires it
+MAX_WRITE_BODY = 4096
 WINDOW_LABELS = {"five_hour": "5-hour", "seven_day": "weekly"}
 WINDOW_ORDER = ("five_hour", "seven_day")
 API_KEY_SOURCES = ("ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key")
@@ -1032,6 +1044,34 @@ class Layer:
                 return name
         return None
 
+    def models_view(self, read_only: bool) -> dict[str, Any]:
+        """Which model each declared tier means and why, without a run's flags or environment:
+        the local setting, else the first non-mock agent that declares the tier."""
+        error = ""
+        try:
+            local = read_settings(self.path)
+        except ValueError as exc:
+            local, error = {}, str(exc)
+        agents = [a for a in self.ir.get("agents") or [] if isinstance(a, dict) and a.get("kind") != "mock"]
+        tiers = []
+        for tier in declared_tiers(self.ir):
+            declaring = [a for a in agents if tier in (agent_tiers(a) or {})]
+            if tier in local:
+                model, source = local[tier], "local setting"
+            elif declaring:
+                agent = declaring[0]
+                model = (agent_tiers(agent) or {})[tier]["model"]
+                default = BUILTIN_TIERS.get(str(agent.get("kind") or ""), {}).get(tier)
+                source = "built-in default" if model == default else "layer"
+            else:   # no agent states a model: the built-in default of the first agent's kind, if any
+                model = next((BUILTIN_TIERS[str(a.get("kind"))][tier] for a in agents
+                              if tier in BUILTIN_TIERS.get(str(a.get("kind") or ""), {})), "")
+                source = "built-in default" if model else ""
+            tiers.append({"tier": tier, "model": model, "source": source, "local": local.get(tier),
+                          "agents": [str(a.get("id") or "") for a in declaring]})
+        writable, why = settings_writable(self, read_only)
+        return {"tiers": tiers, "known": list(KNOWN_MODELS), "writable": writable, "why": why, "error": error}
+
 
 def find_layers(roots: Iterable[Path], depth: int = 4) -> list[Path]:
     """Directories containing agentic-layer.json below each root (the root itself included)."""
@@ -1072,6 +1112,119 @@ def load_layer(path: Path, taken: set[str]) -> Layer | None:
     while key in taken:
         key, suffix = f"{base}-{suffix}", suffix + 1
     return Layer(key=key, path=path, ir=ir, sig=stat_sig(path / LAYER_FILE))
+
+
+# ============================================================================ local model setting
+
+def check_model_id(model: Any) -> str | None:
+    """mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal"""
+    if not isinstance(model, str) or not MODEL_ID_RX.fullmatch(model):
+        raise ValueError(f"model id must be a non-empty string without whitespace, got {model!r}")
+    if model not in KNOWN_MODELS:
+        return f"{model} is not a known model id (known: {', '.join(KNOWN_MODELS)}); it is passed to the agent as is"
+    return None
+
+
+def check_setting(tier: Any, model: Any, known_tiers: list[str]) -> str | None:
+    """mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal"""
+    if not isinstance(tier, str) or not TIER_RX.fullmatch(tier) or tier not in known_tiers:
+        raise ValueError(f"no agent of this layer has a tier `{tier}`; declared: {', '.join(known_tiers)}")
+    return check_model_id(model)
+
+
+def agent_tiers(agent: Any) -> dict[str, dict[str, str]] | None:
+    """mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal"""
+    if not isinstance(agent, dict):
+        return None
+    models = agent.get("models")
+    if isinstance(models, list):
+        return {str(m.get("tier")): {"model": str(m.get("model") or ""), "effort": str(m.get("effort") or "default")}
+                for m in models if isinstance(m, dict) and m.get("tier")}
+    if "modelBase" in agent or "modelHeavy" in agent:
+        return {"base": {"model": str(agent.get("modelBase") or ""), "effort": "default"},
+                "heavy": {"model": str(agent.get("modelHeavy") or ""), "effort": "default"}}
+    return None
+
+
+def declared_tiers(ir: dict[str, Any]) -> list[str]:
+    """mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal"""
+    seen: list[str] = []
+    for agent in ir.get("agents") or []:
+        for tier in (agent_tiers(agent) or {"base": {}, "heavy": {}}):
+            if tier not in seen:
+                seen.append(tier)
+    return seen or ["base", "heavy"]
+
+
+def render_settings(mapping: dict[str, str]) -> str:
+    """mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal"""
+    return json.dumps({"version": 1, "models": dict(sorted(mapping.items()))}, indent=2, sort_keys=True) + "\n"
+
+
+def read_settings(layer_dir: Path) -> dict[str, str]:
+    """mirror of kit/runtime/adw_modules/models.py (ValueError instead of LayerError)"""
+    path = Path(layer_dir) / SETTINGS_FILE
+    hint = "fix or remove it (al models LAYER --reset)"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ValueError(f"{SETTINGS_FILE}: cannot read it ({exc.strerror}); {hint}") from exc
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"{SETTINGS_FILE}: not JSON; {hint}") from exc
+    mapping = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(mapping, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()):
+        raise ValueError(f'{SETTINGS_FILE}: expected {{"version": 1, "models": {{TIER: MODEL_ID}}}}; {hint}')
+    for tier, model in mapping.items():
+        if not TIER_RX.fullmatch(tier):
+            raise ValueError(f"{SETTINGS_FILE}: {tier!r} is not a tier name; {hint}")
+        try:
+            check_model_id(model)
+        except ValueError as exc:
+            raise ValueError(f"{SETTINGS_FILE}: {exc}; {hint}") from exc
+    return dict(mapping)
+
+
+def write_settings(layer_dir: Path, mapping: dict[str, str]) -> Path:
+    """mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal"""
+    path = Path(layer_dir) / SETTINGS_FILE
+    if not mapping:
+        path.unlink(missing_ok=True)
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False,
+                                         prefix=".models.", suffix=".tmp")
+    try:
+        with handle:
+            handle.write(render_settings(mapping))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(handle.name, path)
+    except BaseException:
+        Path(handle.name).unlink(missing_ok=True)
+        raise
+    return path
+
+
+def settings_writable(layer: "Layer", read_only: bool) -> tuple[bool, str]:
+    """Can the Models panel write this layer's local setting? → (writable, why not)."""
+    if read_only:
+        return False, "the dashboard was started with --read-only"
+    why = ("agents/settings is not writable here (in the podman dashboard only layers given directly are "
+           "mounted writable); use `al models LAYER --set TIER=ID` on the host")
+    root = Path(os.path.realpath(layer.path))
+    target = layer.path / SETTINGS_FILE
+    for directory in (target.parent, target.parent.parent):   # agents/settings, agents/
+        real = Path(os.path.realpath(directory))
+        if real != root and root not in real.parents:
+            return False, why   # a symlink that leaves the layer
+    for directory in (target.parent, target.parent.parent, layer.path):
+        if directory.exists():
+            return (True, "") if directory.is_dir() and os.access(directory, os.W_OK | os.X_OK) else (False, why)
+    return False, why
 
 
 # ============================================================================ runs
@@ -1888,7 +2041,7 @@ class RunModel:
             "state": {"branch": state.get("branch", ""), "plan": short(state.get("plan", "")),
                       "worktree": short(state.get("worktree", "")), "ports": state.get("ports") or [],
                       "model_set": state.get("model_set", ""), "class_fixed": state.get("class_fixed"),
-                      "overrides": state.get("overrides") or {},
+                      "overrides": state.get("overrides") or {}, "models": state.get("models") or {},
                       "source": state.get("source", ""), "prompt": short(state.get("prompt", ""))},
             "review": {"mode": review.get("mode", ""), "success": (review.get("verdict") or {}).get("success"),
                        "summary": short((review.get("verdict") or {}).get("summary", "")), "rounds": rounds},
@@ -2154,7 +2307,7 @@ def sse_frame(kind: str, payload: bytes | str, event_id: str | int | None = None
 
 class Model:
     def __init__(self, layer_dirs: list[Path], scan_dirs: list[Path], *, poll: float = 0.75, scan_depth: int = 4,
-                 probe: ContainerProbe | None = None, in_container: bool = False) -> None:
+                 probe: ContainerProbe | None = None, in_container: bool = False, read_only: bool = False) -> None:
         self.layer_dirs = [Path(p) for p in layer_dirs]
         self.scan_dirs = [Path(p) for p in scan_dirs]
         self.poll = poll
@@ -2177,6 +2330,8 @@ class Model:
         self._parents_size, self._parents_dirty = -1, True
         self.liveness_checked: dict[str, float] = {}
         self.usage_sigs: dict[str, tuple | None] = {}
+        self.settings_sigs: dict[str, tuple | None] = {}
+        self.read_only = read_only
 
     # ---------------------------------------------------------------- discovery
     def discover(self) -> bool:
@@ -2238,7 +2393,8 @@ class Model:
                             "runs": len(runs), "running": sum(1 for r in runs if r["status"] == "running"),
                             "explain": layer.explain_file(), "limits": layer.limits(),
                             "budget": self.layer_budget(layer, runs),
-                            "usage": self.layer_usage(layer, time.time())})
+                            "usage": self.layer_usage(layer, time.time()),
+                            "models": layer.models_view(self.read_only)})
             return out
 
     @staticmethod
@@ -2306,6 +2462,12 @@ class Model:
                 self.usage_sigs[layer.key] = sig
             elif self.usage_sigs[layer.key] != sig:
                 self.usage_sigs[layer.key] = sig
+                usage_changed = True
+            sig = stat_sig(layer.path / SETTINGS_FILE)   # the local model setting: the same
+            if layer.key not in self.settings_sigs:
+                self.settings_sigs[layer.key] = sig
+            elif self.settings_sigs[layer.key] != sig:
+                self.settings_sigs[layer.key] = sig
                 usage_changed = True
         if usage_changed:
             self.hub.publish("layers", self.layer_list())
@@ -2528,9 +2690,11 @@ class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], model: Model, token: str | None, static_dir: Path) -> None:
+    def __init__(self, address: tuple[str, int], model: Model, token: str | None, static_dir: Path,
+                 read_only: bool = False) -> None:
         self.model = model
         self.token = token
+        self.read_only = read_only
         self.static_dir = static_dir
         self.shutting_down = threading.Event()
         family = socket.AF_INET6 if ":" in address[0] else socket.AF_INET
@@ -2600,10 +2764,106 @@ class Handler(BaseHTTPRequestHandler):
         name = host.rsplit(":", 1)[0] if not host.startswith("[") else host[1:host.index("]")]
         return is_loopback(name)
 
-    def do_POST(self) -> None:  # noqa: N802 — nothing may change anything
+    def _origin_ok(self) -> bool:
+        """The request comes from this dashboard's own page: Origin is present and names the Host."""
+        origin, host = self.headers.get("Origin"), (self.headers.get("Host") or "").strip()
+        return bool(origin and host) and origin == f"http://{host}"
+
+    def do_POST(self) -> None:  # noqa: N802 — the one write is the local model setting
+        if urllib.parse.urlsplit(self.path).path == "/api/models":
+            try:
+                return self._set_models()
+            except (BrokenPipeError, ConnectionResetError):
+                return None
+        self._refuse()
+
+    def _refuse(self) -> None:
+        self._drain()
         self._error(405, "read-only")
 
-    do_PUT = do_DELETE = do_PATCH = do_POST  # noqa: N815
+    do_PUT = do_DELETE = do_PATCH = _refuse  # noqa: N815
+
+    def _drain(self) -> bytes | None:
+        """Read the request body (so the connection stays usable); None when it is over
+        MAX_WRITE_BODY, which closes the connection once anything large is left unread."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.close_connection = True
+            return None
+        if length < 0:
+            self.close_connection = True
+            return None
+        if length > 64 * 1024:
+            self.close_connection = True
+            return None
+        data = self.rfile.read(length) if length else b""
+        return data if length <= MAX_WRITE_BODY else None
+
+    def _set_models(self) -> None:
+        """POST /api/models {"layer", "tier", "model"} or {"layer", "tier"|null, "reset": true}."""
+        body = self._drain()
+        if not self._host_ok():
+            return self._error(403, "bad host")
+        if not self._authorised({})[0]:   # header or cookie: a token in the URL is not accepted for a write
+            return self._error(401, "token required")
+        if not self._origin_ok():
+            return self._error(403, "cross-origin request refused")
+        if self.headers.get(WRITE_HEADER) != "1":
+            return self._error(403, f"missing {WRITE_HEADER} header")
+        if not (self.headers.get("Content-Type") or "").startswith("application/json"):
+            return self._error(415, "application/json only")
+        if body is None:
+            return self._error(413, f"request body over {MAX_WRITE_BODY} bytes")
+        if self.server.read_only:
+            return self._error(403, "the dashboard was started with --read-only")
+        try:
+            request = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        if not isinstance(request, dict) or not isinstance(request.get("layer"), str):
+            return self._error(400, 'expected {"layer", "tier", "model"} or {"layer", "tier", "reset": true}')
+        reset = request.get("reset") is True
+        tier, model = request.get("tier"), request.get("model")
+        if reset and not (tier is None or isinstance(tier, str)) or not reset and not (
+                isinstance(tier, str) and isinstance(model, str)):
+            return self._error(400, 'expected {"layer", "tier", "model"} or {"layer", "tier", "reset": true}')
+        model_ = self.server.model
+        with model_.lock:
+            layer = model_.layers.get(request["layer"])
+        if layer is None:
+            return self._error(404, "unknown layer")
+        note = None
+        try:
+            if reset:
+                if tier is not None:
+                    check_setting(tier, "x", declared_tiers(layer.ir))
+            else:
+                note = check_setting(tier, model, declared_tiers(layer.ir))
+        except ValueError as exc:
+            return self._error(400, str(exc))
+        writable, why = settings_writable(layer, self.server.read_only)
+        if not writable:
+            return self._error(409, why)
+        try:
+            current = read_settings(layer.path)
+        except ValueError as exc:
+            return self._error(409, str(exc))
+        if reset and tier is None:
+            current = {}
+        elif reset:
+            current.pop(tier, None)
+        else:
+            current[tier] = model
+        try:
+            write_settings(layer.path, current)
+        except OSError as exc:
+            return self._error(409, f"cannot write {SETTINGS_FILE}: {exc.strerror or exc}")
+        view = layer.models_view(self.server.read_only)
+        with model_.lock:
+            model_.settings_sigs[layer.key] = stat_sig(layer.path / SETTINGS_FILE)
+        model_.hub.publish("layers", model_.layer_list())
+        return self._json({"ok": True, "note": note, "models": view})
 
     def do_HEAD(self) -> None:  # noqa: N802
         self.do_GET()
@@ -2926,7 +3186,8 @@ class Handler(BaseHTTPRequestHandler):
 # ============================================================================ entry point
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="dashboard.py", description="Live read-only work dashboard for al layers.")
+    parser = argparse.ArgumentParser(prog="dashboard.py", description="Live work dashboard for al layers "
+                                     "(read-only except the Models panel).")
     parser.add_argument("--layer", action="append", default=[], type=Path, metavar="DIR",
                         help="a layer directory (contains agentic-layer.json); repeatable")
     parser.add_argument("--scan", action="append", default=[], type=Path, metavar="DIR",
@@ -2944,6 +3205,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="opt-in: read container status from this podman API socket (when no podman CLI)")
     parser.add_argument("--in-container", action="store_true",
                         help="running in a container: pids and locks of the host are not visible")
+    parser.add_argument("--read-only", action="store_true",
+                        help="refuse every change, including the Models panel")
     args = parser.parse_args(argv)
     if not args.layer and not args.scan:
         parser.error("give at least one --layer DIR or --scan DIR")
@@ -2955,11 +3218,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def make_server(args: argparse.Namespace, static_dir: Path = STATIC_DIR) -> DashboardServer:
     probe = ContainerProbe(args.podman_socket, enabled=not args.no_podman)
     model = Model(args.layer, args.scan, poll=args.poll, scan_depth=args.scan_depth, probe=probe,
-                  in_container=args.in_container)
+                  in_container=args.in_container, read_only=args.read_only)
     model.discover()
     probe.poll(want_stats=True)   # so the first snapshot already knows the containers
     model.tick()
-    return DashboardServer((args.bind, args.port), model, args.token, static_dir)
+    return DashboardServer((args.bind, args.port), model, args.token, static_dir, read_only=args.read_only)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2985,7 +3248,9 @@ def main(argv: list[str] | None = None) -> int:
         url += f"?token={urllib.parse.quote(args.token)}"
     layers = ", ".join(f"{l['key']} ({l['runs']} runs)" for l in server.model.layer_list()) or "none yet"
     where = f"listening inside the container on port {server.server_address[1]}" if args.in_container else f"on {url}"
-    print(f"al dashboard {where}\n  watching: {layers}\n  containers: {server.model.probe.info()['note']}", flush=True)
+    print(f"al dashboard {where}\n  watching: {layers}\n"
+          f"  models: {'read-only' if args.read_only else 'switchable from the Now view'}\n"
+          f"  containers: {server.model.probe.info()['note']}", flush=True)
     if args.open:
         webbrowser.open(url)
     try:

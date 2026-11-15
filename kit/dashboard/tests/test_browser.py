@@ -335,3 +335,44 @@ def test_reconnects_after_the_server_restarts(page, site):
         page.locator(".run-card", has_text="Cache the catalog").wait_for()
     finally:
         stop_server(again)
+
+
+def test_models_panel_switches_a_tier(page, site, tmp_path):
+    _running, agents = site
+    open_(page, "/now")
+    row = page.locator(".models-panel[data-layer='demo-shop'] .tier-row[data-tier='heavy']")
+    row.wait_for()
+    before = row.locator(".source").inner_text()
+    assert before == "built-in default" and row.locator(".current").inner_text() == "claude-opus-5-5"
+    row.locator("select").select_option("claude-fable-5-2")
+    row.locator("button.apply").click()
+    until(page, "[...document.querySelectorAll(\".models-panel[data-layer='demo-shop'] .tier-row[data-tier='heavy'] .source\")]"
+                ".some(e => e.textContent === 'local setting')")
+    assert row.locator(".current").inner_text() == "claude-fable-5-2"
+    note = page.locator(".models-panel[data-layer='demo-shop'] .model-note")
+    assert "applies to runs started from now on" in note.inner_text() and note.is_visible()
+    settings = agents / "settings" / "models.json"
+    assert json.loads(settings.read_text())["models"] == {"heavy": "claude-fable-5-2"}
+    page.screenshot(path=str(tmp_path / "models-panel.png"), full_page=True)
+    assert (tmp_path / "models-panel.png").stat().st_size > 0
+    row.locator("button.reset").click()
+    until(page, "[...document.querySelectorAll(\".models-panel[data-layer='demo-shop'] .tier-row[data-tier='heavy'] .source\")]"
+                f".some(e => e.textContent === {json.dumps(before)})")
+    assert not settings.exists()
+    # the note under the panel after an apply, and the custom id path with its note
+    row.locator("select").select_option("")
+    row.locator("input[type='text']").fill("my-custom-model")
+    row.locator("button.apply").click()
+    until(page, "[...document.querySelectorAll(\".models-panel[data-layer='demo-shop'] .tier-row[data-tier='heavy'] .current\")]"
+                ".some(e => e.textContent === 'my-custom-model')")
+    until(page, "[...document.querySelectorAll(\".models-panel[data-layer='demo-shop'] .model-note\")]"
+                ".some(e => e.textContent.includes('my-custom-model is not a known model id'))")
+    # a run records which model each tier meant: the run detail shows it
+    state_path = agents / "a1000001" / "state.json"
+    state = json.loads(state_path.read_text())
+    state["models"] = {"heavy": {"model": "claude-fable-5-2", "source": "local setting"},
+                       "base": {"model": "claude-opus-5-5", "source": "built-in default"}}
+    state_path.write_text(json.dumps(state))
+    open_(page, "/run/demo-shop/a1000001")
+    page.wait_for_selector("dl.kv dt:text-is('models')")
+    assert "heavy claude-fable-5-2 (local setting) · base claude-opus-5-5 (built-in default)" in page.locator("dl.kv").first.inner_text()

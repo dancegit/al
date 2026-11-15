@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Run the al work dashboard in its own rootless podman container.
 #
-#   kit/dashboard/run-in-podman.sh [--port 8765] [--poll SECONDS] [--podman-socket] DIR [DIR …]
+#   kit/dashboard/run-in-podman.sh [--port 8765] [--poll SECONDS] [--podman-socket] [--read-only] DIR [DIR …]
 #
 # Each DIR that contains agentic-layer.json is watched as a layer (--layer); any other DIR is
 # scanned for layers (--scan). Every DIR is mounted READ-ONLY at the same path inside the
-# container. Only 127.0.0.1:PORT is published; the container sits on an internal podman network
+# container. The one exception: for each layer DIR given directly, its agents/settings directory
+# (created if missing) is mounted read-write, so the Models panel can change the layer's local
+# model setting (agents/settings/models.json); nothing else is writable. Scanned layers get no
+# writable mount, and the panel says why. --read-only drops these mounts and the panel's write.
+# Only 127.0.0.1:PORT is published; the container sits on an internal podman network
 # with no route out, runs with --cap-drop=ALL, no-new-privileges and a read-only root, and as your
 # own user (--userns=keep-id) so it can read run state files that are private to you.
 #
@@ -19,18 +23,20 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 port=8765
 poll=""
 socket=0
+read_only=0
 dirs=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) port="$2"; shift 2 ;;
     --poll) poll="$2"; shift 2 ;;
     --podman-socket) socket=1; shift ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    --read-only) read_only=1; shift ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) dirs+=("$1"); shift ;;
   esac
 done
-[ ${#dirs[@]} -gt 0 ] || { echo "usage: $0 [--port N] [--poll S] [--podman-socket] DIR [DIR …]" >&2; exit 2; }
+[ ${#dirs[@]} -gt 0 ] || { echo "usage: $0 [--port N] [--poll S] [--podman-socket] [--read-only] DIR [DIR …]" >&2; exit 2; }
 command -v podman >/dev/null || { echo "podman is required" >&2; exit 1; }
 
 image=localhost/al-dashboard:latest
@@ -44,10 +50,19 @@ for dir in "${dirs[@]}"; do
   real="$(realpath "$dir")"
   [ -d "$real" ] || { echo "not a directory: $dir" >&2; exit 2; }
   mounts+=(-v "$real:$real:ro")
-  if [ -f "$real/agentic-layer.json" ]; then watch+=(--layer "$real"); else watch+=(--scan "$real"); fi
+  if [ -f "$real/agentic-layer.json" ]; then
+    watch+=(--layer "$real")
+    if [ "$read_only" = 0 ]; then   # the layer's local model setting: the one writable directory
+      mkdir -p "$real/agents/settings"
+      mounts+=(-v "$real/agents/settings:$real/agents/settings:rw")
+    fi
+  else
+    watch+=(--scan "$real")
+  fi
 done
 
 [ -z "$poll" ] || watch+=(--poll "$poll")
+[ "$read_only" = 0 ] || watch+=(--read-only)
 
 extra=()
 if [ "$socket" = 1 ]; then

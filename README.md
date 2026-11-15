@@ -438,9 +438,11 @@ To change the layer, edit `agentic.rkt` and run `al gen` again. The whole langua
 
 ## Models and cost
 
-Routine steps run on Claude Opus 5.5; planning, building and review on Claude Fable 5.2. An agent can
-declare more model tiers, and each prompt or step picks one with `#:model-set`. For a single run,
-`--model-set TIER`, `--model TIER=ID` or `--max-cost USD` change that without editing the file.
+Every step runs on Claude Opus 5.5 by default; Claude Fable 5.2 is the opt-in for heavy work
+(`#:model-heavy "claude-fable-5-2"`, or `al models LAYER --set heavy=claude-fable-5-2` on one machine,
+or the dashboard's Models panel). An agent can declare more model tiers, and each prompt or step picks
+one with `#:model-set`. For a single run, `--model-set TIER`, `--model TIER=ID` or `--max-cost USD`
+change that without editing the file.
 `(budget limits #:run-usd 5 #:day-usd 50)` stops a run that costs too much and hands it to a person.
 Reviewers can run on a different agent than the one that built the change. Details: the
 [guide](docs/GUIDE.md#choose-models-and-limit-spending).

@@ -54,6 +54,8 @@ class ADWState:
     fanout_parent: dict[str, Any] = field(default_factory=dict)  # {run, step, index} of a fan-out candidate
     # --model-set / --model / --max-cost and their environment variables: {tier, models, max_cost, from}
     overrides: dict[str, Any] = field(default_factory=dict)
+    # {tier: {model, source}} of the ADW's agent, decided when the run started (local settings read then)
+    models: dict[str, Any] = field(default_factory=dict)
     # every agent call: {step, owner, agent, agent_kind, tier, tier_from, model, model_from, effort, status, cost, billing}
     agent_calls: list[dict[str, Any]] = field(default_factory=list)
     # what the agent calls cost: {total, calls, unreported: ["id (kind)" of agents that report no cost],
