@@ -1,0 +1,138 @@
+# al
+
+> `al` generates an agentic layer (prompts, workflows, sandbox, triggers, a dashboard) for any git repository. An LLM writes a description (`LLM.txt`) and a short definition (`agentic.rkt`) in a small Racket language; a compiler checks the definition and a generator produces the layer from templates. It is used by developers from a clone of this repository through the `tools/al` command (Python, run with `uv`); the language and compiler are Racket; the runtime that executes workflows and the dashboard are Python with the standard library only. Nothing is packaged or published: the repository is the product.
+
+## Identity
+
+- Repo URL: none
+- Default branch: main
+- License: none
+- Primary languages: python, racket, javascript, shell
+- Kind: cli
+
+## Layout
+
+- `racket/al/` — the layer language `#lang al`: `private/meta.rkt` (meta-DSL), `private/vocab.rkt` (the vocabulary), `private/compiler.rkt`, `private/schema.rkt`, `private/reference.rkt`, `cli.rkt`, `examples/`
+- `racket/al/tests/` — compiler tests, run with `raco test`; files are named `*-test.rkt`, fixtures in `racket/al/tests/fixtures/`
+- `tools/` — `tools/al` (the command: init, scout, compile, gen, explain, check, eject, improve, dashboard, verify), `tools/explain.py`, `tools/al_improve.py`, `tools/demo/` (demo recording scripts)
+- `kit/runtime/` — what runs a workflow: `adw_modules/*.py`, `dispatch.py`, `triggers/`, `voice/`
+- `kit/runtime/tests/` — pytest unit tests of the runtime, one `test_<module or topic>.py` per area; a new test for `kit/runtime/adw_modules/X.py` goes in `kit/runtime/tests/test_X.py`
+- `kit/templates/` — the prompt templates every layer starts from (`commands/`, `hops/`, `experts/`)
+- `kit/schemas/` — JSON output contracts of the classify, review and test commands
+- `kit/dashboard/` — the live read-only dashboard: `dashboard.py` (server and model), `static/` (page), `demo/` (recording scripts)
+- `kit/dashboard/tests/` — pytest tests of the dashboard: `test_model.py`, `test_events_model.py`, `test_server.py`, and real-browser tests `test_browser*.py`; fixtures are code in `fixtures.py` and `fixtures_events.py`
+- `kit/self/` — the layer definition template used by `al improve`
+- `meta/` — the prompts that guide an LLM through describing a codebase and writing its layer, and `LLM.txt.template.md`
+- `schemas/agentic-layer-v1.schema.json` — JSON Schema of the compiled layer, generated from the vocabulary
+- `tests/integration/` — pytest integration suite over five pinned public repositories; `golden/` holds snapshots of generated prompts; `testbeds.toml` pins the repositories
+- `tests/tools/` — pytest tests of the `al` command itself (eject, in-repo layers, `al improve`, dashboard generation); a new test for `tools/explain.py` or `tools/al` goes here as `tests/tools/test_<topic>.py`
+- `tests/authored/` — the five LLM-authored example layers (`LLM.txt` and `agentic.rkt` each), kept exactly as written
+- `tests/webdemo/`, `tests/rotademo/`, `tests/selfdemo/`, `tests/forge/` — demo applications and live scripts that need a real agent or a throwaway forge
+- `docs/` — `GUIDE.md`, `DESIGN.md`, `CASE-STUDY.md`, `ARTEFACTS.md`, `AL-DSL.llms.txt` (generated language reference)
+- `docs/demo/` — recorded outputs of real runs (video, GIF, screenshots, logs)
+- `agentic/` — this agentic layer (in-repo)
+- Entry document: `README.md`
+
+## Commands
+
+| name | shell command from repo root | proves what | typical duration | needs network? |
+| --- | --- | --- | --- | --- |
+| test-compiler | `PLTCOLLECTS="$PWD/racket:" raco test racket/al/tests/compiler-test.rkt` | the language rules: the compiler accepts the examples and rejects each invalid definition with the documented error | 2s | no |
+| test-runtime | `(cd kit/runtime && uv run --with pytest pytest -q)` | the runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container (podman tests skip without podman) | 50s | no |
+| test-tools | `uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q` | the `al` command itself works: eject, in-repo layers, `al improve`, dashboard generation (mock agent) | 3m | no |
+| test-dashboard | `(cd kit/dashboard && uv run --with pytest pytest -q tests)` | the dashboard's model and HTTP server work: unit and HTTP tests, no browser (the browser tests skip because Playwright is not installed by this command) | 10s | no |
+| test-dashboard-browser | `(cd kit/dashboard && uv run --with pytest --with playwright pytest -q tests)` | the same plus the real-browser tests of the page in the host's Chrome (these skip without Chrome) | 35s | no |
+| test-integration | `uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q` | the default tier of full runs on the five pinned example repositories passes with the mock agent, and the generated prompts equal the golden snapshots | 1m40s | yes |
+
+## Toolchain
+
+- nixpkgs: `racket` (9.x), `uv`, `python312` (scripts require Python >=3.11), `git`
+- Package manager: none; every Python script declares its dependencies inline (PEP 723 `# /// script` header) and tests add theirs with `uv run --with`
+- System packages: `podman` (optional; podman-marked tests skip without it and without the local image `docker.io/library/python:3.12-slim`), Google Chrome or Chromium (optional; browser tests skip without it), `ffmpeg` (optional; only for video proof and demo recording)
+- Services: none
+
+## Artefacts
+
+- log — always (captured command output)
+
+## Conventions
+
+- `racket/al/private/vocab.rkt` is the single source for the compiler's forms, `schemas/agentic-layer-v1.schema.json` and `docs/AL-DSL.llms.txt`; the schema and the reference are regenerated from it and never edited by hand.
+- A change to a kit template (`kit/templates/`) changes generated prompts: update the snapshots with `--update-golden` on the integration suite and include the reviewed snapshot diff in the same change.
+- Never mention a private repository, a real employer or a real customer in any committed file; examples use public repositories or synthetic data only.
+- No personal paths in committed files: no home directory, user name or machine-specific absolute path; write `~/code/myapp` style placeholders or paths relative to the repository root.
+- Tests must not need the network unless they carry the `network` marker (integration suite) and must not call a real LLM: agent steps in tests use the mock agent or `--dry-run`.
+- A test that needs podman, nix or a browser carries the matching marker (`podman`, `nix`, `browser`) and skips when the tool is missing; it never downloads one.
+- Python code targets Python >=3.11, uses `from __future__ import annotations` and the standard library only in `kit/runtime` and `kit/dashboard`; a script that needs a third-party package declares it in its inline `# /// script` header.
+- Tests never write into the repository checkout: they work in pytest's temporary directory and leave no branch, worktree or container behind.
+- Files under `docs/demo/` are recordings of real commands; they are produced by running the demo scripts, never written by hand.
+- Prose in `README.md` and `docs/` is plain and factual: short sentences, no marketing adjectives, numbers only from real runs.
+- The layer in `agentic/` is not changed by ordinary work: the definition and templates change through `al improve`, generated files only through `al gen`.
+- Commit messages are one lower-case summary line naming the area first (e.g. `dashboard: …`), no trailer lines.
+
+## Protected paths
+
+- `racket/al/private` — the language's vocabulary and compiler; every layer and both generated files derive from it
+- `kit/runtime/adw_modules/review.py` — the review and shipping gate
+- `kit/runtime/adw_modules/ship.py` — the shipping gate (merge, deploy, pull request fallback)
+- `kit/runtime/adw_modules/gitsafe.py` — git integrity checks around the sandbox
+- `kit/runtime/adw_modules/envs.py` — the sandbox (worktree, nix, podman environments)
+- `docs/AL-DSL.llms.txt` — generated from the vocabulary; do not edit
+- `schemas/agentic-layer-v1.schema.json` — generated from the vocabulary; do not edit
+- `docs/demo` — recorded outputs of real runs
+- `tests/authored` — LLM-authored example layers, kept exactly as written
+- `tests/integration/testbeds.toml` — the pinned commits of the example repositories
+
+## Work classes
+
+- Chore: a missing unit test, a documentation or docstring correction, a test fixture; touches `tests/tools`, `kit/runtime/tests`, `kit/dashboard/tests`, `racket/al/tests` or prose; proved by the test command of the area touched; a change to the dashboard page (`kit/dashboard/static`) is proved by `test-dashboard-browser`.
+- Bug: a wrong behaviour of `tools/al`, the runtime or the dashboard; the regression test goes in the test directory of that area (`tests/tools`, `kit/runtime/tests`, `kit/dashboard/tests`) and fails before the fix.
+- Feature: a new `al` subcommand or option, a new vocabulary kind, a new dashboard view; user-visible as CLI output, a generated file or a dashboard screen; a vocabulary change needs a human because it is under a protected path.
+- Safe for zero-touch: none
+
+## Forge
+
+- Forge: none
+- Repo: none
+- CI: none
+
+## Conditional docs
+
+- `docs/DESIGN.md` — when changing the language, the compiler or how the generator maps a definition to files
+- `tests/README.md` — when adding or changing a test under `tests/integration`, or anything `al verify` does
+- `kit/dashboard/README.md` — when changing anything under `kit/dashboard`
+- `docs/AL-DSL.llms.txt` — when writing or changing any `agentic.rkt` or a test that contains one
+- `meta/README.md` — when changing a prompt under `meta/commands`
+- `docs/GUIDE.md` — when changing the behaviour or output of a `tools/al` subcommand, because the guide quotes it
+
+## Evidence
+
+- `test-compiler` — `tools/demo/scenes.toml:75` (the test file is named explicitly); `README.md:416` for `PLTCOLLECTS`, folded into the command
+- `test-runtime` — `README.md:418`; `tests/README.md:6`
+- `test-integration` — `README.md:419`; `tests/README.md:17`; default tier and markers `tests/integration/pytest.ini:4`
+- `test-tools` — `README.md:420`; `tests/tools/conftest.py:4`
+- `test-dashboard` — `kit/dashboard/README.md:149`
+- `test-dashboard-browser` — `README.md:421`; `kit/dashboard/README.md:150`
+- needs network, `test-integration` — `tests/README.md:23` (fetches the five pins from GitHub when `testbeds/<name>` is absent)
+- no network, `test-tools` — `tests/tools/conftest.py:1`
+- vocabulary is the single source — `docs/DESIGN.md:77`; `docs/AL-DSL.llms.txt:3`; `schemas/agentic-layer-v1.schema.json:5`
+- golden snapshots — `tests/README.md:37`
+- markers — `tests/integration/pytest.ini:6`; `kit/dashboard/tests/conftest.py:24`; `kit/runtime/tests/conftest.py:69`
+- Racket version — `docs/GUIDE.md:18`
+- protected `racket/al/private` — `docs/DESIGN.md:77`
+- protected `tests/authored` — `README.md:307`
+- protected `docs/demo` — `README.md:352`
+- protected `tests/integration/testbeds.toml` — `tests/integration/testbeds.toml:1`
+- protected gate and sandbox modules, and the conventions on private repositories, personal paths, prose style and commit messages — stated by the maintainer, not written in a repository file
+
+## Unknowns
+
+- `test-dashboard-browser` is not deterministic on the machine where this file was written: `tests/test_browser_events.py::test_a_running_checks_log_is_followed_live_then_settles` failed in 5 of 10 runs on an idle machine (the `.log` element is read while it is empty). The command is declared because the repository documents it, but workflows use `test-dashboard` as their check until a human fixes the test or the page.
+- `README.md:417` and `tests/README.md:5` give the compiler test command as `raco test racket/al/tests`. `al verify` showed that it exits 1 on a clean checkout with Racket 9.3: `raco test` on the directory also loads `racket/al/tests/fixtures/dangling-ref.rkt`, a definition that is invalid on purpose. The command declared here names the test file, as `tools/demo/scenes.toml:75` does. A human should correct the two documents or move the fixture.
+- Repo URL and forge: the checkout has a remote, deliberately not recorded; the layer must work for any clone, so results are local branches and `PR.md`.
+- License: no licence file is tracked.
+- The command that regenerates `docs/AL-DSL.llms.txt` and `schemas/agentic-layer-v1.schema.json` from the vocabulary is not written in any document: UNVERIFIED, so no such command is declared.
+- No lint, format or typecheck command exists in the repository.
+- junit or coverage output: pytest could emit it, but no configuration in the repository says where; none declared.
+- Durations in the Commands table are measured with `al verify` on one machine (see `docs/GUIDE-FINDINGS.md`), not taken from CI; there is no CI.
+- The conventions marked "stated by the maintainer" in Evidence should be written into a CONTRIBUTING file.

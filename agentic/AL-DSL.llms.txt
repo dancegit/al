@@ -1,0 +1,634 @@
+# #lang al — agentic layer DSL reference
+
+> Generated from racket/al/private/vocab.rkt. Do not edit. This is the complete language:
+> anything not listed here does not exist and will be rejected by the compiler.
+
+## Shape of a file
+
+```racket
+#lang al
+(agentic-layer #:name "repo-name" #:description "…" #:llm-txt "LLM.txt"
+  (codebase #:root "…" #:languages (…) (cmd NAME "shell") … (paths …) (conditional-doc "path" "when") …)
+  (FAMILY KIND #:id ID #:field value …) …   ; options, see families below
+  (command NAME #:template T …) …
+  (hop NAME #:template T …) …
+  (expert NAME …) …
+  (adw NAME #:input (…) #:trigger (…) #:environment (…) #:review ID #:agent ID
+    (steps (run NAME …) (check NAME …) (fan-out NAME …) (review) (ship) (compose ADW) …)) …)
+```
+
+Syntax notes: strings use double quotes; names are bare symbols; lists are parenthesised without
+quotes or commas, e.g. `(python rust)` or `("src" "tests")`; booleans are `#t` / `#f`; exactly one
+`(agentic-layer …)` form per file. Every field is `#:keyword value`. Omitted fields take the default.
+Families with a default kind may be omitted entirely. `(cmd NAME "shell" …)` and
+`(conditional-doc "path" "when")` take their first values positionally, exactly as shown.
+
+## Rules the compiler enforces
+
+- Exactly one (codebase …) clause and at least one (adw …) clause.
+- Every name is declared before it is used anywhere: (ref X) fields must name a declared option id, command, hop, cmd, artefact or adw.
+- Option ids default to the kind name; give #:id when you declare two options of the same kind.
+- Command and hop names share one namespace; step names are unique within an ADW (after compose expansion).
+- A (ship) step must come after a (review) step in the same ADW.
+- An ADW whose review option is `auto` with #:ship merge or deploy must contain at least one (check …) step before its (review) step, and #:require-checks must not be empty: zero-touch needs a closed loop.
+- #:ship deploy needs #:deploy-cmd.
+- prompt-input `issue`, trigger `forge-actions`, and webhook issue events need a forge other than `none`.
+- prompt-input `voice` and trigger `voice` need a (voice …) declaration.
+- An ADW's environment stack has at most one option per kind; `host` cannot be combined with `worktree`; an ADW with run steps that write needs `worktree`.
+- claude-code #:permission-mode bypassPermissions is only accepted for ADWs whose environment stack contains a podman option with #:agent-inside #t (the agent itself must be sandboxed).
+- An ADW whose review option is `auto` with #:ship merge or deploy must have a podman option in its environment stack: nothing ships untouched from an unsandboxed environment.
+- (compose ADW) inlines another ADW's steps; cycles are rejected.
+- (fan-out NAME #:adw CHILD …): CHILD is a declared ADW other than the parent, with no cycle through fan-out or compose; CHILD (after compose expansion) contains no (ship) and no (fan-out) step and has a `worktree` environment, so each candidate ends with its work committed on its own branch; #:count is 2–8 and #:max-parallel 0–#:count; the fan-out step comes before the parent's (review) and (ship) steps; the parent has a `worktree` environment.
+- A child ADW used by (fan-out …) must leave its changes committed (e.g. a final (run commit #:command commit) step): a candidate that committed nothing counts as failed.
+- (layer in-repo #:dir D): D is a relative path inside the repository (no `..`, no leading `/`), and (codebase #:root …) is the way back up from D to the repository root: ".." for a top-level directory, "../.." for D = "tools/agentic".
+- An ADW with #:changes layer must use a review option of kind `human` or `agent`: a change to how agents work always passes a person.
+- (dashboard …) is declared at most once; omitted, it is (dashboard local) on 127.0.0.1:8765. A #:bind that is not a loopback address (127.x.x.x, ::1, localhost) needs #:token-env naming the environment variable that holds the access token; #:port is 1–65535 and #:poll-ms at least 100.
+- Kinds marked planned compile but are refused by the generator.
+
+## Option families
+
+### `layer`
+
+Where the generated agentic layer lives. Only `in-repo` puts it inside the application repository; the others keep it out of the application tree.
+Declare at most one. Default when omitted: `(layer sibling)`.
+
+- **`(layer sibling …)`** — A directory next to the application checkout (default: <app>.al).
+  - `#:dir` (string; default "") — Layer directory; empty = `<codebase root>.al` beside the app.
+  - `#:git` (boolean; default #t) — Initialise the layer as its own git repository.
+
+- **`(layer central …)`** — A directory under a central layers home, e.g. ~/agentic-layers/<name>.
+  - `#:home` (string; default "~/agentic-layers") — Parent directory of all layers.
+  - `#:git` (boolean; default #t) — Initialise the layer as its own git repository.
+
+- **`(layer separate-repo …)`** — The layer is its own remote repository; the app is referenced by URL only.
+  - `#:remote` (string; default REQUIRED) — Git remote URL of the layer repository.
+  - `#:dir` (string; default "") — Local checkout directory; empty = `<name>.al`.
+
+- **`(layer in-repo …)`** — The layer is a directory INSIDE the application repository, committed with the code. agentic.rkt lives in that directory and (codebase #:root …) is the way back up to the repository root (".." for a top-level directory). Run state (worktrees, run logs, artefacts, plans, the task list) stays in git-ignored directories of the layer, and every ADW that does not change the layer itself treats the layer directory as a protected path.
+  - `#:dir` (string; default "agentic") — Layer directory relative to the repository root (no `..`, no leading `/`).
+
+### `agent`
+
+The coding agent a step runs on. ADWs name one; the runtime shells out to it headlessly.
+Declare any number. Default when omitted: `(agent claude-code)`.
+
+- **`(agent claude-code …)`** — Claude Code in programmable mode (`claude -p`), stream-json output.
+  - `#:model-base` (string; default "claude-sonnet-5-5") — Model for the `base` model set (cheap steps: classify, commit, branch name).
+  - `#:model-heavy` (string; default "claude-opus-5-5") — Model for the `heavy` model set (plan, implement, review).
+  - `#:permission-mode` (acceptEdits | bypassPermissions | plan | default; default acceptEdits) — Headless permission mode. bypassPermissions only inside a podman environment.
+  - `#:safe-mode` (boolean; default #t) — Run with --safe-mode so user CLAUDE.md, hooks, plugins and skills are not loaded.
+  - `#:allowed-tools` (list of string; default ("Read" "Glob" "Grep" "Edit" "Write" "Bash")) — Tools the headless agent may use without asking (passed as --allowedTools). Narrow it for read-only workflows.
+  - `#:max-turns` (integer; default 60) — Turn cap per step.
+  - `#:timeout` (integer; default 1800) — Wall-clock seconds per step.
+
+- **`(agent codex …)`** — OpenAI Codex CLI (`codex exec`).
+  - `#:model-base` (string; default "gpt-5.4-mini") — Model for the base set.
+  - `#:model-heavy` (string; default "gpt-5.4") — Model for the heavy set.
+  - `#:sandbox` (read-only | workspace-write | danger-full-access; default workspace-write) — Codex sandbox mode.
+  - `#:timeout` (integer; default 1800) — Wall-clock seconds per step.
+
+- **`(agent custom …)`** — Any CLI agent. The command receives the rendered prompt on stdin.
+  - `#:command` (string; default REQUIRED) — Shell command; {model} and {cwd} are substituted.
+  - `#:model-base` (string; default "") — Model for the base set.
+  - `#:model-heavy` (string; default "") — Model for the heavy set.
+  - `#:timeout` (integer; default 1800) — Wall-clock seconds per step.
+
+- **`(agent mock …)`** — Deterministic stand-in used by tests and dry runs: no LLM, replays scripted responses.
+  - `#:script-dir` (string; default "mock") — Directory (in the layer) holding <step>.json scripted responses and optional <step>.patch files.
+  - `#:timeout` (integer; default 60) — Wall-clock seconds per step.
+
+### `forge`
+
+The code forge used for issues, PRs and CI integration.
+Declare at most one. Default when omitted: `(forge none)`.
+
+- **`(forge none …)`** — No forge: branches stay local, review results are written to the layer.
+  - `#:remote` (string; default "") — Optional git remote to push to.
+
+- **`(forge github …)`** — GitHub via the `gh` CLI.
+  - `#:repo` (string; default REQUIRED) — owner/name.
+  - `#:host` (string; default "github.com") — GitHub host (Enterprise supported).
+  - `#:token-env` (string; default "GITHUB_TOKEN") — Environment variable holding the token (falls back to gh auth).
+  - `#:bot-marker` (string; default "[ADW-BOT]") — Prefix on every comment the layer posts, so triggers ignore their own comments.
+
+- **`(forge forgejo …)`** — Forgejo / Gitea via the REST API (v1).
+  - `#:host` (string; default REQUIRED) — Base URL, e.g. https://forgejo.example.org.
+  - `#:repo` (string; default REQUIRED) — owner/name.
+  - `#:token-env` (string; default "FORGEJO_TOKEN") — Environment variable holding the API token.
+  - `#:bot-marker` (string; default "[ADW-BOT]") — Prefix on every comment the layer posts.
+
+- **`(forge gitlab …)`** [planned] — GitLab via `glab`.
+  - `#:repo` (string; default REQUIRED) — group/name.
+  - `#:host` (string; default "gitlab.com") — GitLab host.
+  - `#:token-env` (string; default "GITLAB_TOKEN") — Environment variable holding the token.
+
+### `storage`
+
+Where test/review artefacts (logs, reports, screenshots, video) are kept. Local first.
+Declare at most one. Default when omitted: `(storage local)`.
+
+- **`(storage local …)`** — Artefacts stay on disk inside the layer.
+  - `#:dir` (string; default "artefacts") — Directory relative to the layer.
+
+- **`(storage s3 …)`** — Any S3-compatible bucket (AWS S3, MinIO, Cloudflare R2, Garage). A local copy is always kept too.
+  - `#:bucket` (string; default REQUIRED) — Bucket name.
+  - `#:prefix` (string; default "adw") — Key prefix.
+  - `#:endpoint` (string; default "") — Endpoint URL for non-AWS stores; empty = AWS.
+  - `#:region` (string; default "us-east-1") — Region.
+  - `#:public-base-url` (string; default "") — If set, artefact links in reviews use this base URL.
+  - `#:access-key-env` (string; default "AWS_ACCESS_KEY_ID") — Environment variable with the access key.
+  - `#:secret-key-env` (string; default "AWS_SECRET_ACCESS_KEY") — Environment variable with the secret key.
+  - `#:local-dir` (string; default "artefacts") — Local mirror directory relative to the layer.
+
+### `concurrency`
+
+How far the layer scales out. Every run has its own worktree; these limits are shared by all triggers and manual runs.
+Declare at most one. Default when omitted: `(concurrency slots)`.
+
+- **`(concurrency slots …)`** — File-lock slot pools under agents/.slots: a run, an agent call and a check each hold one slot of their pool.
+  - `#:max-runs` (integer; default 4) — ADW runs in flight at once (each in its own worktree).
+  - `#:max-agents` (integer; default 2) — Agent (LLM) calls in flight at once across all runs.
+  - `#:max-checks` (integer; default 2) — Codebase check commands in flight at once across all runs (they are the CPU-heavy part).
+  - `#:wait-seconds` (integer; default 3600) — How long a run waits for a free slot before failing.
+
+### `voice`
+
+Local speech stack used by the voice prompt input and trigger, and for spoken summaries.
+Declare at most one. Default when omitted: none.
+
+- **`(voice kokoro …)`** — Kokoro TTS (ONNX, local, English) + faster-whisper speech recognition, both as uv scripts.
+  - `#:tts-voice` (string; default "af_heart") — Kokoro voice id.
+  - `#:tts-lang` (string; default "en-us") — Kokoro language code.
+  - `#:tts-speed` (integer; default 100) — Speech speed in percent.
+  - `#:stt-model` (string; default "base.en") — faster-whisper model size.
+  - `#:stt-device` (auto | cpu | cuda; default auto) — Inference device for recognition.
+  - `#:record-seconds` (integer; default 8) — Push-to-talk recording length when no silence detection is available.
+  - `#:speak-summaries` (boolean; default #t) — Speak the run summary when an ADW finishes.
+
+### `dashboard`
+
+A live, read-only work dashboard for this layer (runs in flight, each run's workflow graph, timeline, costs, transcripts, check logs), generated by `al gen` as adws/dashboard.py. Declared by default: observability does not have to be asked for.
+Declare at most one. Default when omitted: `(dashboard local)`.
+
+- **`(dashboard local …)`** — A local process: `uv run adws/dashboard.py` serves the page (standard library only, no CDN) and watches this layer plus the #:also layers.
+  - `#:port` (integer; default 8765) — TCP port of the page.
+  - `#:bind` (string; default "127.0.0.1") — Listen address. Anything other than a loopback address needs #:token-env.
+  - `#:also` (list of string; default ()) — Other layer directories (relative to this layer, e.g. "../other.al") watched on the same page.
+  - `#:poll-ms` (integer; default 750) — How often the run files are polled, in milliseconds (at least 100).
+  - `#:systemd` (boolean; default #f) — Also generate a systemd user unit (systemd/al-<name>-dashboard.service) that keeps it running.
+  - `#:token-env` (string; default "") — Environment variable holding an access token every request must carry; required for a non-loopback #:bind.
+
+- **`(dashboard podman …)`** — The same dashboard in its own locked-down rootless podman container: layers mounted read-only, no capabilities, read-only root, an internal network with no route out, only 127.0.0.1:PORT published, a random token per start.
+  - `#:port` (integer; default 8765) — Host port published on 127.0.0.1.
+  - `#:bind` (string; default "127.0.0.1") — Not used by the container, which publishes on 127.0.0.1 only; kept so that switching between `local` and `podman` is one word.
+  - `#:also` (list of string; default ()) — Other layer directories (relative to this layer) watched on the same page; mounted read-only too.
+  - `#:poll-ms` (integer; default 750) — How often the run files are polled, in milliseconds (at least 100).
+  - `#:systemd` (boolean; default #f) — Also generate a systemd user unit that keeps the container running.
+  - `#:token-env` (string; default "") — Not used by the container (it makes a random token per start and prints the URL with it).
+  - `#:podman-socket` (boolean; default #f) — Mount the user's podman API socket so the page can show container state, CPU and memory. Off by default for a reason: a podman socket gives the container full control of your podman (start, stop, exec into any container), read-only mount or not.
+
+- **`(dashboard none …)`** — No dashboard is generated.
+
+### `prompt-input` — PITER letter P
+
+PITER · Prompt input: where the high-level prompt for a run comes from.
+Declare any number. Default when omitted: `(prompt-input cli)`.
+
+- **`(prompt-input cli …)`** — The prompt is passed on the command line (or stdin) of the ADW script.
+  - `#:allow-stdin` (boolean; default #t) — Read the prompt from stdin when no argument is given.
+
+- **`(prompt-input issue …)`** — A forge issue (title + body). Requires a forge.
+  - `#:labels` (list of string; default ()) — Only issues carrying all of these labels are picked up; empty = any.
+  - `#:keyword` (string; default "adw") — Body/comment keyword prefix that selects a workflow, e.g. `adw: sdlc`.
+  - `#:classify` (boolean; default #t) — Run the classify command to map the issue to chore/bug/feature.
+
+- **`(prompt-input tasklist …)`** — A plain-text task list (tasks.md) in the layer: one heading per worktree, one checkbox line per task.
+  - `#:path` (string; default "tasks.md") — Task file relative to the layer.
+  - `#:open-marker` (string; default "[ ]") — Marker of a task that is ready to be picked up.
+  - `#:running-marker` (string; default "[~]") — Marker written when an ADW claims the task (followed by the adw id).
+  - `#:done-marker` (string; default "[x]") — Marker written on success (followed by adw id and commit hash).
+  - `#:failed-marker` (string; default "[!]") — Marker written on failure (followed by adw id and reason).
+  - `#:blocked-marker` (string; default "[>]") — Marker of a task that waits for the tasks above it in the same section.
+  - `#:tag-syntax` (braces | hash; default braces) — Tags select workflow/model: `{sdlc, heavy}` or `#sdlc #heavy`.
+
+- **`(prompt-input spec-file …)`** — A hand-written spec/plan file dropped into a directory of the layer; planning is skipped.
+  - `#:dir` (string; default "specs/inbox") — Directory relative to the layer that is watched for new specs.
+  - `#:pattern` (string; default "*.md") — Glob of files treated as specs.
+
+- **`(prompt-input voice …)`** — Speak the prompt: local recording → speech recognition → text. Requires a `voice` declaration.
+  - `#:confirm` (boolean; default #t) — Read the recognised prompt back and wait for a spoken/typed yes before running.
+  - `#:route` (task | question | summary | auto; default auto) — What speech becomes: a new tasklist entry, a codebase question, a status summary, or classified automatically.
+  - `#:append-to-tasklist` (boolean; default #t) — When routed as task, append to the tasklist instead of running immediately.
+
+- **`(prompt-input webhook-payload …)`** — A JSON payload posted to the webhook trigger by any external system.
+  - `#:prompt-field` (string; default "prompt") — Dotted path of the prompt text in the payload.
+  - `#:workflow-field` (string; default "workflow") — Dotted path of the workflow (ADW) name in the payload.
+
+- **`(prompt-input notion …)`** [planned] — A Notion database row (status Not started → In progress → Done).
+  - `#:database-id-env` (string; default "NOTION_DATABASE_ID") — Environment variable with the database id.
+  - `#:status-filter` (list of string; default ("Not started")) — Statuses that are picked up.
+
+- **`(prompt-input chat …)`** [planned] — A chat message (Telegram / Slack / Matrix).
+  - `#:platform` (telegram | slack | matrix; default telegram) — Chat platform.
+  - `#:token-env` (string; default "CHAT_TOKEN") — Environment variable with the bot token.
+
+### `trigger` — PITER letter T
+
+PITER · Trigger: the event that starts a run.
+Declare any number. Default when omitted: `(trigger manual)`.
+
+- **`(trigger manual …)`** — Run the ADW script by hand: `adws/adw_<name>.py <prompt-or-ref>`.
+  - `#:confirm` (boolean; default #f) — Ask for confirmation before starting.
+
+- **`(trigger cron …)`** — A polling loop (uv script, optionally a systemd user timer) that checks the prompt inputs.
+  - `#:interval-seconds` (integer; default 20) — Polling interval.
+  - `#:max-concurrent` (integer; default 3) — Maximum ADW runs in flight.
+  - `#:systemd` (boolean; default #f) — Also generate a systemd user service + timer unit.
+
+- **`(trigger webhook …)`** — A small HTTP server receiving forge webhooks or generic JSON payloads.
+  - `#:port` (integer; default 8001) — Listen port.
+  - `#:path` (string; default "/webhook") — Endpoint path.
+  - `#:bind` (string; default "127.0.0.1") — Bind address; put a tunnel/reverse proxy in front for remote forges.
+  - `#:secret-env` (string; default "ADW_WEBHOOK_SECRET") — Environment variable with the HMAC secret.
+  - `#:events` (list of issue-opened | issue-comment | issue-labeled | payload; default (issue-opened issue-comment)) — Which events start a run.
+
+- **`(trigger forge-actions …)`** — A CI workflow file for the forge (GitHub Actions / Forgejo Actions) that runs the ADW on a runner.
+  - `#:events` (list of issue-opened | issue-comment | issue-labeled | schedule | workflow-dispatch; default (issue-opened issue-comment workflow-dispatch)) — Workflow events.
+  - `#:schedule` (string; default "") — Cron expression when `schedule` is among the events.
+  - `#:runner` (string; default "self-hosted") — runs-on label. A self-hosted runner keeps the agent on hardware you control.
+  - `#:label` (string; default "adw") — Issue label that must be present for issue events.
+
+- **`(trigger file-watch …)`** — Watch a file or directory in the layer (tasklist, spec inbox) and start when it changes.
+  - `#:debounce-seconds` (integer; default 3) — Quiet period before a change is acted on.
+
+- **`(trigger voice …)`** — Push-to-talk loop: press Enter, speak, the recognised text is routed by the voice prompt input.
+  - `#:hotkey` (string; default "enter") — Key that starts recording in the terminal loop.
+
+### `environment` — PITER letter E
+
+PITER · Environment: where the agent works. An ADW lists one or more; they stack in order (worktree → nix → podman).
+Declare any number. Default when omitted: `(environment worktree)`.
+
+- **`(environment host …)`** — The application checkout itself, no isolation. Only for read-only workflows.
+  - `#:read-only` (boolean; default #t) — Refuse steps that are expected to write.
+
+- **`(environment worktree …)`** — A dedicated git worktree per run under the layer (trees/<adw-id>), so the app's working tree is never touched.
+  - `#:dir` (string; default "trees") — Worktree parent directory relative to the layer.
+  - `#:port-base` (integer; default 9100) — First port of the per-run port block.
+  - `#:ports-per-run` (integer; default 2) — Ports reserved per run (exported as ADW_PORT_0..n).
+  - `#:copy-files` (list of string; default ()) — Untracked files copied from the app checkout into the worktree (e.g. .env).
+  - `#:keep` (never | on-failure | always; default on-failure) — When the worktree is kept after the run.
+  - `#:sparse` (list of string; default ()) — Sparse-checkout these directories only (cone mode); empty = full checkout. For large monorepos.
+  - `#:gc-days` (integer; default 7) — Kept worktrees of finished runs older than this are removed when a new run starts; 0 = never.
+  - `#:delete-merged-branches` (boolean; default #t) — When a run's worktree is removed, delete its branch if it holds nothing that is not already on the default or al/ship branch.
+
+- **`(environment nix-devshell …)`** — A Nix flake dev shell generated in the layer; every codebase command and the agent run inside `nix develop`.
+  - `#:packages` (list of string; default REQUIRED) — nixpkgs attribute names providing the toolchain (e.g. python312 uv).
+  - `#:nixpkgs` (string; default "github:NixOS/nixpkgs/nixos-unstable") — nixpkgs flake reference.
+  - `#:shell-hook` (string; default "") — Extra shell hook.
+  - `#:pure` (boolean; default #f) — Use `nix develop --ignore-environment` (keeps HOME, PATH is nix-only).
+
+- **`(environment home-manager …)`** — A Home Manager module generated in the layer that installs the toolchain and the layer's helper commands for a user.
+  - `#:packages` (list of string; default REQUIRED) — nixpkgs attribute names.
+  - `#:module-name` (string; default "agentic-layer") — Option namespace: programs.<module-name>.enable.
+  - `#:state-version` (string; default "25.05") — home.stateVersion used by the standalone example configuration.
+
+- **`(environment podman …)`** — A light rootless podman container; the worktree is bind-mounted, nothing else of the host is visible.
+  - `#:base-image` (string; default "docker.io/library/debian:stable-slim") — Base image.
+  - `#:packages` (list of string; default ()) — Distribution packages installed in the image (apt names for Debian bases).
+  - `#:setup` (list of string; default ()) — Extra RUN lines for the Containerfile.
+  - `#:network` (none | host | slirp; default slirp) — Network mode: `slirp` = podman's default rootless user-mode network, `none` = fully offline checks, `host` = host network.
+  - `#:memory` (string; default "4g") — Memory limit.
+  - `#:cpus` (string; default "2") — CPU limit.
+  - `#:agent-inside` (boolean; default #f) — Run the agent CLI inside the container too, so the agent itself is sandboxed (the image must provide the agent CLI). Otherwise only codebase commands run inside.
+  - `#:scope` (run | command; default run) — `run` = one container per ADW run, every step execs into it (installed dependencies persist for the run); `command` = a fresh container per command.
+  - `#:caches` (list of string; default ()) — Named cache volumes shared across runs, mounted at /caches/NAME. Known names also set the tool's cache variable: uv, pip, cargo, go, npm, pre-commit.
+  - `#:credentials` (list of claude | codex; default ()) — Agent credentials made available inside the container (read-only auth file + API key variable). Only meaningful with #:agent-inside #t.
+  - `#:publish` (list of integer; default ()) — Container ports published on 127.0.0.1 at the run's leased host ports, in order (first → ADW_PORT_0). Every run has its own network namespace, so the app inside always binds its usual ports and runs never collide; publish only what a host-side tool (browser, reviewer) must reach.
+  - `#:services` (list of name of a declared service; default ()) — Sidecar services started with the run in the same pod (they share localhost with the run's container) and removed with it.
+  - `#:pids-limit` (integer; default 2048) — Process limit inside the container.
+  - `#:read-only-root` (boolean; default #f) — Mount the image's root filesystem read-only; the worktree, caches, /tmp and the home directory stay writable.
+
+### `service`
+
+Per-run sidecar services (database, cache, mock API). Each run gets its own instances, so parallel runs never share state.
+Declare any number. Default when omitted: none.
+
+- **`(service container …)`** — A container started in the run's pod before the first step and removed with the run.
+  - `#:image` (string; default REQUIRED) — Image reference, e.g. docker.io/library/postgres:16-alpine.
+  - `#:env` (list of string; default ()) — Environment as KEY=VALUE strings.
+  - `#:command` (string; default "") — Command override; empty = the image's default.
+  - `#:ready-cmd` (string; default "") — Command run inside the sidecar until it exits 0 (e.g. `pg_isready -U postgres`); empty = no wait.
+  - `#:ready-timeout` (integer; default 60) — Seconds to wait for readiness.
+
+### `review` — PITER letter R
+
+PITER · Review: how the result is judged and what happens after.
+Declare any number. Default when omitted: `(review human)`.
+
+- **`(review human …)`** — Open a pull request and stop. A human reads it (presence = 2: prompt and review).
+  - `#:reviewers` (list of string; default ()) — Forge users requested as reviewers.
+  - `#:draft` (boolean; default #f) — Open the PR as draft.
+  - `#:body-cmd` (name of a declared cmd, or ""; default "") — Codebase command run in the worktree just before the pull request is written; its standard output (markdown) opens the PR description. It gets ADW_STATE (path of the run's state.json) and ADW_BASE (the commit the change is based on).
+
+- **`(review agent …)`** — An agent reviews the diff against the spec, with artefacts as proof, and posts a structured verdict. A human still merges.
+  - `#:command` (name of a declared command; default review) — Review command.
+  - `#:artefacts` (list of name of a declared artefact; default ()) — Artefacts attached as proof.
+  - `#:reviewers` (integer; default 1) — Independent review agents; all must pass ('double agent check').
+  - `#:max-retries` (integer; default 3) — Patch-and-re-review attempts on blockers before stopping for a human.
+  - `#:body-cmd` (name of a declared cmd, or ""; default "") — Codebase command whose standard output opens the PR description (see review human).
+
+- **`(review auto …)`** — Zero-touch: agent review + deterministic gates; if everything passes the change ships without a human.
+  - `#:command` (name of a declared command; default review) — Review command.
+  - `#:artefacts` (list of name of a declared artefact; default ()) — Artefacts collected, stored and given to the reviewer as proof.
+  - `#:reviewers` (integer; default 1) — Independent review agents; all must pass.
+  - `#:max-retries` (integer; default 3) — Patch-and-re-review attempts on blockers.
+  - `#:ship` (pr | merge | deploy; default merge) — On pass: open PR only, merge to the default branch, or merge and run the deploy command.
+  - `#:deploy-cmd` (name of a declared cmd, or ""; default "") — Codebase command run after merge when ship = deploy.
+  - `#:require-checks` (list of name of a declared cmd; default REQUIRED) — Codebase commands that must exit 0 in the final state (the deterministic gate).
+  - `#:allowed-classes` (list of chore | bug | feature | patch; default (chore bug)) — Work classes allowed to ship untouched; others fall back to a human PR.
+  - `#:max-diff-lines` (integer; default 400) — Larger diffs fall back to a human PR.
+  - `#:block-protected-paths` (boolean; default #t) — Any change under codebase protected paths falls back to a human PR.
+  - `#:body-cmd` (name of a declared cmd, or ""; default "") — Codebase command whose standard output opens the PR description (see review human).
+
+### `artefact`
+
+Proof a check or review produces. Collected from the worktree after the producing step and put in storage.
+Declare any number. Default when omitted: none.
+
+- **`(artefact log …)`** — Captured stdout/stderr of codebase commands (always available).
+  - `#:tail-lines` (integer; default 200) — Lines of each log shown to the reviewer.
+
+- **`(artefact junit …)`** — JUnit XML test report.
+  - `#:glob` (string; default REQUIRED) — Glob relative to the worktree.
+
+- **`(artefact coverage …)`** — Coverage report (lcov, cobertura xml, or text).
+  - `#:glob` (string; default REQUIRED) — Glob relative to the worktree.
+
+- **`(artefact image …)`** — Screenshots or rendered images; the reviewer reads every one.
+  - `#:glob` (string; default REQUIRED) — Glob relative to the worktree.
+  - `#:max-files` (integer; default 12) — Upper bound handed to the reviewer.
+
+- **`(artefact video …)`** — Screen/session recordings; keyframes are extracted with ffmpeg for the reviewer.
+  - `#:glob` (string; default REQUIRED) — Glob relative to the worktree.
+  - `#:keyframes` (integer; default 6) — Evenly spaced frames extracted per video.
+
+- **`(artefact audio …)`** — Audio files (e.g. generated speech).
+  - `#:glob` (string; default REQUIRED) — Glob relative to the worktree.
+
+- **`(artefact trace …)`** — Tool traces such as Playwright trace.zip.
+  - `#:glob` (string; default REQUIRED) — Glob relative to the worktree.
+
+- **`(artefact html …)`** — HTML reports.
+  - `#:glob` (string; default REQUIRED) — Glob relative to the worktree.
+
+- **`(artefact file …)`** — Any other file worth keeping.
+  - `#:glob` (string; default REQUIRED) — Glob relative to the worktree.
+
+## Records
+
+### `codebase`
+
+The application the layer wraps. Everything codebase-specific that templates need lives here.
+  - `#:root` (string; default REQUIRED) — Path of the application checkout, relative to the agentic.rkt file or absolute.
+  - `#:languages` (list of symbol; default REQUIRED) — Languages, most important first.
+  - `#:default-branch` (string; default "main") — Branch that ships.
+  - `#:description` (string; default "") — One-paragraph description used by prime/plan templates.
+  - `#:package-manager` (string; default "") — How dependencies are added (e.g. `uv add`, `cargo add`).
+  - `#:readme` (string; default "README.md") — Entry document agents read first.
+
+### `cmd`
+
+A named shell command of the codebase: (cmd NAME "shell" …). Check steps and validation sections refer to these names.
+  - `#:run` (string; default REQUIRED) — Shell command, run from the worktree root.
+  - `#:timeout` (integer; default 900) — Seconds.
+  - `#:description` (string; default "") — What the command proves.
+
+### `paths`
+
+Where things are: (paths #:source (…) #:tests (…) …).
+  - `#:source` (list of string; default ()) — Source directories.
+  - `#:tests` (list of string; default ()) — Test directories.
+  - `#:docs` (list of string; default ()) — Documentation directories.
+  - `#:protected` (list of string; default ()) — Paths agents must not change without a human (CI config, release, security, migrations…).
+
+### `conditional-doc`
+
+(conditional-doc "path" "condition" …): documentation an agent must read when the condition holds.
+  - `#:path` (string; default REQUIRED) — Document path relative to the codebase root.
+  - `#:when` (string; default REQUIRED) — Condition in plain language.
+
+### `command`
+
+(command NAME #:template T …): instantiate a kit template as a command of this layer.
+  - `#:template` (prime | install | start | plan-feature | plan-bug | plan-chore | plan-patch | plan-layer-change | implement | build | test | resolve-test | e2e-test | review | document | commit | pull-request | classify | branch-name | summarize | question | self-improve | track-kpis | custom; default REQUIRED) — Kit template to instantiate.
+  - `#:description` (string; default "") — One-line purpose.
+  - `#:file` (string; default "") — For template custom: path of a hand-written template relative to the layer.
+  - `#:model-set` (base | heavy; default base) — Model set the step runs on.
+  - `#:output` (text | json | path; default text) — What the command must return: free text, JSON per its schema, or a file path.
+  - `#:focus` (list of string; default ()) — Codebase-specific instructions injected into the template's Instructions section.
+  - `#:relevant` (list of string; default ()) — Codebase paths listed under Relevant Files; empty = codebase source+tests paths.
+  - `#:validation` (list of name of a declared cmd; default ()) — Codebase commands listed as Validation Commands.
+  - `#:fabric` (list of symbol; default ()) — Fabric patterns vendored into the layer and applied by this command.
+
+### `hop`
+
+(hop NAME #:template T …): a higher-order prompt — it takes another prompt, plan or command as its argument.
+  - `#:template` (run-plan | meta-command | meta-adw | meta-expert | plan-build-improve; default REQUIRED) — Kit HOP template.
+  - `#:description` (string; default "") — One-line purpose.
+  - `#:takes` (prompt | plan | command | spec; default prompt) — What the argument is.
+  - `#:produces` (changes | command | adw | expert | plan; default changes) — What comes out.
+  - `#:model-set` (base | heavy; default heavy) — Model set.
+
+### `expert`
+
+(expert NAME …): an agent expert — an expertise file the agent maintains itself (act → learn → reuse).
+  - `#:domain` (string; default REQUIRED) — What the expert knows, in one sentence.
+  - `#:paths` (list of string; default REQUIRED) — Codebase paths the expertise is validated against.
+  - `#:max-lines` (integer; default 1000) — Line cap of the expertise file.
+
+### `adw`
+
+(adw NAME … (steps STEP …)): an AI Developer Workflow. The four PITER choices default to the first declared option of each family.
+  - `#:description` (string; default "") — One-line purpose.
+  - `#:input` (list of name of a declared prompt-input; default the first declared option of that family) — Prompt inputs this ADW accepts.
+  - `#:trigger` (list of name of a declared trigger; default the first declared option of that family) — Triggers that may start it.
+  - `#:environment` (list of name of a declared environment; default the first declared option of that family) — Environment stack, outermost first.
+  - `#:review` (name of a declared review; default the first declared option of that family) — Review option.
+  - `#:agent` (name of a declared agent; default the first declared option of that family) — Agent the steps run on.
+  - `#:classes` (list of chore | bug | feature | patch; default ()) — Work classes routed to this ADW by classification; empty = any.
+  - `#:changes` (codebase | layer; default codebase) — What the ADW changes. `codebase`: the application. `layer`: an agentic layer (its codebase is the repository that holds a layer, as in the workflow `al improve` runs); such an ADW never ships without a person and is exempt from the in-repo layer protection.
+
+### `step-run`
+
+(run NAME #:command C …): one agent, one prompt, one purpose.
+  - `#:command` (name of a declared command-or-hop; default REQUIRED) — Command or HOP to execute.
+  - `#:args` (list of string; default ()) — Arguments; $prompt, $plan, $adw_id, $class, $branch and $out.<step> are substituted.
+  - `#:model-set` (inherit | base | heavy; default inherit) — Override the command's model set.
+  - `#:retries` (integer; default 0) — Re-run on failure.
+  - `#:when` (always | class-feature | class-bug | class-chore | class-patch; default always) — Run only for this work class.
+  - `#:agent` (name of a declared agent, or ""; default "") — Agent for this step only; empty = the ADW's agent. Use it for a cheaper model on routine steps or a different vendor for an independent step.
+
+### `step-check`
+
+(check NAME #:cmd C …): a deterministic feedback loop. Runs a codebase command; on failure an agent resolves and the command re-runs.
+  - `#:cmd` (name of a declared cmd; default REQUIRED) — Codebase command.
+  - `#:resolve` (name of a declared command, or ""; default "") — Command given the failing output; empty = fail the run immediately.
+  - `#:retries` (integer; default 3) — Resolve attempts.
+  - `#:collect` (list of name of a declared artefact; default ()) — Artefacts collected after the command.
+
+### `step-review`
+
+(review [NAME] …): run the ADW's review option here.
+  - `#:patch` (name of a declared command, or ""; default "") — Command that plans a patch for a blocker; implemented via the ADW's implement command.
+  - `#:implement` (name of a declared command-or-hop, or ""; default "") — Command/HOP that implements the patch plan.
+
+### `step-ship`
+
+(ship [NAME]): apply the review option's ship policy (PR / merge / deploy). Must come after a review step.
+  - `#:message` (string; default "") — Extra text for the PR/merge message.
+
+### `step-fan-out`
+
+(fan-out NAME #:adw CHILD …): run COUNT independent candidate runs of the child ADW (same prompt and class, each in its own worktree, branch, container and slots), pick a winner and merge its commits into this run's worktree, so later steps work on them. The child must commit its work and must not ship. Every candidate holds one `runs` slot and so does the parent: #:max-runs of (concurrency slots …) must exceed the number of concurrent parents plus candidates.
+  - `#:adw` (name of a declared adw; default REQUIRED) — The child ADW each candidate runs.
+  - `#:count` (integer; default 3) — Number of candidates, 2–8.
+  - `#:pick` (best | first | all; default best) — `best`: of the passing candidates, the one with the fewest resolve attempts, then the smallest diff, then the earliest; `first`: the first to pass; `all`: every candidate must pass and all are merged in order.
+  - `#:max-parallel` (integer; default 0) — Candidates running at once; 0 = #:count.
+
+## Examples (both compile)
+
+### minimal.rkt
+
+```racket
+#lang al
+;; The smallest useful layer: every PITER choice is the default
+;; (cli prompt, manual trigger, git worktree, human PR review, Claude Code, local artefacts).
+(agentic-layer #:name "minimal"
+  (codebase #:root "../app" #:languages (python)
+    (cmd test "uv run pytest -q"))
+  (command plan #:template plan-chore #:model-set heavy #:output path #:validation (test))
+  (hop implement #:template run-plan #:takes plan)
+  (adw plan-build
+    (steps
+      (run plan #:command plan #:args ("$prompt"))
+      (run build #:command implement #:args ("$out.plan"))
+      (check test #:cmd test))))
+```
+
+### full.rkt
+
+```racket
+#lang al
+;; A layer that uses most of the vocabulary: several prompt inputs and triggers,
+;; a stacked environment, artefacts on S3, and a zero-touch (auto review → merge) ADW
+;; next to a human-reviewed one.
+(agentic-layer #:name "webshop" #:description "Agentic layer for the webshop monorepo"
+  (codebase #:root "../webshop" #:languages (typescript python) #:default-branch "main"
+            #:description "Vue storefront + FastAPI backend" #:package-manager "bun add / uv add"
+    (cmd install "bun install && (cd api && uv sync)" #:timeout 1200)
+    (cmd lint "bun run lint && (cd api && uv run ruff check)")
+    (cmd test "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)")
+    (cmd e2e "bun run e2e" #:timeout 1800 #:description "Playwright; writes e2e-results/")
+    (cmd deploy "./scripts/deploy.sh staging")
+    (paths #:source ("web/src" "api/app") #:tests ("web/tests" "api/tests") #:docs ("docs")
+           #:protected (".github" "api/migrations" "scripts/deploy.sh"))
+    (conditional-doc "docs/payments.md" "When touching anything under api/app/payments"))
+
+  (layer sibling)
+  (forge forgejo #:host "https://forgejo.example.org" #:repo "acme/webshop")
+  (storage s3 #:bucket "webshop-adw" #:endpoint "https://s3.example.org")
+  (voice kokoro)
+  (agent claude-code)
+
+  (prompt-input issue #:labels ("adw"))
+  (prompt-input tasklist)
+  (prompt-input voice #:route auto)
+  (trigger webhook #:port 8001)
+  (trigger cron #:interval-seconds 15 #:systemd #t)
+  (trigger voice)
+  (trigger manual)
+
+  (environment worktree #:copy-files (".env"))
+  (environment nix-devshell #:packages ("bun" "nodejs_22" "python312" "uv" "ffmpeg"))
+  (environment podman #:id sandbox #:packages ("git" "curl") #:network slirp #:caches ("npm" "uv"))
+
+  (artefact log)
+  (artefact junit #:glob "reports/*.xml")
+  (artefact image #:id screenshots #:glob "e2e-results/**/*.png")
+  (artefact video #:id recordings #:glob "e2e-results/**/*.webm" #:keyframes 6)
+
+  (review human)
+  (concurrency slots #:max-runs 4 #:max-agents 2)
+  (dashboard local #:port 8765 #:also ("../storefront.al") #:systemd #t)
+  (review auto #:id zero-touch #:artefacts (log junit screenshots recordings)
+          #:ship deploy #:deploy-cmd deploy #:require-checks (lint test e2e)
+          #:allowed-classes (chore bug) #:max-diff-lines 300)
+
+  (command prime #:template prime)
+  (command classify #:template classify #:output json)
+  (command chore #:template plan-chore #:model-set heavy #:output path #:validation (lint test))
+  (command bug #:template plan-bug #:model-set heavy #:output path #:validation (lint test e2e))
+  (command feature #:template plan-feature #:model-set heavy #:output path #:validation (lint test e2e)
+           #:fabric (create_prd)
+           #:focus ("New endpoints need a pytest module under api/tests mirroring the source path."))
+  (command resolve-test #:template resolve-test #:model-set heavy)
+  (command review #:template review #:model-set heavy #:output json #:fabric (review_code))
+  (command patch #:template plan-patch #:model-set heavy #:output path)
+  (command document #:template document)
+  (command commit #:template commit #:fabric (create_git_diff_commit))
+  (command pull-request #:template pull-request #:fabric (write_pull-request))
+  (hop implement #:template run-plan #:takes plan)
+  (hop new-command #:template meta-command #:produces command)
+  (hop new-adw #:template meta-adw #:produces adw)
+
+  (expert payments #:domain "Payment provider integration and reconciliation" #:paths ("api/app/payments"))
+
+  (adw plan-build #:description "Plan and implement, nothing else" #:input (issue tasklist voice)
+    (steps
+      (run classify #:command classify #:args ("$prompt"))
+      (run plan-chore #:command chore #:args ("$prompt") #:when class-chore)
+      (run plan-bug #:command bug #:args ("$prompt") #:when class-bug)
+      (run plan-feature #:command feature #:args ("$prompt") #:when class-feature)
+      (run build #:command implement #:args ("$plan"))))
+
+  (adw sdlc #:description "Plan, build, test, review; a human merges"
+       #:input (issue tasklist) #:trigger (webhook cron manual)
+       #:environment (worktree nix-devshell) #:review human
+    (steps
+      (compose plan-build)
+      (check lint #:cmd lint #:resolve resolve-test)
+      (check test #:cmd test #:resolve resolve-test #:collect (junit))
+      (run document #:command document #:args ("$plan"))
+      (run commit #:command commit)
+      (review)
+      (ship)))
+
+  (adw zte #:description "Zero-touch: ships chores and bugs when every gate passes"
+       #:input (issue tasklist) #:trigger (webhook cron)
+       #:environment (worktree nix-devshell sandbox) #:review zero-touch #:classes (chore bug)
+    (steps
+      (compose plan-build)
+      (check lint #:cmd lint #:resolve resolve-test)
+      (check test #:cmd test #:resolve resolve-test #:collect (junit))
+      (check e2e #:cmd e2e #:resolve resolve-test #:retries 2 #:collect (screenshots recordings))
+      (run commit #:command commit)
+      (review #:patch patch #:implement implement)
+      (ship)))
+
+  (adw candidate #:description "One candidate of a race: plan, build, test, commit; never ships"
+       #:input (tasklist) #:trigger (manual) #:environment (worktree nix-devshell) #:review human
+    (steps
+      (compose plan-build)
+      (check test #:cmd test #:resolve resolve-test)
+      (run commit #:command commit)))
+
+  (adw race #:description "Three candidates race (two at a time); a human reviews the best one"
+       #:input (tasklist) #:trigger (manual) #:environment (worktree nix-devshell) #:review human
+    (steps
+      (fan-out race #:adw candidate #:count 3 #:pick best #:max-parallel 2)
+      (check lint #:cmd lint #:resolve resolve-test)
+      (check test #:cmd test #:resolve resolve-test #:collect (junit))
+      (review)
+      (ship))))
+```

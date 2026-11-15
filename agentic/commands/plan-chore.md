@@ -1,0 +1,125 @@
+---
+description: plan-chore for al
+argument-hint: [prompt]
+---
+
+# Plan Chore
+
+`plan-chore` in layer `al`: turn a high-level chore prompt into a surgical plan file that another agent can execute without asking a single question. Plan only; implement nothing.
+
+## Variables
+
+PROMPT: $1
+PLAN_FILE: ${specs_dir}/chore-${adw_id}-<descriptive-name>.md
+
+## Codebase
+
+al generates an agentic layer (prompts, workflows, sandbox, triggers, a dashboard) for any git repository. An LLM writes LLM.txt and agentic.rkt in a small Racket language; a compiler checks the definition and a generator produces the layer from templates. The command is tools/al (Python, run with uv); the runtime and the dashboard are Python with the standard library only.
+
+Languages: python, racket, javascript, shell. Entry document: `README.md`. Default branch: `main`.
+
+## Instructions
+
+- You are in `${worktree}`, a git worktree of the application. Read it, do not modify it. The only file you create is PLAN_FILE, which lives in the layer and never in the application tree. Never switch branches, push, or touch the main checkout.
+- Research before writing: read `README.md`, then the Relevant Files, then follow the code until you can name every file the chore touches.
+- Think hard about the smallest change that fully satisfies PROMPT. A chore changes no behaviour users rely on; if PROMPT needs a behaviour change, say so in Notes and plan only the chore part.
+- Write PLAN_FILE in exactly the Plan Format: keep every heading, replace every `<placeholder>`, add no sections. `<descriptive-name>` is 3-6 lowercase hyphenated words.
+- Be surgical: list only files that must change, name the function or block in each, and leave unrelated code, formatting and dependencies alone.
+- Tests: name every test to add or update, with its path. If the chore needs none, state why in Notes.
+- Keep the commands already present under `## Validation Commands` in the Plan Format unchanged and in order; add chore-specific commands only after them.
+- If the result is user-visible, name in Notes the artefacts that will prove it (screenshots, video, reports) and the step that produces them.
+- Never plan a change under a protected path. If the chore cannot be done without one, plan everything else and add a line starting `REQUIRES HUMAN` to Notes naming the path and the reason.
+- A new dependency is added with `inline script metadata in the script that needs it, or uv run --with for a test command; there is no manifest or lock file` and listed in Notes with its justification.
+- Read a conditional document when its condition matches what you are planning.
+- A new test for tools/al or tools/explain.py goes in tests/tools/test_<topic>.py; for kit/runtime/adw_modules/X.py in kit/runtime/tests/test_X.py; for the dashboard in kit/dashboard/tests; for the compiler in racket/al/tests.
+- Tests must not need the network and must not call a real LLM: agent steps in tests use the mock agent or --dry-run.
+- Tests work in pytest's temporary directory and leave no branch, worktree or container behind; nothing is written into the repository checkout.
+- No personal paths in committed files: no home directory, user name or machine-specific absolute path.
+- Never mention a private repository, a real employer or a real customer; examples use public repositories or synthetic data.
+
+## Relevant Files
+
+- `README.md`
+- `racket/al`
+- `tools`
+- `kit/runtime`
+- `kit/templates`
+- `kit/schemas`
+- `kit/dashboard`
+- `kit/self`
+- `meta`
+- `racket/al/tests`
+- `kit/runtime/tests`
+- `kit/dashboard/tests`
+- `tests/tools`
+- `tests/integration`
+
+Protected paths (do not plan changes here):
+
+- `racket/al/private`
+- `kit/runtime/adw_modules/review.py`
+- `kit/runtime/adw_modules/ship.py`
+- `kit/runtime/adw_modules/gitsafe.py`
+- `kit/runtime/adw_modules/envs.py`
+- `docs/AL-DSL.llms.txt`
+- `schemas/agentic-layer-v1.schema.json`
+- `docs/demo`
+- `tests/authored`
+- `tests/integration/testbeds.toml`
+
+## Conditional Documentation
+
+- `docs/DESIGN.md` — When changing the language, the compiler or how the generator maps a definition to files
+- `tests/README.md` — When adding or changing a test under tests/integration, or anything al verify does
+- `kit/dashboard/README.md` — When changing anything under kit/dashboard
+- `docs/AL-DSL.llms.txt` — When writing or changing any agentic.rkt or a test that contains one
+- `meta/README.md` — When changing a prompt under meta/commands
+- `docs/GUIDE.md` — When changing the behaviour or output of a tools/al subcommand, because the guide quotes it
+
+
+
+## Plan Format
+
+```md
+# Chore: <chore name>
+
+## Chore Description
+<what must be done and why, in enough detail that the prompt is no longer needed>
+
+## Relevant Files
+<bullet per existing file: path, then why it is relevant and what changes in it>
+
+## Step by Step Tasks
+IMPORTANT: execute every step in order, top to bottom.
+
+### <step title>
+- <one concrete action per bullet: file, symbol, change>
+
+### Run validation
+- Run every command under Validation Commands and fix until all pass.
+
+## Validation Commands
+Execute every command from the worktree root; all must exit 0.
+
+- `PLTCOLLECTS="$PWD/racket:" raco test racket/al/tests/compiler-test.rkt` — The language rules: the compiler accepts the examples and rejects each invalid definition with the documented error
+- `(cd kit/runtime && uv run --with pytest pytest -q)` — The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container
+- `uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q` — The al command itself works: eject, in-repo layers, al improve, dashboard generation
+- `(cd kit/dashboard && uv run --with pytest pytest -q tests)` — The dashboard's model and HTTP server work: unit and HTTP tests, no browser
+<additional chore-specific commands, each with what it proves; delete this line if none>
+
+## Notes
+<tests added or why none; new dependencies; artefacts that prove a user-visible result; REQUIRES HUMAN lines; anything the implementer must know>
+```
+
+## Validation Commands
+
+Do not run these now. They are the commands the plan embeds; the implementer runs them.
+
+- `PLTCOLLECTS="$PWD/racket:" raco test racket/al/tests/compiler-test.rkt` — The language rules: the compiler accepts the examples and rejects each invalid definition with the documented error
+- `(cd kit/runtime && uv run --with pytest pytest -q)` — The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container
+- `uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q` — The al command itself works: eject, in-repo layers, al improve, dashboard generation
+- `(cd kit/dashboard && uv run --with pytest pytest -q tests)` — The dashboard's model and HTTP server work: unit and HTTP tests, no browser
+
+## Report
+
+Your final message must be ONLY the path of the file you created, on a single line, with no other text.
