@@ -972,12 +972,12 @@ class AggCache:
         self.entries: dict[str, tuple[Tail, Transcript]] = {}
         self.lock = threading.Lock()
 
-    def get(self, path: Path) -> TranscriptAgg:
+    def get(self, path: Path, short: Shortener | None = None) -> TranscriptAgg:
         key = str(path)
         with self.lock:
             entry = self.entries.get(key)
             if entry is None:
-                entry = (Tail(path, settle=TRANSCRIPT_SETTLE), Transcript())
+                entry = (Tail(path, settle=TRANSCRIPT_SETTLE), Transcript(short))
                 self.entries[key] = entry
             tail, transcript = entry
             reset, lines = tail.read(max_bytes=64 * 1024 * 1024)
@@ -1069,12 +1069,13 @@ class RunModel:
             if name not in step_names:
                 step_names.append(name)
         status = str((state or {}).get("status") or "unknown")
+        short = self._short(state)
         running = status == "running"
         now = self.now()
         activities: list[Activity] = []
         agents: list[dict[str, Any]] = []
         for directory in self.files.agent_dirs():
-            agg = self.aggs.get(directory / "raw.jsonl")
+            agg = self.aggs.get(directory / "raw.jsonl", short)
             step, role = agent_group(directory.name, step_names, kinds)
             start = mtime(directory / "prompt.md") or mtime(directory / "raw.jsonl")
             out = mtime(directory / "output.txt")
@@ -1864,7 +1865,7 @@ class Model:
                     self.slots[layer.key] = slots
                     self.hub.publish("slots", {"layer": layer.key, **slots})
         if self.probe.enabled and (any_running or self.hub.count()) and now - self.probe.last > (3 if any_running else 15):
-            if self.probe.poll(want_stats=any_running):
+            if self.probe.poll(want_stats=True):   # stats are only fetched for containers that are running
                 self.hub.publish("containers", self.containers())
                 with self.lock:
                     for key, summary in self.summaries.items():
@@ -2454,6 +2455,7 @@ def make_server(args: argparse.Namespace, static_dir: Path = STATIC_DIR) -> Dash
     model = Model(args.layer, args.scan, poll=args.poll, scan_depth=args.scan_depth, probe=probe,
                   in_container=args.in_container)
     model.discover()
+    probe.poll(want_stats=True)   # so the first snapshot already knows the containers
     model.tick()
     return DashboardServer((args.bind, args.port), model, args.token, static_dir)
 
@@ -2480,7 +2482,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.token:
         url += f"?token={urllib.parse.quote(args.token)}"
     layers = ", ".join(f"{l['key']} ({l['runs']} runs)" for l in server.model.layer_list()) or "none yet"
-    print(f"al dashboard on {url}\n  watching: {layers}", flush=True)
+    where = f"listening inside the container on port {server.server_address[1]}" if args.in_container else f"on {url}"
+    print(f"al dashboard {where}\n  watching: {layers}\n  containers: {server.model.probe.info()['note']}", flush=True)
     if args.open:
         webbrowser.open(url)
     try:

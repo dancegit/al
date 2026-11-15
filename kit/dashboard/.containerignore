@@ -1,0 +1,5 @@
+tests/
+demo/
+README.md
+run-in-podman.sh
+**/__pycache__/

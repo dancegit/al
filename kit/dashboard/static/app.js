@@ -1285,7 +1285,9 @@
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(art);
       }
-      for (const [id, items] of groups) {
+      const rank = { image: 0, video: 1, audio: 2, html: 3, junit: 4, coverage: 5, trace: 6, log: 8 };
+      const ordered = [...groups].sort((a, b) => (rank[a[1][0].type] ?? 7) - (rank[b[1][0].type] ?? 7));
+      for (const [id, items] of ordered) {
         const type = items[0].type;
         const group = h("div", { class: "art-group" }, h("div", { class: "card-head" }, h("h3", { text: id }), h("span", { class: "badge", text: type }),
           h("span", { class: "dim", text: `collected by step ${items[0].step}` }), h("span", { class: "dim", text: `${items.length} file${items.length === 1 ? "" : "s"}` })));
@@ -1325,8 +1327,10 @@
       const sameStep = tab === "step" && state.tab === "step" && state.step === parts[4]
         && (state.params.agent || "") === (route.params.agent || "") && (state.params.attempt || "") === (route.params.attempt || "")
         && (state.params.tab || "") === (route.params.tab || "");
+      const tabChanged = tab !== state.tab && !(tab === "step" && state.tab === "overview") && !(tab === "overview" && state.tab === "step");
       state = { ...state, tab, step: tab === "step" ? parts[4] : "", params: route.params };
       if (sameStep) return true;
+      if (tabChanged) window.scrollTo(0, 0);
       if (sub) { sub.destroy(); sub = null; }
       if (!detail) return true;
       renderTabs();

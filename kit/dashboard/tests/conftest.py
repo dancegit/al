@@ -22,6 +22,7 @@ import fixtures  # noqa: E402
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "browser: drives a real Chrome through Playwright (skipped without one)")
+    config.addinivalue_line("markers", "podman: needs rootless podman and python:3.12-slim locally (skipped otherwise)")
 
 
 @pytest.fixture(scope="session")

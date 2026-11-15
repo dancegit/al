@@ -262,6 +262,26 @@ def test_hostile_content_is_shown_as_text_and_never_runs(page):
     assert page.locator("a[href^='javascript']").count() == 0
 
 
+def test_thousands_of_events(page, site):
+    """3000 tool calls (6000 rows with their results) arrive in chunks and stay usable."""
+    _running, agents = site
+    claude = fixtures.Claude(0, "/work/demo-shop.al/trees/a1000001")
+    for index in range(3000):
+        claude.tool("Bash", {"command": f"echo step {index}"}, f"step {index}\n" * 3, error=index == 2999)
+    claude.final("done", 1.0, 3000, 60000)
+    (agents / "a1000001" / "bulk").mkdir()
+    (agents / "a1000001" / "bulk" / "prompt.md").write_text("bulk")
+    (agents / "a1000001" / "bulk" / "raw.jsonl").write_text(claude.body())
+    started = time.monotonic()
+    open_(page, "/run/demo-shop/a1000001/step/bulk?agent=bulk")
+    until(page, "document.querySelectorAll('.ev.k-tool').length === 3000", timeout=30000)
+    loaded = time.monotonic() - started
+    assert loaded < 15, loaded
+    page.click("button[data-filter='errors']")
+    until(page, "document.querySelectorAll('.ev:not(.hidden)').length === 1")
+    assert "echo step 2999" in page.locator(".ev:not(.hidden)").inner_text()
+
+
 # ------------------------------------------------------------------------------ live
 
 def test_live_updates_without_reload(page, site):

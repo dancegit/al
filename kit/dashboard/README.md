@@ -1,0 +1,167 @@
+# al work dashboard
+
+A live, read-only view of what the agents of one or more layers are doing: which runs are in
+flight and what each agent is doing right now, the workflow of every run as a graph that colours
+in as steps finish, where the time went, what it cost, and every agent's transcript formatted for
+people. One Python file (standard library only) serves one page (HTML, CSS and vanilla JS, no
+CDN, no build step) and pushes updates over Server-Sent Events.
+
+![Three runs started while the page is open; the third waits for a run slot](../../docs/demo/dashboard/live.gif)
+
+[live.mp4](../../docs/demo/dashboard/live.mp4) (52 s): three runs of a demo layer, two at a time;
+the Now view fills, the third run waits for a slot, the graph colours in, a transcript streams,
+a test fails and its resolve agent fixes it. More: [run detail](../../docs/demo/dashboard/run-detail.png) ·
+[transcript, filtered](../../docs/demo/dashboard/step-transcript.png) ·
+[timeline and costs](../../docs/demo/dashboard/timeline-costs.png) ·
+[artefacts](../../docs/demo/dashboard/artefacts.png) · [a layer's workflows](../../docs/demo/dashboard/layers.png).
+The still images are real Claude Opus runs (the flask layer and the healthcare staffing demo).
+
+## Run it
+
+```bash
+uv run kit/dashboard/dashboard.py --scan .                       # every layer below this directory
+uv run kit/dashboard/dashboard.py --layer ~/code/myapp.al --open # one layer, open a browser
+kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own container (below)
+```
+
+| Flag | Meaning |
+|---|---|
+| `--layer DIR` | watch this layer (a directory with `agentic-layer.json`); repeatable |
+| `--scan DIR` | find layers below DIR, in-repo ones included (depth `--scan-depth`, default 4; `.git`, `node_modules`, `trees`, `testbeds`, … are skipped); rescanned every 10 s, so new layers appear |
+| `--port N` | default 8765 |
+| `--bind ADDR` | default 127.0.0.1; a non-loopback address is refused unless `--token` is given |
+| `--token T` | every request needs it (`?token=T` once, then an HttpOnly cookie; or `Authorization: Bearer T`); also read from `AL_DASHBOARD_TOKEN` |
+| `--open` | open the page in a browser |
+| `--poll S` | seconds between file polls (default 0.75) |
+| `--no-podman` | never call podman |
+| `--podman-socket PATH` | opt-in: read container status from a podman API socket (for the container mode) |
+| `--in-container` | the host's processes and locks are not visible: infer slot use from run state |
+
+## What you see
+
+| View | What it shows |
+|---|---|
+| **Now** (`1`) | every run in flight: layer, workflow, request, current step, the agent's latest action in one line ("editing tests/test_basic.py", "running pytest", "thinking"), elapsed time, cost so far, whether it waits for a slot, its container (name, state, CPU and memory when podman is available); slot pools per layer (runs / agents / checks, held / total, from the lock files) and leased ports; recently finished runs |
+| **Runs** (`2`) | history with filters (layer, workflow, status, class, dates, text), sortable by time, cost and duration; count, pass rate, total and median cost and time |
+| **Run** | the workflow as a graph from the layer's IR (agent / check / review / ship / fan-out nodes; `when` branches stacked in one column; resolve loops and the review → patch → re-check loop as back-edges; fan-out candidates as lanes linked to their own runs), coloured live with duration and cost per node; a timeline of every step, check attempt, resolve agent, reviewer, patch round and gate re-run, with agent / check / slot-wait totals; cost and tokens per agent; the outcome: gate decision and reasons, ship target or PR, **why the run stopped** and what the agent asks a human to do, review verdicts per round and reviewer with issues by severity |
+| **Step** | the exact prompt (sections collapsible), the transcript as one row per event: what the agent said, tool calls summarised (file read / edit with a diff / write, shell command, search pattern), results collapsed with size, errors marked, thinking as a marker, the final cost / turns / time. Filters (kind, errors only, tool), search with highlight, follow mode, raw JSON of any event, download of the raw `.jsonl`. Checks: every attempt's log with ANSI colours, its exit code and the resolve agent that followed |
+| **Artefacts** | screenshots as thumbnails (click for full size), videos playable in the page with their keyframes, logs with their tail, all with the step that collected them |
+| **Layers** (`3`) | each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists |
+
+Every view is a URL (`#/run/flask/11bf99ac/step/build?q=static`), so a link can go into a PR or a
+chat. Keys: `j`/`k` move through runs, nodes or transcript events, `Enter` opens, `/` searches,
+`f` follows, `Esc` goes back, `?` lists them.
+
+## What it reads, and how
+
+Everything comes from files the runtime already writes; nothing in a layer is ever written.
+
+| File | Used for |
+|---|---|
+| `agentic-layer.json` | the workflows (graphs), slot limits, review options, declared commands |
+| `agents/<id>/state.json` | status, class, request, step records (status, start, end, detail), checks, review rounds, ship and gate, fan-out candidates, artefacts. Older files without newer keys are fine. A run without `state.json` is shown as `unknown` from its `run.log` |
+| `agents/<id>/run.log` | container name and removal, slot waits (`[slots] … waiting for a free runs slot`), gate re-run exit codes |
+| `agents/<id>/<step>/{prompt.md,raw.jsonl,output.txt,stderr.log}` | one directory per agent call. `<check>-resolve-<n>` belongs to that check, `review-<n>`, `review-<round>-<n>`, `patch-<n>`, `implement-<n>` to the review step. Start = `prompt.md` mtime, end = `output.txt` mtime |
+| `agents/<id>/checks/<name>.<attempt>.log`, `gate-<name>.log` | attempts (end = mtime; start = the end of whatever ran just before, since the runtime is sequential), exit codes, ANSI logs |
+| `agents/<id>/PR.md` | the "Why this stopped" and "What the agent asks" sections of a handoff |
+| `agents/.slots/<pool>.<n>.lock`, `agents/.ports.json` | which slots are held (from `/proc/locks`, read-only) and by which run; leased ports and whether their owner is alive |
+| `artefacts/<id>/manifest.json` | artefacts when `state.json` has none |
+
+Transcripts (`raw.jsonl`) are read incrementally (only new bytes; a half-written last line waits
+for its newline; a truncated or replaced file restarts with a `reset`). Claude Code stream-json
+events become rows:
+
+| Event | Row |
+|---|---|
+| `system/init` | "session started · model · permission mode" (its `cwd` makes paths relative) |
+| `assistant` text / thinking / tool_use | says / thinks (marker only) / one line per tool: `read <path>`, `edit <path>` + diff, `write <path> (n lines)`, `$ <command>`, `search /pattern/ in <path>`, `find files <glob>`, `delegate: …`, todo list |
+| `user` tool_result | attached to its tool call: size, line count, error flag, preview; `tool_use_result.structuredPatch` as a diff, `stderr` shown |
+| `user` with a plain string | a user row |
+| `system/task_started`, `task_notification` | task rows (hidden with "system") |
+| `rate_limit_event` | "rate limit: allowed (seven_day 38%)" (hidden with "system") |
+| `system/thinking_tokens`, `system/ui_invalidate` | no row; thinking tokens are counted |
+| `result` | cost, turns, duration, tokens (in / out / cache read / cache write), error subtypes such as `error_max_turns` |
+| a line that is not JSON | text (codex and custom CLI agents write plain text); a broken JSON line is marked "unreadable" |
+| `{"synthesised": …}` / `{"script": …}` | the mock agent |
+
+Cost and tokens come from each agent's `result` event; while a step runs, tokens are summed from
+its messages and the cost shows as "so far" for the finished steps. Paths in agent output are
+shown relative to the run's worktree (`layer:` for the layer, `~` for the home directory).
+
+## Safety
+
+- **Read-only.** Only GET and HEAD; every other method is 405. No endpoint takes an action.
+- **Served files** are limited to a watched layer's `agents/`, `artefacts/`, `specs/`, its
+  `agentic-layer.json` / `agentic.rkt` and `EXPLAIN.md`. Traversal (`..`, encoded or not), absolute
+  paths, NUL bytes and anything whose real path leaves that tree (symlinked files or directories)
+  are refused. Files are sent with `Content-Security-Policy: sandbox`, `nosniff`, and unknown
+  types as downloads, so an HTML artefact cannot run in the dashboard's origin.
+- **Agent output is untrusted.** The page never parses data as HTML: everything is set with
+  `textContent` or SVG attributes (a test checks the script for `innerHTML` & co.), JSON responses
+  escape `<`, `>` and `&`, and the page's CSP allows only its own script (no inline, no eval).
+  A transcript full of `<script>` and `<img onerror>` displays as text (tested in Chrome).
+- **Network.** Loopback by default, with a Host-header check against DNS rebinding. A non-loopback
+  `--bind` needs `--token`; then every request needs it.
+
+## Its own podman container
+
+```bash
+kit/dashboard/run-in-podman.sh [--port 8765] [--podman-socket] DIR [DIR …]
+```
+
+It builds a small image (`python:3.12-slim` plus the script and its static files) and runs it
+rootless as your user (`--userns=keep-id`, so it can read state files that only you can read),
+with every DIR mounted **read-only at the same path**, `--cap-drop=ALL`,
+`--security-opt=no-new-privileges`, `--read-only`, pids/memory/CPU limits, on an `--internal`
+podman network (no route out), publishing only `127.0.0.1:PORT`. Inside, it must listen on all
+interfaces for the published port, so the script generates a random token and prints the URL.
+
+What the container can and cannot show:
+
+| | Host | Container | Container + `--podman-socket` |
+|---|---|---|---|
+| runs, steps, transcripts, logs, costs, artefacts | yes | yes | yes |
+| slot pools | exact (`/proc/locks`) | inferred from run state | inferred |
+| port leases alive? | yes (owner pid) | unknown | unknown |
+| container name / removed | from run.log | from run.log | from podman |
+| container state, CPU, memory | podman CLI | no | yes |
+
+`--podman-socket` mounts your podman API socket. Mounted read-only or not, **a socket gives full
+control of your podman** (start, stop, exec): the `:ro` flag only stops the file from being
+replaced, not the API from being used. The dashboard only sends GET requests, but you are trusting
+it with that power, which is why it is off by default.
+
+## Tests
+
+```bash
+cd kit/dashboard
+uv run --with pytest pytest -q tests                        # unit + HTTP tests (no browser, no network)
+uv run --with pytest --with playwright pytest -q tests      # + real-browser tests in the host's Chrome
+AL_DASHBOARD_REAL_LAYERS=../../layers uv run --with pytest pytest -q tests -k real   # every real transcript you have
+```
+
+Browser tests use the host's Google Chrome or Chromium (`AL_DASHBOARD_CHROME` to choose); they
+skip without Playwright or Chrome, and nothing is downloaded. `podman`-marked tests skip without
+podman and `python:3.12-slim`. The fixture layers are code (`tests/fixtures.py`, `python
+tests/fixtures.py DIR` writes them out): a passed run, a failed run with a handoff, a resolve loop,
+two review rounds, a fan-out, a run in progress with a half-written line, hostile HTML, corrupt
+JSON, a run without `state.json`, a plain-text agent and a mock run.
+
+## Demo scripts (`demo/`)
+
+| Script | Does |
+|---|---|
+| `live_demo.py` | builds a tiny app and its layer in a temp directory, starts the dashboard and three runs, records Chrome with Playwright and writes `live.mp4` / `live.gif`. Planning, commit and review use the mock agent; the build step uses `replay_agent.py`, a scripted stand-in CLI agent that streams a Claude-format transcript while it really edits the worktree (no LLM, $0). Checks run for real in podman |
+| `screenshots.py` | screenshots of real local runs; refuses to write one whose page text contains the home directory, `/home/`, `~/` or the user name |
+| `gif.py` | GIF encoder with the dashboard's own colours as palette, so status colours survive a small file |
+| `perf.py` | the dashboard's own CPU use, idle and with busy runs |
+
+## Wiring it into layers (planned)
+
+Phase 2 would let a layer declare its dashboard, for example
+`(dashboard #:port 8765 #:bind "127.0.0.1" #:container #f #:podman-socket #f #:also ("../other.al"))`,
+with `al gen` emitting `adws/dashboard.py` (a thin entry that runs this script with the layer
+preselected) and, for `#:container #t`, `env/dashboard.Containerfile` plus a systemd user unit.
+An append-only `agents/<id>/events.jsonl` written by the runtime (step start/end, check attempt
+start/end with exit code, slot wait start/end, container start/stop) would replace the mtime-based
+reconstruction of check start times and slot waits with exact ones.

@@ -117,6 +117,13 @@ def test_running_run_is_live(fx):
     assert s["container"] == {"name": "al-demo-shop-a1000006", "state": "running", "source": "run.log"}
 
 
+def test_current_action_uses_short_paths(fx):
+    path = fx["agents"] / "a1000006" / "build" / "raw.jsonl"
+    with path.open("a") as handle:
+        handle.write(fixtures.PARTIAL_EDIT[fixtures.PARTIAL_SPLIT:] + "\n")
+    assert summary(model_for(fx), "a1000006")["current"]["action"] == "editing shop/catalog.py"
+
+
 def test_missing_state_file_is_an_unknown_run_not_a_crash(fx):
     s = summary(model_for(fx), "a1000009")
     assert s["status"] == "unknown" and s["problem"] == "no state.json"
@@ -465,6 +472,32 @@ def test_slots_from_real_flocks(fx):
         assert slots["ports"][0]["alive"] is False    # pid 0: the lease is stale
     finally:
         os.close(handle)
+
+
+@pytest.mark.podman
+def test_container_probe_with_real_podman(fx):
+    """A labelled container (as the runtime labels them) is found, mapped to its run, with CPU/memory."""
+    import shutil
+    import subprocess
+    image = "docker.io/library/python:3.12-slim"
+    if not shutil.which("podman") or subprocess.run(["podman", "image", "exists", image]).returncode != 0:
+        pytest.skip(f"needs podman and {image} in local storage")
+    name = f"al-dashboard-test-{os.getpid()}"
+    layer_dir = str(fx["layer"].resolve())
+    subprocess.run(["podman", "run", "-d", "--rm", "--name", name, "--label", "al.run=a1000006", "--label", f"al.layer-dir={layer_dir}",
+                    image, "sleep", "60"], check=True, capture_output=True)
+    try:
+        probe = d.ContainerProbe(None)
+        assert probe.poll(want_stats=True) is True
+        layer = d.load_layer(fx["layer"].resolve(), set())
+        found = probe.lookup(layer, "a1000006")
+        assert found["name"] == name and found["state"] == "running" and found["source"] == "podman"
+        assert found["cpu"] and found["mem"]
+        model = model_for(fx)
+        model.probe = probe
+        assert model._decorated(summary(model, "a1000006"))["container"]["name"] == name
+    finally:
+        subprocess.run(["podman", "rm", "-f", "-t", "0", name], capture_output=True)
 
 
 def test_container_probe_degrades_without_podman():
