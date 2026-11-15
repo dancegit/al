@@ -199,6 +199,48 @@
                     "name"
                   ],
                   "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "(fan-out NAME #:adw CHILD …): run COUNT independent candidate runs of the child ADW (same prompt and class, each in its own worktree, branch, container and slots), pick a winner and merge its commits into this run's worktree, so later steps work on them. The child must commit its work and must not ship. Every candidate holds one `runs` slot and so does the parent: #:max-runs of (concurrency slots …) must exceed the number of concurrent parents plus candidates.",
+                  "properties": {
+                    "adw": {
+                      "description": "The child ADW each candidate runs.",
+                      "type": "string"
+                    },
+                    "count": {
+                      "description": "Number of candidates, 2–8.",
+                      "type": "integer"
+                    },
+                    "kind": {
+                      "const": "fan-out"
+                    },
+                    "maxParallel": {
+                      "description": "Candidates running at once; 0 = #:count.",
+                      "type": "integer"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "pick": {
+                      "description": "`best`: of the passing candidates, the one with the fewest resolve attempts, then the smallest diff, then the earliest; `first`: the first to pass; `all`: every candidate must pass and all are merged in order.",
+                      "enum": [
+                        "best",
+                        "first",
+                        "all"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "adw",
+                    "count",
+                    "kind",
+                    "maxParallel",
+                    "name",
+                    "pick"
+                  ],
+                  "type": "object"
                 }
               ]
             },

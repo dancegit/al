@@ -329,6 +329,153 @@
         "webhook",
         "cron"
       ]
+    },
+    {
+      "agent": "claude-code",
+      "classes": [],
+      "description": "One candidate of a race: plan, build, test, commit; never ships",
+      "environment": [
+        "worktree",
+        "nix-devshell"
+      ],
+      "input": [
+        "tasklist"
+      ],
+      "name": "candidate",
+      "review": "human",
+      "steps": [
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "args": [
+            "$prompt"
+          ],
+          "command": "feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "args": [
+            "$plan"
+          ],
+          "command": "implement",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "cmd": "test",
+          "collect": [],
+          "kind": "check",
+          "name": "test",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "args": [],
+          "command": "commit",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "commit",
+          "retries": 0,
+          "when": "always"
+        }
+      ],
+      "trigger": [
+        "manual"
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "classes": [],
+      "description": "Three candidates race (two at a time); a human reviews the best one",
+      "environment": [
+        "worktree",
+        "nix-devshell"
+      ],
+      "input": [
+        "tasklist"
+      ],
+      "name": "race",
+      "review": "human",
+      "steps": [
+        {
+          "adw": "candidate",
+          "count": 3,
+          "kind": "fan-out",
+          "maxParallel": 2,
+          "name": "race",
+          "pick": "best"
+        },
+        {
+          "cmd": "lint",
+          "collect": [],
+          "kind": "check",
+          "name": "lint",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test",
+          "collect": [
+            "junit"
+          ],
+          "kind": "check",
+          "name": "test",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "implement": "",
+          "kind": "review",
+          "name": "review",
+          "patch": ""
+        },
+        {
+          "kind": "ship",
+          "message": "",
+          "name": "ship"
+        }
+      ],
+      "trigger": [
+        "manual"
+      ]
     }
   ],
   "agents": [

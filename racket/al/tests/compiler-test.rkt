@@ -111,6 +111,63 @@
   (check-equal? (hash-ref (hash-ref ir 'concurrency) 'maxRuns) 8)
   (check-equal? (hash-ref (cadr (hash-ref ir 'environments)) 'scope) "run"))
 
+(define build-cmd '(command build #:template build))
+(define candidate-adw '(adw candidate (steps (run plan #:command plan) (run build #:command build))))
+(define (race-adw . fan-out-fields)
+  `(adw parent (steps (fan-out race #:adw candidate ,@fan-out-fields) (check t #:cmd test))))
+
+(test-case "fan-out compiles to a step of the parent"
+  (define ir (compile-layer-datum
+              (layer plan build-cmd candidate-adw
+                     (race-adw '#:count 3 '#:pick 'first '#:max-parallel 2))))
+  (define parent (cadr (hash-ref ir 'adws)))
+  (check-equal? (car (hash-ref parent 'steps))
+                (hasheq 'kind "fan-out" 'name "race" 'adw "candidate" 'count 3 'pick "first" 'maxParallel 2))
+  (define defaults (car (hash-ref (cadr (hash-ref (compile-layer-datum
+                                                   (layer plan build-cmd candidate-adw (race-adw)))
+                                                  'adws))
+                                  'steps)))
+  (check-equal? (hash-ref defaults 'pick) "best")
+  (check-equal? (hash-ref defaults 'count) 3)
+  (check-equal? (hash-ref defaults 'maxParallel) 0))
+
+(test-case "fan-out rules"
+  (check-rejects (layer plan candidate-adw (race-adw '#:count 1)) #rx"#:count must be between 2 and 8")
+  (check-rejects (layer plan candidate-adw (race-adw '#:count 9)) #rx"#:count must be between 2 and 8")
+  (check-rejects (layer plan candidate-adw (race-adw '#:max-parallel 4))
+                 #rx"#:max-parallel must be between 0 \\(= #:count\\) and #:count")
+  (check-rejects (layer plan candidate-adw (race-adw '#:pick 'random)) #rx"one of: best, first, all")
+  (check-rejects (layer plan '(adw parent (steps (fan-out race #:adw nobody))))
+                 #rx"`nobody` is not a declared adw; declared: parent")
+  (check-rejects (layer plan '(adw parent (steps (run plan #:command plan) (fan-out race #:adw parent))))
+                 #rx"fan-out race: #:adw must name another ADW, not `parent` itself")
+  (check-rejects (layer plan review-cmd '(adw candidate (steps (run plan #:command plan) (review) (ship)))
+                        (race-adw))
+                 #rx"fan-out race: child ADW `candidate` contains a \\(ship\\) step; candidates must not ship")
+  (check-rejects (layer plan build-cmd candidate-adw
+                        '(adw middle (steps (fan-out inner #:adw candidate)))
+                        '(adw parent (steps (fan-out race #:adw middle))))
+                 #rx"fan-out race: child ADW `middle` contains a \\(fan-out\\) step; fan-out does not nest")
+  (check-rejects (layer plan
+                        '(adw parent (steps (fan-out race #:adw child)))
+                        '(adw child (steps (fan-out back #:adw parent))))
+                 #rx"fan-out race: cycle parent → child → parent")
+  (check-rejects (layer plan
+                        '(adw parent (steps (fan-out race #:adw child)))
+                        '(adw child (steps (compose parent))))
+                 #rx"fan-out race: cycle parent → child")
+  (check-rejects (layer plan '(environment host) '(environment worktree)
+                        '(adw candidate #:environment (host) (steps (run plan #:command plan)))
+                        '(adw parent #:environment (worktree) (steps (fan-out race #:adw candidate))))
+                 #rx"fan-out race: child ADW `candidate` needs a `worktree` environment")
+  (check-rejects (layer plan '(environment host) '(environment worktree)
+                        '(adw candidate #:environment (worktree) (steps (run plan #:command plan)))
+                        '(adw parent #:environment (host) (steps (fan-out race #:adw candidate))))
+                 #rx"\\(adw parent\\): fan-out race needs a `worktree` environment")
+  (check-rejects (layer plan build-cmd review-cmd candidate-adw
+                        '(adw parent (steps (review) (fan-out race #:adw candidate) (ship))))
+                 #rx"fan-out race must come before the ADW's \\(review\\) and \\(ship\\) steps"))
+
 (test-case "#lang al reports the offending clause's source location"
   (define msg
     (with-handlers ([exn:fail:syntax? exn-message])
@@ -141,3 +198,20 @@
   (for ([r (all-records)])
     (check-true (string-contains? ref (format "### `~a`" (record-name r)))))
   (check-true (string-contains? ref "#lang al")))
+
+(test-case "schema and reference include the fan-out step"
+  (define schema (layer-schema))
+  (define step-alts
+    (hash-ref (hash-ref (hash-ref (hash-ref (hash-ref (hash-ref (hash-ref schema 'properties) 'adws) 'items)
+                                            'properties) 'steps) 'items) 'oneOf))
+  (define fan-out (findf (lambda (s) (equal? (hash-ref (hash-ref (hash-ref s 'properties) 'kind) 'const) "fan-out"))
+                         step-alts))
+  (check-true (hash? fan-out))
+  (check-equal? (hash-ref fan-out 'required) '("adw" "count" "kind" "maxParallel" "name" "pick"))
+  (define ref (reference-text))
+  (check-true (string-contains? ref "### `step-fan-out`"))
+  (check-true (string-contains? ref "(fan-out NAME #:adw CHILD"))
+  (check-true (string-contains? ref "fan-out"))
+  (define full (dynamic-require (build-path examples "full.rkt") 'layer-spec))
+  (check-true (for*/or ([a (hash-ref full 'adws)] [s (hash-ref a 'steps)])
+                (equal? (hash-ref s 'kind) "fan-out"))))

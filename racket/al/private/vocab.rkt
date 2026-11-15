@@ -401,6 +401,14 @@
   "(ship [NAME]): apply the review option's ship policy (PR / merge / deploy). Must come after a review step."
   [message string "" "Extra text for the PR/merge message."])
 
+(define-record step-fan-out
+  "(fan-out NAME #:adw CHILD …): run COUNT independent candidate runs of the child ADW (same prompt and class, each in its own worktree, branch, container and slots), pick a winner and merge its commits into this run's worktree, so later steps work on them. The child must commit its work and must not ship. Every candidate holds one `runs` slot and so does the parent: #:max-runs of (concurrency slots …) must exceed the number of concurrent parents plus candidates."
+  [adw (ref adw) #:required "The child ADW each candidate runs."]
+  [count integer 3 "Number of candidates, 2–8."]
+  [pick (enum best first all) best
+   "`best`: of the passing candidates, the one with the fewest resolve attempts, then the smallest diff, then the earliest; `first`: the first to pass; `all`: every candidate must pass and all are merged in order."]
+  [max-parallel integer 0 "Candidates running at once; 0 = #:count."])
+
 ;; ---------------------------------------------------------------------------------------
 ;; Derived lists and the semantic rules the compiler enforces (also printed in the reference)
 ;; ---------------------------------------------------------------------------------------
@@ -432,4 +440,6 @@
     "claude-code #:permission-mode bypassPermissions is only accepted for ADWs whose environment stack contains a podman option with #:agent-inside #t (the agent itself must be sandboxed)."
     "An ADW whose review option is `auto` with #:ship merge or deploy must have a podman option in its environment stack: nothing ships untouched from an unsandboxed environment."
     "(compose ADW) inlines another ADW's steps; cycles are rejected."
+    "(fan-out NAME #:adw CHILD …): CHILD is a declared ADW other than the parent, with no cycle through fan-out or compose; CHILD (after compose expansion) contains no (ship) and no (fan-out) step and has a `worktree` environment, so each candidate ends with its work committed on its own branch; #:count is 2–8 and #:max-parallel 0–#:count; the fan-out step comes before the parent's (review) and (ship) steps; the parent has a `worktree` environment."
+    "A child ADW used by (fan-out …) must leave its changes committed (e.g. a final (run commit #:command commit) step): a candidate that committed nothing counts as failed."
     "Kinds marked planned compile but are refused by the generator."))

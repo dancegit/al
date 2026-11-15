@@ -92,4 +92,20 @@
       (check e2e #:cmd e2e #:resolve resolve-test #:retries 2 #:collect (screenshots recordings))
       (run commit #:command commit)
       (review #:patch patch #:implement implement)
+      (ship)))
+
+  (adw candidate #:description "One candidate of a race: plan, build, test, commit; never ships"
+       #:input (tasklist) #:trigger (manual) #:environment (worktree nix-devshell) #:review human
+    (steps
+      (compose plan-build)
+      (check test #:cmd test #:resolve resolve-test)
+      (run commit #:command commit)))
+
+  (adw race #:description "Three candidates race (two at a time); a human reviews the best one"
+       #:input (tasklist) #:trigger (manual) #:environment (worktree nix-devshell) #:review human
+    (steps
+      (fan-out race #:adw candidate #:count 3 #:pick best #:max-parallel 2)
+      (check lint #:cmd lint #:resolve resolve-test)
+      (check test #:cmd test #:resolve resolve-test #:collect (junit))
+      (review)
       (ship))))
