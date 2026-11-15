@@ -1,0 +1,11 @@
+$ uv run agentic/adws/adw_sdlc.py "$(cat request.txt)"
+Add unit tests for the pure helper functions of tools/explain.py. That file has no test of its own: tests/to
+$ 
+
+$ 
+
+$ git diff main...chore/987d41e7 --stat   # then a person reviews
+18 new tests in tests/tools/test_explain.py
+
+HUMAN STEP: read the diff, run the suite on the branch (53 passed), break the code on purpose (7 of 18 tests f
+ail), merge

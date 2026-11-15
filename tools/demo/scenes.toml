@@ -310,6 +310,24 @@ steps = [
 ]
 
 [[scene]]
+id = "06e-al-for-al"
+title = "al, used on itself"
+subtitle = "This repository has its own agentic layer, built by following the guide, and agents have shipped a change to it"
+gap = 0.4
+explain = [
+  "The strongest test of a tool is to use it on itself",
+  "A fresh agent followed the user guide, with no inside knowledge, to build a layer for this repository",
+  "Then a real agent made a small change to al, checked by al's own five test suites",
+  "A person reviewed the change and merged it. The dashboard shows the run as it happened",
+]
+steps = [
+  { run = "sed -n '1,6p' docs/demo/al-for-al/request.txt | cut -c1-108", show = "uv run agentic/adws/adw_sdlc.py \"$(cat request.txt)\"", note = "this repository, with its own layer checked in as agentic/", caption = "The request: unit tests for part of al that had none, with acceptance criteria. The layer was written by following the guide." },
+  { video = "docs/demo/al-for-al/dashboard-live.mp4", label = "a real Claude Opus 5.5 agent working on al, watched live (recording starts 41 s in)", speed = 2.2, hold = 2, caption = "Live in the dashboard: the plan, then the agent reading the code and writing tests, then al's own test suites running as checks." },
+  { image = "docs/demo/al-for-al/run.png", label = "the finished run", seconds = 8, caption = "Finished: 12½ minutes, $1.01, five agent steps and five checks, all green. The result is a branch and a description for a person." },
+  { run = "grep -c '^+def test_' docs/demo/al-for-al/change.patch | sed 's/$/ new tests in tests\\/tools\\/test_explain.py/'; echo; echo 'HUMAN STEP: read the diff, run the suite on the branch (53 passed), break the code on purpose (7 of 18 tests fail), merge'", show = "git diff main...chore/987d41e7 --stat   # then a person reviews", caption = "The reviewer ran the tests, then broke the code on purpose to see the new tests fail. Only then was the change merged." },
+]
+
+[[scene]]
 id = "07-forgejo"
 title = "Forge integration, live"
 subtitle = "A throwaway local Forgejo: issue → PR, zero-touch merge through the API, signed webhook → run"

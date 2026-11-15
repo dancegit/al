@@ -5,7 +5,7 @@ the real build and test commands, a safe place to work, a way to prove what they
 change may ship. That setup is called an **agentic layer**. `al` generates one for any repository, in any
 language, without changing the repository.
 
-**[Watch the 12-minute tour (MP4, 8 MB)](docs/demo/tour.mp4)** — it explains the idea and shows every part
+**[Watch the 13-minute tour (MP4, 9 MB)](docs/demo/tour.mp4)** — it explains the idea and shows every part
 running for real.
 
 ![How it works: codebase → LLM.txt → agentic.rkt → compiler → agentic layer](docs/demo/pipeline.png)
@@ -300,6 +300,24 @@ It only reads. It cannot start, stop or change a run, agent output is displayed 
 interpreted, and it listens on your own machine unless you give it a token. It can also run in its own
 container with no way out to the network. More: [`kit/dashboard/README.md`](kit/dashboard/README.md).
 
+## al, used on itself
+
+This repository has its own agentic layer, checked in as [`agentic/`](agentic). It was not written by
+hand: a fresh agent followed the [guide](docs/GUIDE.md) step by step, with no inside knowledge, and
+logged every place the guide was wrong or unclear ([`docs/GUIDE-FINDINGS.md`](docs/GUIDE-FINDINGS.md);
+the corrections have since been applied). The layer is explained in plain words at
+[`docs/layers/al.md`](docs/layers/al.md).
+
+Then a real agent made a change to `al` itself, with al's own test suites as the checks. This is the
+dashboard while it worked:
+
+![A real agent working on al, watched live in the dashboard](docs/demo/al-for-al/dashboard-live.gif)
+
+The request was unit tests for a part of `al` that had none. The run took 12½ minutes and cost $1.01:
+five agent steps and five checks, all green. A person then reviewed it: ran the suite on the branch, broke
+the code on purpose to confirm the new tests fail, and merged
+([the change](docs/demo/al-for-al/change.patch), [the run's own summary](docs/demo/al-for-al/PR.md)).
+
 ## The example repositories
 
 Five well-known public repositories, chosen to cover different languages, build tools and ways of working.
@@ -364,6 +382,7 @@ Every clip is a recording of real commands, with waiting time cut. The captured 
 ![per-run isolation](docs/demo/06-scaling.gif)
 
 More clips:
+[al used on itself](docs/demo/06e-al-for-al.gif) ·
 [the live dashboard](docs/demo/06d-dashboard.gif) ·
 [changing the layer by asking in words](docs/demo/05g-layer-change.gif) ·
 [healthcare: a safety rule shipped on proof](docs/demo/05d-rota-feature.gif) ·
