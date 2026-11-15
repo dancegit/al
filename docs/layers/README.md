@@ -19,6 +19,9 @@ tools/al explain ~/code/myapp.al --md layer.md --gif layer.gif    # a document a
 | [jq](jq.md) | C command-line tool | spec files as input; Debian build container; opens a pull request, never merges |
 | [notes](notes.md) | small Notes web app | screenshots and video as proof; human review and two-agent review |
 | [rota](rota.md) | healthcare staffing app | isolation test as its own check; protected migrations; a planted-defect workflow |
+| [al](al.md) | this repository (`agentic/`) | the layer lives in the repository it works on; five test suites as checks on the host; a human reviews a branch and `PR.md`, no forge |
 
 The first five were written by an LLM from each repository's description and are kept exactly as written
-(`tests/authored/`). The last two are the demo applications' layer templates (`tests/webdemo`, `tests/rotademo`).
+(`tests/authored/`). The next two are the demo applications' layer templates (`tests/webdemo`, `tests/rotademo`).
+The last is this repository's own layer, written by following [the guide](../GUIDE.md); what that showed is
+in [`GUIDE-FINDINGS.md`](../GUIDE-FINDINGS.md).

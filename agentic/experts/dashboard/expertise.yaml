@@ -1,0 +1,50 @@
+# Expertise of the dashboard expert (layer al).
+# Mental model, not a source of truth; never hand-edit.
+# The code is the source of truth. This file is maintained by the expert's
+# self-improve prompt, which validates every entry against the code and keeps
+# the file under 1000 lines.
+
+expert: dashboard
+domain: >-
+  The live read-only dashboard: run model, events, HTTP server, page, transcript normalisation
+max_lines: 1000
+paths:
+- kit/dashboard
+
+# What this part of the codebase does, who calls it, and what it depends on.
+# Three to six sentences.
+overview: ""
+
+# The files that matter, most important first.
+#   - path: <path relative to the codebase root>
+#     purpose: <what lives here and why someone would open it>
+#     lines: <symbol or section>: <start>-<end>; ...
+key_files: []
+
+# What someone working in this domain does, and where it happens.
+#   - name: <operation>
+#     entry: <path:line of the entry point>
+#     flow: <the call path in one line>
+#     notes: <preconditions, side effects, failure modes>
+key_operations: []
+
+# Conventions the code follows here and that new code must follow.
+#   - name: <pattern>
+#     rule: <what to do>
+#     example: <path:line>
+patterns: []
+
+# How this domain is tested.
+#   command: <name of the codebase command that runs these tests>
+#   locations: [<test paths>]
+#   conventions: [<naming, fixtures, what must be covered>]
+testing:
+  command: ""
+  locations: []
+  conventions: []
+
+# Traps, limits and debts that are true of the code as it is now.
+#   - issue: <what goes wrong>
+#     where: <path:line>
+#     workaround: <what to do instead>
+known_issues: []

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>al · work dashboard</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/now" title="al work dashboard"><span class="logo">al</span><span class="brand-text">work</span></a>
+  <nav class="views" aria-label="Views">
+    <a href="#/now" data-view="now"><kbd>1</kbd> Now</a>
+    <a href="#/runs" data-view="runs"><kbd>2</kbd> Runs</a>
+    <a href="#/layers" data-view="layers"><kbd>3</kbd> Layers</a>
+  </nav>
+  <div class="crumbs" id="crumbs" aria-live="polite"></div>
+  <div class="spacer"></div>
+  <div id="conn" class="conn conn-wait" title="Live connection to the dashboard server">connecting</div>
+  <button id="help-button" class="icon-button" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+</header>
+<main id="main" tabindex="-1"></main>
+<div id="overlay" class="overlay" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

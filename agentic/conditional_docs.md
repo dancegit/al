@@ -1,0 +1,10 @@
+# Conditional documentation
+
+Read a document below before working when its condition holds.
+
+- `docs/DESIGN.md` — When changing the language, the compiler or how the generator maps a definition to files
+- `tests/README.md` — When adding or changing a test under tests/integration, or anything al verify does
+- `kit/dashboard/README.md` — When changing anything under kit/dashboard
+- `docs/AL-DSL.llms.txt` — When writing or changing any agentic.rkt or a test that contains one
+- `meta/README.md` — When changing a prompt under meta/commands
+- `docs/GUIDE.md` — When changing the behaviour or output of a tools/al subcommand, because the guide quotes it

@@ -1,0 +1,40 @@
+[adw 987d41e7] sdlc start: class=chore dry_run=False
+[adw 987d41e7] step classify (run) start
+[adw 987d41e7] step classify (run) passed: {"class":"chore","adw":"","model_set":"base","slug":"add-explain-helper-unit-tests"}
+[adw 987d41e7] step plan-chore (run) start
+[adw 987d41e7] step plan-chore (run) passed: <repo>/agentic/specs/chore-987d41e7-unit-tests-explain-helpers.md
+[adw 987d41e7] step plan-bug (run) skipped: when=class-bug, class=chore
+[adw 987d41e7] step plan-feature (run) skipped: when=class-feature, class=chore
+[adw 987d41e7] step build (run) start
+[adw 987d41e7] step build (run) passed: I added `tests/tools/test_explain.py` with 18 unit tests for `listing`, `split_blocks` and `describe_step` in `tools/explain.py`. All 18 pass, every validation 
+[adw 987d41e7] step test-compiler (check) start
+[adw 987d41e7] step test-compiler (check) passed: exit 0, log agents/987d41e7/checks/test-compiler.1.log
+[adw 987d41e7] step test-runtime (check) start
+[adw 987d41e7] step test-runtime (check) passed: exit 0, log agents/987d41e7/checks/test-runtime.1.log
+[adw 987d41e7] step test-tools (check) start
+[adw 987d41e7] step test-tools (check) passed: exit 0, log agents/987d41e7/checks/test-tools.1.log
+[adw 987d41e7] step test-dashboard (check) start
+[adw 987d41e7] step test-dashboard (check) passed: exit 0, log agents/987d41e7/checks/test-dashboard.1.log
+[adw 987d41e7] step test-integration (check) start
+[adw 987d41e7] step test-integration (check) passed: exit 0, log agents/987d41e7/checks/test-integration.1.log
+[adw 987d41e7] step document (run) start
+[adw 987d41e7] step document (run) passed: The run added one new file, `tests/tools/test_explain.py`, but it is not committed. `git diff main...HEAD` is empty, and `git status --porcelain` lists only `??
+[adw 987d41e7] step commit (run) start
+[adw 987d41e7] step commit (run) passed: **Commit:** `f0d1a64feeca3d72632ee184bec2ccdc478c41b5` `chore: add unit tests for the pure helpers of tools/explain.py`
+[adw 987d41e7] step review (review) start
+[adw 987d41e7] step review (review) passed: ok
+[adw 987d41e7] step ship (ship) start
+[adw 987d41e7] gate: action pr
+[adw 987d41e7] ship: no forge; PR description written to agents/987d41e7/PR.md, branch chore/987d41e7-add-unit-tests-for-the-pure kept
+[adw 987d41e7] step ship (ship) passed: ok
+[adw 987d41e7] worktree removed: <repo>/agentic/trees/987d41e7
+=== ADW summary ===
+adw:       sdlc 987d41e7
+status:    passed
+branch:    chore/987d41e7-add-unit-tests-for-the-pure
+plan:      <repo>/agentic/specs/chore-987d41e7-unit-tests-explain-helpers.md
+checks:    test-compiler=0, test-runtime=0, test-tools=0, test-dashboard=0, test-integration=0
+review:    pass (human)
+ship:      pr -> agents/987d41e7/PR.md (shipped=False)
+artefacts: 5
+state:     <repo>/agentic/agents/987d41e7/state.json
