@@ -80,7 +80,7 @@ Five invocations, all on a throwaway copy of `main` in the layer's declared envi
 | 2 | all five commands | `verify: 4/5 ok`, 5 min 52 s. compiler 1.5 s, runtime 48.5 s, tools 172.7 s, integration 95.6 s ok; `test-dashboard` exit 1 in 32.9 s | one browser test is not deterministic (T3); the layer now has `test-dashboard` (no browser, used as the check) and `test-dashboard-browser` (declared, not used) |
 | 3 | `--cmd test-dashboard --cmd test-dashboard-browser` | `verify: 2/2 ok`. 10.2 s and 33.1 s (the browser test happened to pass) | |
 | 4 | all six commands | all six exit 0 (1.5 s, 48.8 s, 172.9 s, 10.6 s, 33.6 s, 92.7 s), then exit status 1: "THE APPLICATION CHECKOUT CHANGED DURING VERIFY" | this file was being written in the checkout while verify ran. With an in-repo layer, any edit in your checkout during `al verify` fails it (see T6) |
-| 5 | all six commands, checkout left alone | @CLEAN@ | |
+| 5 | all six commands, checkout left alone | `verify: 6/6 ok`, about 6 min: 1.5 s, 48.3 s, 176.1 s, 10.2 s, 32.9 s, 96.7 s | |
 
 Nothing had to be weakened. Both layer changes replace a command that is not true on this machine with a
 documented one that is, and both problems are recorded in `agentic/LLM.txt` under Unknowns.
@@ -95,7 +95,7 @@ documented one that is, and both problems are recorded in `agentic/LLM.txt` unde
 | Describe (`LLM.txt`) | about 4 minutes of agent work |
 | Author (`agentic.rkt`) and compile | about 1 minute; compile 1.0 s, first attempt |
 | `al explain` / `al gen` / `al check` | 1.4 s (3.5 s with document and animation) / 0.9 s / 2.7 s |
-| `al verify` | 50 s for two commands; 5 min 52 s for five; 6 commands in the final pass, see above |
+| `al verify` | 50 s for two commands; 5 min 52 s for five; about 6 min for all six |
 | Dry runs | `plan-build` 0.4 s; `sdlc` 5 min 54 s; poller 0.7 s for each pass |
 | The real run | 12 min 30 s: agents 6 min 39 s (classify 2 s, plan 58 s, build 4 min 56 s, document 32 s, commit 10 s), checks 5 min 51 s |
 | Review by the human reviewer | about 5 minutes, of which 2 min 53 s is `tests/tools` |
