@@ -134,7 +134,9 @@ def test_agent_inside_runs_the_agent_in_the_container(make_layer: object, monkey
     assert argv[:3] == ["podman", "exec", "-i"] and argv[-3:] == ["claude", "-p", "hi"]
     assert "ANTHROPIC_API_KEY=sk-test" in argv and "UV_CACHE_DIR=/caches/uv" in argv and "AL_CACHE_CCACHE=/caches/ccache" in argv
     start = next(call for call in calls if call[:3] == ["podman", "run", "-d"])
-    assert f"{layer.layer_dir}:{layer.layer_dir}:ro" in start               # layer read-only …
+    ir_file = layer.layer_dir / "agentic-layer.json"
+    assert f"{ir_file}:{ir_file}:ro" in start                                # layer read-only, entry by entry …
+    assert not any(arg.startswith(f"{layer.layer_dir}:") for arg in start)   # … never as a whole (other runs live there)
     assert f"{layer.layer_dir / 'specs'}:{layer.layer_dir / 'specs'}" in start  # … except where a run writes
     assert "al-cache-uv:/caches/uv:U" in start and "--network" in start and start[start.index("--network") + 1] == "none"
     stack.teardown(success=True)
