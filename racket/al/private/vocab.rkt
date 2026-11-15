@@ -397,7 +397,8 @@
   [args (list-of string) () "Arguments; $prompt, $plan, $adw_id, $class, $branch and $out.<step> are substituted."]
   [model-set (enum inherit base heavy) inherit "Override the command's model set."]
   [retries integer 0 "Re-run on failure."]
-  [when (enum always class-feature class-bug class-chore class-patch) always "Run only for this work class."])
+  [when (enum always class-feature class-bug class-chore class-patch) always "Run only for this work class."]
+  [agent (optional-ref agent) "" "Agent for this step only; empty = the ADW's agent. Use it for a cheaper model on routine steps or a different vendor for an independent step."])
 
 (define-record step-check
   "(check NAME #:cmd C …): a deterministic feedback loop. Runs a codebase command; on failure an agent resolves and the command re-runs."

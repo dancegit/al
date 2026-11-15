@@ -443,10 +443,18 @@
           (for/first ([id (in-list (hash-ref a 'environment))]
                       #:when (equal? (hash-ref (opt 'environment id) 'kind) "podman"))
             (opt 'environment id)))
-        (when (and (equal? (hash-ref ag 'kind) "claude-code")
-                   (equal? (hash-ref ag 'permissionMode) "bypassPermissions")
-                   (not (and podman (hash-ref podman 'agentInside))))
-          (fail "~a: agent `~a` uses bypassPermissions, which is only accepted when the agent itself runs inside a podman environment: add (environment podman #:agent-inside #t …) to the ADW's #:environment" who (hash-ref ag 'id)))
+        ;; the ADW's agent and every step-level agent (#:agent on a run step) obey the same rule
+        (define step-agent-ids
+          (for/list ([st (in-list steps)]
+                     #:when (and (equal? (hash-ref st 'kind) "run")
+                                 (not (string=? (hash-ref st 'agent "") ""))))
+            (hash-ref st 'agent)))
+        (for ([agent-id (in-list (remove-duplicates (cons (hash-ref ag 'id) step-agent-ids)))])
+          (define used (opt 'agent agent-id))
+          (when (and (equal? (hash-ref used 'kind) "claude-code")
+                     (equal? (hash-ref used 'permissionMode) "bypassPermissions")
+                     (not (and podman (hash-ref podman 'agentInside))))
+            (fail "~a: agent `~a` uses bypassPermissions, which is only accepted when the agent itself runs inside a podman environment: add (environment podman #:agent-inside #t …) to the ADW's #:environment" who agent-id)))
         (when (and (equal? (hash-ref rv 'kind) "auto")
                    (member (hash-ref rv 'ship) '("merge" "deploy"))
                    (not podman))

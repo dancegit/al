@@ -69,6 +69,11 @@
 
 (test-case "semantic rules"
   (check-rejects (layer plan '(adw a (steps (run plan #:command plan) (ship)))) #rx"must come after a \\(review\\)")
+  (check-rejects (layer plan '(agent claude-code) '(agent claude-code #:id wild #:permission-mode bypassPermissions)
+                        '(adw a (steps (run plan #:command plan #:agent wild))))
+                 #rx"agent `wild` uses bypassPermissions")
+  (check-rejects (layer plan '(adw a (steps (run plan #:command plan #:agent nobody))))
+                 #rx"`nobody` is not a declared agent")
   (check-rejects (layer plan review-cmd '(review auto #:require-checks (test))
                         '(adw a (steps (run plan #:command plan) (review) (ship))))
                  #rx"needs a \\(check …\\) step before")

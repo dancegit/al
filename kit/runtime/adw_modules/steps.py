@@ -90,7 +90,8 @@ def run_run(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> Non
     retries = max(0, int(step.get("retries", 0)))
     for attempt in range(retries + 1):
         try:
-            output = run_agent(layer, state, name, command_name, args, model_set, env_stack)
+            output = run_agent(layer, state, name, command_name, args, model_set, env_stack,
+                               str(step.get("agent") or ""))
             break
         except StepFailed as exc:
             if attempt == retries:

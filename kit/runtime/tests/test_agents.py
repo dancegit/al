@@ -150,3 +150,15 @@ def test_json_extraction_prefers_last_fenced_block_then_braces():
     assert extract_json('Verdict follows {"a": {"b": 3}} done', "s") == {"a": {"b": 3}}
     with pytest.raises(StepFailed, match="no JSON"):
         extract_json("nothing here", "s")
+
+
+def test_a_step_can_name_its_own_agent(make_layer, tmp_path):
+    """`(run NAME … #:agent ID)`: that step runs on the named agent, the others on the ADW's agent."""
+    layer, run_state, env = setup_run(make_layer, {"agents": [
+        {"id": "mock-agent", "kind": "mock", "status": "stable", "scriptDir": "mock", "timeout": 5},
+        {"id": "other", "kind": "mock", "status": "stable", "scriptDir": "mock-other", "timeout": 5}]})
+    other = Path(layer.layer_dir) / "mock-other"
+    other.mkdir(exist_ok=True)
+    (other / "text.json").write_text('{"output": "from the step agent"}')
+    assert run_agent(layer, run_state, "text", "text", ["x"], "base", env, "other") == "from the step agent"
+    assert run_agent(layer, run_state, "text", "text", ["x"], "base", env) != "from the step agent"

@@ -354,14 +354,16 @@ def _render_prompt(layer: Any, state: Any, command_name: str, command: dict[str,
 
 
 def run_agent(layer: Any, state: Any, step_name: str, command_name: str, args: list[str],
-              model_set: str, env_stack: Any) -> str:
+              model_set: str, env_stack: Any, agent_id: str = "") -> str:
     """Render the command/hop, run it on the ADW's agent (mock when dry-run) and return the processed output."""
     command = layer.command(command_name)
     prompt = _render_prompt(layer, state, command_name, command, args)
     directory = step_dir(layer, state, step_name)
     (directory / "prompt.md").write_text(prompt, encoding="utf-8")
     raw_path = directory / "raw.jsonl"
-    agent = layer.option("agents", layer.adw(state.adw)["agent"])
+    # A step may name its own agent (`#:agent`), e.g. a cheaper model for a commit step or a
+    # different vendor for an independent look; otherwise the ADW's agent runs it.
+    agent = layer.option("agents", agent_id or layer.adw(state.adw)["agent"])
     kind = "mock" if state.dry_run else agent["kind"]
     cwd = work_dir(layer, state)
     if kind == "mock":

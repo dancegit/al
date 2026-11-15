@@ -58,6 +58,10 @@
                   "additionalProperties": false,
                   "description": "(run NAME #:command C …): one agent, one prompt, one purpose.",
                   "properties": {
+                    "agent": {
+                      "description": "Agent for this step only; empty = the ADW's agent. Use it for a cheaper model on routine steps or a different vendor for an independent step.",
+                      "type": "string"
+                    },
                     "args": {
                       "description": "Arguments; $prompt, $plan, $adw_id, $class, $branch and $out.<step> are substituted.",
                       "items": {
@@ -101,6 +105,7 @@
                     }
                   },
                   "required": [
+                    "agent",
                     "args",
                     "command",
                     "kind",

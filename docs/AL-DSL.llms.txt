@@ -433,6 +433,7 @@ Where things are: (paths #:source (…) #:tests (…) …).
   - `#:model-set` (inherit | base | heavy; default inherit) — Override the command's model set.
   - `#:retries` (integer; default 0) — Re-run on failure.
   - `#:when` (always | class-feature | class-bug | class-chore | class-patch; default always) — Run only for this work class.
+  - `#:agent` (name of a declared agent, or ""; default "") — Agent for this step only; empty = the ADW's agent. Use it for a cheaper model on routine steps or a different vendor for an independent step.
 
 ### `step-check`
 
