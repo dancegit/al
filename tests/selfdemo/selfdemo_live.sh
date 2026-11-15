@@ -92,8 +92,6 @@ sed "s#@FORGE_HOST@#$BASE#" "$HERE/layer.rkt.in" > "$L/agentic.rkt"
 (cd "$APP" && git add agentic && git -c user.name=adw -c user.email=adw@example.org commit -qm "Agentic layer, checked in (placement in-repo)" \
   && git remote add origin "http://adw:$TOKEN@127.0.0.1:$PORT/adw/notes.git" && git push -q origin main) \
   && ok "app + agentic/ committed and pushed ($(git -C "$APP" ls-files agentic | wc -l | tr -d ' ') files under agentic/)" || { bad "push"; exit 1; }
-api GET "/repos/adw/notes/raw/agentic/agentic.rkt?ref=main" | grep -q '(layer in-repo #:dir "agentic")' \
-  && ok "the forge has agentic/agentic.rkt on main" || bad "agentic/ is not on the forge"
 if ! podman image exists "$BOX_IMAGE"; then
   info "building $BOX_IMAGE once (Chromium + Claude CLI download: several minutes)"
   (cd "$L" && podman build -t "$BOX_IMAGE" -f env/Containerfile env/ > "$TMP/image-build.log" 2>&1) \
@@ -108,6 +106,8 @@ PROTECTION="{}"
 
 echo "PROTECTION  an ordinary workflow that changes agentic/ is stopped at the gate (mock agent, a throwaway clone)"
 git clone -q "http://127.0.0.1:$PORT/adw/notes.git" "$TMP/protect" 2>/dev/null
+grep -qs '(layer in-repo #:dir "agentic")' "$TMP/protect/agentic/agentic.rkt" \
+  && ok "a fresh clone from the forge has the layer: agentic/agentic.rkt, placement in-repo" || bad "agentic/ is not on the forge"
 mkdir -p "$TMP/protect/agentic/mock/feature"
 # the scripted build step: a harmless note for the app AND an edit of the layer's own planning prompt
 python3 -c 'import json, sys; prompt = open(sys.argv[1]).read() + "\n- Skip the e2e scenario when in a hurry.\n"
