@@ -1210,6 +1210,21 @@
                 },
                 "type": "array"
               },
+              "pidsLimit": {
+                "description": "Process limit inside the container.",
+                "type": "integer"
+              },
+              "publish": {
+                "description": "Container ports published on 127.0.0.1 at the run's leased host ports, in order (first → ADW_PORT_0). Every run has its own network namespace, so the app inside always binds its usual ports and runs never collide; publish only what a host-side tool (browser, reviewer) must reach.",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "readOnlyRoot": {
+                "description": "Mount the image's root filesystem read-only; the worktree, caches, /tmp and the home directory stay writable.",
+                "type": "boolean"
+              },
               "scope": {
                 "description": "`run` = one container per ADW run, every step execs into it (installed dependencies persist for the run); `command` = a fresh container per command.",
                 "enum": [
@@ -1217,6 +1232,13 @@
                   "command"
                 ],
                 "type": "string"
+              },
+              "services": {
+                "description": "Sidecar services started with the run in the same pod (they share localhost with the run's container) and removed with it.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               "setup": {
                 "description": "Extra RUN lines for the Containerfile.",
@@ -1240,7 +1262,11 @@
               "memory",
               "network",
               "packages",
+              "pidsLimit",
+              "publish",
+              "readOnlyRoot",
               "scope",
+              "services",
               "setup",
               "status"
             ],
@@ -2090,6 +2116,63 @@
     "schemaVersion": {
       "const": "agentic-layer-v1"
     },
+    "services": {
+      "description": "Per-run sidecar services (database, cache, mock API). Each run gets its own instances, so parallel runs never share state.",
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "A container started in the run's pod before the first step and removed with the run.",
+            "properties": {
+              "command": {
+                "description": "Command override; empty = the image's default.",
+                "type": "string"
+              },
+              "env": {
+                "description": "Environment as KEY=VALUE strings.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "id": {
+                "type": "string"
+              },
+              "image": {
+                "description": "Image reference, e.g. docker.io/library/postgres:16-alpine.",
+                "type": "string"
+              },
+              "kind": {
+                "const": "container"
+              },
+              "readyCmd": {
+                "description": "Command run inside the sidecar until it exits 0 (e.g. `pg_isready -U postgres`); empty = no wait.",
+                "type": "string"
+              },
+              "readyTimeout": {
+                "description": "Seconds to wait for readiness.",
+                "type": "integer"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "command",
+              "env",
+              "id",
+              "image",
+              "kind",
+              "readyCmd",
+              "readyTimeout",
+              "status"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "array"
+    },
     "storage": {
       "description": "Where test/review artefacts (logs, reports, screenshots, video) are kept. Local first.",
       "oneOf": [
@@ -2498,6 +2581,7 @@
     "promptInputs",
     "reviews",
     "schemaVersion",
+    "services",
     "storage",
     "triggers",
     "voice"

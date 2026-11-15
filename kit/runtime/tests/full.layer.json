@@ -660,7 +660,11 @@
         "git",
         "curl"
       ],
+      "pidsLimit": 2048,
+      "publish": [],
+      "readOnlyRoot": false,
       "scope": "run",
+      "services": [],
       "setup": [],
       "status": "stable"
     }
@@ -788,6 +792,7 @@
     }
   ],
   "schemaVersion": "agentic-layer-v1",
+  "services": [],
   "storage": {
     "accessKeyEnv": "AWS_ACCESS_KEY_ID",
     "bucket": "webshop-adw",

@@ -272,6 +272,22 @@ Declare any number. Default when omitted: `(environment worktree)`.
   - `#:scope` (run | command; default run) — `run` = one container per ADW run, every step execs into it (installed dependencies persist for the run); `command` = a fresh container per command.
   - `#:caches` (list of string; default ()) — Named cache volumes shared across runs, mounted at /caches/NAME. Known names also set the tool's cache variable: uv, pip, cargo, go, npm, pre-commit.
   - `#:credentials` (list of claude | codex; default ()) — Agent credentials made available inside the container (read-only auth file + API key variable). Only meaningful with #:agent-inside #t.
+  - `#:publish` (list of integer; default ()) — Container ports published on 127.0.0.1 at the run's leased host ports, in order (first → ADW_PORT_0). Every run has its own network namespace, so the app inside always binds its usual ports and runs never collide; publish only what a host-side tool (browser, reviewer) must reach.
+  - `#:services` (list of name of a declared service; default ()) — Sidecar services started with the run in the same pod (they share localhost with the run's container) and removed with it.
+  - `#:pids-limit` (integer; default 2048) — Process limit inside the container.
+  - `#:read-only-root` (boolean; default #f) — Mount the image's root filesystem read-only; the worktree, caches, /tmp and the home directory stay writable.
+
+### `service`
+
+Per-run sidecar services (database, cache, mock API). Each run gets its own instances, so parallel runs never share state.
+Declare any number. Default when omitted: none.
+
+- **`(service container …)`** — A container started in the run's pod before the first step and removed with the run.
+  - `#:image` (string; default REQUIRED) — Image reference, e.g. docker.io/library/postgres:16-alpine.
+  - `#:env` (list of string; default ()) — Environment as KEY=VALUE strings.
+  - `#:command` (string; default "") — Command override; empty = the image's default.
+  - `#:ready-cmd` (string; default "") — Command run inside the sidecar until it exits 0 (e.g. `pg_isready -U postgres`); empty = no wait.
+  - `#:ready-timeout` (integer; default 60) — Seconds to wait for readiness.
 
 ### `review` — PITER letter R
 

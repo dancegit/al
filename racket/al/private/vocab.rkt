@@ -239,7 +239,21 @@
   [agent-inside boolean #f "Run the agent CLI inside the container too, so the agent itself is sandboxed (the image must provide the agent CLI). Otherwise only codebase commands run inside."]
   [scope (enum run command) run "`run` = one container per ADW run, every step execs into it (installed dependencies persist for the run); `command` = a fresh container per command."]
   [caches (list-of string) () "Named cache volumes shared across runs, mounted at /caches/NAME. Known names also set the tool's cache variable: uv, pip, cargo, go, npm, pre-commit."]
-  [credentials (list-of (enum claude codex)) () "Agent credentials made available inside the container (read-only auth file + API key variable). Only meaningful with #:agent-inside #t."])
+  [credentials (list-of (enum claude codex)) () "Agent credentials made available inside the container (read-only auth file + API key variable). Only meaningful with #:agent-inside #t."]
+  [publish (list-of integer) () "Container ports published on 127.0.0.1 at the run's leased host ports, in order (first → ADW_PORT_0). Every run has its own network namespace, so the app inside always binds its usual ports and runs never collide; publish only what a host-side tool (browser, reviewer) must reach."]
+  [services (list-of (ref service)) () "Sidecar services started with the run in the same pod (they share localhost with the run's container) and removed with it."]
+  [pids-limit integer 2048 "Process limit inside the container."]
+  [read-only-root boolean #f "Mount the image's root filesystem read-only; the worktree, caches, /tmp and the home directory stay writable."])
+
+(define-family service #:key "services" #:letter "" #:default #f
+  "Per-run sidecar services (database, cache, mock API). Each run gets its own instances, so parallel runs never share state.")
+(define-kind service container
+  "A container started in the run's pod before the first step and removed with the run."
+  [image string #:required "Image reference, e.g. docker.io/library/postgres:16-alpine."]
+  [env (list-of string) () "Environment as KEY=VALUE strings."]
+  [command string "" "Command override; empty = the image's default."]
+  [ready-cmd string "" "Command run inside the sidecar until it exits 0 (e.g. `pg_isready -U postgres`); empty = no wait."]
+  [ready-timeout integer 60 "Seconds to wait for readiness."])
 
 ;; ---------------------------------------------------------------------------------------
 ;; R — Review

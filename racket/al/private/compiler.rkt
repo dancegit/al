@@ -416,6 +416,7 @@
                'environments (opts 'environment)
                'reviews (opts 'review)
                'artefacts (opts 'artefact)
+               'services (opts 'service)
                'commands (reverse commands)
                'hops (reverse hops)
                'experts (reverse experts)
