@@ -36,9 +36,9 @@ subtitle = "Honest status"
 seconds = 11
 bullets = [
   "Tried on 5 public repositories in 5 languages; every layer compiled first try",
-  "Real Claude Opus 5.5 runs on flask: 2 to 3 minutes and about $0.70 each, first attempt",
-  "250+ automated tests, including attempts to escape the container",
-  "Not yet tried: fan-out with real agents, large features, a team's private repository",
+  "Real Claude Opus 5.5 runs on three apps: $0.47 to $2.96 per shipped change, 2 to 9 minutes",
+  "280+ automated tests, including attempts to escape the container",
+  "A planted defect was rejected by both reviewer agents, twice. Not yet tried: large or ambiguous tasks",
 ]
 note = "README.md explains the ideas; docs/DESIGN.md has the details"
 
@@ -200,6 +200,24 @@ steps = [
   { image = "docs/demo/rotademo/c-after-fix.png", label = "after the patch loop: greyed out and labelled (Expired)", seconds = 7, caption = "The reviewers' findings go to an agent that plans and makes a fix. The checks run again on the fixed code." },
   { run = "python3 tools/demo/show_verdicts.py docs/demo/rotademo/c-verdicts.json", show = "show_verdicts.py c-verdicts.json   # review round 2", caption = "Round 2: both approve the fixed change, the gate passes, and only now is it merged." },
   { image = "docs/demo/rotademo/c-pr-final.png", label = "the pull request on Forgejo after the second round", seconds = 7, caption = "On the record: the rejection, the fix and the approval. In a first attempt the second round also failed, and it went to a human instead." },
+]
+
+[[scene]]
+id = "05f-rota-handoff"
+title = "Healthcare staffing: a stopping condition"
+subtitle = "Request: record each worker’s pay band. That needs a database change, which agents may not ship on their own"
+gap = 0.4
+explain = [
+  "Not every change should ship by itself. Database schema changes are a classic case",
+  "The request needs a new database migration, and the migrations folder is marked as protected",
+  "The agent does everything it is allowed to, refuses to write the migration, and says exactly what a person must add",
+  "The run stops and hands over: a draft pull request with the reason and the agent's request",
+  "A person adds the migration, the checks pass, and the person merges",
+]
+steps = [
+  { run = "while IFS= read -r l; do printf '%s\\n' \"$l\" | cut -c1-108; sleep 0.22; done < docs/demo/rotademo/b-run.log", show = "uv run rota.al/adws/dispatch.py --source issue:1 --class feature", note = "REPLAY of the saved log of a real run (docs/demo/rotademo/b-run.log): 192 seconds, $1.24", caption = "Replay of the real run. The tests fail because the database column does not exist yet. The run stops and hands its work over." },
+  { image = "docs/demo/rotademo/b-pr-why-human-top.png", label = "the draft pull request on Forgejo: [needs human]", seconds = 10, caption = "What a person sees: why the run stopped, the failing test output, and the exact migration the agent asks them to add." },
+  { run = "grep -m1 -B1 -A3 'ALTER TABLE' docs/demo/rotademo/b-requires-human.txt | cut -c1-108; echo; echo 'HUMAN STEP: add migrations/003_worker_pay_band.sql with exactly that SQL to the branch'; echo 'checks on the branch: test 50 passed, isolation 16 passed, e2e 9 steps passed'; echo 'HUMAN STEP: merge the pull request'", show = "the agent's request, then the human's two actions", caption = "A person added that one file. The test suite, the customer-data isolation test and the browser run then passed, and the person merged." },
 ]
 
 [[scene]]

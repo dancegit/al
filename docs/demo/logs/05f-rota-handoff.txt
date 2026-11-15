@@ -1,0 +1,36 @@
+$ uv run rota.al/adws/dispatch.py --source issue:1 --class feature
+dispatch: feature <- issue:1
+[adw 17ac7cc3] feature start: class=feature dry_run=False
+[adw 17ac7cc3] step plan (run) start
+[adw 17ac7cc3] container started: al-rota-demo-17ac7cc3
+[adw 17ac7cc3] step plan (run) passed: <tmp>/rota.al/specs/feature-17ac7cc3-worker-pay-band-column.md
+[adw 17ac7cc3] step build (run) start
+[adw 17ac7cc3] step build (run) passed: The code changes for the pay band feature are all in place, but ever
+[adw 17ac7cc3] step test (check) start
+[adw 17ac7cc3] step test (check) failed: test: check test exited 2 after 3 attempt(s); log agents/17ac7cc3/c
+[adw 17ac7cc3] run failed: test: check test exited 2 after 3 attempt(s); log agents/17ac7cc3/checks/test.3.l
+[adw 17ac7cc3] handoff: PR #2 http://127.0.0.1:41829/adw/rota/pulls/2 needs a human
+[adw 17ac7cc3] container removed: al-rota-demo-17ac7cc3
+=== ADW summary ===
+adw:       feature 17ac7cc3
+status:    failed
+branch:    feature/17ac7cc3-record-each-workers-pay-band-and
+plan:      <tmp>/rota.al/specs/feature-17ac7cc3-worker-pay-band-column.md
+checks:    test=2
+review:    none
+ship:      handoff -> http://127.0.0.1:41829/adw/rota/pulls/2 (shipped=False)
+handoff:   stopped at test; the work needs a human: http://127.0.0.1:41829/adw/rota/pulls/2 (branch feature/
+artefacts: 3
+state:     <tmp>/rota.al/agents/17ac7cc3/state.json
+$ 
+
+$ the agent's request, then the human's two actions
+
+- Implemented in: `migrations/003_worker_pay_band.sql` (new file, `ALTER TABLE workers ADD COLUMN pay_band T
+
+- `migrations/003_worker_pay_band.sql` — adds `workers.pay_band`. Protected path: a human adds it (see Notes
+  ```sql
+
+HUMAN STEP: add migrations/003_worker_pay_band.sql with exactly that SQL to the branch
+checks on the branch: test 50 passed, isolation 16 passed, e2e 9 steps passed
+HUMAN STEP: merge the pull request

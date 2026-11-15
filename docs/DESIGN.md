@@ -221,3 +221,14 @@ comment on the pull request (at most eight pictures; a video is linked). A human
 what the checks captured without leaving the forge, and a zero-touch merge leaves the same evidence on
 the record. GitHub has no attachment API through `gh`; there the route is an S3-compatible store with a
 public base URL. The web app demo in `tests/webdemo` exercises both review styles end to end.
+
+## When a run cannot finish
+
+A run of a shipping workflow that stops part-way (a check that will not go green, a failed agent
+step, a failed review) does not just end as "failed". It commits what it has, publishes its branch
+through the same safe paths as shipping, and opens a pull request marked `[needs human]` (a draft
+where the forge supports it; `PR.md` without a forge). The body states why it stopped, with the tail
+of the failing log, and collects every `REQUIRES HUMAN` request from the plan and the agents'
+reports, including the code block each one introduces. The run still counts as failed, so triggers
+and the task list see a failure; the difference is that a person is pointed at the work and told
+what it needs. A tampered sandbox is never handed over, and nothing is merged or deployed.

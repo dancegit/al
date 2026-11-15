@@ -1,8 +1,8 @@
 $ raco test racket/al/tests
 14 tests passed
 $ cd kit/runtime && pytest -q
-212 passed in 50.49s
+241 passed in 50.98s
 $ pytest tests/integration -q   # testbeds pinned; every test restores them
-27 passed, 6 deselected in 107.92s (0:01:47)
+27 passed, 6 deselected in 111.35s (0:01:51)
 $ for b in flask ripgrep gin express jq; do git -C testbeds/$b status --short | wc -l; done
 flask:0 ripgrep:0 gin:0 express:0 jq:0 

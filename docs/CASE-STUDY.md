@@ -27,6 +27,8 @@ the interesting work was not typing, it was deciding what would count as proof.
   [`kit/runtime`](../kit/runtime)
 - **Isolation per run**: its own copy of the code, container, network namespace and database;
   the application's own checkout is never modified.
+- **Handover instead of failure**: a run that cannot finish opens a pull request that says why
+  and what it needs from a person.
 - **Seven example codebases**: five public repositories in five languages, a small Notes web
   app, and a healthcare staffing app with two separate customer organisations.
 
@@ -37,7 +39,7 @@ Verification was built in layers, because each layer catches what the one before
 | Layer | What it proves | Where |
 |---|---|---|
 | Compiler rules | the layer definition is coherent and not unsafe | 14 tests |
-| Runtime tests | the machinery behaves, including attempts to break out of the container run against real podman | 226 tests |
+| Runtime tests | the machinery behaves, including attempts to break out of the container run against real podman | 241 tests |
 | Integration tests | full runs on the five public repositories, each test on a private copy that must be left clean | 27 tests |
 | `al verify` | the commands a layer declares really work in the environment it declares | cargo, go, npm, autotools and Python suites, all run for real |
 | Live forge test | issues, pull requests, merges and signed webhooks against a real Forgejo | 13 assertions |
@@ -52,6 +54,7 @@ Real runs with Claude Opus 5.5, each started from a one-paragraph request:
 | Notes web app | dark theme | pull request with screenshots; a person merged | 111 s | $0.47 |
 | Notes web app | search box | two reviewer agents approved on a recorded video; merged | 273 s | $1.31 |
 | Staffing app | enforce 11 hours of rest between shifts | two reviewers approved; merged | 405 s | $2.34 |
+| Staffing app | a change needing a database migration | agent stopped and handed over a draft pull request; a person added one file and merged | 192 s | $1.24 |
 | Staffing app | a planted flawed change | both reviewers rejected it; an agent fixed it; approved; merged | 547 s | $2.96 |
 
 Sources: [`docs/demo/logs`](demo/logs), [`docs/demo/webdemo/summary.json`](demo/webdemo/summary.json),
@@ -90,15 +93,16 @@ good. Each was found by a check that did not depend on the agent's own opinion.
 - Asked for a change that needed a database migration, the agent correctly refused to write to
   the protected `migrations/` directory and stated the exact SQL a person should add. The run
   then simply ended as "failed", with no pull request and the finished work stranded locally.
-  The agent behaved well; the harness handed over badly. *Fixed: a stopped run now opens a
-  pull request that says why it stopped and what the agent asks of a human.*
+  The agent behaved well; the harness handed over badly. *Fixed, and re-run for real: a stopped
+  run now opens a draft pull request that says why it stopped and what the agent asks of a
+  human. A person added the one file and the checks passed.*
 - Given a planted change that passed every test but missed an acceptance criterion, both
   reviewer agents rejected it, in both attempts. But in the first attempt, the second review
   round promoted to "blocker" something both reviewers had called minor in round one, so the
   change went to a human instead of merging. *Reviewers are not consistent between rounds. The
   gate treats disagreement as "ask a human", which is the safe direction.*
 - After a fix, reviewers were shown a screenshot from before the fix. They noticed and said so.
-  *Fixed in the runtime.*
+  *Fixed in the runtime; covered by unit tests, not yet by a real run.*
 
 **What has not been tested**
 

@@ -105,7 +105,13 @@ def test_failing_check_fails_the_run(zte):
     steps = {s["name"]: s["status"] for s in state["steps"]}
     assert steps["fast"] == "failed" and "review" not in steps and "ship" not in steps, steps
     assert "fast-resolve-1" in state["outputs"], "the resolve loop ran once (#:retries 1)"
-    assert not state["ship"], state["ship"]
+    # a stopped run hands its work to a human instead of dropping it: nothing ships, the reason
+    # is recorded, and (no forge here) the handoff text is written to PR.md with the branch kept
+    ship = state["ship"]
+    assert ship["action"] == "handoff" and ship["shipped"] is False, ship
+    assert any(reason.startswith("run-stopped:fast") for reason in ship["reasons"]), ship
+    handoff = zte.dir / "agents" / state["adw_id"] / "PR.md"
+    assert "Why this stopped" in handoff.read_text()
     assert "SyntaxError" in (zte.dir / state["checks"]["fast"]["log"]).read_text()
     _nothing_shipped(zte)
 

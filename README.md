@@ -5,7 +5,7 @@ the real build and test commands, a safe place to work, a way to prove what they
 change may ship. That setup is called an **agentic layer**. `al` generates one for any repository, in any
 language, without changing the repository.
 
-**[Watch the 7½-minute tour (MP4, 5 MB)](docs/demo/tour.mp4)** — it explains the idea and shows every part
+**[Watch the 10-minute tour (MP4, 7 MB)](docs/demo/tour.mp4)** — it explains the idea and shows every part
 running for real.
 
 ![How it works: codebase → LLM.txt → agentic.rkt → compiler → agentic layer](docs/demo/pipeline.png)
@@ -158,6 +158,84 @@ full list coming back when the box is cleared."*
 To run both yourself: `tests/webdemo/webdemo_live.sh` (about 7 minutes and $1.80 of model usage).
 What it sets up and what each output file is: [`tests/webdemo/README.md`](tests/webdemo/README.md).
 
+## A healthcare staffing app: rules, stopping conditions, and a review that says no
+
+The seventh example is from a domain where mistakes are expensive: **Rota**, a small shift-scheduling app
+for hospital wards ([`tests/rotademo/app`](tests/rotademo/app)). It has two separate customer organisations,
+workers with professional registrations that expire, and a database with migrations. All data is synthetic.
+
+![The Rota shifts board](docs/demo/rotademo/before.png)
+
+Three things in it matter more than the screens:
+
+- **Issues carry acceptance criteria**, and plans restate them as a checklist a reviewer can tick.
+- **Tests at three levels**: business rules, the API, and user journeys, plus a browser run that records video.
+- **A customer-data isolation test that covers every route automatically**, including routes an agent adds
+  later. One organisation must never see another's data. Agents are not allowed to change that test, the
+  permission code or the database migrations.
+
+Three requests were run for real with Claude Opus 5.5.
+
+### 1. A safety rule, shipped on proof
+
+*Request: refuse an assignment that would give a worker less than 11 hours of rest between shifts, in the
+business rule, the API and on screen.*
+
+The agent built it at all three levels and extended the browser scenario. The test suite, the isolation
+test and the browser run passed. Two reviewer agents approved after examining 19 pieces of evidence each,
+and the gate merged it. This is the video they were given:
+
+![Workers who would get too little rest are shown as unavailable, with the reason](docs/demo/rotademo/a-rest-rule.gif)
+
+405 seconds, $2.34. Nobody was involved after the request.
+
+### 2. A stopping condition: the agent hands over instead of guessing
+
+*Request: record each worker's pay band and show it on the workers page.* That needs a new database
+migration, and migrations are protected.
+
+The agent did everything it was allowed to, refused to write the migration, and stated exactly what a
+person should add. The tests could not pass without it, so the run stopped. It did not just fail: it
+opened a draft pull request marked **[needs human]** with the reason and the request:
+
+![The draft pull request: why the run stopped and what the agent asks a human to do](docs/demo/rotademo/b-pr-why-human-top.png)
+
+A person added that one file. The three checks then passed, and the person merged. 192 seconds, $1.24.
+
+### 3. The review catches a defect
+
+Approving good work proves little. So we **planted a flawed change on purpose**: it adds an "Expired"
+badge for workers whose registration has lapsed, with tests, but leaves those workers selectable in the
+assign dropdown. Every automated check passes. The flaw only shows if you compare the result with the
+acceptance criteria. Everything after the planted step was real.
+
+| the planted defect: Chloe Martin can still be chosen | after the fix |
+|---|---|
+| ![before the fix](docs/demo/rotademo/c-before-fix.png) | ![after the fix](docs/demo/rotademo/c-after-fix.png) |
+
+Both reviewer agents rejected it, independently. One wrote:
+
+> Criterion 3 is not met: an expired worker can still be selected in the assign dropdown.
+> templates/shifts.html:26 has no `disabled` attribute. The e2e log (…, steps 5-6) shows Chloe Martin
+> selected in #assign-8 and submitted […]. That is exactly the after-the-fact discovery the issue asks to remove.
+
+Their findings went to an agent that planned and made a fix. The checks ran again, both reviewers approved
+the second round, and only then was it merged. 547 seconds, $2.96.
+
+This was run twice, and both times both reviewers rejected the planted change. In the first run the
+*second* review round raised a new objection, so that change went to a person instead of merging: the
+reviewers are not perfectly consistent, and disagreement is treated as "ask a human".
+
+| | Safety rule | Database change | Planted defect |
+|---|---|---|---|
+| What it shows | acceptance criteria, tests at three levels, proof on video | a stopping condition and a clean handover | review rejects bad work |
+| Who decided | two reviewer agents and the gate | a person | reviewers said no, then yes |
+| Outcome | merged, no human | draft PR; a person added one file and merged | rejected, fixed, approved, merged |
+
+To run them: `tests/rotademo/rotademo_live.sh` (about 20 minutes and $6.50 of model usage).
+Details and every output file: [`tests/rotademo/README.md`](tests/rotademo/README.md).
+A longer account of what was verified and where agents failed: [`docs/CASE-STUDY.md`](docs/CASE-STUDY.md).
+
 ## The example repositories
 
 Five well-known public repositories, chosen to cover different languages, build tools and ways of working.
@@ -222,6 +300,9 @@ Every clip is a recording of real commands, with waiting time cut. The captured 
 ![per-run isolation](docs/demo/06-scaling.gif)
 
 More clips:
+[healthcare: a safety rule shipped on proof](docs/demo/05d-rota-feature.gif) ·
+[healthcare: the review catches a planted defect](docs/demo/05e-rota-defect.gif) ·
+[healthcare: a stopping condition and handover](docs/demo/05f-rota-handoff.gif) ·
 [a visual change with human review](docs/demo/05b-ui-change-human.gif) ·
 [a feature reviewed by two agents](docs/demo/05c-feature-agents.gif) ·
 [five repositories](docs/demo/03-five-codebases.gif) ·
@@ -268,7 +349,8 @@ raco test racket/al/tests                                    # the language rule
 (cd kit/runtime && uv run --with pytest pytest -q)           # the runtime, including attempts to escape the container
 uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q   # full runs on the five repositories
 tests/forge/forgejo_live.sh                                  # a throwaway Forgejo: issue → PR, merge, webhook
-tests/webdemo/webdemo_live.sh                                # the web app scenarios with a real agent (costs about $1.80)
+tests/webdemo/webdemo_live.sh                                # the Notes web app scenarios with a real agent (about $1.80)
+tests/rotademo/rotademo_live.sh                              # the healthcare staffing scenarios with a real agent (about $6.50)
 ```
 
 The integration tests never work in your checkouts. Each session makes its own copy of every example
@@ -280,6 +362,7 @@ repository at a pinned commit, and a test fails if it leaves anything behind. De
 
 - Five repositories in five languages, each with an LLM-written layer and its real test or build commands passing.
 - Three complete runs with Claude Opus 5.5 on flask, each right on the first attempt, about 2 to 3 minutes and $0.70.
+- A healthcare staffing app: a rule shipped on video proof, a database change stopped and handed to a person, and a planted defect rejected by both reviewer agents and then fixed.
 - A web app end to end, three times over: a visual change reviewed by a person from screenshots, and a feature reviewed by two agents from a video, then merged.
 - Isolation, the shipping rules, the Forgejo integration and the voice round trip, each with tests that run the real thing.
 
@@ -289,7 +372,7 @@ repository at a pinned commit, and a test fails if it leaves anything behind. De
 - Fan-out with real agents, and anything on a team's private repository.
 - GitHub end to end. The live forge test uses Forgejo; GitHub is covered by unit tests only.
 - The agent inside the container on anything but flask and the Notes demo app.
-- Reviewers catching a real defect. In every real run so far the work was correct, so the reviewers have only ever had to approve.
+- Reviewers catching defects in general. One planted defect was rejected in two runs out of two; that is a demonstration, not a rate.
 
 ## Where the ideas come from
 
