@@ -76,7 +76,7 @@
   (review auto #:id zero-touch #:artefacts (log) #:reviewers 2 #:max-retries 2 #:ship merge
           #:require-checks (test-compiler test-runtime test-tools test-dashboard test-integration)
           #:allowed-classes (chore bug feature) #:max-diff-lines 4000)
-  (dashboard local)
+  (dashboard local #:port 8770)   ; 8765 is often taken by other tools
 
   (command prime #:template prime)
   (command classify #:template classify #:output json)

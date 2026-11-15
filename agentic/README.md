@@ -50,7 +50,7 @@ Spending limits: none declared (add `(budget limits #:run-usd … #:day-usd …)
 A live, read-only dashboard of every run of this layer:
 
 ```bash
-uv run agentic/adws/dashboard.py                 # then open http://127.0.0.1:8765/
+uv run agentic/adws/dashboard.py                 # then open http://127.0.0.1:8770/
 uv run agentic/adws/dashboard.py --port 9000 --open   # flags override the declared ones
 ```
 

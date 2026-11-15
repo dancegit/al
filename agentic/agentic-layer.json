@@ -928,7 +928,7 @@
     "id": "local",
     "kind": "local",
     "pollMs": 750,
-    "port": 8765,
+    "port": 8770,
     "status": "stable",
     "systemd": false,
     "tokenEnv": ""
