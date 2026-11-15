@@ -220,6 +220,8 @@ def test_symlinked_layer_tree_is_refused(fx):
 def test_nothing_can_be_changed(server):
     for method in ("POST", "PUT", "DELETE", "PATCH"):
         assert server.get("/api/snapshot", method=method)[0] == 405
+    for method in ("PUT", "DELETE", "PATCH"):   # the one write is POST /api/models
+        assert server.get("/api/models", method=method)[0] == 405
 
 
 def test_dns_rebinding_host_is_refused(server):

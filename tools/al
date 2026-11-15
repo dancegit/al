@@ -20,8 +20,12 @@
   al adopt   LAYER [--app APP] [--dry-run] [--only rules|prompts|workflows …]
                                    bring a codebase's existing agent setup (rule files, prompts, workflow
                                    scripts) into the layer, deterministically; reports what a person must decide
-  al dashboard [LAYER_OR_DIR …] [--port N] [--open] [--podman]
-                                   watch the runs of any layers (or every layer below a directory) live, read-only
+  al dashboard [LAYER_OR_DIR …] [--port N] [--open] [--podman] [--read-only]
+                                   watch the runs of any layers (or every layer below a directory) live; its one
+                                   write is the Models panel (a local model setting), off with --read-only
+  al models  LAYER [--set TIER=ID …] [--reset [TIER]]
+                                   show or change which model each tier uses on this machine (a local setting,
+                                   agents/settings/models.json, never committed); applies to runs started afterwards
   al verify  LAYER [--cmd NAME …] [--timeout S] [--json]
                                    run the layer's codebase cmds on a throwaway worktree, in the ADWs' environment
 
@@ -1431,7 +1435,26 @@ def check_layer(layer: Path) -> list[str]:
             problems.append(f"application working tree is not clean:\n{dirty}")
         if layer.resolve() == app or app in layer.resolve().parents:
             problems.append("layer lives inside the application tree")
+    if app.exists() or (layer / ".git").exists():
+        problems += tracked_settings(layer, ir, app)
     return problems
+
+
+def tracked_settings(layer: Path, ir: dict, app: Path) -> list[str]:
+    """The layer's local model setting is machine-local: committing it is a problem."""
+    rel = "agents/settings/models.json"
+    if (ir.get("layer") or {}).get("kind") == "in-repo":
+        try:
+            repo, path = app, f"{layer.resolve().relative_to(app.resolve()).as_posix()}/{rel}"
+        except ValueError:
+            return []
+    elif (layer / ".git").exists():
+        repo, path = layer, rel
+    else:
+        return []
+    cp = run(["git", "-C", str(repo), "ls-files", "--", path], check=False)
+    return [f"{rel} is a local setting and must not be committed: git rm --cached {line}"
+            for line in cp.stdout.splitlines() if line.strip()]
 
 
 DIED_AFTER = 60          # seconds without a heartbeat before a run whose process is gone counts as dead
@@ -1847,6 +1870,85 @@ def init_in_repo(app: Path, directory: str, layer_arg: Path | None) -> None:
           f"      then `al gen {layer}` and commit the directory: git add {rel} && git commit")
 
 
+def layer_models_module(layer: Path):
+    """The layer's own runtime modules (models, ir, errors), so `al models` and the layer's runs
+    read and write the local setting with the same code."""
+    if not (layer / "agentic-layer.json").is_file() or not (layer / "adws/adw_modules/models.py").is_file():
+        raise AlError(f"{layer} is not a generated layer: run `al gen {layer}` first")
+    for name in [n for n in sys.modules if n == "adw_modules" or n.startswith("adw_modules.")]:
+        del sys.modules[name]   # another layer's runtime may have been imported before
+    sys.path.insert(0, str(layer / "adws"))
+    try:
+        from adw_modules import errors, ir as ir_module, models
+    except ImportError as exc:
+        raise AlError(f"cannot import the layer runtime from {layer / 'adws'}: {exc}") from exc
+    if not hasattr(models, "write_settings"):
+        raise AlError(f"{layer} was generated before local model settings: run `al gen {layer}`")
+    return models, ir_module, errors
+
+
+def models_cli(a: argparse.Namespace) -> int:
+    layer = a.layer.resolve()
+    models, ir_module, errors = layer_models_module(layer)
+    try:
+        loaded = ir_module.load(layer)
+    except errors.LayerError as exc:
+        raise AlError(str(exc)) from exc
+    known = models.declared_tiers(loaded)
+    try:
+        current = models.read_settings(layer)
+    except errors.LayerError as exc:
+        if a.reset != "*":   # a broken file can always be removed with a bare --reset
+            raise AlError(str(exc)) from exc
+        current = {}
+    notes: list[str] = []
+    if a.set:
+        changes: dict[str, str] = {}
+        for item in a.set:
+            try:
+                parsed = models.parse_models(item, "--set")
+                if not parsed:
+                    raise ValueError(f"--set: expected TIER=MODEL_ID (e.g. heavy=claude-fable-5-2), got {item!r}")
+                for tier, model in parsed.items():
+                    note = models.check_setting(tier, model, known)
+                    if note:
+                        notes.append(note)
+                changes.update(parsed)
+            except ValueError as exc:
+                raise AlError(str(exc)) from exc
+        models.write_settings(layer, {**current, **changes})
+    elif a.reset == "*":
+        models.write_settings(layer, {})
+    elif a.reset:
+        if a.reset not in known:
+            raise AlError(f"no agent of this layer has a tier `{a.reset}`; declared: {', '.join(known)}")
+        models.write_settings(layer, {k: v for k, v in current.items() if k != a.reset})
+    for note in notes:
+        print(f"note: {note}")
+    try:
+        valid, ignored = models.local_settings(loaded)
+        over = models.overrides(None, None, None, settings=valid)
+    except (errors.LayerError, ValueError) as exc:
+        raise AlError(str(exc)) from exc
+    for line in ignored:
+        print(f"note: {line}")
+    agents = [x for x in loaded.ir.get("agents") or [] if x.get("kind") != "mock"]
+    for tier in known:
+        row = {"model": "?", "source": "no agent states a model"}
+        for agent in agents:
+            resolved = models.resolve_tiers(loaded, str(agent.get("id")), over)
+            if tier in resolved:
+                row = resolved[tier]
+                break
+        else:
+            if tier in (over.get("models") or {}):
+                row = {"model": over["models"][tier], "source": over["models_from"][tier]}
+        print(f"{tier:<8} {row['model']:<20} ({row['source']})")
+    print(f"settings: {layer / models.SETTINGS_FILE} (local to this machine, never committed); "
+          "applies to runs started from now on")
+    return 0
+
+
 def dashboard_command(a: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
     """The kit's dashboard over the given layers and directories (no layer needs to declare one)."""
     dirs = [d.resolve() for d in (a.dirs or [Path(".")])]
@@ -1857,12 +1959,14 @@ def dashboard_command(a: argparse.Namespace) -> tuple[list[str], dict[str, str]]
     if a.podman:
         if a.bind or a.token or a.open:
             raise AlError("--podman publishes on 127.0.0.1 with its own token; --bind, --token and --open do not apply")
-        return [str(DASHBOARD_KIT / "run-in-podman.sh"), "--port", str(a.port), *map(str, dirs)], env
+        return [str(DASHBOARD_KIT / "run-in-podman.sh"), "--port", str(a.port),
+                *(["--read-only"] if a.read_only else []), *map(str, dirs)], env
     argv = [sys.executable, str(DASHBOARD_KIT / "dashboard.py"), "--port", str(a.port)]
     for d in dirs:
         argv += ["--layer" if (d / "agentic-layer.json").is_file() else "--scan", str(d)]
     argv += ["--bind", a.bind] if a.bind else []
     argv += ["--open"] if a.open else []
+    argv += ["--read-only"] if a.read_only else []
     if a.token:
         env["AL_DASHBOARD_TOKEN"] = a.token   # not on argv, where `ps` would show it
     return argv, env
@@ -1919,13 +2023,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("name", nargs="?"); p.add_argument("--list", action="store_true", help="every template and where it resolves from")
     p.add_argument("--force", action="store_true", help="replace an existing layer copy with the kit's version")
     improve_parsers(sub)
-    p = sub.add_parser("dashboard", help="watch the runs of any layers live in a browser (read-only)")
+    p = sub.add_parser("dashboard", help="watch the runs of any layers live in a browser (read-only except the Models panel)")
     p.add_argument("dirs", nargs="*", type=Path, metavar="LAYER_OR_DIR",
                    help="a layer (has agentic-layer.json) or a directory to scan for layers; default: .")
     p.add_argument("--port", type=int, default=8765); p.add_argument("--bind")
     p.add_argument("--token", help="access token (needed for a non-loopback --bind; also AL_DASHBOARD_TOKEN)")
     p.add_argument("--open", action="store_true", help="open the page in a browser")
     p.add_argument("--podman", action="store_true", help="run it in its own locked-down podman container")
+    p.add_argument("--read-only", action="store_true", help="the dashboard changes nothing, not even model settings")
+    p = sub.add_parser("models", help="show or change which model each tier of a layer uses (a local setting)")
+    p.add_argument("layer", type=Path)
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--set", action="append", metavar="TIER=MODEL_ID",
+                       help="use MODEL_ID for tier TIER in runs of this layer on this machine (repeatable)")
+    group.add_argument("--reset", nargs="?", const="*", metavar="TIER",
+                       help="drop the local setting of TIER, or of every tier without TIER")
     p = sub.add_parser("adopt", help="bring the codebase's existing agent setup (rules, prompts, workflow scripts) into a layer")
     p.add_argument("layer", type=Path)
     p.add_argument("--app", type=Path, help="the application checkout (needed before the layer has an agentic.rkt)")
@@ -2005,6 +2117,8 @@ def main(argv: list[str] | None = None) -> int:
             return eject_cli(a)
         elif a.cmd == "dashboard":
             return dashboard_cli(a)
+        elif a.cmd == "models":
+            return models_cli(a)
         elif a.cmd in IMPROVE_COMMANDS:
             return improve_main(a)
         elif a.cmd == "adopt":

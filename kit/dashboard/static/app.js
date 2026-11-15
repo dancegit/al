@@ -206,6 +206,74 @@
     return response.json();
   }
 
+  /** The dashboard's one write (POST /api/models): JSON with the X-AL-Dashboard header; throws the server's error. */
+  api.post = async function post(path, body) {
+    const response = await fetch(path, { method: "POST", credentials: "same-origin", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-AL-Dashboard": "1" }, body: JSON.stringify(body) });
+    let data = null;
+    try { data = await response.json(); } catch (_err) { data = null; }
+    if (!response.ok) throw new Error((data && data.error) || `${response.status} ${path}`);
+    return data;
+  };
+
+  const modelNotes = new Map();   // layer key -> {text, error}: the last answer, kept when the block is rebuilt
+
+  /** One layer's block of the "Models" panel: which model each tier means, why, and a switch. */
+  function modelsPanel(layer) {
+    const m = layer.models || { tiers: [], known: [], writable: false, why: "", error: "" };
+    const last = modelNotes.get(layer.key);
+    const note = h("div", { class: `model-note faint${last && last.error ? " error" : ""}`, text: last ? last.text : "" });
+    const el = h("div", { class: "models-panel", dataset: { layer: layer.key } },
+      h("div", { class: "name" }, h("a", { href: `#/layer/${enc(layer.key)}`, text: layer.name || layer.key })));
+    const send = async (body, button) => {
+      button.disabled = true;
+      note.textContent = "";
+      note.classList.remove("error");
+      try {
+        const answer = await api.post("/api/models", { layer: layer.key, ...body });
+        note.textContent = answer.note || "saved; applies to runs started from now on";
+        modelNotes.set(layer.key, { text: note.textContent, error: false });
+      } catch (err) {
+        note.textContent = String(err.message || err);
+        note.classList.add("error");
+        modelNotes.set(layer.key, { text: note.textContent, error: true });
+      } finally {
+        button.disabled = false;
+      }
+    };
+    for (const t of m.tiers || []) {
+      const known = m.known || [];
+      const custom = !known.includes(t.model);
+      const select = h("select", { "aria-label": `model of tier ${t.tier}`, disabled: !m.writable },
+        known.map((id) => h("option", { value: id, text: id, selected: !custom && id === t.model })),
+        h("option", { value: "", text: "custom…", selected: custom }));
+      const input = h("input", { type: "text", class: "mono", placeholder: "model id", "aria-label": `custom model id of tier ${t.tier}`,
+        value: custom ? t.model || "" : "", disabled: !m.writable, hidden: !custom });
+      select.addEventListener("change", () => { input.hidden = select.value !== ""; if (!input.hidden) input.focus(); });
+      const apply = h("button", { class: "btn apply", text: "Apply", disabled: !m.writable });
+      apply.addEventListener("click", () => send({ tier: t.tier, model: select.value || input.value.trim() }, apply));
+      const reset = t.local ? h("button", { class: "btn reset", text: "Reset", disabled: !m.writable,
+        title: "drop the local setting of this tier" }) : null;
+      if (reset) reset.addEventListener("click", () => send({ tier: t.tier, reset: true }, reset));
+      el.appendChild(h("div", { class: "tier-row", dataset: { tier: t.tier } },
+        h("span", { class: "tier", text: t.tier }),
+        h("span", { class: "current mono", text: t.model || "?" }),
+        h("span", { class: "source", text: t.source || "unknown" }),
+        h("span", { class: "controls" }, select, input, apply, reset)));
+    }
+    if (m.error) el.appendChild(h("div", { class: "why error", text: m.error }));
+    if (!m.writable && m.why) el.appendChild(h("div", { class: "why", text: m.why }));
+    el.appendChild(note);
+    el.appendChild(h("div", { class: "faint foot",
+      text: "Applies to runs started from now on; runs in flight keep their models. --model and AL_MODELS still win." }));
+    return el;
+  }
+
+  /** "heavy claude-fable-5-2 (local setting) · base claude-opus-5-5 (built-in default)" for a run's state.models. */
+  function runModelsText(models) {
+    return Object.entries(models || {}).map(([tier, spec]) => `${tier} ${(spec && spec.model) || "?"} (${(spec && spec.source) || "?"})`).join(" · ");
+  }
+
   function debounce(fn, ms) {
     let timer = null;
     return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
@@ -818,17 +886,22 @@
     const grid = h("div", { class: "now-grid" });
     const pools = h("div", { class: "pools" });
     const usage = h("div", { class: "usage" });
+    const modelsBox = h("div", { class: "models" });
     const recent = h("div", { class: "table-wrap" });
     const containerNote = h("span", { class: "faint" });
     main.append(strip,
       h("div", { class: "card-head" }, h("h2", { text: "In flight" }), h("span", { class: "spacer" }), containerNote), grid,
       h("div", { class: "card-head" }, h("h2", { text: "Subscription usage" }), h("span", { class: "spacer" }),
         h("span", { class: "faint", text: "what the agent CLI last reported; not a live meter" })), usage,
+      h("div", { class: "card-head" }, h("h2", { text: "Models" }), h("span", { class: "spacer" }),
+        h("span", { class: "faint", text: "which model each tier uses; a local setting of this machine" })), modelsBox,
       h("div", { class: "card-head", style: null }, h("h2", { text: "Slots and ports" })), pools,
       h("div", { class: "card-head" }, h("h2", { text: "Recently finished" })), recent);
     grid.style.marginBottom = "18px";
     pools.style.marginBottom = "18px";
     usage.style.marginBottom = "18px";
+    modelsBox.style.marginBottom = "18px";
+    const modelBlocks = new Map();   // layer key -> {sig, el}: a block is rebuilt only when its data changes
     const cards = new Map();
     let selected = -1;
 
@@ -903,12 +976,27 @@
       const info = store.containers || {};
       containerNote.textContent = info.available ? `containers: ${info.note}` : (info.note || "");
       renderUsage();
+      renderModels();
       renderPools();
       renderRecent(runs);
     }
 
     function renderUsage() {
       replace(usage, store.layers.length ? store.layers.map((layer) => usagePanel(layer)) : h("div", { class: "empty", text: "no layers yet" }));
+    }
+
+    function renderModels() {
+      if (!store.layers.length) { modelBlocks.clear(); replace(modelsBox, h("div", { class: "empty", text: "no layers yet" })); return; }
+      const blocks = store.layers.map((layer) => {
+        const sig = JSON.stringify([layer.name, layer.models]);
+        const known = modelBlocks.get(layer.key);
+        if (known && known.sig === sig) return known.el;
+        const el = modelsPanel(layer);
+        modelBlocks.set(layer.key, { sig, el });
+        return el;
+      });
+      for (const key of [...modelBlocks.keys()]) if (!store.layers.some((l) => l.key === key)) modelBlocks.delete(key);
+      if (blocks.length !== modelsBox.children.length || blocks.some((el, i) => modelsBox.children[i] !== el)) replace(modelsBox, blocks);
     }
 
     function renderPools() {
@@ -1221,7 +1309,8 @@
       blocks.push(h("div", { class: "outcome-block" }, h("div", { class: "card-head" }, h("h3", { text: "Status" }), pill(sm.status)),
         kv([["failed step", sm.failed_step], ["why", sm.error], ["branch", detail.state.branch ? h("span", { class: "mono", text: detail.state.branch }) : ""],
           ["plan", detail.state.plan ? h("span", { class: "mono", text: detail.state.plan }) : ""], ["source", detail.state.source],
-          ["ports", (detail.state.ports || []).join(", ")]])));
+          ["ports", (detail.state.ports || []).join(", ")],
+          ["models", runModelsText(detail.state.models)]])));
       if (detail.budget) {
         const b = detail.budget, stop = b.stopped;
         const limit = (v) => (v === null || v === undefined ? "none" : fmt.cost(v));

@@ -233,12 +233,14 @@ uv run adws/dashboard.py --open            # http://127.0.0.1:8765/
 It shows what is running now, each workflow as a graph that colours in as steps finish, where the time
 and the money went, and every agent step's transcript in readable form, with filters and search. A
 check's log can be read while the check is still running. A run whose process was killed is shown as
-"died", which is different from "failed". The page only reads; it cannot start, stop or change anything.
+"died", which is different from "failed". The page cannot start, stop or change a run. Its one write is
+the Models panel (see [Choose models and limit spending](#choose-models-and-limit-spending)), which
+changes the layer's local model setting; start it with `--read-only` to turn that off too.
 
-To watch several codebases at once: `al dashboard ~/code` (finds every layer under that folder). To run
-it in its own locked-down container, declare `(dashboard podman)` in `agentic.rkt`; to turn it off,
-`(dashboard none)`. It listens on your own machine only; exposing it elsewhere requires naming a token
-variable with `#:token-env`.
+To watch several codebases at once: `al dashboard ~/code` (finds every layer under that folder;
+`al dashboard ~/code --read-only` for a page that changes nothing). To run it in its own locked-down
+container, declare `(dashboard podman)` in `agentic.rkt`; to turn it off, `(dashboard none)`. It listens
+on your own machine only; exposing it elsewhere requires naming a token variable with `#:token-env`.
 
 ## Step 9 — The first real run
 
@@ -288,8 +290,10 @@ with all permissions when it runs inside a container.
 
 ## Choose models and limit spending
 
-By default routine steps (classify, commit) run on Claude Opus 5.5 and planning, building and review on
-Claude Fable 5.2. Models are grouped in named tiers on the agent, and prompts and steps pick a tier:
+By default every step runs on Claude Opus 5.5: routine steps (classify, commit) and planning, building
+and review alike. Claude Fable 5.2 is the opt-in for the heaviest work. Models are grouped in named tiers
+on the agent, and prompts and steps pick a tier. To opt in for every machine, write it in the layer
+(here with a cheaper `fast` tier for commits):
 
 ```racket
 (agent claude-code #:models ((fast "claude-haiku-5-5") (base "claude-opus-5-5") (heavy "claude-fable-5-2" #:effort high)))
@@ -307,9 +311,40 @@ Which tier a step uses, first match wins:
 | 3 | the request | a task tag `{heavy}`, or `adw: sdlc heavy` in an issue |
 | 4 | the prompt | `#:model-set` on the command (default: `base` for commands, `heavy` for prompts that take a plan) |
 
-`--model heavy=MODEL_ID` (or `AL_MODELS="heavy=…,base=…"`) changes which model a tier means for one run,
-and `--max-cost 3` (or `AL_MAX_COST`) caps one run. The compiler rejects a workflow that could use a tier
-its agent does not declare.
+Which model a tier means, first match wins:
+
+| | Source | Example |
+|---|---|---|
+| 1 | a flag, for this run | `--model heavy=claude-fable-5-2` |
+| 2 | an environment variable, for this run | `AL_MODELS="heavy=claude-fable-5-2,base=claude-opus-5-5"` |
+| 3 | the local setting of this machine | `al models myapp.al --set heavy=claude-fable-5-2`, or the dashboard's Models panel |
+| 4 | the layer | `(agent claude-code #:model-heavy "claude-fable-5-2")` or `#:models ((heavy …))` |
+| 5 | the built-in default | `claude-opus-5-5` for `base` and `heavy` (codex: `gpt-5.4-mini`, `gpt-5.4`) |
+
+`--max-cost 3` (or `AL_MAX_COST`) caps one run. The compiler rejects a workflow that could use a tier its
+agent does not declare.
+
+The local setting is for switching without editing `agentic.rkt` or typing flags, also for runs that
+triggers start. It lives in `agents/settings/models.json`, which is never committed (`al check` reports
+it as a problem if it is), and only changes which model id a tier means, never which tier a step uses
+or its `#:effort`:
+
+```console
+$ al models ~/code/myapp.al --set heavy=claude-fable-5-2
+base     claude-opus-5-5      (built-in default)
+heavy    claude-fable-5-2     (local setting)
+settings: ~/code/myapp.al/agents/settings/models.json (local to this machine, never committed); applies to runs started from now on
+```
+
+`al models LAYER` shows the table without changing anything, `--reset heavy` drops one tier's setting
+and `--reset` all of them. A model id al does not know is accepted with a `note:` and passed to the
+agent as is; a tier no agent declares is an error. The dashboard's Now view has the same switch: a
+Models panel with one row per tier, its current model and where it comes from, a selector of the known
+models (or a custom id) and a Reset button. It writes the same file in the same format.
+
+Runs in flight keep the models they started with; fan-out candidates use their parent's. Every run
+records which model each tier meant and why: the `tiers:` line of its summary, `models` in its
+`state.json` and its `run.start` event, and the run's page in the dashboard.
 
 A run that goes over a limit stops and hands over like any other stopped run: a `[needs human]` pull
 request with the reason `budget:run: spent $X of $Y`, and the work so far kept. When today's limit is

@@ -1,6 +1,7 @@
 # al work dashboard
 
-A live, read-only view of what the agents of one or more layers are doing: which runs are in
+A live view of what the agents of one or more layers are doing (read-only except one guarded
+switch: which model each tier uses): which runs are in
 flight and what each agent is doing right now, the workflow of every run as a graph that colours
 in as steps finish, where the time went, what it cost, and every agent's transcript formatted for
 people. One Python file (standard library only) serves one page (HTML, CSS and vanilla JS, no
@@ -64,7 +65,8 @@ chat. Keys: `j`/`k` move through runs, nodes or transcript events, `Enter` opens
 
 ## What it reads, and how
 
-Everything comes from files the runtime already writes; nothing in a layer is ever written.
+Everything comes from files the runtime already writes; the only file the dashboard writes is
+agents/settings/models.json (the Models panel; off with `--read-only`).
 
 | File | Used for |
 |---|---|
@@ -72,6 +74,7 @@ Everything comes from files the runtime already writes; nothing in a layer is ev
 | `agents/<id>/events.jsonl` | when present (runs of this runtime version and later): exact start and end of every agent call (with the agent, its kind and model), check attempt (exit code, re-check or not), gate and deploy command, slot wait and the container; the check running now; subscription usage reports, limit stops and waits (`limit.status`, `limit.stop`, `limit.wait`). See "Run events" in `docs/DESIGN.md`. Older runs have no such file and are read as below, from file times |
 | `agents/<id>/state.json` | status, class, request, step records (status, start, end, detail, the agent, model and model tier used), every agent call's tier and why it was chosen (`agent_calls`), cost and spending limits (`cost`, `budget`: a run a limit stopped carries a distinct "budget stop" mark; `cost.billing` for "API-equivalent"), what the run recorded about subscription usage (`usage`: billing mode, the limit that stopped it, waits), script steps (`scripts`), checks, review rounds, ship and gate, fan-out candidates and a candidate's parent (`fanout_parent`), artefacts. Liveness: `pid`, `host` and `heartbeat` (refreshed every ~5 s). A run whose state says running but whose heartbeat is older than 20 s while its process is gone is shown as **died**, with when it was last seen (other host, or inside the container where pids are not visible: after 5 min without a heartbeat). Older files without newer keys are fine. A run without `state.json` is shown as `unknown` from its `run.log` |
 | `agents/subscription-usage.json` | the Now view's "Subscription usage" panel: the billing mode and the latest report per usage window, written by the runtime after each agent call. Read-only, polled like the run files; a change is pushed to the page. Missing = "no data yet"; anything unreadable or of the wrong type is ignored, and its content is shown as text |
+| `agents/settings/models.json` | the Now view's "Models" panel: the layer's local model setting (`{"models": {TIER: MODEL_ID}, "version": 1}`, never committed), the same file `al models LAYER --set TIER=ID` writes. With the IR's agent tiers it gives each tier's model and its source (`local setting`, `layer`, `built-in default`). Polled like the usage file; a change is pushed to the page. An unreadable file is shown as an error and not used. Also the one file the dashboard writes (see Safety) |
 | `agents/<id>/run.log` | without events: container name and removal, slot waits (`[slots] … waiting for a free runs slot`), gate re-run exit codes. Newer runtimes start each line with its UTC time, which is stripped before matching |
 | `agents/<id>/<step>/{prompt.md,raw.jsonl,output.txt,stderr.log}` | one directory per agent call (the transcript's init event also says whether the call ran on a subscription or an API key, so older runs are labelled too). `<check>-resolve-<n>` belongs to that check, `review-<n>`, `review-<round>-<n>`, `patch-<n>`, `implement-<n>` to the review step. Without events: start = `prompt.md` mtime, end = `output.txt` mtime |
 | `agents/<id>/scripts/<name>.<n>.log` | the output of a `script` step, shown when its node is opened |
@@ -103,7 +106,16 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
 
 ## Safety
 
-- **Read-only.** Only GET and HEAD; every other method is 405. No endpoint takes an action.
+- **One write, guarded.** Only GET and HEAD, plus `POST /api/models`, which sets or resets one
+  tier of a layer's local model setting (`agents/settings/models.json`); every other method and
+  path is 405, and no endpoint starts, stops or changes a run. The write needs: the token as for
+  every request, but from the `Authorization` header or the cookie only (a token in the query
+  string is refused); an `Origin` header equal to `http://<Host>` (a missing one is refused); the
+  `X-AL-Dashboard: 1` header, which a plain HTML form cannot send; `Content-Type:
+  application/json`; a body of at most 4 KiB. The tier and model id are validated like `al models`
+  (a declared tier; a non-empty id without whitespace or control characters; an unknown id gets a
+  note), and the file is replaced atomically (temporary file, `fsync`, rename). `--read-only`
+  (`al dashboard --read-only`) turns the write off; the panel then says so.
 - **Served files** are limited to a watched layer's `agents/`, `artefacts/`, `specs/`, its
   `agentic-layer.json` / `agentic.rkt` and `EXPLAIN.md`. Traversal (`..`, encoded or not), absolute
   paths, NUL bytes and anything whose real path leaves that tree (symlinked files or directories)
@@ -119,7 +131,7 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
 ## Its own podman container
 
 ```bash
-kit/dashboard/run-in-podman.sh [--port 8765] [--podman-socket] DIR [DIR …]
+kit/dashboard/run-in-podman.sh [--port 8765] [--podman-socket] [--read-only] DIR [DIR …]
 ```
 
 It builds a small image (`python:3.12-slim` plus the script and its static files) and runs it
@@ -128,6 +140,13 @@ with every DIR mounted **read-only at the same path**, `--cap-drop=ALL`,
 `--security-opt=no-new-privileges`, `--read-only`, pids/memory/CPU limits, on an `--internal`
 podman network (no route out), publishing only `127.0.0.1:PORT`. Inside, it must listen on all
 interfaces for the published port, so the script generates a random token and prints the URL.
+
+The one writable mount: for each DIR that is a layer (has `agentic-layer.json`), its
+`agents/settings` directory is created if missing and mounted read-write, so the Models panel can
+switch that layer's models. A directory is mounted rather than the file because a bind-mounted
+single file cannot be replaced atomically. Layers found by scanning a DIR get no writable mount, and
+their panel says "not writable here" with the `al models` command to use on the host instead.
+`--read-only` mounts nothing writable and turns the panel's write off.
 
 What the container can and cannot show:
 

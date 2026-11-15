@@ -53,10 +53,11 @@ class Running:
         self.port = server.server_address[1]
         self.base = f"http://127.0.0.1:{self.port}"
 
-    def get(self, path: str, headers: dict[str, str] | None = None, method: str = "GET") -> tuple[int, dict[str, str], bytes]:
+    def get(self, path: str, headers: dict[str, str] | None = None, method: str = "GET",
+            body: bytes | None = None) -> tuple[int, dict[str, str], bytes]:
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         try:
-            connection.request(method, path, headers=headers or {})
+            connection.request(method, path, body=body, headers=headers or {})
             response = connection.getresponse()
             return response.status, {k.lower(): v for k, v in response.getheaders()}, response.read()
         finally:
