@@ -745,13 +745,13 @@
         "description": "",
         "name": "lint",
         "run": "bun run lint && (cd api && uv run ruff check)",
-        "timeout": 900
+        "timeout": 1800
       },
       {
         "description": "",
         "name": "test",
         "run": "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)",
-        "timeout": 900
+        "timeout": 1800
       },
       {
         "description": "Playwright; writes e2e-results/",
@@ -763,13 +763,13 @@
         "description": "",
         "name": "deploy",
         "run": "./scripts/deploy.sh staging",
-        "timeout": 900
+        "timeout": 1800
       },
       {
         "description": "the team's own script: appends the change to CHANGELOG.md",
         "name": "changelog",
         "run": "./scripts/changelog.sh",
-        "timeout": 900
+        "timeout": 1800
       }
     ],
     "conditionalDocs": [

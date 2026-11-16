@@ -1899,7 +1899,7 @@ def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print) 
         for name in skipped:
             say(f"  skip  {name}  (never run implicitly; name it with --cmd {name})")
         for c in selected:
-            limit = int(timeout if timeout is not None else c.get("timeout", 900))
+            limit = int(timeout if timeout is not None else c.get("timeout", 1800))
             started = time.monotonic()
             try:
                 with contextlib.redirect_stdout(sys.stderr):

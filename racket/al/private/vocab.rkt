@@ -413,7 +413,7 @@
 (define-record cmd
   "A named shell command of the codebase: (cmd NAME \"shell\" …). Check steps and validation sections refer to these names."
   [run string #:required "Shell command, run from the worktree root."]
-  [timeout integer 900 "Seconds."]
+  [timeout integer 1800 "Seconds one run of the command may take; allow for several runs sharing the machine."]
   [description string "" "What the command proves."])
 
 (define-record paths
