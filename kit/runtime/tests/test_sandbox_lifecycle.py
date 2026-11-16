@@ -301,7 +301,7 @@ def test_status_lists_every_podman_env_with_the_shared_recipe(make_layer, monkey
 
 @pytest.mark.parametrize("run, expected", [
     ("pytest -q", "pytest"), ("FOO=1 uv run x", "uv"), ("cd web && npm test", "npm"), ("./test.sh", "./test.sh"),
-    ("env A=b make", "make"), ("true", None), ("export X=1; exec python3 -m pytest", "python3"),
+    ("env A=b make", "make"), ("env -u AL_ROOT uv run pytest", "uv"), ("(cd kit && env -u X -C sub uv run t)", "uv"), ("true", None), ("export X=1; exec python3 -m pytest", "python3"),
     ("(cd web && bun test) | tee log", "bun"), ("echo 'unbalanced", None)])
 def test_first_executable(run, expected) -> None:
     assert sandbox.first_executable(run) == expected

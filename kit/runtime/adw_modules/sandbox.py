@@ -549,7 +549,8 @@ def first_executable(run: str) -> str | None:
             elif word in WRAPPERS:
                 index += 1
                 while index < len(words) and words[index].startswith("-"):
-                    index += 1
+                    # `env -u NAME`, `env -C DIR`: the option's value is not the program
+                    index += 2 if word == "env" and words[index] in ("-u", "--unset", "-C", "--chdir") else 1
             else:
                 break
         if index >= len(words):
