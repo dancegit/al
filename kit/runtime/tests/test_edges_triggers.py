@@ -106,6 +106,19 @@ def test_generic_payload():
     assert webhook.decide(full_ir(), TRIG, {"X-GitHub-Event": "issue_comment"}, pr_comment, {}).status == 200
 
 
+def test_webhook_ignores_an_issue_claimed_at_creation():
+    claimed = {"number": 12, "body": "please\n\n<!-- al:claimed run=1a2b3c4d -->", "labels": [{"name": "adw"}]}
+    for event, payload in (("issues", {"action": "opened", "issue": claimed}),
+                           ("issue_comment", {"action": "created", "issue": claimed,
+                                              "comment": {"body": "adw: zte"}})):
+        d = webhook.decide(full_ir(), TRIG, {"X-GitHub-Event": event}, json.dumps(payload).encode(), env={})
+        assert (d.status, d.run, d.reason) == (200, False, "started by its creator")
+    plain = dict(claimed, body="please")
+    d = webhook.decide(full_ir(), TRIG, {"X-GitHub-Event": "issues"},
+                       json.dumps({"action": "opened", "issue": plain}).encode(), env={})
+    assert (d.status, d.source) == (202, "issue:12")
+
+
 def test_save_payload(tmp_path):
     p = webhook.save_payload(tmp_path, {"prompt": "x"})
     assert p.parent == tmp_path / "agents" / "payloads" and json.loads(p.read_text()) == {"prompt": "x"}
@@ -173,6 +186,23 @@ def test_cron_poll_claims_and_launches(tmp_path):
     assert text.count("[~]") == 3 and launched[1][1] in text
     # nothing is started twice on the next poll
     assert s.poll_once() == 0
+
+
+def test_cron_poll_skips_an_issue_claimed_at_creation(tmp_path):
+    lay = cron_layer(tmp_path)
+    (tmp_path / "tasks.md").write_text("")
+    fake = FakeForge()
+    fake.issues = [{"number": 7, "title": "Tidy", "labels": ["adw"],
+                    "body": "Tidy the readme\n\n" + inputs.claim_marker("1a2b3c4d")},
+                   {"number": 8, "title": "Other", "labels": ["adw"], "body": "plain"}]
+    launched = []
+    s = cron.Scheduler(lay, "cron", 10, forge=fake, launch=lambda a, l, e: launched.append(a) or FakeProc(None),
+                       out=lambda m: None)
+    assert s.poll_once() == 1
+    assert [a[a.index("--source") + 1] for a in launched] == ["issue:8"]
+    assert fake.posted == [(8, "queued for adw `sdlc`")]   # the claimed issue gets no comment either
+    assert inputs.is_claimed(fake.issues[0]) and not inputs.is_claimed(fake.issues[1])
+    assert inputs.strip_claim(fake.issues[0]["body"]) == "Tidy the readme"
 
 
 def test_cron_max_concurrent_and_failures(tmp_path):

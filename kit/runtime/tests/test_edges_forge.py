@@ -144,3 +144,42 @@ def test_default_forge_is_none_and_path_layer(tmp_path):
     assert forge.get_client(str(tmp_path), env={}).kind == "none"
     lay = forge.as_layer(tmp_path)
     assert lay.layer_dir == tmp_path.resolve()
+
+
+def test_github_create_issue_passes_the_body_on_stdin(tmp_path):
+    run = FakeRun("https://github.com/acme/shop/issues/17\n")
+    c = forge.GitHubForge(GITHUB, tmp_path, env={}, run=run)
+    body = "Tidy the readme\n\n$(touch pwned); rm -rf ~\n\n<!-- al:claimed run=1a2b3c4d -->"
+    assert c.create_issue("Tidy the readme", body, ["chore"]) == {
+        "number": 17, "url": "https://github.com/acme/shop/issues/17"}
+    argv, kw = run.calls[0]
+    assert argv == ["gh", "issue", "create", "--title", "Tidy the readme", "--body-file", "-",
+                    "--label", "chore", "--repo", "acme/shop"]
+    assert kw["input"] == body and all(body not in a for a in argv)
+
+
+def test_forgejo_create_issue_resolves_label_ids(tmp_path):
+    http = FakeHttp([
+        [{"id": 4, "name": "adw"}, {"id": 9, "name": "bug"}, {"id": 11, "name": "chore"}],
+        {"number": 23, "html_url": "https://git.example.org/acme/shop/issues/23"},
+    ])
+    c = forge.ForgejoForge(FORGEJO, tmp_path, env={}, http=http)
+    assert c.create_issue("Fix it", "the body", ["adw", "chore"]) == {
+        "number": 23, "url": "https://git.example.org/acme/shop/issues/23"}
+    assert (http.calls[0]["method"], http.calls[0]["url"]) == (
+        "GET", "https://git.example.org/api/v1/repos/acme/shop/labels")
+    assert http.calls[1]["method"] == "POST"
+    assert http.calls[1]["url"] == "https://git.example.org/api/v1/repos/acme/shop/issues"
+    assert http.calls[1]["json"] == {"title": "Fix it", "body": "the body", "labels": [4, 11]}
+    missing = forge.ForgejoForge(FORGEJO, tmp_path, env={}, http=FakeHttp([[{"id": 4, "name": "adw"}]]))
+    with pytest.raises(forge.ForgeError, match="no label feature"):
+        missing.create_issue("t", "b", ["feature"])
+    plain = FakeHttp([{"number": 2, "html_url": "u"}])
+    forge.ForgejoForge(FORGEJO, tmp_path, env={}, http=plain).create_issue("t", "b")
+    assert [call["method"] for call in plain.calls] == ["POST"]   # no labels: no label lookup
+
+
+def test_none_forge_cannot_create_an_issue(tmp_path):
+    c = forge.get_client(layer(tmp_path, {"id": "none", "kind": "none", "remote": ""}))
+    with pytest.raises(forge.ForgeError, match="create_issue"):
+        c.create_issue("t", "b")

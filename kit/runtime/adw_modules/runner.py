@@ -360,8 +360,12 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
     return exit_code
 
 
-def main(adw: str, layer_dir: Path, argv: list[str] | None = None) -> int:
-    """Entry point of adws/adw_<name>.py. Returns 0 on success, 1 on a failed run, 2 on usage errors."""
+def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: dict[str, Any] | None = None) -> int:
+    """Entry point of adws/adw_<name>.py. Returns 0 on success, 1 on a failed run, 2 on usage errors.
+
+    `definition` is an ADW the compiled layer does not declare (a single-command run, see
+    launch.single_command_adw): it is added to the loaded IR for this run only and recorded in
+    state.json, so the run goes through the same runner as every other one."""
     parser = _parser(adw)
     try:
         args = parser.parse_args(argv)
@@ -369,6 +373,9 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
     try:
         layer = ir.load(Path(layer_dir))
+        synthetic = definition
+        if synthetic is not None:
+            layer.ir["adws"] = [*layer.ir.get("adws", []), synthetic]
         definition = layer.validate_adw(adw)
         recompute = not args.resume or bool(args.model_set or args.model or args.max_cost or any(
             os.environ.get(k) for k in (models.ENV_TIER, models.ENV_MODELS, models.ENV_MAX_COST)))
@@ -390,6 +397,8 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None) -> int:
             raise UsageError(str(exc)) from exc
         request = None if args.resume else resolve_request(layer, definition, args)
         state = _resumed_state(layer, adw, args) if args.resume else _new_state(adw, definition, args, request)
+        if synthetic is not None:
+            state.definition = dict(synthetic)
         if recompute:
             state.overrides = over
             state.models = models.resolve_tiers(layer, str(definition.get("agent") or ""), over)
