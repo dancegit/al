@@ -195,10 +195,10 @@ def test_al_tool_lookup_reports_where_it_looked(ws, tmp_path, monkeypatch, works
     monkeypatch.setattr(d, "KIT_AL", tmp_path / "kit" / "tools" / "al")
     running = workspace_server(ws, al="/nonexistent")
     al = running.json("/api/snapshot")["al"]
-    assert al == {"found": False, "looked": ["/nonexistent", "~/kit/tools/al", "PATH"]}
+    assert al == {"found": False, "looked": ["/nonexistent", "~/kit/tools/al", "tools/al in a folder above it", "PATH"]}
     actions = running.json("/api/repo?repo=fern")["actions"]
     assert actions and all(a["available"] is False and a["needs"] == "al" for a in actions)
-    assert "looked for: /nonexistent, ~/kit/tools/al, PATH" in actions[0]["why"]
+    assert "looked for: /nonexistent, ~/kit/tools/al, tools/al in a folder above it, PATH" in actions[0]["why"]
 
 
 def test_workspace_api_escapes_and_hides_absolute_paths(ws, tmp_path, workspace_server):
@@ -211,3 +211,26 @@ def test_workspace_api_escapes_and_hides_absolute_paths(ws, tmp_path, workspace_
     assert repos["<script>x"]["key"] == "script-x"
     status, _headers, body = running.get("/api/repo?repo=script-x")
     assert status == 200 and b"<script>" not in body
+
+
+def test_a_dashboard_generated_inside_als_own_repository_finds_the_tool_above_it(tmp_path, monkeypatch):
+    """The generated dashboard of an in-repo layer sits in LAYER/adws/dashboard: tools/al is not beside
+    its kit but in the checkout further up."""
+    tool = tmp_path / "checkout" / "tools" / "al"
+    tool.parent.mkdir(parents=True)
+    tool.write_text("#!/bin/sh\n")
+    tool.chmod(0o755)
+    monkeypatch.delenv("AL_TOOL", raising=False)
+    monkeypatch.setattr(d, "KIT_AL", tmp_path / "checkout" / "layer" / "tools" / "al")
+    found, looked = d.find_al_tool(None)
+    assert found == tool.resolve() and "tools/al in a folder above it" in looked
+
+
+def test_the_tool_can_be_named_in_the_environment(tmp_path, monkeypatch):
+    tool = tmp_path / "elsewhere" / "al"
+    tool.parent.mkdir()
+    tool.write_text("#!/bin/sh\n")
+    tool.chmod(0o755)
+    monkeypatch.setenv("AL_TOOL", str(tool))
+    monkeypatch.setattr(d, "KIT_AL", tmp_path / "nowhere" / "tools" / "al")
+    assert d.find_al_tool(None)[0] == tool.resolve()

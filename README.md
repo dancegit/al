@@ -36,6 +36,10 @@ Put a small compiler between the AI and the result.
 
 The LLM writes two small files. Everything after that is deterministic: the same input always gives the same layer.
 
+A layer can also say where work goes: one line such as `(delivery sprint)` or `(delivery gitflow)` declares the
+branches work collects in and which of them only people may change, so agents branch from and deliver into the
+right one ([How work is delivered](docs/GUIDE.md#how-work-is-delivered)).
+
 ## A concrete example: flask
 
 [flask](https://github.com/pallets/flask) is a Python web framework. Its `LLM.txt` records facts like these

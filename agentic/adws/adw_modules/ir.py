@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +35,10 @@ class Layer:
     ir: dict[str, Any]
     layer_dir: Path
     app_root: Path
+    # the run's delivery target (delivery.record) when the layer declares stages; empty = none.
+    # A run-scoped layer (delivery.scope) carries it, so every reader of default_branch (worktree
+    # base, integration, merge, PR base, gate) uses the run's target branch.
+    delivery: dict[str, Any] = field(default_factory=dict)
 
     @property
     def name(self) -> str:
@@ -42,6 +46,15 @@ class Layer:
 
     @property
     def default_branch(self) -> str:
+        """The branch a run starts from and delivers into: the run's stage branch when it has a
+        delivery target, else (codebase #:default-branch …)."""
+        if self.delivery.get("branch"):
+            return str(self.delivery["branch"])
+        return self.codebase_default_branch
+
+    @property
+    def codebase_default_branch(self) -> str:
+        """(codebase #:default-branch …), whatever the run's target."""
         return str(self.ir["codebase"].get("defaultBranch") or "main")
 
     @property

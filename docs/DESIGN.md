@@ -118,6 +118,58 @@ Shipping never touches the application's working tree: with a forge it is PR + m
 API; with a bare remote it is a push from the worktree; purely locally the result is placed on
 `al/ship/<default-branch>` for a one-line fast-forward.
 
+## How work is delivered
+
+A layer may declare **stages**: `(stage NAME #:branch "…" #:from STAGE #:into STAGE #:accepts (…)
+#:agents-may-merge #t|#f #:entry merge|squash|rebase|fast-forward #:checks (…) #:deploy-cmd CMD)`. Following
+`#:into` (default `#:from`) from every stage leads to one final stage, whose branch is `#:default-branch`. A
+`(cycle sprint|release …)` makes one stage repeat: its branch pattern holds `{cycle}` (or `{version}`), and the
+open cycle is state of the layer (`agents/cycle.json`), changed by `al cycle LAYER status|start|close`.
+
+**Presets** are declared in the meta layer with `define-preset`: data (the parameters, typed like any field)
+plus a function from the checked parameters to `(stage …)`/`(cycle …)` clauses. The compiler splices the
+expansion where `(delivery PRESET …)` stands (a declared stage of the same name replaces the preset's in
+place), the reference prints each preset's expansion with its defaults, and `al explain` shows it from the
+IR (`delivery.expansion`). The compiler's delivery rules are about coherence: one final stage, no cycle in
+the graph, valid branch patterns, and above all no zero-touch workflow whose classes route to a stage
+with `#:agents-may-merge #f`.
+
+**A layer without stages compiles to the IR it always had**: the `stages`, `cycle` and `delivery` keys and
+every ADW's `deliverTo` are left out (the schema lists them as optional), and a run is exactly what it was.
+
+At run time `adw_modules/delivery.py` resolves the run's target (stage, concrete branch, entry method) and
+the runner hands every step a **run-scoped layer** whose `default_branch` is that branch. Every existing
+reader of `default_branch` (the worktree base, ship's integrate/merge/PR base, the gate's diff base,
+fan-out) then follows the target without a change to those modules; `codebase_default_branch` keeps the
+codebase's value. A `deliver` step runs before `ship`: it re-checks the class routing, the entry method and
+(with a forge) branch protection, merges a stage head that moved, and on a conflict runs one patch round
+against it (`deliver-patch-1`, `deliver-implement-1`, the checks again, the review again). A failure there is
+handed to a person like any stopped run, with `delivery:<reason>` as the reason. The target is recorded in
+`state.json` (`delivery`), so a resumed run keeps it.
+
+The `deliver` step runs only for a ship step that runs: a ship step skipped by `#:when` records no `deliver`
+step. The compiler rejects `#:entry fast-forward` with any forge, because through a forge a pull request is
+merged by merge, squash or rebase.
+
+**Follow-ups for a person (protected modules).**
+
+- **`ship.py`, entry methods without a forge.** (1) Add `ENTRY_METHODS = ("merge", "squash", "rebase",
+  "fast-forward")` at module level; `delivery.entry_supported` reads it and then accepts those methods with
+  no other change. (2) In `_integrate`, read `entry = (getattr(layer, "delivery", {}) or {}).get("entry",
+  "merge")`: for `rebase`, replace `_merge(worktree, base, sandbox)` with `git rebase <base>` (abort on
+  conflict, like `_merge`); for `fast-forward`, do not merge, require `git merge-base --is-ancestor <base>
+  HEAD` and otherwise raise `StepFailed("ship", "fast-forward impossible: <branch> moved")`; for `squash`,
+  merge as today. (3) In `_merge_locally` and `_merge_via_remote`, for `squash` first create one commit with
+  `git commit-tree HEAD^{tree} -p <base> -m <title>` and update or push that commit instead of HEAD
+  (sandboxed: `gitsafe.import_objects` on it before `gitsafe.update_ref`). (4) In `ship()`, call
+  `client.merge_pr(pr["number"], method=entry)` when `entry != "fast-forward"`.
+- **`review.py`, a public patch round.** Offer `patch_round(layer, state, step, request, prefix="",
+  env_stack=None) -> dict` (today's `_patch_round` with the request text and the step-name prefix as
+  parameters: step names `{prefix}patch-1` / `{prefix}implement-1`), returning `{"patch_plan",
+  "implement_output", "checks_rerun"}`, plus public `checks_that_ran(state, adw)` and `model_set(layer,
+  command)`. `delivery._conflict_round` would then call `review.patch_round(…, prefix="deliver-")` and drop
+  its own `_model_set` and `_checks_that_ran`.
+
 ## Separation from the application
 
 The layer is its own directory (default `<app>.al`, its own git repo). The app is referenced by
@@ -199,7 +251,8 @@ of the output format.
 racket/al/         #lang al: meta.rkt (meta-DSL), vocab.rkt, compiler.rkt, schema.rkt, reference.rkt, tests/
 schemas/           agentic-layer-v1.schema.json      (generated)
 docs/              AL-DSL.llms.txt (generated), DESIGN.md
-tools/al           init | scout | adopt | compile | gen | check | explain | eject | improve | dashboard | verify
+tools/al           init | scout | adopt | compile | gen | check | explain | eject | improve | dashboard | verify | cycle
+tools/al_delivery.py  read-only detection of the branching style in use (`al scout`'s `## Delivery`)
 kit/templates/     command, HOP and expert templates   kit/schemas/  JSON output contracts
 kit/runtime/       adw_modules (generic IR interpreter), triggers, voice, dispatch
 meta/              LLM.txt template + the meta commands

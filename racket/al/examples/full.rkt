@@ -2,7 +2,8 @@
 ;; A layer that uses most of the vocabulary: several prompt inputs and triggers,
 ;; a stacked environment, artefacts on S3, and a zero-touch (auto review → merge) ADW
 ;; next to a human-reviewed one, model tiers, a second vendor as reviewer, spending limits, and a
-;; script step that runs one of the team's own scripts, and notifications when a run needs a person.
+;; script step that runs one of the team's own scripts, notifications when a run needs a person, and
+;; delivery into a sprint branch (with a hotfix route a person merges).
 (agentic-layer #:name "webshop" #:description "Agentic layer for the webshop monorepo"
   (codebase #:root "../webshop" #:languages (typescript python) #:default-branch "main"
             #:description "Vue storefront + FastAPI backend" #:package-manager "bun add / uv add"
@@ -49,6 +50,9 @@
   (review auto #:id zero-touch #:artefacts (log junit screenshots recordings) #:agent second-opinion
           #:ship deploy #:deploy-cmd deploy #:require-checks (lint test e2e)
           #:allowed-classes (chore bug) #:max-diff-lines 300)
+  (delivery sprint #:length-days 14)   ; every change collects in sprint/{cycle}; a person accepts the sprint into main
+  ;; urgent bugs go to their own branch, cut from main; only a person merges it back into main
+  (stage hotfix #:branch "hotfix/{date}" #:from main #:into main #:accepts (bug) #:agents-may-merge #f #:environment-name "production")
 
   (command prime #:template prime)
   (command classify #:template classify #:model-set fast #:output json)
@@ -100,6 +104,16 @@
       (check e2e #:cmd e2e #:resolve resolve-test #:retries 2 #:collect (screenshots recordings))
       (run commit #:command commit)
       (review #:patch patch #:implement implement)
+      (ship)))
+
+  (adw hotfix #:description "Urgent bugs: straight to a hotfix branch, a person merges"
+       #:input (issue tasklist) #:trigger (webhook manual)
+       #:environment (worktree nix-devshell) #:review human #:classes (bug) #:deliver-to hotfix
+    (steps
+      (compose plan-build)
+      (check test #:cmd test #:resolve resolve-test)
+      (run commit #:command commit)
+      (review)
       (ship)))
 
   (adw candidate #:description "One candidate of a race: plan, build, test, commit; never ships"

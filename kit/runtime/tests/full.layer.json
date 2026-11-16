@@ -4,6 +4,7 @@
       "agent": "claude-code",
       "changes": "codebase",
       "classes": [],
+      "deliverTo": "",
       "description": "Plan and implement, nothing else",
       "environment": [
         "worktree"
@@ -85,6 +86,7 @@
       "agent": "claude-code",
       "changes": "codebase",
       "classes": [],
+      "deliverTo": "",
       "description": "Plan, build, test, review; a human merges",
       "environment": [
         "worktree",
@@ -235,6 +237,7 @@
         "chore",
         "bug"
       ],
+      "deliverTo": "",
       "description": "Zero-touch: ships chores and bugs when every gate passes",
       "environment": [
         "worktree",
@@ -367,7 +370,122 @@
     {
       "agent": "claude-code",
       "changes": "codebase",
+      "classes": [
+        "bug"
+      ],
+      "deliverTo": "hotfix",
+      "description": "Urgent bugs: straight to a hotfix branch, a person merges",
+      "environment": [
+        "worktree",
+        "nix-devshell"
+      ],
+      "input": [
+        "issue",
+        "tasklist"
+      ],
+      "name": "hotfix",
+      "review": "human",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "implement",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "cmd": "test",
+          "collect": [],
+          "kind": "check",
+          "name": "test",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "agent": "",
+          "args": [],
+          "command": "commit",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "commit",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "implement": "",
+          "kind": "review",
+          "name": "review",
+          "patch": ""
+        },
+        {
+          "kind": "ship",
+          "message": "",
+          "name": "ship"
+        }
+      ],
+      "trigger": [
+        "webhook",
+        "manual"
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "changes": "codebase",
       "classes": [],
+      "deliverTo": "",
       "description": "One candidate of a race: plan, build, test, commit; never ships",
       "environment": [
         "worktree",
@@ -466,6 +584,7 @@
       "agent": "claude-code",
       "changes": "codebase",
       "classes": [],
+      "deliverTo": "",
       "description": "Three candidates race (two at a time); a human reviews the best one",
       "environment": [
         "worktree",
@@ -626,13 +745,13 @@
         "description": "",
         "name": "lint",
         "run": "bun run lint && (cd api && uv run ruff check)",
-        "timeout": 900
+        "timeout": 1800
       },
       {
         "description": "",
         "name": "test",
         "run": "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)",
-        "timeout": 900
+        "timeout": 1800
       },
       {
         "description": "Playwright; writes e2e-results/",
@@ -644,13 +763,13 @@
         "description": "",
         "name": "deploy",
         "run": "./scripts/deploy.sh staging",
-        "timeout": 900
+        "timeout": 1800
       },
       {
         "description": "the team's own script: appends the change to CHANGELOG.md",
         "name": "changelog",
         "run": "./scripts/changelog.sh",
-        "timeout": 900
+        "timeout": 1800
       }
     ],
     "conditionalDocs": [
@@ -851,6 +970,14 @@
     "status": "stable",
     "waitSeconds": 3600
   },
+  "cycle": {
+    "id": "sprint",
+    "kind": "sprint",
+    "lengthDays": 14,
+    "name": "{year}-s{week}",
+    "stage": "sprint",
+    "status": "stable"
+  },
   "dashboard": {
     "also": [
       "../storefront.al"
@@ -863,6 +990,25 @@
     "status": "stable",
     "systemd": true,
     "tokenEnv": ""
+  },
+  "delivery": {
+    "expansion": [
+      "(cycle sprint #:stage sprint #:length-days 14 #:name \"{year}-s{week}\")",
+      "(stage sprint #:branch \"sprint/{cycle}\" #:from main #:accepts (feature bug chore patch) #:entry merge)",
+      "(stage main #:branch \"main\" #:accepts () #:agents-may-merge #f)"
+    ],
+    "params": {
+      "accepts": [
+        "feature",
+        "bug",
+        "chore",
+        "patch"
+      ],
+      "lengthDays": 14,
+      "main": "main",
+      "name": "{year}-s{week}"
+    },
+    "preset": "sprint"
   },
   "description": "Agentic layer for the webshop monorepo",
   "environments": [
@@ -1075,6 +1221,54 @@
   ],
   "schemaVersion": "agentic-layer-v1",
   "services": [],
+  "stages": [
+    {
+      "accepts": [
+        "feature",
+        "bug",
+        "chore",
+        "patch"
+      ],
+      "agentsMayMerge": true,
+      "branch": "sprint/{cycle}",
+      "checks": [],
+      "deployCmd": "",
+      "entry": "merge",
+      "environmentName": "",
+      "from": "main",
+      "into": "",
+      "name": "sprint",
+      "origin": "preset sprint"
+    },
+    {
+      "accepts": [],
+      "agentsMayMerge": false,
+      "branch": "main",
+      "checks": [],
+      "deployCmd": "",
+      "entry": "merge",
+      "environmentName": "",
+      "from": "",
+      "into": "",
+      "name": "main",
+      "origin": "preset sprint"
+    },
+    {
+      "accepts": [
+        "bug"
+      ],
+      "agentsMayMerge": false,
+      "branch": "hotfix/{date}",
+      "checks": [],
+      "deployCmd": "",
+      "entry": "merge",
+      "environmentName": "production",
+      "from": "main",
+      "into": "main",
+      "name": "hotfix",
+      "origin": "declared"
+    }
+  ],
   "storage": {
     "accessKeyEnv": "AWS_ACCESS_KEY_ID",
     "bucket": "webshop-adw",

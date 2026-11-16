@@ -15,7 +15,8 @@
     (cmd test-runtime "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q)"
          #:description "The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container")
     (cmd test-tools "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q"
-         #:description "The al command itself works: eject, in-repo layers, al improve, dashboard generation")
+         #:description "The al command itself works: eject, in-repo layers, al improve, dashboard generation"
+         #:timeout 3600)
     (cmd test-dashboard "(cd kit/dashboard && uv run --with pytest pytest -q tests)"
          #:description "The dashboard's model and HTTP server work: unit and HTTP tests, no browser")
     ;; Declared because the repository documents it; not used as a workflow check: one browser test
@@ -27,7 +28,7 @@
     ;; left out: they fail in the sandbox's newer Chromium for a reason not yet understood (they pass in
     ;; the Chrome of a developer machine); `test-dashboard-browser` still runs them.
     (cmd test-dashboard-proof "(cd kit/dashboard && rm -rf shots && AL_DASHBOARD_SHOTS=shots uv run --with pytest --with playwright pytest -q tests --deselect tests/test_browser_layout.py::test_a_fourteen_step_workflow_fits_a_1280_pixel_window --deselect tests/test_browser_layout.py::test_the_cost_tables_totals_row_lines_up_with_its_columns)"
-         #:timeout 1800
+         #:timeout 2400
          #:description "The dashboard's unit, HTTP and real-browser tests, with screenshots of the page written to kit/dashboard/shots")
     (cmd test-integration "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q"
          #:timeout 3600

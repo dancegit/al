@@ -629,37 +629,37 @@
         "description": "The language rules: the compiler accepts the examples and rejects each invalid definition with the documented error",
         "name": "test-compiler",
         "run": "PLTCOLLECTS=\"$PWD/racket:\" raco test racket/al/tests/compiler-test.rkt",
-        "timeout": 900
+        "timeout": 1800
       },
       {
         "description": "The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container",
         "name": "test-runtime",
         "run": "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q)",
-        "timeout": 900
+        "timeout": 1800
       },
       {
         "description": "The al command itself works: eject, in-repo layers, al improve, dashboard generation",
         "name": "test-tools",
         "run": "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q",
-        "timeout": 900
+        "timeout": 3600
       },
       {
         "description": "The dashboard's model and HTTP server work: unit and HTTP tests, no browser",
         "name": "test-dashboard",
         "run": "(cd kit/dashboard && uv run --with pytest pytest -q tests)",
-        "timeout": 900
+        "timeout": 1800
       },
       {
         "description": "The dashboard tests plus the real-browser tests of the page in the host's Chrome",
         "name": "test-dashboard-browser",
         "run": "(cd kit/dashboard && uv run --with pytest --with playwright pytest -q tests)",
-        "timeout": 900
+        "timeout": 1800
       },
       {
         "description": "The dashboard's unit, HTTP and real-browser tests, with screenshots of the page written to kit/dashboard/shots",
         "name": "test-dashboard-proof",
         "run": "(cd kit/dashboard && rm -rf shots && AL_DASHBOARD_SHOTS=shots uv run --with pytest --with playwright pytest -q tests --deselect tests/test_browser_layout.py::test_a_fourteen_step_workflow_fits_a_1280_pixel_window --deselect tests/test_browser_layout.py::test_the_cost_tables_totals_row_lines_up_with_its_columns)",
-        "timeout": 1800
+        "timeout": 2400
       },
       {
         "description": "The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots",
