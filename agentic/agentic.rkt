@@ -22,6 +22,13 @@
     ;; is not deterministic (see LLM.txt, Unknowns).
     (cmd test-dashboard-browser "(cd kit/dashboard && uv run --with pytest --with playwright pytest -q tests)"
          #:description "The dashboard tests plus the real-browser tests of the page in the host's Chrome")
+    ;; The zero-touch workflow's dashboard check: the same tests with the browser tests, in the sandbox's
+    ;; Chromium, saving the screenshots the tests take as proof for the reviewers. Two layout tests are
+    ;; left out: they fail in the sandbox's newer Chromium for a reason not yet understood (they pass in
+    ;; the Chrome of a developer machine); `test-dashboard-browser` still runs them.
+    (cmd test-dashboard-proof "(cd kit/dashboard && rm -rf shots && AL_DASHBOARD_SHOTS=shots uv run --with pytest --with playwright pytest -q tests --deselect tests/test_browser_layout.py::test_a_fourteen_step_workflow_fits_a_1280_pixel_window --deselect tests/test_browser_layout.py::test_the_cost_tables_totals_row_lines_up_with_its_columns)"
+         #:timeout 1800
+         #:description "The dashboard's unit, HTTP and real-browser tests, with screenshots of the page written to kit/dashboard/shots")
     (cmd test-integration "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q"
          #:timeout 3600
          #:description "The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots")
@@ -61,20 +68,21 @@
   ;; The sandbox of the zero-touch workflow: the agent and every check run inside this container, which
   ;; sees only the run's worktree. It carries what this repository's suites need: Racket, uv and git.
   (environment podman #:id sandbox #:base-image "docker.io/library/python:3.12-slim"
-               #:packages ("git" "curl" "ca-certificates" "libatomic1" "racket")
+               #:packages ("git" "curl" "ca-certificates" "libatomic1" "racket" "chromium" "fonts-liberation")
                #:setup ("pip install --no-cache-dir uv"
                         "HOME=/opt/claude bash -c 'curl -fsSL https://claude.ai/install.sh | bash' && chmod -R a+rX /opt/claude && ln -s /opt/claude/.local/bin/claude /usr/local/bin/claude")
                #:memory "8g" #:cpus "4" #:caches ("uv") #:agent-inside #t #:credentials (claude))
 
   (artefact log)
+  (artefact image #:id screenshots #:glob "kit/dashboard/shots/*.png")
 
   (review human)
   (review auto #:id two-reviewers #:artefacts (log) #:reviewers 2 #:max-retries 2 #:ship pr
           #:require-checks (test-compiler test-runtime) #:allowed-classes (chore bug feature))
   ;; Zero-touch: two reviewer agents and every suite must pass, then the change is merged without a person.
   ;; A change under a protected path, or a very large one, still goes to a person.
-  (review auto #:id zero-touch #:artefacts (log) #:reviewers 2 #:max-retries 2 #:ship merge
-          #:require-checks (test-compiler test-runtime test-tools test-dashboard test-integration)
+  (review auto #:id zero-touch #:artefacts (log screenshots) #:reviewers 2 #:max-retries 2 #:ship merge
+          #:require-checks (test-compiler test-runtime test-tools test-dashboard-proof test-integration)
           #:allowed-classes (chore bug feature) #:max-diff-lines 4000)
   (dashboard local #:port 8770)   ; 8765 is often taken by other tools
 
@@ -171,7 +179,7 @@
       (check test-compiler #:cmd test-compiler #:resolve resolve-test #:collect (log))
       (check test-runtime #:cmd test-runtime #:resolve resolve-test #:collect (log))
       (check test-tools #:cmd test-tools #:resolve resolve-test #:collect (log))
-      (check test-dashboard #:cmd test-dashboard #:resolve resolve-test #:collect (log))
+      (check test-dashboard #:cmd test-dashboard-proof #:resolve resolve-test #:collect (log screenshots))
       (check test-integration #:cmd test-integration #:resolve resolve-test #:collect (log))
       (run document #:command document #:args ("$plan"))
       (run commit #:command commit)

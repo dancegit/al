@@ -96,6 +96,7 @@ Codebase commands the new command may list as its validation:
 - **test-tools**: `env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q` — The al command itself works: eject, in-repo layers, al improve, dashboard generation
 - **test-dashboard**: `(cd kit/dashboard && uv run --with pytest pytest -q tests)` — The dashboard's model and HTTP server work: unit and HTTP tests, no browser
 - **test-dashboard-browser**: `(cd kit/dashboard && uv run --with pytest --with playwright pytest -q tests)` — The dashboard tests plus the real-browser tests of the page in the host's Chrome
+- **test-dashboard-proof**: `(cd kit/dashboard && rm -rf shots && AL_DASHBOARD_SHOTS=shots uv run --with pytest --with playwright pytest -q tests --deselect tests/test_browser_layout.py::test_a_fourteen_step_workflow_fits_a_1280_pixel_window --deselect tests/test_browser_layout.py::test_the_cost_tables_totals_row_lines_up_with_its_columns)` — The dashboard's unit, HTTP and real-browser tests, with screenshots of the page written to kit/dashboard/shots
 - **test-integration**: `env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q` — The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots
 
 The new command is valid when it has every required section, uses only arguments and variables found in existing commands, and names only declared cmds.

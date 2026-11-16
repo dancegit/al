@@ -516,9 +516,10 @@
           "retries": 3
         },
         {
-          "cmd": "test-dashboard",
+          "cmd": "test-dashboard-proof",
           "collect": [
-            "log"
+            "log",
+            "screenshots"
           ],
           "kind": "check",
           "name": "test-dashboard",
@@ -612,6 +613,13 @@
       "kind": "log",
       "status": "stable",
       "tailLines": 200
+    },
+    {
+      "glob": "kit/dashboard/shots/*.png",
+      "id": "screenshots",
+      "kind": "image",
+      "maxFiles": 12,
+      "status": "stable"
     }
   ],
   "budget": null,
@@ -646,6 +654,12 @@
         "name": "test-dashboard-browser",
         "run": "(cd kit/dashboard && uv run --with pytest --with playwright pytest -q tests)",
         "timeout": 900
+      },
+      {
+        "description": "The dashboard's unit, HTTP and real-browser tests, with screenshots of the page written to kit/dashboard/shots",
+        "name": "test-dashboard-proof",
+        "run": "(cd kit/dashboard && rm -rf shots && AL_DASHBOARD_SHOTS=shots uv run --with pytest --with playwright pytest -q tests --deselect tests/test_browser_layout.py::test_a_fourteen_step_workflow_fits_a_1280_pixel_window --deselect tests/test_browser_layout.py::test_the_cost_tables_totals_row_lines_up_with_its_columns)",
+        "timeout": 1800
       },
       {
         "description": "The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots",
@@ -967,7 +981,9 @@
         "curl",
         "ca-certificates",
         "libatomic1",
-        "racket"
+        "racket",
+        "chromium",
+        "fonts-liberation"
       ],
       "pidsLimit": 2048,
       "publish": [],
@@ -1117,7 +1133,8 @@
         "feature"
       ],
       "artefacts": [
-        "log"
+        "log",
+        "screenshots"
       ],
       "blockProtectedPaths": true,
       "bodyCmd": "",
@@ -1131,7 +1148,7 @@
         "test-compiler",
         "test-runtime",
         "test-tools",
-        "test-dashboard",
+        "test-dashboard-proof",
         "test-integration"
       ],
       "reviewers": 2,
