@@ -118,6 +118,7 @@ def test_a_fourteen_step_workflow_fits_a_1280_pixel_window(browser, alsite):  # 
     context, page = new_page(browser, running.base)
     try:
         open_(page, f"/run/{json.loads(AL_LAYER_IR.read_text())['name']}/f1000001")
+        page.wait_for_selector("#main[data-rendered]")
         page.wait_for_selector(".g-node[data-step='ship']")
         wrap = page.locator(".graph-wrap").first
         box = wrap.bounding_box()
@@ -141,6 +142,7 @@ def test_a_fourteen_step_workflow_fits_a_1280_pixel_window(browser, alsite):  # 
 
 def test_the_cost_tables_totals_row_lines_up_with_its_columns(epage):
     open_(epage, "/run/events-shop/e1000001")
+    epage.wait_for_selector("#main[data-rendered]")
     epage.wait_for_selector("tfoot tr")
     table = epage.locator("table", has=epage.locator("tfoot")).first
     assert table.locator("tfoot tr").evaluate("tr => getComputedStyle(tr).display") == "table-row"
@@ -151,3 +153,35 @@ def test_the_cost_tables_totals_row_lines_up_with_its_columns(epage):
         head, cell = heads.nth(index).bounding_box(), cells.nth(index).bounding_box()
         assert abs(head["x"] - cell["x"]) < 1 and abs(head["width"] - cell["width"]) < 1, index
     assert cells.nth(8).inner_text().startswith("$")
+
+
+def test_an_idle_run_page_keeps_its_nodes(epage, esite):
+    """A run page re-renders only when its own detail changes: unrelated events and an unchanged run keep its nodes."""
+    open_(epage, "/run/events-shop/e1000001")
+    epage.wait_for_selector("#main[data-rendered]")
+    until(epage, "Number(document.querySelector('#main').dataset.rendered) >= 2")   # the connect snapshot's reload is done
+    marked = """(() => {
+      const nodes = [document.querySelector('.graph-wrap'), ...document.querySelectorAll('.g-node'),
+        [...document.querySelectorAll('table')].find((t) => t.querySelector('tfoot'))];
+      for (const node of nodes) node.dataset.mark = 'same';
+      return [document.querySelectorAll('.g-node').length, Number(document.querySelector('#main').dataset.rendered)];
+    })()"""
+    count, n = epage.evaluate(marked)
+    assert count > 0
+    running = esite[0]
+    model = running.server.model
+    model.hub.publish("workspace", model.workspace_view())
+    model.hub.publish("layers", model.layer_list())
+    model.hub.publish("slots", {"layer": "events-shop", **model.slots.get("events-shop", {})})
+    model.hub.publish("run", next(r for r in model.snapshot()["runs"] if r["key"] == "events-shop/e1000001"))
+    until(epage, f"document.querySelector('#main').dataset.rendered === '{n + 1}'")
+    kept = epage.evaluate("""(() => {
+      const nodes = [...document.querySelectorAll('.g-node')];
+      const table = [...document.querySelectorAll('table')].find((t) => t.querySelector('tfoot'));
+      return {
+        wrap: document.querySelector('.graph-wrap').dataset.mark === 'same',
+        nodes: nodes.length, marked: nodes.filter((node) => node.dataset.mark === 'same').length,
+        table: Boolean(table) && table.dataset.mark === 'same',
+      };
+    })()""")
+    assert kept == {"wrap": True, "nodes": count, "marked": count, "table": True}, kept

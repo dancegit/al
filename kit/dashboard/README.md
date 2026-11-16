@@ -286,7 +286,10 @@ AL_DASHBOARD_REAL_LAYERS=../../layers uv run --with pytest pytest -q tests -k re
 ```
 
 Browser tests use the host's Google Chrome or Chromium (`AL_DASHBOARD_CHROME` to choose); they
-skip without Playwright or Chrome, and nothing is downloaded. `podman`-marked tests skip without
+skip without Playwright or Chrome, and nothing is downloaded. A run page sets `#main[data-rendered]`
+(a count of its completed loads) for tests to wait on instead of sleeping, and a fetched detail equal to
+the one shown does not re-render, so an idle run page keeps its nodes
+(`tests/test_browser_layout.py::test_an_idle_run_page_keeps_its_nodes`). `podman`-marked tests skip without
 podman and `python:3.12-slim`. The fixture layers are code (`tests/fixtures.py`, `python
 tests/fixtures.py DIR` writes them out): a passed run, a failed run with a handoff, a resolve loop,
 two review rounds, a fan-out, a run in progress with a half-written line, hostile HTML, corrupt
