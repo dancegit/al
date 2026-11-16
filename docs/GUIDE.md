@@ -95,6 +95,23 @@ repository. Read `adopted/REPORT.md`, especially "For a person to decide": where
 contradicts a built-in prompt, it shows both texts and leaves the choice to you. If you run `al adopt`
 before `agentic.rkt` exists, run it again after step 4.
 
+**If your `adws/` (or `adw/`) scripts form a hand-built suite** (at least two of them import the same
+package beside them, such as `adws/adw_modules/`), `LLM.txt` adds an `### Existing ADW suite` section
+inside `## Existing agent setup`. It describes the suite as one unit: the shared runtime package and its
+guards, the entry script and its subcommands, where the suite keeps its own run journal (and which
+files it writes there), its model routing, wrappers and systemd units, and per script its title, usage
+lines, options (`--adw-id`, `--resume`, `--no-wait`), numbered steps (code or LLM), the prompts it runs
+(resolved to `.claude/commands/` files, or listed as unresolved), their schemas and its exit codes.
+Each fact says how it was found (file, ast, docstring, comment, text scan, or "inferred from
+prose"); what could not be found is listed under "unknown". Scout only reads the files: nothing is
+imported or run. `al scout --json` has the same data under `existing_adw_suite`.
+
+`al adopt` then proposes one runnable workflow per subcommand of the entry script (and one per
+script no subcommand reaches), for example `legacy-adw-orbit-watch` for `adws/adw_orbit.py watch`.
+Prompts that only the suite's own runtime reads stay where they are instead of being copied. The
+report gains "Run an existing workflow" (the exact command, the resume command and what a person must
+decide) and "Model routing" (the suite's tiers beside the layer's; al does not change them).
+
 *If it goes wrong:* the agent invents a command. Delete the row. A command that is not written down in
 your repository does not belong in `LLM.txt`.
 
@@ -521,6 +538,31 @@ as a step:
 It runs in the run's private copy (and container, if there is one), receives the run's context in
 `ADW_ID`, `ADW_PROMPT`, `ADW_CLASS` and `ADW_PLAN`, and fails the run if it exits non-zero. It is not a
 check: the shipping rules never count it as verification.
+
+A script that may have to wait for something outside (a review queue, a deploy) can say so with an exit
+code, and a script that keeps its own run journal can have it followed. This is what `al adopt` proposes
+for the watch command of a hand-built suite:
+
+```racket
+(cmd legacy-adw-orbit-watch "uv run adws/adw_orbit.py watch ${ADW_RESUME:+--resume \"$ADW_ID\"}")
+…
+(script run #:cmd legacy-adw-orbit-watch #:args ("--adw-id" "$adw_id")
+            #:waiting-exit (75)
+            #:journal ".work/adw/{adw_id}")
+```
+
+- `#:waiting-exit (75)`: when the script exits 75 the run ends **waiting**, not failed. It exits 75
+  itself, keeps its worktree, sends no failure notification and prints how to resume it:
+  `uv run adws/adw_legacy-adw-orbit-watch.py --resume --adw-id <id>`. The resumed run runs that step
+  again with `ADW_RESUME=1` in its environment (empty otherwise), so the command line above passes
+  `--resume <id>` on to the script. An exit 75 that is not declared still fails the run.
+- `#:journal ".work/adw/{adw_id}"`: a folder, relative to the run's worktree, where the script writes
+  its own journal (`{adw_id}` is the run id). While the script runs, each line of its `events.jsonl` is
+  mirrored into the run's events, and each inner step's `prompt.md` and output files are copied into
+  the run as documents. A missing folder is not an error.
+
+On the dashboard the run shows as `waiting` (⏸) with its resume command, and the script step lists the
+journal's inner steps with their time, tokens, cost and documents.
 
 ### Keep the layer in your repository
 

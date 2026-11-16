@@ -162,7 +162,7 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "(script NAME #:cmd C …): run a declared codebase cmd as a workflow step, e.g. a workflow script the team already has. It runs in the run's environment (worktree, container), gets the run context in environment variables (ADW_ID, ADW_PROMPT, ADW_CLASS, ADW_PLAN, ADW_BRANCH, ADW_WORKTREE, ADW_LAYER_DIR), its output becomes the step's output ($out.NAME), and a non-zero exit fails the run. It is not a check: no resolve loop, and the gate does not count it as verification.",
+                  "description": "(script NAME #:cmd C …): run a declared codebase cmd as a workflow step, e.g. a workflow script the team already has. It runs in the run's environment (worktree, container), gets the run context in environment variables (ADW_ID, ADW_PROMPT, ADW_CLASS, ADW_PLAN, ADW_BRANCH, ADW_WORKTREE, ADW_LAYER_DIR, ADW_RESUME), its output becomes the step's output ($out.NAME), and a non-zero exit fails the run, unless the exit code is one of its #:waiting-exit codes: then the run ends as `waiting`, and `--resume` runs the step again with ADW_RESUME=1 (empty otherwise). It is not a check: no resolve loop, and the gate does not count it as verification.",
                   "properties": {
                     "args": {
                       "description": "Arguments appended to the command, each shell-quoted; $prompt, $plan, $adw_id, $class, $branch and $out.<step> are substituted.",
@@ -175,6 +175,10 @@
                       "description": "Codebase command to run.",
                       "type": "string"
                     },
+                    "journal": {
+                      "description": "A folder the script writes its own run journal to, relative to the run's worktree; {adw_id} is the run id. While the script runs, each line of its events.jsonl is mirrored into the run's events (script.event) and each inner step's prompt.md and output files become documents of the run. A missing folder is not an error.",
+                      "type": "string"
+                    },
                     "kind": {
                       "const": "script"
                     },
@@ -184,14 +188,23 @@
                     "timeout": {
                       "description": "Seconds; 0 = the cmd's own #:timeout.",
                       "type": "integer"
+                    },
+                    "waitingExit": {
+                      "description": "Exit codes that mean the script is waiting for something outside (e.g. 75): the run ends as `waiting` (not failed, not passed), keeps its worktree and prints how to resume; `--resume` runs this step again with ADW_RESUME=1.",
+                      "items": {
+                        "type": "integer"
+                      },
+                      "type": "array"
                     }
                   },
                   "required": [
                     "args",
                     "cmd",
+                    "journal",
                     "kind",
                     "name",
-                    "timeout"
+                    "timeout",
+                    "waitingExit"
                   ],
                   "type": "object"
                 },

@@ -192,9 +192,13 @@
             "$prompt"
           ],
           "cmd": "changelog",
+          "journal": ".work/changelog/{adw_id}",
           "kind": "script",
           "name": "changelog",
-          "timeout": 0
+          "timeout": 0,
+          "waitingExit": [
+            75
+          ]
         },
         {
           "agent": "",
