@@ -8,9 +8,10 @@ is. `al-<layer>:latest` is re-pointed at the current hash, so a runtime that sti
 count and age (KEEP_OLD, MAX_AGE_DAYS).
 
 Doctor and preflight. One generated POSIX sh script runs in a container started exactly as a run
-starts it (`stack.wrap`), prints `AL-DOCTOR<TAB>check<TAB>ok|miss|skip<TAB>detail` lines, and each
-miss carries the declaration to change. `preflight` runs the fast checks before a run's first step
-and fails the run at once with that table.
+starts it (`sh -c` in the run's container, never bash), prints
+`AL-DOCTOR<TAB>check<TAB>ok|miss|skip<TAB>detail` lines, and each miss carries the declaration to
+change. `preflight` runs the fast checks before a run's first step and fails the run at once with
+that table.
 
 Used by the runner (preflight), by `al sandbox` and by `al verify` (through the layer's own
 runtime), so they share one implementation.
@@ -786,7 +787,7 @@ def doctor(layer: Any, stack: Any, adw: dict[str, Any] | None, *, fast: bool = F
     checks: list[Check] = []
     started_ok = True
     try:
-        argv = stack.wrap(script)
+        argv = stack._podman_argv(["sh", "-c", script]) if stack.podman_option else stack.wrap(script)
     except (StepFailed, LayerError) as exc:
         started_ok = False
         message = str(exc)

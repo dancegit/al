@@ -65,12 +65,12 @@ class FakePodman:
             return fake.answer(list(argv[1:]))
 
         class Popen:
+            def __new__(cls, argv, *args, **kwargs):
+                if argv[0] != "podman":                  # a real process, usable by subprocess.run as well
+                    return real_popen(argv, *args, **kwargs)
+                return super().__new__(cls)
+
             def __init__(self, argv, **kwargs):
-                if argv[0] != "podman":
-                    self._real = real_popen(argv, **kwargs)
-                    self.__dict__.update({k: getattr(self._real, k) for k in ("stdout", "pid")})
-                    return
-                self._real = None
                 with fake.lock:
                     fake.calls.append(list(argv))
                 time.sleep(fake.build_delay)
@@ -79,8 +79,6 @@ class FakePodman:
                 self.returncode = None
 
             def wait(self, timeout=None):
-                if self._real is not None:
-                    return self._real.wait(timeout)
                 if fake.build_exit == 0:
                     ref = self.argv[self.argv.index("-t") + 1]
                     labels = dict(self.argv[i + 1].split("=", 1) for i, a in enumerate(self.argv) if a == "--label")
@@ -373,7 +371,12 @@ class _Stack:
         self.podman_option, self.cwd, self.error, self.output = option, worktree, error, output
         self.state = SimpleNamespace(worktree=str(worktree), image="", adw_id=ADW_ID)
         self.scripts: list[str] = []
+        self.argvs: list[list[str]] = []
         self._pod = None
+
+    def _podman_argv(self, argv, interactive=False):
+        self.argvs.append(argv)
+        return self.wrap(argv[-1])
 
     def wrap(self, script: str) -> list[str]:
         self.scripts.append(script)
@@ -399,6 +402,14 @@ def test_doctor_names_the_missing_command_and_its_declaration(make_layer, tmp_pa
     script = stack.scripts[0]
     assert "command -v pytest" in script and "command -v ruff" in script and "[ -x ./sync.sh ]" in script
     assert "/proc/1/comm" in script
+
+
+def test_doctor_runs_its_script_with_sh_not_bash(make_layer, tmp_path) -> None:
+    layer = _workflow_layer(make_layer)
+    stack = _Stack(layer.ir["environments"][1], tmp_path, "AL-DOCTOR\\tgit\\tok\\tfine\\n")
+    sandbox.doctor(layer, stack, layer.adw("demo"), fast=True)
+    assert stack.argvs[0][:2] == ["sh", "-c"]
+    assert stack.argvs[0][2].startswith("#!/bin/sh")
 
 
 def test_doctor_never_prints_a_credential(make_layer, tmp_path, monkeypatch) -> None:
@@ -525,3 +536,35 @@ def test_preflight_records_the_image_in_state(make_layer, monkeypatch) -> None:
     assert pre["status"] == "passed"
     found = [e["type"] for e in events.read(layer / "agents" / ADW_ID / "events.jsonl")]
     assert found.index("env.preflight") < found.index("step.start")
+
+
+def test_a_run_rebuilds_after_a_recipe_change_and_not_otherwise(make_layer, monkeypatch) -> None:
+    layer = _run_layer(make_layer, podman={})
+    fake = FakePodman(monkeypatch)
+    monkeypatch.setattr(sandbox, "doctor", lambda *a, **k: [])
+
+    def run(adw_id: str):
+        fake.calls.clear()
+        main("demo", layer, ["Do it", "--adw-id", adw_id])
+        found = events.read(layer / "agents" / adw_id / "events.jsonl")
+        return fake.builds(), [e for e in found if e["type"].startswith("env.build")]
+
+    first = sandbox.recipe_hash(load(layer))
+    builds, found = run("5d5d0011")
+    assert len(builds) == 1 and builds[0][2:4] == ["-t", f"al-test-layer:{first}"]
+    assert [e["type"] for e in found] == ["env.build.start", "env.build.end"]
+    assert found[-1]["status"] == "passed" and found[-1]["recipe"] == first
+
+    (layer / "env" / "Containerfile").write_text("FROM debian:stable-slim\nRUN echo two\n", encoding="utf-8")
+    second = sandbox.recipe_hash(load(layer))
+    assert second != first
+
+    builds, found = run("5d5d0012")
+    assert len(builds) == 1 and builds[0][2:4] == ["-t", f"al-test-layer:{second}"]
+    assert found[-1]["type"] == "env.build.end"
+    assert found[-1]["status"] == "passed" and found[-1]["recipe"] == second
+
+    builds, found = run("5d5d0013")
+    assert builds == [] and found == []
+    state = json.loads((layer / "agents" / "5d5d0013" / "state.json").read_text())
+    assert state["image"] == f"al-test-layer:{second}"
