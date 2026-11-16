@@ -818,3 +818,158 @@
   (check-equal? (map route (hash-ref zte 'classes)) '("sprint" "sprint"))
   (define hotfix (findf (lambda (a) (equal? (hash-ref a 'name) "hotfix")) (hash-ref full 'adws)))
   (check-equal? (hash-ref hotfix 'deliverTo) "hotfix"))
+
+;; ---------------------------------------------------------------------------------------
+;; Promotion between stages
+;; ---------------------------------------------------------------------------------------
+
+(define (promotions-of ir) (hash-ref ir 'promotions))
+(define (promotion-from ir name) (findf (lambda (p) (equal? (hash-ref p 'from) name)) (promotions-of ir)))
+(define sprint-promotion-parts (list plan review-cmd '(delivery sprint)))
+(define (promo-layer . clauses) (apply layer (append sprint-promotion-parts (list simple-adw) clauses)))
+;; dev → qa → main, where agents may merge into qa
+(define (dev-qa-layer . clauses)
+  (apply layer plan simple-adw
+         '(stage dev #:branch "dev" #:from main #:into qa)
+         '(stage qa #:branch "qa" #:from main #:into main #:accepts () #:agents-may-merge #t)
+         '(stage main #:branch "main" #:accepts () #:agents-may-merge #f)
+         clauses))
+
+(test-case "promotion: no stage = no promotions key"
+  (define ir (compile-layer-datum (layer plan simple-adw)))
+  (check-false (hash-has-key? ir 'promotions))
+  (check-equal? (sort (map symbol->string (hash-keys ir)) string<?)
+                (sort (map symbol->string keys-before-delivery) string<?)))
+
+(test-case "promotion: every non-final stage has one, declared or default"
+  (define ir (compile-layer-datum (layer plan simple-adw '(delivery sprint))))
+  (check-equal? (length (promotions-of ir)) 1)
+  (define p (car (promotions-of ir)))
+  (check-equal? (hash-ref p 'from) "sprint")
+  (check-equal? (hash-ref p 'to) "main")
+  (check-equal? (hash-ref p 'approval) "human")
+  (check-equal? (hash-ref p 'approvers) 1)
+  (check-equal? (hash-ref p 'requires) '("checks" "acceptance"))
+  (check-equal? (hash-ref p 'method) "merge")
+  (check-equal? (hash-ref p 'version) 'null)
+  (check-equal? (hash-ref p 'tag) "")
+  (check-equal? (hash-ref p 'present) '("summary" "changes" "proof" "demo" "checks" "notes" "excluded"))
+  (check-equal? (hash-ref p 'after) '())
+  (check-equal? (hash-ref p 'backMerge) '())
+  (check-equal? (hash-ref p 'adw) "a")
+  (check-equal? (hash-ref p 'hotfix) #f)
+  (check-equal? (hash-ref p 'origin) "default")
+  (define gitflow (compile-layer-datum (layer plan simple-adw '(delivery gitflow))))
+  (check-equal? (map (lambda (p) (hash-ref p 'from)) (promotions-of gitflow)) '("develop" "release" "hotfix"))
+  (define hotfix (promotion-from gitflow "hotfix"))
+  (check-equal? (hash-ref hotfix 'hotfix) #t)
+  (check-equal? (hash-ref hotfix 'backMerge) '("develop"))
+  (check-equal? (hash-ref (promotion-from gitflow "develop") 'hotfix) #f)
+  (check-equal? (hash-ref (promotion-from gitflow "release") 'hotfix) #f))
+
+(test-case "promotion: declared fields compile"
+  (define ir (compile-layer-datum
+              (layer plan review-cmd '(delivery gitflow)
+                     '(adw other (steps (run plan #:command plan)))
+                     '(adw h #:review human #:classes (bug) #:deliver-to hotfix
+                           (steps (run plan #:command plan) (check t #:cmd test) (review) (ship)))
+                     '(stage main #:branch "main" #:accepts () #:agents-may-merge #f
+                             #:deploy-cmd test #:environment-name "production")
+                     '(promotion hotfix -> main #:approvers 2 #:version (bump minor) #:after (deploy production)
+                                 #:back-merge (develop)))))
+  (define p (promotion-from ir "hotfix"))
+  (check-equal? (hash-ref p 'version) (hasheq 'how "bump" 'level "minor"))
+  (check-equal? (hash-ref p 'after) '("deploy" "production"))
+  (check-equal? (hash-ref p 'backMerge) '("develop"))
+  (check-equal? (hash-ref p 'adw) "h")
+  (check-equal? (hash-ref p 'approvers) 2)
+  (check-equal? (hash-ref p 'origin) "declared")
+  (check-equal? (hash-ref (promotion-from ir "develop") 'adw) "other")
+  (define keep (compile-layer-datum (promo-layer '(promotion sprint -> main #:version (keep) #:adw a))))
+  (check-equal? (hash-ref (promotion-from keep "sprint") 'version) (hasheq 'how "keep" 'level "patch"))
+  (check-equal? (hash-ref (promotion-from keep "sprint") 'adw) "a"))
+
+(test-case "promotion: shape and stages"
+  (check-rejects (promo-layer '(promotion sprint main))
+                 #rx"\\(promotion …\\): expected \\(promotion FROM -> TO #:approval human …\\)")
+  (check-rejects (promo-layer '(promotion sprint -> nowhere)) #rx"`nowhere` is not a declared stage; declared: sprint, main")
+  (check-rejects (dev-qa-layer '(promotion dev -> main))
+                 #rx"\\(promotion dev -> main\\): stage dev goes into qa \\(its #:into, default #:from\\); promote it into qa")
+  (check-rejects (promo-layer '(promotion sprint -> main) '(promotion sprint -> main #:approvers 2))
+                 #rx"\\(promotion sprint -> …\\): declared twice; a stage has one promotion")
+  (check-rejects (layer plan simple-adw '(promotion sprint -> main))
+                 #rx"\\(promotion …\\) needs declared stages: add \\(stage …\\) clauses or a \\(delivery PRESET …\\) clause")
+  (check-rejects (promo-layer '(promotion main -> sprint)) #rx"stage main is the final stage"))
+
+(test-case "promotion: agents may not approve into a protected stage"
+  (check-rejects (promo-layer '(promotion sprint -> main #:approval agent))
+                 #rx"\\(promotion sprint -> main\\): #:approval agent lets agents approve, but agents may not merge into stage main \\(#:agents-may-merge #f\\); use #:approval human")
+  (check-rejects (promo-layer '(promotion sprint -> main #:approval auto))
+                 #rx"\\(promotion sprint -> main\\): #:approval auto .*agents may not merge into stage main \\(#:agents-may-merge #f\\); use #:approval human")
+  (check-not-exn (lambda () (compile-layer-datum (dev-qa-layer '(promotion dev -> qa #:approval agent #:approvers 2)))))
+  (check-rejects (promo-layer '(promotion sprint -> main #:approvers 0)) #rx"#:approvers must be 1–9 \\(got 0\\)")
+  (check-rejects (promo-layer '(promotion sprint -> main #:approvers 10)) #rx"#:approvers must be 1–9 \\(got 10\\)"))
+
+(test-case "promotion: hotfix gate"
+  (check-rejects (layer plan simple-adw '(delivery gitflow) '(promotion hotfix -> main #:approval auto))
+                 #rx"\\(promotion hotfix -> main\\): a hotfix promotion goes into the final stage under its own gate; #:approval auto is not allowed")
+  (define ir (compile-layer-datum (layer plan simple-adw '(delivery gitflow)
+                                         '(promotion hotfix -> main #:approval human #:approvers 2))))
+  (check-equal? (hash-ref (promotion-from ir "hotfix") 'approvers) 2)
+  (check-equal? (hash-ref (promotion-from ir "hotfix") 'backMerge) '("develop")))
+
+(test-case "promotion: tag, version, after, back-merge"
+  (check-rejects (promo-layer '(promotion sprint -> main #:tag "v{version}"))
+                 #rx"\\(promotion sprint -> main\\): #:tag \"v\\{version\\}\" needs #:version \\(bump …\\) or \\(keep\\)")
+  (check-rejects (promo-layer '(promotion sprint -> main #:tag "v{month}")) #rx"#:tag \"v\\{month\\}\": unknown placeholder \\{month\\}")
+  (check-rejects (promo-layer '(promotion sprint -> main #:version (bump) #:tag "v {version}")) #rx"not a valid tag name")
+  (check-rejects (dev-qa-layer '(promotion dev -> qa #:tag "dev-{cycle}")) #rx"\\{cycle\\} .*\\(cycle …\\) #:stage")
+  (check-not-exn (lambda () (compile-layer-datum (promo-layer '(promotion sprint -> main #:tag "sprint-{cycle}-{date}")))))
+  (check-rejects (promo-layer '(promotion sprint -> main #:after (deploy))) #rx"#:after \\(deploy\\) needs #:deploy-cmd on stage main")
+  (check-rejects (layer plan simple-adw '(delivery sprint)
+                        '(stage main #:branch "main" #:accepts () #:agents-may-merge #f #:deploy-cmd test #:environment-name "production")
+                        '(promotion sprint -> main #:after (deploy staging)))
+                 #rx"#:after \\(deploy staging\\): stage main deploys to production \\(its #:environment-name\\)")
+  (check-not-exn (lambda () (compile-layer-datum
+                             (layer plan simple-adw '(delivery sprint)
+                                    '(stage main #:branch "main" #:accepts () #:agents-may-merge #f #:deploy-cmd test #:environment-name "production")
+                                    '(promotion sprint -> main #:after (deploy production))))))
+  (check-rejects (promo-layer '(promotion sprint -> main #:after (restart))) #rx"#:after \\(restart\\): expected \\(deploy\\) or \\(deploy ENV\\)")
+  (check-rejects (promo-layer '(promotion sprint -> main #:back-merge (sprint)))
+                 #rx"#:back-merge names stage sprint, which is FROM or TO"))
+
+(test-case "stage: frozen periods"
+  (define ir (compile-layer-datum (layer plan simple-adw '(delivery sprint)
+                                         '(stage sprint #:branch "sprint/{cycle}" #:from main #:frozen ("2026-12-21..2027-01-03")))))
+  (check-equal? (hash-ref (stage-named ir "sprint") 'frozen) '("2026-12-21..2027-01-03"))
+  (check-equal? (hash-ref (stage-named ir "sprint") 'frozenWhilePromoting) #f)
+  (check-equal? (hash-ref (stage-named ir "main") 'frozen) '())
+  (for ([bad '("2026-12-21" "2027-01-03..2026-12-21" "2026-02-30..2026-03-01")])
+    (check-rejects (layer plan simple-adw '(delivery sprint) `(stage sprint #:branch "sprint/{cycle}" #:from main #:frozen (,bad)))
+                   (regexp (regexp-quote (format "(stage sprint): #:frozen ~s: expected \"YYYY-MM-DD..YYYY-MM-DD\" with the first day not after the second" bad)))))
+  (check-not-exn (lambda () (compile-layer-datum (layer plan simple-adw '(delivery sprint)
+                                                        '(stage sprint #:branch "sprint/{cycle}" #:from main #:frozen ("2028-02-29..2028-02-29")))))))
+
+(test-case "schema and reference: promotion"
+  (define schema (layer-schema))
+  (check-false (member "promotions" (hash-ref schema 'required)))
+  (define items (hash-ref (hash-ref (hash-ref schema 'properties) 'promotions) 'items))
+  (for ([k '(from to approval approvers requires method version tag present after backMerge adw hotfix origin)])
+    (check-true (hash-has-key? (hash-ref items 'properties) k) (format "~a" k)))
+  (check-equal? (hash-ref (hash-ref (hash-ref items 'properties) 'version) 'type) '("object" "null"))
+  (define stage-props (hash-ref (hash-ref (hash-ref (hash-ref schema 'properties) 'stages) 'items) 'properties))
+  (check-true (hash-has-key? stage-props 'frozen))
+  (check-true (hash-has-key? stage-props 'frozenWhilePromoting))
+  (define ref (reference-text))
+  (for ([needle '("### `promotion`" "(promotion FROM -> TO" "### `version-change`")])
+    (check-true (string-contains? ref needle) needle))
+  (check-equal? promotion-placeholders '("{version}" "{cycle}" "{date}")))
+
+(test-case "full.rkt: promotions"
+  (define full (dynamic-require (build-path examples "full.rkt") 'layer-spec))
+  (define (promo from) (findf (lambda (p) (equal? (hash-ref p 'from) from)) (hash-ref full 'promotions)))
+  (check-equal? (hash-ref (promo "sprint") 'tag) "v{version}")
+  (check-equal? (hash-ref (promo "sprint") 'version) (hasheq 'how "bump" 'level "minor"))
+  (check-equal? (hash-ref (promo "hotfix") 'approvers) 2)
+  (check-equal? (hash-ref (promo "hotfix") 'backMerge) '("sprint"))
+  (check-equal? (hash-ref (promo "hotfix") 'hotfix) #t))

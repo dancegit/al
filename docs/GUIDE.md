@@ -718,6 +718,143 @@ is merged with the stage's method.
 docs, and writes a `## Delivery` section into the `LLM.txt` draft:
 
 ```
+## Promote a stage
+
+Work that collects in a stage (a sprint, `develop`, a release or hotfix branch, a phase) moves into the next
+stage when people accept it. `al promote` does that move: it shows them the evidence, records who accepted
+what, takes out what they refused, and then merges, versions, tags, deploys and merges back.
+
+### Declare how a stage is promoted
+
+Every stage that goes into another has a promotion: the one you declare, or one with the defaults (one
+person approves; the stage's checks must pass; every change is accepted or refused, or the whole is
+approved; merged by merge; no version, no tag):
+
+```racket
+(delivery sprint)
+(promotion sprint -> main #:approval human #:approvers 1 #:version (bump minor) #:tag "v{version}")
+(promotion hotfix -> main #:approvers 2)                ; an urgent fix needs two people
+(promotion develop -> main #:after (deploy production) #:back-merge (sprint))
+```
+
+`#:method` is `merge`, `squash`, `fast-forward` or `cherry-pick`; `#:version` is `(bump major|minor|patch)` or
+`(keep)` and is written where the repository keeps it (`VERSION`, `pyproject.toml`, `package.json`,
+`Cargo.toml`; else the latest `vX.Y.Z` tag), with a changelog entry in the style `CHANGELOG.md` already has
+(Keep a Changelog, or the format of its last version heading). `#:present` chooses the sections of the
+presentation pack. `al explain` says each promotion in words.
+
+### Run it
+
+```
+$ al promote LAYER sprint main
+promotion 3f680cec: sprint/2026-s47 -> main (merge; 1 human approval)
+changes: 3 delivered since the cycle opened (3 to decide)
+checks on sprint/2026-s47 at cd991ef: test=0
+pack: artefacts/3f680cec/pack/index.html
+approval item: promotions/3f680cec/approval.md
+waiting: 1 human approval missing; 3 changes undecided
+decide: al decide LAYER sprint main accept|refuse|approve [CHANGE …] --by NAME [--comment TEXT]
+then:   al promote LAYER sprint main
+```
+
+(The run's own progress lines and its summary are left out here.) The changes are the runs that delivered
+into the sprint (or whose pull request into it a person merged) and are not in `main` yet. The checks of
+both stages run on the sprint's head. The command ends with exit 75: the promotion is a run like any other
+(`agents/<id>/`, the dashboard's run page) and it now **waits** for people.
+
+The **presentation pack**, `artefacts/<id>/pack/index.html`, is one page to open in a browser or show in a
+review meeting: a plain summary; per change the request, what was done, the files, risk notes the reviewers
+raised, and each acceptance criterion of its plan with the proof that covers it (the checks, screenshots,
+playable recordings and their keyframes, the reviewer's verdict; a criterion nothing covers is marked);
+the checks on the stage head; release notes and the changelog entry; and what is not included. Beside it
+are `summary.md`, `release-notes.md`, `changelog-entry.md` and `acceptance.md`.
+
+### Decide
+
+```
+$ al decide LAYER sprint main refuse 0000aaa2 --then revert --by "Ada Example" --comment "not this sprint"
+recorded: Ada Example refuses 0000aaa2 (then revert): "not this sprint"
+waiting: 1 human approval missing; 2 changes undecided
+$ al decide LAYER sprint main approve --by "Ada Example"
+recorded: Ada Example approves all
+ready: run `al promote LAYER sprint main` to continue
+```
+
+Accept or refuse single changes, or `approve` the whole (which accepts what is undecided). `--by`
+defaults to the application's `git config user.name`. The same decisions can be made on the dashboard
+(the promotion card) and, with a forge, on the pull request: an approving review, or a comment
+`/accept ID…`, `/refuse ID… [revert|patch] why` or `/approve`. Each decision is one line in
+`promotions/<id>/acceptance.jsonl`, rendered as `promotions/<id>/sign-off.md` (who, when, what, comment).
+`promotions/` is not ignored by git: commit it, it is the audit trail.
+
+### Continue
+
+```
+$ al promote LAYER sprint main
+continuing promotion 3f680cec (opened 2026-11-16)
+excluded: 0000aaa2 reverted out of sprint/2026-s47 (refused by Ada Example: "not this sprint")
+approved: by Ada Example
+version: 0.1.0 -> 0.2.0 (VERSION); CHANGELOG.md: keepachangelog entry with 2 changes
+merged: sprint/2026-s47 into main by merge at 4adce8c
+tagged: v0.2.0
+closed: cycle sprint 2026-s47 (accepted)
+```
+
+A refused change is reverted out of the stage first (an agent round, with the review step's
+`#:patch`/`#:implement`, resolves a revert that does not apply cleanly), the checks run again and the pack
+is rebuilt; `--then patch` also starts a patch run of the change's workflow with your comment. Then the
+version and changelog commit, the merge, the tag, `#:after (deploy …)` and the back-merges. Nothing is ever
+checked out in your working tree: a target branch you have checked out gets `al/promote/<branch>` and a note
+(`git merge --ff-only al/promote/main`). All changes refused: nothing is merged and nothing tagged.
+
+`al promote LAYER sprint main --dry-run` builds the pack and says what would happen (`would merge …`,
+`would set version …`, `would tag …`) without changing a branch, a tag or a record. A stage whose
+`{date}` branch pattern matches several open branches needs `--branch`.
+
+### A forge
+
+With `(forge github …)` or `(forge forgejo …)` the request is a pull request from the stage branch into the
+next one, whose body is the pack's summary; with Forgejo the pack's pictures and the page itself are
+attached. Approvals and `/accept` / `/refuse` / `/approve` comments are read each time the promotion
+continues, and the pull request is merged through the forge (`merge` or `squash`).
+
+### Hotfixes
+
+A hotfix stage (cut from `main` and going straight back into it, as in `(delivery gitflow)`) is promoted
+under its own gate: `#:approval auto` is refused, and without `#:back-merge` the fix is merged back into
+every other stage that takes work (`develop`, the sprint). A back-merge that conflicts gets one agent round;
+a stage agents may not merge into gets the back-merge as a branch `al/back-merge/<id>-<stage>` (and a pull
+request with a forge) instead.
+
+### Freezes
+
+```racket
+(stage sprint #:branch "sprint/{cycle}" #:from main #:frozen ("2026-12-21..2027-01-03") #:frozen-while-promoting #t)
+```
+
+A run that would deliver into a frozen stage ends `waiting` at its `deliver` step and says until when
+(`delivery.frozen` in its events); resume it afterwards with the command it prints. With
+`#:frozen-while-promoting #t` the stage takes no delivery while a promotion out of it is open; when the
+promotion closes, its summary lists the runs that waited, with their resume commands.
+
+### Agents as approvers
+
+Between intermediate stages agents may approve: `(promotion dev -> qa #:approval agent #:approvers 2)` runs
+two independent reviewer agents on the whole stage and the pack; both must pass. The compiler (and the
+runtime again) refuses `#:approval agent` or `auto` into a stage where agents may not merge.
+
+### What the compiler refuses
+
+- A promotion without stages, between stages that are not FROM and FROM's `#:into` (default `#:from`), or
+  two promotions of one stage.
+- `#:approval agent|auto` into a stage with `#:agents-may-merge #f`; `#:approvers` outside 1–9; `auto` on a
+  hotfix promotion.
+- A `#:tag` with a placeholder other than `{version}` `{cycle}` `{date}`, that is not a valid tag name,
+  with `{version}` but no `#:version`, or with `{cycle}` on a stage that is not the cycle's.
+- `#:after` other than `(deploy)` / `(deploy ENV)`, a deploy into a stage without `#:deploy-cmd`, or an ENV
+  other than its `#:environment-name`; `#:back-merge` naming FROM or TO.
+- A `#:frozen` period that is not `"YYYY-MM-DD..YYYY-MM-DD"` with real dates, the first not after the second.
+
 ## Delivery
 
 - Style: sprint

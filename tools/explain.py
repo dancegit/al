@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 GROUPED = {"prompt-input", "trigger", "environment", "artefact", "review", "agent", "command", "hop", "expert", "service", "notify",
-           "stage"}
+           "stage", "promotion"}
 CLAUSE = re.compile(r"^  \(([a-z][a-z-]*)\b")
 INCLUDED_CLAUSE = re.compile(r"^\(([a-z][a-z-]*)\b")       # an included file's clauses start in column 0
 INCLUDE = re.compile(r'\(include\s+"([^"]+)"\s*\)')
@@ -247,6 +247,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
                 + "; they are explained below with the file's own blocks.", [])
     if head in ("delivery", "stage", "cycle"):
         return delivery_text(ir, head)
+    if head == "promotion":
+        return promotion_text(ir)
     if head == "forge":
         f = ir["forge"]
         return ("The forge", "No forge: results stay as local branches." if f["kind"] == "none"
@@ -361,6 +363,10 @@ def describe_stage(stage: dict) -> str:
         parts.append(f"deployed by `{stage['deployCmd']}`")
     if stage.get("environmentName"):
         parts.append(f"lands in {stage['environmentName']}")
+    if stage.get("frozen"):
+        parts.append("closed to deliveries " + listing([p.replace("..", " to ") for p in stage["frozen"]]) + " (UTC)")
+    if stage.get("frozenWhilePromoting"):
+        parts.append("closed to deliveries while it is being promoted")
     return "; ".join(p for p in parts if p)
 
 
@@ -393,9 +399,63 @@ def delivery_text(ir: dict, head: str = "delivery") -> tuple[str, str, list[str]
     if closed:
         text += f" Agents may not merge into {listing(closed)}: a person takes the work there."
     bullets = [describe_stage(s) for s in stages]
+    bullets += [f"`{p['from']}` is promoted into {p['to']} with `al promote LAYER {p['from']} {p['to']}` "
+                f"({approvers_words(p)})" for p in ir.get("promotions") or []]
     if d.get("expansion"):
         bullets += [f"`(delivery {d['preset']} …)` stands for: `{clause}`" for clause in d["expansion"]]
     return "How work is delivered", text, bullets
+
+
+NUMBERS = {1: "a person", 2: "two people", 3: "three people", 4: "four people", 5: "five people"}
+
+
+def approvers_words(p: dict) -> str:
+    """Who approves a promotion, in words: `a person approves (1)`, `two people approve (2)`, …"""
+    n = int(p.get("approvers") or 1)
+    if p.get("approval") == "auto":
+        return "no one approves (auto)"
+    if p.get("approval") == "agent":
+        return f"{n} reviewer agent{'s' if n > 1 else ''} approve{'' if n > 1 else 's'} ({n})"
+    who = NUMBERS.get(n, f"{n} people")
+    return f"{who} approve{'s' if n == 1 else ''} ({n})"
+
+
+def describe_promotion(p: dict) -> str:
+    """One promotion in words, e.g. `sprint → main: a person approves (1); requires checks and acceptance;
+    merged by merge; version bump minor, tag v{version}; then deploy to production; merged back into develop`."""
+    parts = [approvers_words(p)]
+    if p.get("requires"):
+        parts.append("requires " + listing(list(p["requires"])))
+    parts.append(f"merged by {p.get('method', 'merge')}")
+    version = p.get("version")
+    released = []
+    if isinstance(version, dict):
+        released.append(f"version bump {version['level']}" if version.get("how") == "bump" else "version kept")
+    if p.get("tag"):
+        released.append(f"tag {p['tag']}")
+    if released:
+        parts.append(", ".join(released))
+    after = list(p.get("after") or [])
+    if after:
+        parts.append("then deploy" + (f" to {after[1]}" if len(after) > 1 else ""))
+    if p.get("backMerge"):
+        parts.append("merged back into " + listing(list(p["backMerge"])))
+    kind = []
+    if p.get("hotfix"):
+        kind.append("a hotfix: its own gate, straight into the final stage")
+    if p.get("origin") == "default":
+        kind.append("the defaults: no (promotion …) is declared for it")
+    head = f"{p['from']} → {p['to']}" + (f" ({'; '.join(kind)})" if kind else "")
+    return f"{head}: " + "; ".join(parts)
+
+
+def promotion_text(ir: dict) -> tuple[str, str, list[str]]:
+    """How each stage moves into the next: who approves, what must hold, version, tag, deploy, back-merge."""
+    promos = ir.get("promotions") or []
+    text = (f"{len(promos)} promotion(s): `al promote LAYER FROM TO` checks the stage, builds a presentation pack, "
+            "asks for the approval below and records every decision in `promotions/`; once approved it merges, "
+            "versions, tags, deploys and merges back. A refused change is reverted out of the stage first.")
+    return "How a stage is promoted", text, [describe_promotion(p) for p in promos]
 
 
 def has_forge(ir: dict) -> bool:

@@ -269,6 +269,16 @@
     return el;
   }
 
+  /** A promotion run's badge: which stage goes where, and whether it waits for people. */
+  function promotionBadge(run) {
+    const p = run && run.promotion;
+    if (!p) return null;
+    const what = `promote ${p.from} → ${p.to}`;
+    const state = p.dry_run ? "dry run" : (p.state === "waiting for approval" ? "waiting for approval" : p.state);
+    return h("span", { class: `badge promote${run.status === "waiting" ? " waiting" : ""}`, title: p.why || what,
+      text: `${what} · ${p.changes} change${p.changes === 1 ? "" : "s"}${p.refused ? `, ${p.refused} refused` : ""} · ${state}` });
+  }
+
   function outcomeBadge(run) {
     const o = run.outcome || {};
     if (run.usage && run.usage.stopped) return limitBadge(run);
@@ -1043,7 +1053,7 @@
       replace(el,
         h("div", { class: "head" }, h("span", { class: `dot s-${run.waiting ? "waiting" : "running"}` }),
           h("span", { class: "where", text: `${run.layer} · ${run.adw}` }), h("span", { class: "mono faint", text: run.id }),
-          run.dry_run ? h("span", { class: "badge", text: "dry run" }) : null, h("span", { class: "spacer" }), progress(run.steps)),
+          run.dry_run ? h("span", { class: "badge", text: "dry run" }) : null, promotionBadge(run), h("span", { class: "spacer" }), progress(run.steps)),
         h("div", { class: "title", text: run.title || "(no request text)" }),
         h("div", { class: "doing" }, h("span", { class: "step", text: current.step ? `▶ ${current.step}` : "▶" }),
           h("span", { class: "action", text: run.waiting ? `waiting for a free ${run.waiting} slot` : (current.action || "working") })),
@@ -1244,7 +1254,7 @@
           h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }), h("td", {}, progress(run.steps)),
           h("td", { class: "right num", ...(run.status === "running" ? { "data-since": run.started } : {}), text: run.status === "running" ? fmt.dur(now() - (run.started || now())) : fmt.dur(run.duration) }),
           h("td", { class: "right num", text: fmt.cost(run.cost) }), h("td", { class: "right num dim", text: fmt.tokens((run.tokens || {}).out) }),
-          h("td", {}, outcomeBadge(run), run.dry_run ? h("span", { class: "badge", text: "dry" }) : null));
+          h("td", {}, outcomeBadge(run), promotionBadge(run), run.dry_run ? h("span", { class: "badge", text: "dry" }) : null));
         body.appendChild(tr);
       }
       if (!runs.length) body.appendChild(h("tr", {}, h("td", { colspan: 12, class: "dim", text: store.loaded ? "no runs match" : "loading…" })));
@@ -1279,6 +1289,90 @@
   }
 
   // =========================================================================== views: Run detail
+  const promotionForm = new Map();   // run key -> {by, comment, picked}: kept while the card is rebuilt
+
+  /** The promotion card of a promotion run: the changes with their acceptance criteria and the proof of
+   * each, the decisions so far, the pack, and Accept / Refuse (revert | patch) / Approve all / Continue,
+   * which POST /api/promotion (the layer's own adws/promote.py records the decision or resumes the run). */
+  function promotionCard(detail, layerKey, reload) {
+    const p = detail.promotion, sm = detail.summary;
+    const key = `${layerKey}/${p.id}`;
+    const form = promotionForm.get(key) || { by: localStorage.getItem("al.promotion.by") || "", comment: "", picked: new Set() };
+    promotionForm.set(key, form);
+    const note = h("div", { class: "promotion-note", role: "status" });
+    const status = p.approval_status || {};
+    const fileLink = (rel, label) => h("a", { href: `/files/${enc(layerKey)}/${rel}`, target: "_blank", rel: "noopener", text: label });
+    const send = async (body, done) => {
+      form.by = by.value.trim();
+      form.comment = comment.value;
+      if (body.action === "decide" && !form.by) { replace(note, h("span", { class: "badge warn", text: "your name goes with every decision" })); by.focus(); return; }
+      localStorage.setItem("al.promotion.by", form.by);
+      try {
+        const answer = await api.post("/api/promotion", { layer: layerKey, from: p.from, to: p.to, ...body,
+          ...(body.action === "decide" ? { by: form.by, comment: form.comment } : {}) });
+        replace(note, h("span", { class: "badge ok", text: done(answer) }));
+        if (body.action === "decide") { form.comment = ""; form.picked.clear(); }
+        reload();
+      } catch (error) {
+        replace(note, h("span", { class: "badge warn", text: error.message }));
+      }
+    };
+    const proofItem = (item) => {
+      const mark = item.ok ? "✓" : "✗";
+      if ((item.kind === "image" || item.kind === "video") && item.path) {
+        return h("li", { class: item.ok ? "ok" : "bad" }, `${mark} ${item.kind} `, fileLink(item.path, item.label));
+      }
+      return h("li", { class: item.ok ? "ok" : "bad", text: `${mark} ${item.label}` });
+    };
+    const decided = (change) => change.status === "refused"
+      ? h("span", { class: "badge warn", text: `refused by ${change.by}${change.excluded ? ` · ${change.excluded}` : ""}` })
+      : change.status === "accepted" ? h("span", { class: "badge ok", text: `accepted by ${change.by}` })
+        : h("span", { class: "badge", text: "undecided" });
+    const rows = p.changes.map((change) => {
+      const pick = h("input", { type: "checkbox", "aria-label": `select change ${change.id}`, disabled: !p.can_decide || !!change.excluded,
+        onchange: (e) => { if (e.target.checked) form.picked.add(change.id); else form.picked.delete(change.id); } });
+      pick.checked = form.picked.has(change.id);
+      return h("div", { class: `promotion-change s-${change.status}`, "data-change": change.id },
+        h("div", { class: "card-head" }, pick, h("h3", { text: change.title || change.id }), h("span", { class: "mono dim", text: change.id }),
+          h("span", { class: "badge", text: change.klass }), h("span", { class: "spacer" }), decided(change),
+          change.patch_run && change.patch_run.run_id ? h("a", { class: "badge info", href: `#/run/${enc(layerKey)}/${enc(change.patch_run.run_id)}`, text: `patch run ${change.patch_run.run_id}` }) : null),
+        change.comment ? h("div", { class: "why", text: `“${change.comment}”` }) : null,
+        h("ul", { class: "criteria" }, change.criteria.map((c) => h("li", { class: c.uncovered ? "uncovered" : "" },
+          h("span", { text: c.criterion }), c.uncovered ? h("span", { class: "badge warn", text: "no proof" }) : null,
+          h("ul", { class: "proof" }, c.proof.map(proofItem))))),
+        change.files.length ? h("div", { class: "faint mono", text: change.files.join("  ") }) : null);
+    });
+    const by = h("input", { type: "text", class: "promotion-by", placeholder: "your name", maxlength: 80, value: form.by, "aria-label": "your name" });
+    const comment = h("textarea", { class: "promotion-comment", placeholder: "comment (why)", maxlength: 2000, rows: 2, "aria-label": "comment" });
+    comment.value = form.comment;
+    const picked = () => [...form.picked];
+    const needPick = (verb) => { if (!picked().length) { replace(note, h("span", { class: "badge warn", text: `select the changes to ${verb}` })); return false; } return true; };
+    const button = (text, cls, onclick, enabled = true) => h("button", { type: "button", class: `toggle ${cls}`, text, disabled: !enabled, onclick });
+    const can = p.can_decide && sm.status !== "running";
+    const actions = h("div", { class: "promotion-actions" }, by, comment,
+      h("div", { class: "buttons" },
+        button("Accept selected", "accept", () => needPick("accept") && send({ action: "decide", decision: "accept", changes: picked() }, () => `accepted ${picked().join(", ")}`), can),
+        button("Refuse · revert", "refuse", () => needPick("refuse") && send({ action: "decide", decision: "refuse", then: "revert", changes: picked() }, () => "refused: it is reverted when the promotion continues"), can),
+        button("Refuse · patch run", "refuse", () => needPick("refuse") && send({ action: "decide", decision: "refuse", then: "patch", changes: picked() }, () => "refused: reverted, and a patch run starts with your comment"), can),
+        button("Approve all", "approve", () => send({ action: "decide", decision: "approve", changes: [] }, () => "approved"), can),
+        button("Continue", "continue", () => send({ action: "continue" }, (a) => `continuing promotion ${a.run_id}`), p.open && sm.status !== "running")),
+      note);
+    const decisions = (p.decisions || []).map((d) => h("li", {}, h("b", { text: d.by }), ` ${d.decision} ${(d.scope || []).join(", ")}`,
+      d.then ? ` (then ${d.then})` : "", d.comment ? ` — “${d.comment}”` : "", h("span", { class: "faint", text: ` ${d.at}${d.kind !== "human" ? ` · ${d.kind}` : ""}` })));
+    const stopped = p.stopped ? h("div", { class: "badge warn", text: `stopped at ${p.stopped.step}: ${p.stopped.reason}` }) : null;
+    return h("div", { class: "card promotion-card" },
+      h("div", { class: "card-head" }, h("h2", { text: `Promote ${p.from_branch} → ${p.to_branch}` }),
+        h("span", { class: "badge", text: `${p.method} · ${p.approval}${p.approval !== "auto" ? ` × ${p.approvers}` : ""}` }),
+        p.open ? h("span", { class: "badge waiting", text: status.why || "open" }) : h("span", { class: "badge", text: p.closed_at ? "closed" : "not open" }),
+        h("span", { class: "spacer" }), p.pack ? fileLink(p.pack, "open the presentation pack") : null,
+        ...Object.entries(p.records || {}).map(([name, rel]) => fileLink(rel, name))),
+      stopped,
+      (p.notes || []).length ? h("ul", { class: "issues" }, p.notes.map((n) => h("li", { text: n }))) : null,
+      h("div", { class: "promotion-changes" }, rows),
+      p.can_decide ? actions : null,
+      decisions.length ? h("details", { class: "promotion-decisions", open: true }, h("summary", { text: `decisions (${decisions.length})` }), h("ul", {}, decisions)) : null);
+  }
+
   function RunView(main, crumbs, route) {
     let [, layerKey, runId] = route.parts;
     let detail = null;
@@ -1323,7 +1417,7 @@
         h("div", {},
           h("div", { class: "line1" }, pill(sm.status), h("h1", { text: `${sm.adw}` }), h("span", { class: "mono dim", text: sm.id }),
             h("span", { class: "badge", text: sm.layer }), sm.klass ? h("span", { class: "badge", text: `class ${sm.klass}` }) : null,
-            sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, outcomeBadge(sm),
+            sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, outcomeBadge(sm), promotionBadge(sm),
             sm.fanout_parent ? h("a", { class: "badge info", href: `#/run/${enc(layerKey)}/${enc(sm.fanout_parent)}`,
               text: sm.fanout && sm.fanout.index ? `candidate ${sm.fanout.index} of ${sm.fanout_parent}${sm.fanout.step ? ` (${sm.fanout.step})` : ""}` : `candidate of ${sm.fanout_parent}` }) : null,
             sm.status === "died" ? h("span", { class: "badge died", title: "state.json still says running, but its heartbeat stopped and its process is gone",
@@ -1362,6 +1456,7 @@
 
     function renderOverview() {
       for (const child of [...body.children]) if (child !== graphCard) child.remove();
+      if (detail.promotion) body.appendChild(promotionCard(detail, layerKey, load));
       const grid = h("div", { class: "grid-2" }, h("div", { class: "stack" }, timelineCard(), costsCard()), h("div", { class: "stack" }, outcomeCard()));
       body.appendChild(grid);
     }
@@ -2151,6 +2246,28 @@
             h("a", { class: "toggle", href: routeHash(["runs"], { layer: key }), text: "all runs" }))),
           h("div", { class: "figures" }, [["runs", st.count], ["pass rate", fmt.pct(st.pass_rate)], ["total cost", fmt.cost(st.cost_total)], ["median time", fmt.dur(st.duration_median)]]
             .map(([label, value]) => h("div", { class: "stat" }, h("div", { class: "label", text: label }), h("div", { class: "value", text: value }))))),
+        (data.promotions || []).length ? h("div", { class: "card promotions-section" },
+          h("div", { class: "card-head" }, h("h3", { text: "Promotions" }), h("span", { class: "dim", text: "a stage moves into the next once people accept it" }),
+            h("span", { class: "spacer" }), h("span", { class: "promotion-note", role: "status" })),
+          data.promotions.map((p) => {
+            const note = h("span", { class: "faint" });
+            const start = async (dry) => {
+              try {
+                const answer = await api.post("/api/promotion", { layer: key, action: p.open ? "continue" : "start", from: p.from, to: p.to, dry_run: dry });
+                go(answer.url);
+              } catch (error) { replace(note, h("span", { class: "badge warn", text: error.message })); }
+            };
+            const enabled = data.promote && data.promote.available && data.promote.start.enabled;
+            const why = !data.promote || !data.promote.available ? "run `al gen` to add adws/promote.py" : data.promote.start.why;
+            return h("div", { class: "promotion-row" },
+              h("b", { text: `${p.from} → ${p.to}` }), h("span", { class: "badge", text: `${p.approval}${p.approval !== "auto" ? ` × ${p.approvers}` : ""} · ${p.method}` }),
+              p.hotfix ? h("span", { class: "badge warn", text: "hotfix" }) : null, p.tag ? h("span", { class: "badge", text: `tag ${p.tag}` }) : null,
+              p.open ? h("a", { class: "badge waiting", href: `#/run/${enc(key)}/${enc(p.open.id)}`, text: `open: ${p.open.id}` }) : null,
+              h("span", { class: "spacer" }),
+              h("button", { type: "button", class: "toggle", disabled: !enabled, title: enabled ? "" : why, text: p.open ? `Continue ${p.from} → ${p.to}` : `Promote ${p.from} → ${p.to}`, onclick: () => start(false) }),
+              h("button", { type: "button", class: "toggle", disabled: !enabled, title: enabled ? "build the pack and say what would happen; changes nothing" : why, text: "Dry run", onclick: () => start(true) }),
+              note);
+          })) : null,
         data.adws.map((adw) => h("div", { class: "card adw-section" },
           h("div", { class: "card-head" }, h("h3", { text: adw.name }), h("span", { class: "dim", text: adw.description }), h("span", { class: "spacer" }),
             h("a", { class: "toggle", href: routeHash(["runs"], { layer: key, adw: adw.name }), text: `${adw.stats.count} runs` })),

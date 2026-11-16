@@ -26,6 +26,38 @@
     },
     "preset": "sprint"
   },
+  "promotions": [
+    {
+      "adw": "sdlc",
+      "after": [],
+      "approval": "human",
+      "approvers": 1,
+      "backMerge": [],
+      "from": "sprint",
+      "hotfix": false,
+      "method": "merge",
+      "origin": "declared",
+      "present": [
+        "summary",
+        "changes",
+        "proof",
+        "demo",
+        "checks",
+        "notes",
+        "excluded"
+      ],
+      "requires": [
+        "checks",
+        "acceptance"
+      ],
+      "tag": "v{version}",
+      "to": "main",
+      "version": {
+        "how": "bump",
+        "level": "minor"
+      }
+    }
+  ],
   "stages": [
     {
       "accepts": [
@@ -41,6 +73,8 @@
       "entry": "merge",
       "environmentName": "",
       "from": "main",
+      "frozen": [],
+      "frozenWhilePromoting": false,
       "into": "",
       "name": "sprint",
       "origin": "preset sprint"
@@ -54,6 +88,8 @@
       "entry": "merge",
       "environmentName": "",
       "from": "",
+      "frozen": [],
+      "frozenWhilePromoting": false,
       "into": "",
       "name": "main",
       "origin": "preset sprint"

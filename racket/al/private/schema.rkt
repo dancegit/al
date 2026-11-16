@@ -84,6 +84,12 @@
                    (array-of (rec 'stage #:extra (hash-set name-prop 'origin
                                                            (hasheq 'type "string"
                                                                    'description "\"declared\", or \"preset NAME\" for a stage a (delivery …) preset made."))))
+                   'promotions
+                   (array-of (rec 'promotion
+                                  #:extra (hasheq 'hotfix (hasheq 'type "boolean"
+                                                                  'description "FROM is cut from the final stage TO and goes straight back into it (a hotfix): its own gate, merged back into the working stages.")
+                                                  'origin (hasheq 'type "string"
+                                                                  'description "\"declared\" (a (promotion …) clause) or \"default\" (a non-final stage without one)."))))
                    'delivery
                    (hasheq 'type (list "object" "null")
                            'description "The (delivery PRESET …) clause: {preset, params, expansion (the clauses it stands for, one string each)}; null when stages are declared by hand only."))])
@@ -95,6 +101,6 @@
           'description "IR emitted by #lang al. Generated from racket/al/private/vocab.rkt — do not edit."
           'type "object"
           'additionalProperties #f
-          ;; stages, cycle and delivery exist only in the IR of a layer that declares a stage
-          'required (sort (map symbol->string (filter (lambda (k) (not (memq k '(stages cycle delivery)))) (hash-keys props))) string<?)
+          ;; stages, cycle, delivery and promotions exist only in the IR of a layer that declares a stage
+          'required (sort (map symbol->string (filter (lambda (k) (not (memq k '(stages cycle delivery promotions)))) (hash-keys props))) string<?)
           'properties props))

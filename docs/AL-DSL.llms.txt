@@ -17,6 +17,7 @@
     (steps (run NAME …) (check NAME …) (script NAME …) (fan-out NAME …) (review) (ship) (compose ADW) …)) …
   (stage NAME #:branch "…" #:from STAGE #:into STAGE …) …   ; where work is delivered, see record `stage`
   (delivery PRESET #:param value …)          ; at most one; stands for stage and cycle clauses, see Delivery presets
+  (promotion FROM -> TO #:approval human …)   ; how a stage moves into the next (al promote)
   (include "FILE") …)                       ; more clauses from FILE, e.g. what `al adopt` wrote
 ```
 
@@ -60,6 +61,13 @@ pairs, e.g. `#:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:eff
 - A zero-touch ADW (review auto with #:ship merge or deploy) may only deliver to stages with #:agents-may-merge #t.
 - #:entry fast-forward is rejected with every forge (github, forgejo): a pull request is merged by merge, squash or rebase.
 - (delivery PRESET #:param value …) is declared at most once and expands to (stage …) and (cycle …) clauses (see Delivery presets); a (stage NAME …) with the name of a preset's stage replaces it, another name adds a stage; a (cycle …) next to a preset that declares one is an error.
+- (promotion FROM -> TO …) needs declared stages; FROM and TO are declared stages, TO is FROM's #:into (default #:from), and each stage has at most one promotion. Every non-final stage without a declared promotion gets one with the defaults (origin "default").
+- #:approval agent or auto is rejected for a promotion into a stage with #:agents-may-merge #f; #:approvers is 1–9.
+- A hotfix promotion (FROM's #:from and #:into are TO, TO is the final stage, and no other stage goes into FROM) may not use #:approval auto; without #:back-merge it is merged back into every other stage that accepts a class.
+- #:tag uses only {version} {cycle} {date} and is a valid tag name once filled; {version} needs #:version; {cycle} needs FROM to be the (cycle …) #:stage.
+- #:after items are (deploy) or (deploy ENV): TO needs a #:deploy-cmd, and ENV equals TO's #:environment-name.
+- #:back-merge names declared stages other than FROM and TO.
+- A stage #:frozen period is "YYYY-MM-DD..YYYY-MM-DD" with valid dates, the first not after the second.
 - Kinds marked planned compile but are refused by the generator.
 
 ## Option families
@@ -542,6 +550,30 @@ Where things are: (paths #:source (…) #:tests (…) …).
   - `#:checks` (list of name of a declared cmd; default ()) — Codebase cmds that must hold on it: added to the review's #:require-checks for runs delivering here.
   - `#:deploy-cmd` (name of a declared cmd, or ""; default "") — Codebase cmd that deploys this stage; used by a review with #:ship deploy that has no #:deploy-cmd of its own.
   - `#:environment-name` (string; default "") — Where the deploy lands, in words (e.g. staging, production); shown in the run summary and by al explain.
+  - `#:frozen` (list of string; default ()) — Periods closed to new deliveries, each "YYYY-MM-DD..YYYY-MM-DD" (UTC, both days included): a run that would deliver then ends `waiting` at its deliver step and says until when.
+  - `#:frozen-while-promoting` (boolean; default #f) — Closed to new deliveries while a promotion out of this stage is open.
+
+### `version-change`
+
+How a promotion changes the repository's version: (bump major|minor|patch) or (keep).
+  - `#:how` (bump | keep; default REQUIRED) — bump: raise the version where the repository keeps it (VERSION, pyproject.toml, package.json, Cargo.toml; else the latest vX.Y.Z tag); keep: use the version it has.
+  - `#:level` (major | minor | patch; default patch) — Which part a bump raises.
+
+### `promotion`
+
+(promotion FROM -> TO …): how a stage's work moves into the next stage — evidence for the people who accept it, a recorded decision, then merge, version, tag, deploy and back-merge. Run with `al promote LAYER FROM TO`; every non-final stage without one gets one with these defaults.
+  - `#:from` (name of a declared stage; default REQUIRED) — The stage whose branch is promoted.
+  - `#:to` (name of a declared stage; default REQUIRED) — The stage it goes into: FROM's #:into (default #:from).
+  - `#:approval` (human | agent | auto; default human) — human: people approve (al decide, the dashboard, or an approving review / `/approve` on the pull request); agent: independent reviewer agents review the whole stage diff and the pack; auto: no approval. agent and auto only into a stage with #:agents-may-merge #t.
+  - `#:approvers` (integer; default 1) — human: distinct people who must approve; agent: reviewer agents that must all pass. 1–9.
+  - `#:requires` (list of checks | acceptance; default (checks acceptance)) — checks: the #:checks of FROM and TO pass on the stage head; acceptance: every change is accepted or refused (or the whole promotion approved) before it merges.
+  - `#:method` (merge | squash | fast-forward | cherry-pick; default merge) — How the stage enters TO.
+  - `#:version` ((HOW LEVEL [#:field value …]), see record `version-change`; default none) — The version change, e.g. (bump minor); none = the version is not touched.
+  - `#:tag` (string; default "") — Tag on the promoted commit; placeholders {version} {cycle} {date}; "" = no tag.
+  - `#:present` (list of summary | changes | proof | demo | checks | notes | excluded; default (summary changes proof demo checks notes excluded)) — Sections of the presentation pack: summary, per-change details with acceptance criteria, proof (pictures, recordings), demo (one page to open and show), checks on the stage head, release notes and changelog entry, what is not included.
+  - `#:after` (list of symbol; default ()) — (deploy) or (deploy ENV): after merging, run TO's #:deploy-cmd; ENV must equal TO's #:environment-name.
+  - `#:back-merge` (list of name of a declared stage; default ()) — Stages the promoted result is merged back into (an agent round resolves a conflict). A hotfix promotion (FROM is cut from TO) defaults to every other stage that accepts a class.
+  - `#:adw` (name of a declared adw, or ""; default "") — Workflow whose environment, agent, review command and #:patch/#:implement commands the promotion's agent rounds use; "" = the first workflow that delivers into FROM, else the first workflow.
 
 ### `model-tier`
 
@@ -754,6 +786,8 @@ Expands to (defaults):
   (delivery sprint #:length-days 14)   ; every change collects in sprint/{cycle}; a person accepts the sprint into main
   ;; urgent bugs go to their own branch, cut from main; only a person merges it back into main
   (stage hotfix #:branch "hotfix/{date}" #:from main #:into main #:accepts (bug) #:agents-may-merge #f #:environment-name "production")
+  (promotion sprint -> main #:approval human #:approvers 1 #:version (bump minor) #:tag "v{version}")   ; a person accepts the sprint; main gets a version, a tag and a changelog entry
+  (promotion hotfix -> main #:approval human #:approvers 2)   ; an urgent fix needs two people and is merged back into the sprint
 
   (command prime #:template prime)
   (command classify #:template classify #:model-set fast #:output json)

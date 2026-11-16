@@ -1148,6 +1148,67 @@
       "timeout": 10
     }
   ],
+  "promotions": [
+    {
+      "adw": "sdlc",
+      "after": [],
+      "approval": "human",
+      "approvers": 1,
+      "backMerge": [],
+      "from": "sprint",
+      "hotfix": false,
+      "method": "merge",
+      "origin": "declared",
+      "present": [
+        "summary",
+        "changes",
+        "proof",
+        "demo",
+        "checks",
+        "notes",
+        "excluded"
+      ],
+      "requires": [
+        "checks",
+        "acceptance"
+      ],
+      "tag": "v{version}",
+      "to": "main",
+      "version": {
+        "how": "bump",
+        "level": "minor"
+      }
+    },
+    {
+      "adw": "hotfix",
+      "after": [],
+      "approval": "human",
+      "approvers": 2,
+      "backMerge": [
+        "sprint"
+      ],
+      "from": "hotfix",
+      "hotfix": true,
+      "method": "merge",
+      "origin": "declared",
+      "present": [
+        "summary",
+        "changes",
+        "proof",
+        "demo",
+        "checks",
+        "notes",
+        "excluded"
+      ],
+      "requires": [
+        "checks",
+        "acceptance"
+      ],
+      "tag": "",
+      "to": "main",
+      "version": null
+    }
+  ],
   "promptInputs": [
     {
       "classify": true,
@@ -1236,6 +1297,8 @@
       "entry": "merge",
       "environmentName": "",
       "from": "main",
+      "frozen": [],
+      "frozenWhilePromoting": false,
       "into": "",
       "name": "sprint",
       "origin": "preset sprint"
@@ -1249,6 +1312,8 @@
       "entry": "merge",
       "environmentName": "",
       "from": "",
+      "frozen": [],
+      "frozenWhilePromoting": false,
       "into": "",
       "name": "main",
       "origin": "preset sprint"
@@ -1264,6 +1329,8 @@
       "entry": "merge",
       "environmentName": "production",
       "from": "main",
+      "frozen": [],
+      "frozenWhilePromoting": false,
       "into": "main",
       "name": "hotfix",
       "origin": "declared"

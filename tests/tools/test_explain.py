@@ -180,3 +180,17 @@ def test_explain_adw_says_where_it_delivers():
     assert "delivers into hotfix (`hotfix/{date}`)" in text
     _, zte, _ = explain.explain({"head": "adw", "first": "  (adw zte #:description"}, FULL_IR)
     assert "delivers into sprint (`sprint/{cycle}`)" in zte
+
+
+def test_explain_promotion_in_words():
+    heading, text, bullets = explain.explain({"head": "promotion", "first": "  (promotion sprint -> main"}, FULL_IR)
+    assert heading == "How a stage is promoted"
+    sprint = next(line for line in bullets if line.startswith("sprint → main"))
+    assert "a person approves (1)" in sprint and "version bump minor" in sprint and "tag v{version}" in sprint
+    assert "requires checks and acceptance" in sprint and "merged by merge" in sprint
+    hotfix = next(line for line in bullets if line.startswith("hotfix → main"))
+    assert "two people approve" in hotfix and "merged back into sprint" in hotfix and "hotfix" in hotfix
+    assert "al promote LAYER FROM TO" in text
+    _, delivery, stage_lines = explain.explain({"head": "delivery", "first": "  (delivery sprint #:length-days 14)"},
+                                               FULL_IR)
+    assert any("promoted into main with `al promote LAYER sprint main`" in line for line in stage_lines)
