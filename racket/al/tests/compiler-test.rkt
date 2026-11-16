@@ -596,3 +596,208 @@
   (for ([needle '("### `model-tier`" "### `step-script`" "(budget limits …)" "shorthand for the `heavy` entry of #:models"
                   "(include \"FILE\")" "claude-fable-5-2" "#:waiting-exit" "#:journal")])
     (check-true (string-contains? ref needle) needle)))
+
+;; ---------------------------------------------------------------------------------------
+;; Delivery: stages, cycles, presets
+;; ---------------------------------------------------------------------------------------
+
+(define-runtime-path golden "golden")
+
+(define (preset-expansion-of name)
+  (hash-ref (hash-ref (compile-layer-datum (layer plan simple-adw (list 'delivery name))) 'delivery) 'expansion))
+
+(define (golden-lines name)
+  (filter (lambda (l) (not (string=? l "")))
+          (string-split (file->string (build-path golden (format "delivery-~a.rktd" name))) "\n")))
+
+(define zte-parts
+  (list plan review-cmd
+        '(agent claude-code #:permission-mode bypassPermissions)
+        '(environment worktree) '(environment podman #:agent-inside #t)
+        '(review auto #:require-checks (test lint))))
+(define (zte-adw . kws)
+  `(adw zte #:environment (worktree podman) ,@kws
+        (steps (run plan #:command plan) (check t #:cmd test) (review) (ship))))
+(define (stages-of ir) (hash-ref ir 'stages))
+(define (stage-named ir name) (findf (lambda (s) (equal? (hash-ref s 'name) name)) (stages-of ir)))
+
+(define keys-before-delivery
+  '(agents artefacts budget codebase commands concurrency dashboard description environments experts forge
+    hops layer llmTxt name notifiers promptInputs reviews schemaVersion services storage triggers voice adws))
+
+(test-case "delivery: no stage declared = the IR of before"
+  (for ([ir (list (compile-layer-datum (layer plan simple-adw))
+                  (compile-layer-datum (apply layer (append zte-parts (list (zte-adw))))))])
+    (for ([k '(stages cycle delivery)]) (check-false (hash-has-key? ir k) (format "~a" k)))
+    (for ([a (hash-ref ir 'adws)]) (check-false (hash-has-key? a 'deliverTo)))
+    (check-equal? (sort (map symbol->string (hash-keys ir)) string<?)
+                  (sort (map symbol->string keys-before-delivery) string<?))))
+
+(test-case "stage: compiles with its defaults"
+  (define ir (compile-layer-datum (layer plan simple-adw '(stage main #:branch "main"))))
+  (define s (car (stages-of ir)))
+  (check-equal? (hash-ref s 'from) "")
+  (check-equal? (hash-ref s 'into) "")
+  (check-equal? (hash-ref s 'accepts) '("chore" "bug" "feature" "patch"))
+  (check-equal? (hash-ref s 'agentsMayMerge) #t)
+  (check-equal? (hash-ref s 'entry) "merge")
+  (check-equal? (hash-ref s 'checks) '())
+  (check-equal? (hash-ref s 'origin) "declared")
+  (check-equal? (hash-ref ir 'cycle) 'null)
+  (check-equal? (hash-ref ir 'delivery) 'null)
+  (check-equal? (hash-ref (car (hash-ref ir 'adws)) 'deliverTo) ""))
+
+(test-case "stage graph"
+  (check-rejects (layer plan simple-adw '(stage main #:branch "main") '(stage other #:branch "other"))
+                 #rx"two final stages")
+  (check-rejects (layer plan simple-adw '(stage a #:branch "a" #:from b) '(stage b #:branch "b" #:from a))
+                 #rx"stages a → b → a form a cycle")
+  (check-rejects (layer plan simple-adw '(stage a #:branch "a" #:from nowhere) '(stage main #:branch "main"))
+                 #rx"`nowhere` is not a declared stage; declared: a, main")
+  (check-rejects (layer plan simple-adw '(stage trunk #:branch "trunk"))
+                 #rx"must equal \\(codebase #:default-branch …\\) \"main\"")
+  (check-rejects (layer plan simple-adw '(stage a #:branch "main" #:from main) '(stage main #:branch "main"))
+                 #rx"branch \"main\" is used by two stages")
+  (check-rejects (layer plan simple-adw '(stage main #:branch "main") '(stage main #:branch "main"))
+                 #rx"\\(stage main\\): declared twice"))
+
+(test-case "stage branch patterns"
+  (define (with-stage . fields) (layer plan simple-adw `(stage a ,@fields #:from main) '(stage main #:branch "main")))
+  (check-rejects (with-stage '#:branch "sprint/{sprint}") #rx"unknown placeholder \\{sprint\\}")
+  (check-rejects (with-stage '#:branch "a..b") #rx"not a valid git branch name")
+  (check-rejects (with-stage '#:branch "x y") #rx"not a valid git branch name")
+  (check-rejects (with-stage '#:branch "/main") #rx"not a valid git branch name")
+  (check-rejects (with-stage '#:branch "x.lock") #rx"not a valid git branch name")
+  (check-rejects (with-stage '#:branch "{cycle}") #rx"\\{cycle\\} .*only on the stage of \\(cycle …\\)")
+  (check-not-exn (lambda () (compile-layer-datum
+                             (layer plan simple-adw '(cycle release #:stage rel)
+                                    '(stage rel #:branch "release/{version}" #:from main) '(stage main #:branch "main")))))
+  (check-not-exn (lambda () (compile-layer-datum (with-stage '#:branch "hotfix/{date}"))))
+  (check-rejects (layer plan simple-adw '(stage main #:branch "{date}")) #rx"final stage.*placeholder"))
+
+(test-case "cycle rules"
+  (define (sprint-layer . cycle)
+    (layer plan simple-adw cycle '(stage sprint #:branch "sprint/{cycle}" #:from main) '(stage main #:branch "main")))
+  (check-rejects (layer plan simple-adw '(cycle sprint #:stage sprint)) #rx"declare the stage it repeats")
+  (check-rejects (sprint-layer 'cycle 'sprint '#:stage 'main) #rx"is the final stage")
+  (check-rejects (sprint-layer 'cycle 'sprint '#:stage 'sprint '#:length-days 0) #rx"#:length-days must be 1–366")
+  (check-rejects (sprint-layer 'cycle 'sprint '#:stage 'sprint '#:length-days 400) #rx"#:length-days must be 1–366")
+  (check-rejects (sprint-layer 'cycle 'sprint '#:stage 'sprint '#:name "{month}") #rx"#:name \"\\{month\\}\": unknown placeholder \\{month\\}")
+  (check-rejects (sprint-layer 'cycle 'release '#:stage 'sprint '#:name "{n}") #rx"must contain \\{version\\}")
+  (check-rejects (layer plan simple-adw '(cycle sprint #:stage sprint)
+                        '(stage sprint #:branch "sprint/x" #:from main) '(stage main #:branch "main"))
+                 #rx"must contain \\{cycle\\}")
+  (check-rejects (layer plan simple-adw '(cycle sprint #:stage sprint) '(cycle release #:stage sprint)
+                        '(stage sprint #:branch "sprint/{cycle}" #:from main) '(stage main #:branch "main"))
+                 #rx"only one cycle"))
+
+(test-case "deliver-to and class routing"
+  (check-rejects (layer plan '(adw a #:deliver-to main (steps (run plan #:command plan))))
+                 #rx"#:deliver-to needs declared stages")
+  (check-rejects (layer plan '(stage main #:branch "main") '(adw a #:deliver-to elsewhere (steps (run plan #:command plan))))
+                 #rx"`elsewhere` is not a declared stage; declared: main")
+  (check-rejects (layer plan '(stage hot #:branch "hot" #:from main #:accepts (bug)) '(stage main #:branch "main")
+                        '(adw a #:deliver-to hot #:classes (bug feature) (steps (run plan #:command plan) (review) (ship))))
+                 #rx"stage `hot` does not accept class feature")
+  (check-not-exn
+   (lambda ()
+     (compile-layer-datum
+      (layer plan '(stage a #:branch "a" #:from main #:accepts (bug)) '(stage main #:branch "main")
+             '(adw f #:classes (feature) (steps (run plan #:command plan))))))))
+
+(test-case "zero-touch may only deliver where agents may merge"
+  (check-not-exn (lambda () (compile-layer-datum (apply layer (append zte-parts (list '(delivery sprint) (zte-adw)))))))
+  (check-rejects (apply layer (append zte-parts (list '(delivery sprint) (zte-adw '#:deliver-to 'main))))
+                 #rx"\\(adw zte\\): review `auto` ships without a human, but class [a-z]+ is delivered to stage `main` \\(branch main\\), where agents may not merge; deliver to a stage with #:agents-may-merge #t \\(e.g. #:deliver-to sprint\\) or use a human or agent review")
+  (check-not-exn
+   (lambda ()
+     (compile-layer-datum
+      (layer plan review-cmd '(delivery sprint)
+             '(adw h #:review human #:deliver-to main
+                   (steps (run plan #:command plan) (check t #:cmd test) (review)))))))
+  ;; with a (ship) step the stage must also accept the ADW's classes (main in the sprint preset accepts none)
+  (check-rejects (layer plan review-cmd '(delivery sprint)
+                        '(adw h #:review human #:deliver-to main
+                              (steps (run plan #:command plan) (check t #:cmd test) (review) (ship))))
+                 #rx"stage `main` does not accept class"))
+
+(test-case "entry methods the forge forbids"
+  (check-rejects (layer plan simple-adw '(forge github #:repo "o/r") '(stage main #:branch "main" #:entry fast-forward))
+                 #rx"GitHub cannot merge a pull request by fast-forward")
+  (check-not-exn (lambda () (compile-layer-datum (layer plan simple-adw '(stage main #:branch "main" #:entry fast-forward))))))
+
+(test-case "deploy command from the stage"
+  (define (deploy-layer main-stage)
+    (append (list 'agentic-layer '#:name "t"
+                  '(codebase #:root "." #:languages (python) (cmd test "pytest") (cmd lint "ruff check") (cmd deploy "./deploy.sh")))
+            (list plan review-cmd '(agent claude-code) '(environment worktree) '(environment podman)
+                  '(review auto #:require-checks (test) #:ship deploy)
+                  main-stage (zte-adw))))
+  (check-not-exn (lambda () (compile-layer-datum (deploy-layer '(stage main #:branch "main" #:deploy-cmd deploy)))))
+  (check-rejects (deploy-layer '(stage main #:branch "main"))
+                 #rx"#:ship deploy but no #:deploy-cmd, and stage `main` it delivers to has none")
+  (check-rejects (layer plan review-cmd '(review auto #:require-checks (test) #:ship deploy)
+                        '(adw a (steps (check t #:cmd test) (review) (ship))))
+                 #rx"review `auto` has #:ship deploy but no #:deploy-cmd$"))
+
+(test-case "delivery presets expand to their golden output"
+  (for ([name '(trunk sprint gitflow release-train phase-gate)])
+    (check-equal? (preset-expansion-of name) (golden-lines name) (format "~a" name))
+    (check-not-exn (lambda () (compile-layer-datum (layer plan simple-adw (list 'delivery name)))))))
+
+(test-case "delivery presets: parameters and overrides"
+  (define ir (compile-layer-datum
+              `(agentic-layer #:name "t"
+                 (codebase #:root "." #:languages (python) #:default-branch "trunk" (cmd test "pytest"))
+                 ,plan ,simple-adw (delivery sprint #:length-days 7 #:main "trunk"))))
+  (check-equal? (hash-ref (hash-ref ir 'cycle) 'lengthDays) 7)
+  (check-equal? (hash-ref (stage-named ir "main") 'branch) "trunk")
+  (check-equal? (hash-ref (hash-ref ir 'delivery) 'preset) "sprint")
+  (check-equal? (hash-ref (hash-ref (hash-ref ir 'delivery) 'params) 'lengthDays) 7)
+  (define over (compile-layer-datum (layer plan simple-adw '(delivery sprint)
+                                           '(stage sprint #:branch "iteration/{cycle}" #:from main)
+                                           '(stage hotfix #:branch "hotfix/{date}" #:from main))))
+  (check-equal? (map (lambda (s) (hash-ref s 'name)) (stages-of over)) '("sprint" "main" "hotfix"))
+  (check-equal? (hash-ref (stage-named over "sprint") 'branch) "iteration/{cycle}")
+  (check-equal? (hash-ref (stage-named over "sprint") 'origin) "declared")
+  (check-equal? (hash-ref (stage-named over "main") 'origin) "preset sprint")
+  (check-equal? (hash-ref (stage-named over "hotfix") 'origin) "declared")
+  (check-rejects (layer plan simple-adw '(delivery waterfall))
+                 #rx"unknown delivery preset waterfall; presets are: trunk, sprint, gitflow, release-train, phase-gate")
+  (check-rejects (layer plan simple-adw '(delivery sprint) '(delivery trunk)) #rx"\\(delivery …\\) is declared twice")
+  (check-rejects (layer plan simple-adw '(delivery sprint #:weeks 2)) #rx"unknown field #:weeks; fields are: #:main #:length-days")
+  (check-rejects (layer plan simple-adw '(delivery sprint) '(cycle sprint #:stage sprint))
+                 #rx"\\(delivery sprint\\) already declares a cycle")
+  (define one (compile-layer-datum (layer plan simple-adw '(delivery phase-gate #:phases (a)))))
+  (check-equal? (map (lambda (s) (list (hash-ref s 'name) (hash-ref s 'into))) (stages-of one))
+                '(("a" "main") ("main" ""))))
+
+(test-case "schema and reference: stage, cycle, delivery presets"
+  (define schema (layer-schema))
+  (define req (hash-ref schema 'required))
+  (for ([k '("stages" "cycle" "delivery")])
+    (check-false (member k req) k)
+    (check-true (hash-has-key? (hash-ref schema 'properties) (string->symbol k)) k))
+  (define adw (hash-ref (hash-ref (hash-ref schema 'properties) 'adws) 'items))
+  (check-false (member "deliverTo" (hash-ref adw 'required)))
+  (check-true (hash-has-key? (hash-ref adw 'properties) 'deliverTo))
+  (define stage-props (hash-ref (hash-ref (hash-ref (hash-ref schema 'properties) 'stages) 'items) 'properties))
+  (check-true (hash-has-key? stage-props 'name))
+  (check-true (hash-has-key? stage-props 'origin))
+  (define ref (reference-text))
+  (for ([needle '("### `stage`" "(cycle sprint …)" "## Delivery presets" "(delivery PRESET")])
+    (check-true (string-contains? ref needle) needle))
+  (for ([name '(trunk sprint gitflow release-train phase-gate)])
+    (check-true (string-contains? ref (format "(delivery ~a" name)) (format "~a" name))
+    (check-true (string-contains? ref (car (golden-lines name))) (format "~a golden" name))))
+
+(test-case "full.rkt: zte routes chore and bug to the sprint"
+  (define full (dynamic-require (build-path examples "full.rkt") 'layer-spec))
+  (define stages (hash-ref full 'stages))
+  (define (route klass)
+    (hash-ref (or (findf (lambda (s) (member klass (hash-ref s 'accepts))) stages) (last stages)) 'name))
+  (define zte (findf (lambda (a) (equal? (hash-ref a 'name) "zte")) (hash-ref full 'adws)))
+  (check-equal? (hash-ref zte 'deliverTo) "")
+  (check-equal? (map route (hash-ref zte 'classes)) '("sprint" "sprint"))
+  (define hotfix (findf (lambda (a) (equal? (hash-ref a 'name) "hotfix")) (hash-ref full 'adws)))
+  (check-equal? (hash-ref hotfix 'deliverTo) "hotfix"))

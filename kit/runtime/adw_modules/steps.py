@@ -290,6 +290,10 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
         from . import ship
 
         ship.ship(layer, state, adw, step, env_stack)
+        if getattr(layer, "delivery", None):  # the run delivers into a stage (see delivery.py)
+            from . import delivery
+
+            delivery.after_ship(layer, state)
     elif kind == "fan-out":
         from . import fanout
 
@@ -298,11 +302,21 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
         raise LayerError(f"Unknown ADW step kind: {kind!r}")
 
 
+DELIVER_STEP = "deliver"
+
+
 def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_stack: Any) -> None:
     name, kind = str(step.get("name", "")), str(step.get("kind", ""))
     record = state.step_record(name, kind)
     if record.get("status") == "passed":
         return
+    if kind == "ship" and getattr(layer, "delivery", None):
+        # The delivery checks (delivery.before_ship) are a step of their own, recorded as `deliver`
+        # before the ship step: a run they stop is handed to a person like any other stopped run.
+        from . import delivery
+
+        _run_recorded(layer, state, DELIVER_STEP, DELIVER_STEP,
+                      lambda: delivery.before_ship(layer, state, adw, step, env_stack))
     when = str(step.get("when", "always"))
     if when.startswith("class-") and state.klass != when.removeprefix("class-"):
         stamp = _timestamp()
@@ -311,6 +325,12 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
         events.say(f"[adw {state.adw_id}] step {name} ({kind}) skipped: {record['detail']}", "step.end",
                    step=name, kind=kind, status="skipped", detail=record["detail"], seconds=0.0)
         return
+    _run_recorded(layer, state, name, kind, lambda: _execute_step(layer, state, adw, step, env_stack), step)
+
+
+def _run_recorded(layer: Any, state: Any, name: str, kind: str, work: Any, step: dict[str, Any] | None = None) -> None:
+    """Run `work` as step `name`: its record in state.json, its step.start/step.end events."""
+    record = state.step_record(name, kind)
     attempts = int(record.get("attempts", 0)) + 1
     events.say(f"[adw {state.adw_id}] step {name} ({kind}) start", "step.start", step=name, kind=kind, attempt=attempts)
     started = time.monotonic()
@@ -324,7 +344,7 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
                    seconds=round(time.monotonic() - started, 3))
 
     try:
-        _execute_step(layer, state, adw, step, env_stack)
+        work()
     except StepWaiting as exc:
         ended("waiting", str(exc), f"[adw {state.adw_id}] step {name} ({kind}) waiting: {exc.reason}")
         raise
@@ -337,7 +357,7 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
         detail = f"{type(exc).__name__}: {exc}"
         ended("failed", detail, f"[adw {state.adw_id}] step {name} ({kind}) failed: {detail}")
         raise StepFailed(name, detail) from exc
-    detail = _pass_detail(state, step)
+    detail = _pass_detail(state, step) if step is not None else "ok"
     ended("passed", detail, f"[adw {state.adw_id}] step {name} ({kind}) passed: {detail}")
 
 

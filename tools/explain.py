@@ -27,7 +27,8 @@ import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-GROUPED = {"prompt-input", "trigger", "environment", "artefact", "review", "agent", "command", "hop", "expert", "service", "notify"}
+GROUPED = {"prompt-input", "trigger", "environment", "artefact", "review", "agent", "command", "hop", "expert", "service", "notify",
+           "stage"}
 CLAUSE = re.compile(r"^  \(([a-z][a-z-]*)\b")
 INCLUDED_CLAUSE = re.compile(r"^\(([a-z][a-z-]*)\b")       # an included file's clauses start in column 0
 INCLUDE = re.compile(r'\(include\s+"([^"]+)"\s*\)')
@@ -244,6 +245,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         return ("More of the definition, from another file", f"These clauses are in `{block.get('target', '?')}`"
                 + (", written by `al adopt` from the codebase's existing agent setup" if "adopted/" in block.get("target", "") else "")
                 + "; they are explained below with the file's own blocks.", [])
+    if head in ("delivery", "stage", "cycle"):
+        return delivery_text(ir, head)
     if head == "forge":
         f = ir["forge"]
         return ("The forge", "No forge: results stay as local branches." if f["kind"] == "none"
@@ -304,6 +307,9 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         text = (f"The `{name}` workflow" + (f": {adw['description'].rstrip('.')}" if adw["description"] else "") + f". Steps: {short}. {outcome} {where_it_runs(adw, ir)}")
         if adw.get("changes") == "layer":
             text += " It changes the agentic layer itself, so a person always reviews it."
+        delivers = delivers_into(adw, ir)
+        if delivers:
+            text += f" {delivers}"
         bullets = [f"Work from {listing([pi[i]['kind'] for i in adw['input']], 'or')}; started by {listing([tr[i]['kind'] for i in adw['trigger']], 'or')}; "
                    f"runs in {listing([en[i]['kind'] for i in adw['environment']])}; agent `{adw['agent']}`"]
         bullets += [f"{n}. {describe_step(s, ir)}" for n, s in enumerate(steps, 1)]
@@ -311,6 +317,85 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
             bullets.append(f"The reviewers run on agent `{review['agent']}`, not on the agent that did the work")
         return f"Workflow: {name}", text, bullets
     return head, f"`({head} …)`", []
+
+
+CLASSES = ("chore", "bug", "feature", "patch")
+
+
+def route(adw: dict, ir: dict, klass: str) -> dict | None:
+    """The stage a run of `adw` with class `klass` delivers into (as the runtime routes it)."""
+    stages = ir.get("stages") or []
+    if not stages:
+        return None
+    if adw.get("deliverTo"):
+        return next(s for s in stages if s["name"] == adw["deliverTo"])
+    final = next((s for s in stages if not (s["into"] or s["from"])), stages[-1])
+    return next((s for s in stages if klass in s["accepts"]), final)
+
+
+def delivers_into(adw: dict, ir: dict) -> str:
+    """`It delivers into sprint (`sprint/{cycle}`).`, or "" for a layer without stages."""
+    if not ir.get("stages"):
+        return ""
+    targets: dict[str, list[str]] = {}
+    for klass in adw.get("classes") or CLASSES:
+        stage = route(adw, ir, klass)
+        targets.setdefault(f"{stage['name']} (`{stage['branch']}`)", []).append(klass)
+    if len(targets) == 1:
+        return f"It delivers into {next(iter(targets))}."
+    return "It delivers " + listing([f"{', '.join(k)} into {t}" for t, k in targets.items()]) + "."
+
+
+def describe_stage(stage: dict) -> str:
+    into = stage["into"] or stage["from"]
+    origin = "" if stage.get("origin", "declared") == "declared" else f" [{stage['origin']}]"
+    parts = [f"`{stage['name']}`{origin}: branch `{stage['branch']}`",
+             f"cut from {stage['from']}" if stage["from"] else "the final stage",
+             f"delivered into {into} when accepted" if into else "",
+             f"takes {listing(stage['accepts'], 'and')} by default" if stage["accepts"] else "takes nothing by default",
+             "agents may merge into it" if stage["agentsMayMerge"] else f"agents may not merge into {stage['name']} (only people change it)",
+             f"changes enter by {stage['entry']}"]
+    if stage.get("checks"):
+        parts.append(f"must pass {listing(['`' + c + '`' for c in stage['checks']])}")
+    if stage.get("deployCmd"):
+        parts.append(f"deployed by `{stage['deployCmd']}`")
+    if stage.get("environmentName"):
+        parts.append(f"lands in {stage['environmentName']}")
+    return "; ".join(p for p in parts if p)
+
+
+def cycle_words(ir: dict) -> str:
+    c = ir.get("cycle")
+    if not isinstance(c, dict) or c.get("kind") == "none":
+        return "No stage repeats."
+    if c["kind"] == "sprint":
+        return (f"The `{c['stage']}` stage repeats every {c['lengthDays']} days (cycles named `{c['name']}`): "
+                f"`al cycle LAYER start` opens the next branch, `al cycle LAYER close` closes one.")
+    return (f"The `{c['stage']}` stage repeats per version (cycles named `{c['name']}`): "
+            f"`al cycle LAYER start --version V` opens the next branch.")
+
+
+def delivery_text(ir: dict, head: str = "delivery") -> tuple[str, str, list[str]]:
+    """Where work goes: the stages, from where, into where, what each takes, who may merge, the cycle,
+    and for a preset the clauses it stands for."""
+    stages = ir.get("stages") or []
+    if head == "cycle":
+        return "The cycle", cycle_words(ir), []
+    if head == "stage":
+        declared = [s for s in stages if s.get("origin", "declared") == "declared"]
+        return ("Stages declared here", f"{len(declared)} stage(s) declared by hand"
+                + (", next to the preset's" if ir.get("delivery") else "") + ".",
+                [describe_stage(s) for s in declared])
+    d = ir.get("delivery") or {}
+    text = (f"Work is delivered the `{d.get('preset', 'declared')}` way through {len(stages)} stages: "
+            + " → ".join(f"`{s['branch']}`" for s in stages) + ". " + cycle_words(ir))
+    closed = [s["name"] for s in stages if not s["agentsMayMerge"]]
+    if closed:
+        text += f" Agents may not merge into {listing(closed)}: a person takes the work there."
+    bullets = [describe_stage(s) for s in stages]
+    if d.get("expansion"):
+        bullets += [f"`(delivery {d['preset']} …)` stands for: `{clause}`" for clause in d["expansion"]]
+    return "How work is delivered", text, bullets
 
 
 def has_forge(ir: dict) -> bool:

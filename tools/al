@@ -7,7 +7,8 @@
 
   al init    APP [--layer DIR]     create the layer directory beside the app and scout a draft LLM.txt
   al init    APP --in-repo [--dir agentic]   … or inside the application repository, committed with it
-  al scout   APP [-o LLM.txt]      deterministic LLM.txt draft (an LLM completes it: meta/commands/scout-codebase.md)
+  al scout   APP [-o LLM.txt] [--layer LAYER]  deterministic LLM.txt draft (an LLM completes it: meta/commands/scout-codebase.md);
+                                   with --layer, its declared forge is asked for branch protection
   al compile LAYER                 agentic.rkt -> agentic-layer.json (validated against the schema)
   al gen     LAYER [--discard-edits]  compile + generate commands, HOPs, ADWs, env, triggers, forge files
   al explain LAYER [--md F] [--gif F]  explain the layer definition in plain language, block by block
@@ -35,6 +36,9 @@
   al run     LAYER /NAME [ARGS …] [--class C] [--model-set T] [--model T=ID …] [--detach] [--dry-run] [--yes]
                                    start one of the layer's workflows, or one command or hop as a recorded run
                                    that never ships, exactly as the dashboard does; ARGS (or stdin) are the prompt
+  al cycle  LAYER status|start|close [--name N] [--version V] [--push] [--json]
+                                   the layer's (cycle …): open the next stage branch from its source (git branch,
+                                   nothing checked out; --push publishes it), close the open one (never merges)
   al models  LAYER [--set TIER=ID …] [--reset [TIER]]
                                    show or change which model each tier uses on this machine (a local setting,
                                    agents/settings/models.json, never committed); applies to runs started afterwards
@@ -123,7 +127,7 @@ PROTECTED_CANDIDATES = [
 ]
 
 
-def scout(app: Path) -> dict:
+def scout(app: Path, layer: Path | None = None) -> dict:
     app = app.resolve()
     if not (app / ".git").exists():
         raise AlError(f"{app} is not a git checkout")
@@ -257,6 +261,7 @@ def scout(app: Path) -> dict:
         "contributing": next((p for p in ("CONTRIBUTING.md", "CONTRIBUTING.rst", "docs/contributing.rst", "HACKING.md") if has(p)), ""),
         "existing_agent_setup": existing,
         "existing_adw_suite": suite_module().detect_suite(app, tracked),
+        "delivery": delivery_module().detect(app, tracked, forge_layer=layer, default_branch=head),
     }
 
 
@@ -293,6 +298,14 @@ def adopt_module():
         sys.path.insert(0, str(ROOT / "tools"))
     import al_adopt
     return al_adopt
+
+
+def delivery_module():
+    """tools/al_delivery.py: read-only detection of the branching style in use (`al scout`)."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_delivery
+    return al_delivery
 
 
 def suite_module():
@@ -389,6 +402,10 @@ def render_llm_txt(s: dict) -> str:
 
 - Forge: {s['forge']}{f" ({s['repo']})" if s['repo'] else ''}
 - CI: {', '.join(f'`{c}`' for c in s['ci']) or '(none found)'}
+
+## Delivery
+
+{delivery_module().render_section(s['delivery']) if s.get('delivery') else '- UNVERIFIED'}
 
 ## Conditional docs
 
@@ -2023,6 +2040,64 @@ def layer_models_module(layer: Path):
     return models, ir_module, errors
 
 
+def layer_delivery_module(layer: Path):
+    """The layer's own delivery module (adw_modules/delivery.py), so `al cycle` and the layer's runs
+    read and write the cycle state with the same code."""
+    if not (layer / "agentic-layer.json").is_file() or not (layer / "adws/adw_modules/delivery.py").is_file():
+        if (layer / "agentic-layer.json").is_file() and (layer / "adws/adw_modules").is_dir():
+            raise AlError(f"{layer} was generated before `al cycle`: run `al gen {layer}`")
+        raise AlError(f"{layer} is not a generated layer: run `al gen {layer}` first")
+    for name in [n for n in sys.modules if n == "adw_modules" or n.startswith("adw_modules.")]:
+        del sys.modules[name]   # another layer's runtime may have been imported before
+    sys.path.insert(0, str(layer / "adws"))
+    try:
+        from adw_modules import delivery, errors, ir as ir_module
+    except ImportError as exc:
+        raise AlError(f"cannot import the layer runtime from {layer / 'adws'}: {exc}") from exc
+    return delivery, ir_module, errors
+
+
+def cycle_cli(a: argparse.Namespace) -> int:
+    """`al cycle LAYER status|start|close`: 0 on success, 1 with `al cycle: <reason>: <words>`."""
+    layer = a.layer.resolve()
+    delivery, ir_module, errors = layer_delivery_module(layer)
+    try:
+        loaded = ir_module.load(layer)
+        if a.action == "status":
+            result = delivery.cycle_status(loaded)
+            lines = delivery.status_lines(result)
+        elif a.action == "start":
+            result = delivery.cycle_start(loaded, name=a.name, version=a.version, push=a.push)
+            lines = []
+            kind = loaded.ir["cycle"]["kind"]
+            if result.get("closed"):
+                lines.append(_closed_line(kind, result["closed"], delivery.cycle_status(loaded)["into"]["branch"]))
+            current = result["current"]
+            lines.append(f"cycle: {kind} {current['name']} opened: branch {current['branch']} from "
+                         f"{result['source']['branch']} at {current['from_commit'][:7]}")
+            if result.get("pushed"):
+                lines.append(f"pushed: {current['branch']} to {result['pushed']}")
+        else:
+            if a.name or a.version or a.push:
+                print("al cycle: --name, --version and --push go with start", file=sys.stderr)
+                return 2
+            result = delivery.cycle_close(loaded)
+            lines = [_closed_line(loaded.ir["cycle"]["kind"], result["closed"], result["into"]), f"next: {result['next']}"]
+    except delivery.DeliveryError as exc:
+        print(f"al cycle: {exc.reason}: {exc.message}", file=sys.stderr)
+        return 1
+    except errors.LayerError as exc:
+        print(f"al cycle: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, sort_keys=True) if a.json else "\n".join(lines))
+    return 0
+
+
+def _closed_line(kind: str, closed: dict, into: str) -> str:
+    how = f"already in {into}" if closed.get("accepted") else f"not merged into {into}; a person accepts it"
+    return f"cycle: {kind} {closed['name']} closed ({how})"
+
+
 def layer_launch_module(layer: Path):
     """The layer's own start path (adw_modules/launch.py), so `al run` and the dashboard start work
     with the same code and the layer's runtime version."""
@@ -2236,6 +2311,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--in-repo", action="store_true", help="put the layer inside the application repository (committed with it)")
     p.add_argument("--dir", default="agentic", help="with --in-repo: the layer directory, relative to the repository root")
     p = sub.add_parser("scout"); p.add_argument("app", type=Path); p.add_argument("-o", "--out", type=Path); p.add_argument("--json", action="store_true")
+    p.add_argument("--layer", type=Path, help="a layer whose declared forge is asked for branch protection (nothing else is read)")
     p = sub.add_parser("explain", help="explain a layer definition in plain language, block by block")
     p.add_argument("layer", type=Path); p.add_argument("--md", type=Path); p.add_argument("--gif", type=Path)
     for name in ("compile", "check"):
@@ -2284,6 +2360,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--request-key", help="the same key never starts a second run (default: a new one)")
     p.add_argument("--yes", action="store_true",
                    help="confirm a workflow that ships without a person, or the same request again within 5 minutes")
+    p = sub.add_parser("cycle", help="the layer's (cycle …): status, start the next stage branch, close the open one")
+    p.add_argument("layer", type=Path)
+    p.add_argument("action", choices=("status", "start", "close"))
+    p.add_argument("--name", help="start: the cycle's name instead of the #:name pattern")
+    p.add_argument("--version", help="start: the version of a release cycle")
+    p.add_argument("--push", action="store_true", help="start: push the new branch to the forge or #:remote")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("models", help="show or change which model each tier of a layer uses (a local setting)")
     p.add_argument("layer", type=Path)
     group = p.add_mutually_exclusive_group()
@@ -2329,7 +2412,7 @@ def main(argv: list[str] | None = None) -> int:
             extra = (["--md", str(a.md)] if a.md else []) + (["--gif", str(a.gif)] if a.gif else [])
             return subprocess.call([str(ROOT / "tools" / "explain.py"), str(a.layer), *extra])
         if a.cmd == "scout":
-            facts = scout(a.app)
+            facts = scout(a.app, layer=a.layer)
             text = json.dumps(facts, indent=2) if a.json else render_llm_txt(facts)
             a.out.write_text(text) if a.out else print(text)
         elif a.cmd == "init" and a.in_repo:
@@ -2391,6 +2474,8 @@ def main(argv: list[str] | None = None) -> int:
             return dashboard_cli(a)
         elif a.cmd == "models":
             return models_cli(a)
+        elif a.cmd == "cycle":
+            return cycle_cli(a)
         elif a.cmd == "run":
             return run_cli(a)
         elif a.cmd == "deploy":

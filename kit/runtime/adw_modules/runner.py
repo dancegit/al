@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import budget, envs, events, ir, models, notify, state as state_module, steps
+from . import budget, delivery, envs, events, ir, models, notify, state as state_module, steps
 from . import slots
 from .agents import CLASSES
 from .errors import LayerError, StepFailed, StepWaiting
@@ -206,11 +206,22 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"cost:      {budget.summary(state)}",
         *([f"models:    {_models_line(state)}"] if state.agent_calls else []),
         f"ship:      {ship}",
+        *([f"delivery:  {_delivery_line(state)}"] if state.delivery else []),
         *([handoff] if handoff else []),
         f"artefacts: {len(state.artefacts)}",
         *([f"resume:    {resume_command(state)}"] if state.status == "waiting" else []),
         f"state:     {state_module.run_dir(layer.layer_dir, state.adw_id) / 'state.json'}",
     ]
+
+
+def _delivery_line(state: state_module.ADWState) -> str:
+    """Where the run delivers, e.g. `sprint -> sprint/2026-s47 (merge; delivered=True)`."""
+    d = state.delivery
+    if d.get("refused"):
+        return f"{d.get('stage') or '?'} -> {d.get('branch') or '?'} (refused: {d['refused']})"
+    where = f" @ {d['environment_name']}" if d.get("environment_name") else ""
+    return (f"{d.get('stage')} -> {d.get('branch')} ({d.get('entry', 'merge')}; "
+            f"delivered={d.get('delivered')}){where}")
 
 
 def resume_command(state: state_module.ADWState) -> str:
@@ -407,6 +418,18 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
         if refused:
             print(f"adw_{adw}: refused: {refused}", file=sys.stderr)
             return budget.EXIT_REFUSED
+        try:  # where the run delivers (a layer with stages); refused before any worktree exists
+            target = delivery.for_run(layer, definition, state)
+        except delivery.DeliveryError as exc:
+            print(f"adw_{adw}: refused: delivery:{exc.reason}: {exc.message}", file=sys.stderr)
+            state.status, state.ended = "failed", state_module.now()
+            state.save(layer.layer_dir)
+            return 1
+        if target is not None:
+            layer = delivery.scope(layer, target)
+            state.delivery = {**state.delivery, **layer.delivery}
+            state.delivery.pop("refused", None)
+            state.delivery.pop("reason", None)
         state.save(layer.layer_dir)
     except UsageError as exc:
         parser.print_usage(sys.stderr)
@@ -418,6 +441,8 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
     log_path = state_module.run_dir(layer.layer_dir, state.adw_id) / "run.log"
     with log_path.open("a", encoding="utf-8") as log, events.recording(layer.layer_dir, state.adw_id):
         tee = _Tee(sys.stdout, log)
+        if layer.delivery:
+            events.emit("delivery.target", **layer.delivery)
         try:
             with contextlib.redirect_stdout(tee):
                 exit_code = _run(layer, state, definition, args, request)

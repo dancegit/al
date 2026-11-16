@@ -6,6 +6,12 @@
 ;;   (define-kind FAMILY KIND [#:status stable|experimental|planned] "doc"
 ;;     [field type default "doc"] ...)
 ;;   (define-record NAME [#:positional (FIELD …)] "doc" [field type default "doc"] ...)
+;;   (define-preset CLAUSE NAME "doc" #:expand PROC [field type default "doc"] ...)
+;;
+;; A preset is a named shorthand written (CLAUSE NAME #:field value …), e.g. (delivery sprint
+;; #:length-days 7). Its fields are checked like any other; PROC receives them as a hash (JSON
+;; keys, the compiled values) and returns the clauses the preset stands for, as data, so the
+;; compiler splices them in and the reference (and `al explain`) can print what it expands to.
 ;;
 ;; From these declarations three things are derived, so they cannot drift:
 ;;   1. the DSL forms the compiler accepts   (private/compiler.rkt)
@@ -28,9 +34,10 @@
 
 (require racket/list racket/string)
 
-(provide define-family define-kind define-record
-         (struct-out family) (struct-out kind) (struct-out field) (struct-out record)
+(provide define-family define-kind define-record define-preset
+         (struct-out family) (struct-out kind) (struct-out field) (struct-out record) (struct-out preset)
          all-families all-records find-family find-kind find-record
+         all-presets find-preset preset-default-params preset-expansion
          field-required? field-none? field-shorthand? kebab->camel field-json-key field-keyword
          emitted-fields)
 
@@ -38,15 +45,35 @@
 (struct kind (name status doc fields) #:transparent)
 (struct family (name key letter default-kind doc [kinds #:mutable]) #:transparent)
 (struct record (name doc fields positional) #:transparent)
+(struct preset (clause name doc fields expand) #:transparent)
 
 (define families '())
 (define records '())
+(define presets '())
 
 (define (all-families) (reverse families))
 (define (all-records) (reverse records))
 (define (find-family name) (findf (lambda (f) (eq? (family-name f) name)) families))
 (define (find-record name) (findf (lambda (r) (eq? (record-name r) name)) records))
 (define (find-kind fam name) (findf (lambda (k) (eq? (kind-name k) name)) (family-kinds fam)))
+
+(define (all-presets) (reverse presets))
+(define (find-preset clause name)
+  (findf (lambda (p) (and (eq? (preset-clause p) clause) (eq? (preset-name p) name))) presets))
+(define (register-preset! p) (set! presets (cons p presets)))
+
+;; A field default as the compiler emits it: symbols (enum values, names) become strings.
+(define (default->json v)
+  (cond [(symbol? v) (symbol->string v)]
+        [(list? v) (map default->json v)]
+        [else v]))
+;; The parameters of preset P with every field at its default (JSON keys).
+(define (preset-default-params p)
+  (for/fold ([h (hasheq)]) ([f (in-list (preset-fields p))])
+    (hash-set h (field-json-key f) (default->json (field-default f)))))
+;; The clauses P stands for with PARAMS (default: its defaults), as data.
+(define (preset-expansion p [params (preset-default-params p)])
+  ((preset-expand p) params))
 
 (define (register-family! f) (set! families (cons f families)))
 (define (register-record! r) (set! records (cons r records)))
@@ -88,3 +115,6 @@
      (register-record! (record 'name doc (list (field 'fname 'ftype 'fdefault fdoc) ...) '(p ...)))]
     [(_ name doc [fname ftype fdefault fdoc] ...)
      (register-record! (record 'name doc (list (field 'fname 'ftype 'fdefault fdoc) ...) '()))]))
+
+(define-syntax-rule (define-preset clause name doc #:expand proc [fname ftype fdefault fdoc] ...)
+  (register-preset! (preset 'clause 'name doc (list (field 'fname 'ftype 'fdefault fdoc) ...) proc)))

@@ -80,6 +80,18 @@ CI config, release and publishing, security-sensitive code, migrations, generate
 - Repo: <owner/name; host if not the default>
 - CI: <CI system, config path, and which commands it runs>
 
+## Delivery
+
+<How work reaches the main branch today, as `al scout` proposes it: confirm or correct it from branch names, merges and the contribution docs.>
+
+- Style: <trunk | sprint | gitflow | release-branch | phase-gate>, or UNVERIFIED
+- Proposed preset: `<(delivery PRESET #:param value …)>`, or UNVERIFIED
+- Default branch: <the branch that ships>
+- What speaks for it: <branch names, merge commits, tags, CI triggers, CONTRIBUTING lines; each with where it was seen>
+- What speaks against it: <conflicting evidence, or `nothing`>
+- Branch protection: <which branches only people may change, and the evidence; or UNVERIFIED>
+- Which branches agents may merge into: <the stages a zero-touch workflow may deliver into, or `none`; or UNVERIFIED>
+
 ## Conditional docs
 
 <Documents an agent must read only in a specific situation: `doc path — when to read it`.>

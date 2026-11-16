@@ -573,6 +573,160 @@ request for you, with the reasons listed. Before turning this on:
       a test that proves one customer cannot see another's data.)
 - [ ] You have looked at what the reviewers say on a few human-reviewed runs.
 
+## How work is delivered
+
+Without anything declared, every run starts from `(codebase #:default-branch …)` and ships into it (or hands a
+branch to you). If your team collects work somewhere else first, a sprint branch, `develop`, a release branch,
+say so with one line. The run's private copy then starts from that branch, and its ship step delivers into it.
+`al scout` proposes the line from the history it finds (see the end of this section).
+
+Each **stage** is a branch (or a branch pattern) where work collects: the stage it is cut from, the stage it
+goes into once accepted, which kinds of work it takes, whether agents may merge into it, and how changes enter
+it. A **preset** writes the stages for you. These are the five, with what each stands for:
+
+**Trunk** — everything goes straight into `main`:
+
+```racket
+(delivery trunk)
+;; stands for:
+(stage main #:branch "main" #:entry squash)
+```
+
+**Sprints** — work collects in a branch per sprint; you accept the sprint into `main`:
+
+```racket
+(delivery sprint #:length-days 14)
+;; stands for:
+(cycle sprint #:stage sprint #:length-days 14 #:name "{year}-s{week}")
+(stage sprint #:branch "sprint/{cycle}" #:from main #:accepts (feature bug chore patch) #:entry merge)
+(stage main #:branch "main" #:accepts () #:agents-may-merge #f)
+```
+
+`al explain` says:
+
+```
+How work is delivered
+  Work is delivered the sprint way through 2 stages: sprint/{cycle} → main. The sprint stage repeats
+  every 14 days (cycles named {year}-s{week}): al cycle LAYER start opens the next branch, al cycle
+  LAYER close closes one. Agents may not merge into main: a person takes the work there.
+```
+
+and for each workflow, where it delivers: `It delivers into sprint (sprint/{cycle}).`
+
+A sprint branch is opened, and closed, with `al cycle`. Opening one creates the branch from `main` with
+`git branch`; nothing is checked out and nothing is pushed unless you add `--push`:
+
+```
+$ al cycle ../shop.al start
+cycle: sprint 2026-s47 opened: branch sprint/2026-s47 from main at e745d25
+$ al cycle ../shop.al status
+cycle: sprint 2026-s47 open since 2026-11-16 (14 days, 14 left)
+branch: sprint/2026-s47 (from main at e745d25)
+ahead of main: 0 commits · behind main: 0 commits
+$ al cycle ../shop.al close
+cycle: sprint 2026-s47 closed (not merged into main; a person accepts it)
+next: a person merges sprint/2026-s47 into main (git merge --no-ff sprint/2026-s47)
+```
+
+`al cycle … start` while a sprint is open closes it first. Closing never merges: accepting a sprint is your
+step. A run started while no sprint is open is refused before it does anything
+(`refused: delivery:no-open-cycle`).
+
+**Gitflow** — work collects in `develop`; release branches per version, hotfix branches from `main`:
+
+```racket
+(delivery gitflow)
+;; stands for:
+(cycle release #:stage release #:name "{version}")
+(stage develop #:branch "develop" #:from main #:accepts (feature bug chore patch) #:entry merge)
+(stage release #:branch "release/{version}" #:from develop #:into main #:accepts () #:agents-may-merge #f)
+(stage hotfix #:branch "hotfix/{date}" #:from main #:into main #:accepts () #:agents-may-merge #f)
+(stage main #:branch "main" #:accepts () #:agents-may-merge #f)
+```
+
+A release branch is opened with `al cycle LAYER start --version 1.4`.
+
+**Release train** — a train branch that leaves on a schedule (`#:length-days 0`: one per version):
+
+```racket
+(delivery release-train)
+;; stands for:
+(cycle sprint #:stage train #:length-days 14 #:name "{date}")
+(stage train #:branch "train/{cycle}" #:from main #:accepts (feature bug chore patch) #:entry merge)
+(stage main #:branch "main" #:accepts () #:agents-may-merge #f)
+```
+
+**Phase gates** — work enters the first phase; you promote it through the others:
+
+```racket
+(delivery phase-gate)
+;; stands for:
+(stage build #:branch "phase/build" #:from main #:into verify #:accepts (feature bug chore patch))
+(stage verify #:branch "phase/verify" #:from main #:into accept #:accepts () #:agents-may-merge #f)
+(stage accept #:branch "phase/accept" #:from main #:into main #:accepts () #:agents-may-merge #f)
+(stage main #:branch "main" #:accepts () #:agents-may-merge #f)
+```
+
+### Add or change a stage
+
+A `(stage NAME …)` with the name of one of the preset's stages replaces it; any other name adds one. An
+urgent route for bugs, which a person merges:
+
+```racket
+(delivery sprint #:length-days 14)
+(stage hotfix #:branch "hotfix/{date}" #:from main #:into main #:accepts (bug) #:agents-may-merge #f
+       #:environment-name "production")
+
+(adw hotfix #:description "Urgent bugs: straight to a hotfix branch, a person merges"
+     #:review human #:classes (bug) #:deliver-to hotfix
+  (steps (compose plan-build) (check test #:cmd test) (run commit #:command commit) (review) (ship)))
+```
+
+A workflow delivers to its `#:deliver-to` stage, else to the first stage that takes its class, else to the
+final stage. A run whose class changes on the way (the classify step says `bug`, which goes elsewhere) is
+handed to you instead of delivered to the wrong branch.
+
+### What the compiler refuses
+
+- A zero-touch workflow (`review auto` with `#:ship merge` or `deploy`) whose work would go to a stage only
+  people may change:
+  `(adw zte): review `zero-touch` ships without a human, but class feature is delivered to stage `main` (branch main), where agents may not merge; deliver to a stage with #:agents-may-merge #t (e.g. #:deliver-to sprint) or use a human or agent review`.
+- Stages that do not lead to one final stage, two final stages, a final stage whose branch is not
+  `#:default-branch`, two stages on one branch, an invalid branch name or an unknown placeholder.
+- `#:entry fast-forward` with `(forge github …)`, which cannot merge a pull request that way.
+- `#:deliver-to` without any stage, or to a stage that does not take the workflow's classes.
+
+### When the stage moved meanwhile
+
+Before shipping, the run looks at the stage branch again. If others delivered into it in the meantime, their
+work is merged into the run's copy and checked with it (`delivery.stale` in the run's events). If it
+conflicts, the review's patch commands get one round to resolve it, the checks run again and the reviewers
+look again; without `#:patch`/`#:implement` on the review step, or if the conflict stays, the run is handed
+to you (`delivery:conflict`).
+
+Without a forge, changes enter a stage by merge; a stage with `#:entry squash`, `rebase` or `fast-forward`
+is handed to you until shipping supports it (`delivery:entry-unsupported`). Through a forge, the pull request
+is merged with the stage's method.
+
+### Let `al scout` propose it
+
+`al scout` reads the branch names, the merges on the default branch, tags, CI triggers and the contribution
+docs, and writes a `## Delivery` section into the `LLM.txt` draft:
+
+```
+## Delivery
+
+- Style: sprint
+- Proposed preset: `(delivery sprint #:length-days 14)`
+- Default branch: main
+- What speaks for it:
+  - 7 sprint branches: sprint/2026-s01, sprint/2026-s02, …
+  - cut every 14 days from main (median gap)
+```
+
+With no signal it proposes `(delivery trunk)`, marked UNVERIFIED. `al scout APP --layer LAYER` also asks the
+layer's forge which branches are protected. It only reads: nothing in the repository changes.
+
 ## Step 13 — Run several at once
 
 Every run already has its own copy of the code. For more:
