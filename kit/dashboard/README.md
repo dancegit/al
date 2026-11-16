@@ -351,7 +351,10 @@ outlives the dashboard, every refusal, and the issue race against the layer's po
 and in trigger mode (`tests/fake_forgejo.py`, an in-memory Forgejo). `tests/test_browser_start.py`
 (Chrome) types `/plan-c`, picks the completion, starts and lands on the run, and opens the ship
 confirmation; with `AL_DASHBOARD_SHOTS=DIR` it saves `start-form.png`, `start-confirm.png` and
-`start-run.png` to DIR.
+`start-run.png` to DIR. `tests/test_browser_promotion.py` (Chrome) checks the promotion card, the pack
+page and the layer page's Promotions section; with `AL_DASHBOARD_SHOTS=DIR` it saves
+`promotion-card.png`, `promotion-refused.png`, `promotion-pack.png` and `promotion-layer.png` (the
+layer page's Promotions section with its buttons) to DIR.
 
 `tests/test_workspace.py` covers the workspace scan (states, sibling layers, al scout's summary, depth,
 symlinks out of the folder, the file and time bounds, git without fsmonitor or hooks, the cache and the
