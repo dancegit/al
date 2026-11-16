@@ -1,7 +1,7 @@
 """A layer with stages and a promotion waiting for people, for the dashboard's promotion tests: built
 the way `al gen` lays one out (without Racket): the kit's runtime copied to adws/adw_modules, one
 adws/adw_<name>.py per workflow and adws/promote.py with the text tools/al writes. Three changes are
-delivered into the sprint by real runs of the layer (the mock agent), one with a screenshot, then
+delivered into the sprint by real runs of the layer (the mock agent), one with a screenshot, one with a recording, then
 `adws/promote.py run sprint main` opens the promotion: it ends `waiting` at `approval`, with its
 state.json, events.jsonl, approval.md and the pack under artefacts/<id>/pack/."""
 from __future__ import annotations
@@ -116,20 +116,37 @@ def build_promotion_site(root: Path, *, open_promotion: bool = True) -> dict:
                     "branch": SPRINT, "from_commit": head}}, indent=2))
     for adw_id, name, prompt, criteria in CHANGES:
         deliver(layer, adw_id, name, prompt, criteria)
-    shot = layer / "artefacts" / "0000c001" / "screenshots" / "cart.png"
-    shot.parent.mkdir(parents=True)
-    shutil.copy(DATA / "tiny.png", shot)
-    state_path = layer / "agents" / "0000c001" / "state.json"
-    state = json.loads(state_path.read_text())
-    state["artefacts"].append({"id": "screenshots", "type": "image", "step": "test",
-                               "path": "artefacts/0000c001/screenshots/cart.png", "bytes": shot.stat().st_size})
-    state_path.write_text(json.dumps(state, indent=2))
+    shot = _attach(layer, "tiny.png", "artefacts/0000c001/screenshots/cart.png")
+    _record(layer, "0000c001", {"id": "screenshots", "type": "image", "step": "test",
+                                "path": "artefacts/0000c001/screenshots/cart.png", "bytes": shot.stat().st_size})
+    video = _attach(layer, "tiny.webm", "artefacts/0000c002/recording/search.webm")
+    frame = _attach(layer, "tiny.png", "artefacts/0000c002/recording/search.keyframes/frame-001.png")
+    _record(layer, "0000c002", {"id": "recording", "type": "video", "step": "test",
+                                "path": "artefacts/0000c002/recording/search.webm", "bytes": video.stat().st_size,
+                                "keyframes": [{"path": "artefacts/0000c002/recording/search.keyframes/frame-001.png",
+                                               "bytes": frame.stat().st_size}]})
     site = {"root": root, "app": app, "layer": layer, "changes": [c[0] for c in CHANGES], "run": ""}
     if open_promotion:
         done = script(layer, "promote.py", "run", "sprint", "main")
         assert done.returncode == 75, done.stdout + done.stderr
         site["run"] = json.loads((layer / "agents" / "promotions" / "sprint-main.json").read_text())["id"]
     return site
+
+
+def _attach(layer: Path, data_file: str, rel: str) -> Path:
+    """A copy of tests/data/<data_file> at <layer>/<rel>, as `artefacts.collect` leaves one."""
+    target = layer / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(DATA / data_file, target)
+    return target
+
+
+def _record(layer: Path, adw_id: str, artefact: dict) -> None:
+    """Appends an artefact record to agents/<adw_id>/state.json."""
+    state_path = layer / "agents" / adw_id / "state.json"
+    state = json.loads(state_path.read_text())
+    state["artefacts"].append(artefact)
+    state_path.write_text(json.dumps(state, indent=2))
 
 
 def script(layer: Path, name: str, *argv: str) -> subprocess.CompletedProcess:

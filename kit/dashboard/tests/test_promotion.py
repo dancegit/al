@@ -210,6 +210,9 @@ def test_pack_page_is_served_inline_and_sandboxed(site):
         assert b"Add a cart" in body and b'<img src="media/0000c001/cart.png"' in body
         status, _h, _b = running.get(f"/files/shop/artefacts/{site['run']}/pack/media/0000c001/cart.png")
         assert status == 200
+        assert b'<video controls src="media/0000c002/search.webm"' in body
+        status, _h, _b = running.get(f"/files/shop/artefacts/{site['run']}/pack/media/0000c002/search.webm")
+        assert status == 200
         for bad in ("artefacts/../agentic-layer.json", f"artefacts/{site['run']}/pack/../../../../app/VERSION",
                     "promotions/../agents/cycle.json"):
             assert running.get(f"/files/shop/{bad}")[0] in (403, 404), bad

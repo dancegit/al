@@ -1,6 +1,6 @@
 """The promotion card in a real Chrome: a promotion run waiting for people lists its three changes
-with their criteria and proof; refusing one with a comment shows it as refused; the pack page opens
-with its pictures and a playable recording. Skipped without Playwright or Chrome (nothing is
+with their criteria and proof; refusing one with a comment shows it as refused; the pack page that
+build_pack generated opens with its pictures and a playable recording. Skipped without Playwright or Chrome (nothing is
 downloaded). With AL_DASHBOARD_SHOTS=<directory> it saves promotion-card.png, promotion-refused.png
 and promotion-pack.png there. Everything on the page is synthetic: the mock agent, a temporary
 application, invented names."""
@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from pathlib import Path
 
 import pytest
 
 from conftest import start_server, stop_server
-from promotion_fixtures import DATA, build_promotion_site
+from promotion_fixtures import build_promotion_site
 from test_browser import CHROME, browser, open_, until, playwright_api  # noqa: F401 — fixtures and skips
 
 pytestmark = pytest.mark.browser
@@ -69,17 +68,16 @@ def test_promotion_card_accept_refuse_and_continue(ppage):
 
 def test_pack_page_shows_pictures_and_plays_the_recording(ppage):
     page, site = ppage
-    # the pack of a run with a recording: copy the webm in as the checkout change's proof and rebuild
-    pack = site["layer"] / "artefacts" / site["run"] / "pack"
-    media = pack / "media" / "0000c002"
-    media.mkdir(parents=True, exist_ok=True)
-    shutil.copy(DATA / "tiny.webm", media / "search.webm")
-    page_html = (pack / "index.html").read_text()
-    (pack / "index.html").write_text(page_html.replace(
-        "<h2>Proof</h2>", '<h2>Proof</h2><video controls src="media/0000c002/search.webm" title="search.webm"></video>', 1))
+    # the pack exactly as build_pack wrote it: 0000c002 carries a recording with one keyframe
     page.goto(f"{page.base}/files/shop/artefacts/{site['run']}/pack/index.html")
     page.wait_for_selector("video")
-    assert page.locator("video").first.get_attribute("controls") is not None
+    video = "video[controls][src='media/0000c002/search.webm']"
+    assert page.locator(f"#change-0000c002 {video}").count() == 1
+    proof = page.locator("figure", has=page.locator(video))
+    assert proof.count() == 1 and proof.locator("figcaption").inner_text() == "search.webm"
+    assert page.locator("h3:has-text('Add search (0000c002)') + figure").locator(video).count() == 1
+    assert page.locator(".strip video[src='media/0000c002/search.webm']").count() == 1
+    assert page.locator(".strip img[src='media/0000c002/frame-001.png']").count() == 1
     assert page.locator("img[src='media/0000c001/cart.png']").count() >= 1
     assert "Add a cart" in page.inner_text("body")
     shot(page, "promotion-pack.png")
