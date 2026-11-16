@@ -22,6 +22,20 @@ You need:
 | `ffmpeg` (optional) | only if you want video as proof | `ffmpeg -version` |
 | `nix` (optional) | only if you want a Nix toolchain shell | `nix --version` |
 
+al finds each of these programs in the same order everywhere: a setting that names it (`AL_RACKET`,
+`AL_RACO`, `AL_UV`, `AL_GIT`, `AL_CLAUDE`, `AL_CODEX`, an absolute path), then `PATH`, then the usual
+per-user install folders (`~/.nix-profile/bin`, `~/.local/state/nix/profile/bin`,
+`/etc/profiles/per-user/$USER/bin`, `/nix/var/nix/profiles/default/bin`, `~/.local/bin`, `~/racket/bin`,
+`/usr/local/racket/bin`, `/opt/racket/bin`). A setting is read from the environment, else from the layer's
+`local.env`, `~/.config/al/<layer name>.env` or, for every layer, `~/.config/al/tools.env`:
+
+```bash
+mkdir -p ~/.config/al && echo "AL_RACKET=$HOME/racket/bin/racket" >> ~/.config/al/tools.env
+```
+
+A command whose prerequisite is missing stops before it does any work, with exit code 4 and one sentence
+per missing tool (see [When al cannot find a tool](#when-al-cannot-find-a-tool-al-doctor)).
+
 Get `al` and make the command available:
 
 ```bash
@@ -159,7 +173,10 @@ al compile ~/code/myapp.al > /dev/null && echo "compiles"
 `al author ~/code/myapp.al --preferences "…"` does the same hand-off with the agent CLI (`claude`): it gives
 the agent `meta/commands/author-layer.md` with the layer's `LLM.txt`, then compiles what it wrote. Without
 `--preferences` it uses the conservative answers above and the codebase root beside the layer. It never
-overwrites an existing `agentic.rkt`.
+overwrites an existing `agentic.rkt`. It checks first that `racket` and the agent CLI are there, so a
+missing one costs no agent time. `al author ~/code/myapp.al --accept-existing` takes an `agentic.rkt` that
+is already there (say, one an earlier attempt wrote before the compiler could be found) when it compiles,
+and asks no agent; one that does not compile is reported with the repair hint below.
 
 *If it goes wrong:* the error is always of the form `agentic.rkt:LINE:COL: … expected one of: …` or
 `… is not a declared …; declared: …`. Give it to the agent with
@@ -390,6 +407,16 @@ is shown as `interrupted`, never as running. Jobs are kept in `~/.local/state/al
 - The actions run the al tool of the checkout the dashboard comes from (or `al` on `PATH`). Without one,
   every action is disabled and the panel says where it looked. The create and adopt actions run
   `al author`, which needs the agent CLI (`claude`).
+- The panel's tools table is what `al doctor` sees on this machine: each tool, where it was found (or the
+  sentence that says where al looked), and its version. A job runs with the folders of those tools in front
+  of the dashboard's `PATH`, and checks its prerequisites (`al doctor LAYER --for …`) before its first step:
+  a missing tool fails the job within a second, before any agent is asked.
+
+When a job fails, the failed step shows why (the `al: …` lines it printed, or its exit code), and so does
+the job. A failed or interrupted job offers **Retry from STEP**: after you confirm, the steps from the one
+that failed onwards run again in the same job; the steps that passed, their times and the output stay
+(the output gets a `--- retry from STEP ---` line). A retried `author` step runs with `--accept-existing`,
+so an `agentic.rkt` the first attempt wrote is taken when it compiles instead of asking the agent again.
 
 ## Step 9 — The first real run
 
@@ -873,6 +900,48 @@ One rule comes with this. An ordinary workflow that changes anything under `agen
 handed to a person, whatever its review setting: agents do not get to rewrite their own instructions
 on the way past. Layer changes go through `al improve`.
 
+## When al cannot find a tool: `al doctor`
+
+`al doctor` shows where al finds each program it runs, and its version:
+
+```bash
+al doctor ~/code/myapp.al
+```
+
+```
+tool    found where                              version
+racket  ~/racket/bin/racket (~/racket/bin)       Welcome to Racket v9.0 [cs].
+raco    ~/racket/bin/raco (beside racket)
+uv      ~/.local/bin/uv (PATH)                   uv 0.9.2
+git     /usr/bin/git (PATH)                      git version 2.47.0
+claude  ~/.local/bin/claude (PATH)               2.1.0 (Claude Code)
+```
+
+With a layer its settings count too (`local.env`, `~/.config/al/<name>.env`) and the agent CLIs are the
+ones its workflows use; without one, `claude`. `--json` prints the same rows as a document
+(`{"ok": …, "tools": [{"tool", "found", "path", "source", "version", "looked", "sentence"}]}`).
+`--for gen,author --agent mock` checks only what those subcommands need and prints `ok`, or one sentence
+per missing tool. It exits 4 when a tool is missing; every other subcommand that finds a prerequisite
+missing stops the same way, before any work:
+
+```
+al: author: racket is missing: al looked at AL_RACKET (not set), PATH, ~/.nix-profile/bin, ~/.local/state/nix/profile/bin, /etc/profiles/per-user/$USER/bin, /nix/var/nix/profiles/default/bin, ~/.local/bin, ~/racket/bin, /usr/local/racket/bin, /opt/racket/bin; install Racket (https://racket-lang.org) or set AL_RACKET=/path/to/racket in the layer's local.env or ~/.config/al/tools.env.
+```
+
+A setting that names something that is not an executable file is reported as such; al never falls back
+to another copy behind it.
+
+**On a deployed host** (`al deploy`), the same search runs on the host: a setting in
+`~/.config/al/tools.env` (or `<name>.env`) there, the login `PATH`, the per-user folders. The units'
+`Environment=PATH=` holds the folder of each tool it found, then the login `PATH`, so a unit finds `uv`
+and the agent CLI even when only an interactive shell would. Racket is required on the host only when the
+dashboard unit is installed and the host has an al tool (the dashboard's actions compile layers there);
+otherwise it is `not needed`. A missing tool fails the deploy with its preflight row, before anything is
+changed. The paths are recorded in `~/.config/al/<name>-tools.json` on the host, and
+`al deploy LAYER --to HOST --status` lists the tools now and at the deploy, with a line such as
+`drift: uv moved: was …, now …; run al deploy again so the units' PATH follows` or
+`drift: claude vanished: was …`.
+
 ## When something goes wrong
 
 | What you see | What it means | What to do |
@@ -885,6 +954,7 @@ on the way past. Layer changes go through `al improve`.
 | the agent cannot edit files or run commands | permission mode or allowed tools too narrow | adjust `#:permission-mode` / `#:allowed-tools` on the agent |
 | leftover branches or copies after experiments | runs you interrupted | `git -C ~/code/myapp worktree prune`, then delete the branches |
 | a run refuses to start with exit code 3 | today's spending limit is reached | raise `#:day-usd`, or wait until tomorrow |
+| an `al` command exits 4 with `… is missing: al looked at …` | a prerequisite (racket, uv, git, the agent CLI) is not where al looks | install it, or name it in `~/.config/al/tools.env`; `al doctor` shows what al sees |
 | `al adopt` refuses to write | a file it wrote earlier was edited by hand | move your change into `agentic.rkt`, or `--force` |
 | a container image is stale after you changed the recipe | images are built once and reused | `podman rmi al-<layer name>:latest`, then run again |
 

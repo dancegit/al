@@ -72,14 +72,18 @@ class Host:
         for name, body in STUBS.items():
             self.stub(name, body.replace("{real_sh}", shutil.which("sh") or "/bin/sh"), log=name != "sh")
 
-    def stub(self, name: str, body: str, log: bool = True) -> None:
-        """bin/<name>: a small sh script; with `log` each call appends its arguments to .calls/<name>.log."""
-        path = self.bin / name
+    def stub(self, name: str, body: str, log: bool = True, folder: Path | None = None) -> Path:
+        """bin/<name> (or <folder>/<name>, e.g. the fake home's .local/bin, which is not on the login
+        PATH): a small sh script; with `log` each call appends its arguments to .calls/<name>.log."""
+        directory = folder if folder is not None else self.bin
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
         if path.is_symlink() or path.exists():
             path.unlink()
         record = f'echo "$*" >> "$root/.calls/{name}.log"\n' if log else ""
         path.write_text(f'#!/bin/sh\nroot="{self.root}"\n{record}{body}')
         path.chmod(0o755)
+        return path
 
     def remove(self, tool: str) -> None:
         (self.bin / tool).unlink()

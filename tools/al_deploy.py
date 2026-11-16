@@ -17,9 +17,16 @@ What is generated where:
 - not on the host, not needed to run: bin/al, .al-manifest.local.json, systemd/ in the layer (the
   machine-specific files `al gen` writes locally).
 
-Racket is not needed on the host and the host never runs `al gen`: Racket compiles a definition;
-the host only runs the committed result. Deploying needs no Racket either (it reads the committed
-agentic-layer.json).
+The host never runs `al gen` for the deployment: Racket compiles a definition and the host runs the
+committed result. Racket is needed on the host only for the dashboard's actions (create, adopt, gen
+on a repository from the page), so it is required only when the dashboard unit is installed and the
+host has an al tool. Deploying needs no Racket here either (it reads the committed agentic-layer.json).
+
+The tools the units run (git, uv, the agent CLI, racket and al when present) are found on the host by
+the search of tools/al_tools.py (a setting in ~/.config/al/tools.env or <layer name>.env, the login
+PATH, the per-user install folders), as one sh function (`al_tools.shell_finder`). Their folders go
+in front of the login PATH in the units' Environment=PATH=, and the paths are recorded in
+~/.config/al/<name>-tools.json on the host; `--status` reports a tool that moved or vanished since.
 
 Everything that touches the host goes through a Transport. SshTransport runs the person's own
 `ssh HOST` with no option that overrides their configuration (no key, user, port or host-key
@@ -42,6 +49,7 @@ import shlex
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -51,6 +59,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+if str(Path(__file__).resolve().parent) not in sys.path:     # tools/: al_tools beside this file
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import al_tools  # noqa: E402
 
 
 class AlError(Exception):
@@ -62,6 +74,9 @@ class AlError(Exception):
 REMOTE_TOOLS = ("sh", "cat", "sed", "grep", "df", "id", "mkdir", "chmod", "rm", "ls", "head", "dirname",
                 "test", "env", "tr", "git")
 CHECKED_TOOLS = ("uv", "podman", "systemctl", "loginctl", "claude", "codex")
+# what preflight resolves on the host with al_tools.shell_finder: fact key → (program, setting)
+HOST_TOOLS = {"git": ("git", "AL_GIT"), "uv": ("uv", "AL_UV"), "racket": ("racket", "AL_RACKET"), "al": ("al", "AL_TOOL")}
+NOT_FOUND = "not found (looked at the setting, the login PATH and the per-user folders)"
 
 # agent kind -> (CLI, credentials file under the home directory, variables that replace a login).
 # Mirrors kit/runtime/adw_modules/envs.py: CREDENTIALS (a test keeps the two equal).
@@ -208,7 +223,7 @@ class Remote:
         if self.dry_run:
             return _done()
         self._traced(f"local$ {script}")
-        return subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        return subprocess.run(al_tools.argv(argv), capture_output=True, text=True, stdin=subprocess.DEVNULL)
 
 
 def put(remote: Remote, path: str, text: str, mode: str = "0644") -> subprocess.CompletedProcess:
@@ -425,6 +440,15 @@ class HostFacts:
     directory = property(lambda self: self["directory"])
     envnames = property(lambda self: {n for n in self["envnames"].split(",") if n})
 
+    @property
+    def tools(self) -> dict[str, str]:
+        """tool → its path on the host ("" when it was not found), from the al_find lines of preflight."""
+        out = {}
+        for key, value in self.raw.items():
+            if key in HOST_TOOLS or key.startswith("agent."):
+                out[key.removeprefix("agent.")] = value.split(" ", 1)[0] if value else ""
+        return out
+
 
 def directory_expr(facts: Facts, path: str | None) -> str:
     """The deployment directory as a shell word: --path, else <home>/al/<repository name>."""
@@ -444,17 +468,34 @@ else echo dir=absent
 fi"""
 
 
+def tool_lines(facts: Facts) -> list[str]:
+    """sh lines that find each tool the units run (al_tools.shell_finder must come first) and print
+    `KEY=PATH VERSION`, or `KEY=` when it is nowhere."""
+    found = [(key, program, setting) for key, (program, setting) in HOST_TOOLS.items()]
+    found += [(f"agent.{need.bin}", need.bin, al_tools.TOOLS[need.bin].setting if need.bin in al_tools.TOOLS
+               else "AL_" + need.bin.upper()) for need in agent_logins(facts.ir)]
+    lines = [f"al_layer={shlex.quote(facts.name)}"]
+    for key, program, setting in found:
+        version = "" if program == "al" else ' $("$p" --version 2>/dev/null | head -n 1)'
+        lines.append(f'if p=$(al_find {program} {setting}); then echo "{key}=$p{version}"; else echo "{key}="; fi')
+    return lines
+
+
+def host_fix(program: str) -> str:
+    """How to make a missing tool found on the host: install it, or name it in tools.env there."""
+    tool = al_tools.TOOLS.get(program)
+    install, setting = (tool.install, tool.setting) if tool else (f"install {program}", "AL_" + program.upper())
+    return f"{install} on the host, or set {setting}=/path/to/{program} in ~/.config/al/tools.env there"
+
+
 def preflight_script(facts: Facts, path: str | None = None) -> str:
     """One read. It prints key=value lines whose values are versions, paths and yes/no only: never
     the content of a variable or of a credentials file (of the environment only the names leave the host)."""
-    lines = ['echo "home=$HOME"', 'echo "path=$PATH"']
-    for tool in ("git", "uv", "podman"):
-        lines.append(f'if command -v {tool} >/dev/null 2>&1; then echo "{tool}=$(command -v {tool}) $({tool} --version 2>/dev/null | head -n 1)"; '
-                     f'else echo "{tool}="; fi')
+    lines = [al_tools.shell_finder(), 'echo "home=$HOME"', 'echo "path=$PATH"', *tool_lines(facts)]
+    lines.append('if command -v podman >/dev/null 2>&1; then echo "podman=$(command -v podman) $(podman --version 2>/dev/null | head -n 1)"; '
+                 'else echo "podman="; fi')
     lines.append("echo \"rootless=$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)\"")
     for need in agent_logins(facts.ir):
-        lines.append(f'if command -v {need.bin} >/dev/null 2>&1; then echo "agent.{need.bin}=$(command -v {need.bin}) $({need.bin} --version 2>/dev/null | head -n 1)"; '
-                     f'else echo "agent.{need.bin}="; fi')
         lines.append(f'if test -s "$HOME/{need.file}"; then echo "login.{need.bin}=yes"; else echo "login.{need.bin}=no"; fi')
     env_file = f'"$HOME/.config/al/{facts.name}.env"'
     lines += [
@@ -490,10 +531,10 @@ def preflight_rows(facts: Facts, host: HostFacts) -> list[Row]:
     name, rows = facts.name, []
 
     def tool(check: str, key: str, fix: str) -> None:
-        rows.append(Row(check, "ok", host[key]) if host[key] else Row(check, "MISSING", "not found on the login PATH", fix))
+        rows.append(Row(check, "ok", host[key]) if host[key] else Row(check, "MISSING", NOT_FOUND, fix))
 
-    tool("git", "git", "install git on the host (e.g. apt install git)")
-    tool("uv", "uv", "install uv on the host: https://docs.astral.sh/uv/ (it must be on the login PATH)")
+    tool("git", "git", host_fix("git"))
+    tool("uv", "uv", host_fix("uv"))
     if not needs_podman(facts.ir):
         rows.append(Row("podman", "not needed", "the layer declares no podman environment or dashboard"))
     elif host["podman"] and host["rootless"] == "true":
@@ -502,7 +543,7 @@ def preflight_rows(facts: Facts, host: HostFacts) -> list[Row]:
         rows.append(Row("podman", "MISSING", f"{host['podman']} (rootless: {host['rootless'] or 'unknown'})" if host["podman"] else "not found on the login PATH",
                         "install podman and make rootless work: podman info must say rootless: true (subuid/subgid for the user)"))
     for need in agent_logins(facts.ir):
-        tool(f"agent CLI {need.bin}", f"agent.{need.bin}", f"install the {need.bin} CLI on the host and put it on the login PATH")
+        tool(f"agent CLI {need.bin}", f"agent.{need.bin}", host_fix(need.bin))
         named = sorted(set(need.any_of) & host.envnames)
         if host[f"login.{need.bin}"] == "yes":
             rows.append(Row(f"agent login {need.bin}", "ok", f"~/{need.file}"))
@@ -528,8 +569,18 @@ def preflight_rows(facts: Facts, host: HostFacts) -> list[Row]:
                         "systemctl --user must work for this user over ssh (pam_systemd; XDG_RUNTIME_DIR set)"))
     rows.append(Row("lingering", "ok", "units keep running after logout") if host["linger"] == "yes"
                 else Row("lingering", "will fix", "off: loginctl enable-linger, so the units survive logout"))
-    rows.append(Row("racket", "not needed", "the layer was compiled where you ran al gen; the host only runs it"))
+    if racket_needed(facts, host):
+        tool("racket", "racket", "install Racket on the host or set AL_RACKET in ~/.config/al/tools.env")
+    else:
+        rows.append(Row("racket", "not needed", "the layer was compiled where you ran al gen; the host only runs it"))
     return rows
+
+
+def racket_needed(facts: Facts, host: HostFacts) -> bool:
+    """Racket on the host runs only the dashboard's actions (create, adopt, gen), and those need the
+    dashboard unit and an al tool on the host."""
+    dashboard = (facts.ir.get("dashboard") or {}).get("kind", "local") != "none"
+    return dashboard and bool(host.tools.get("al"))
 
 
 def secret_rows(facts: Facts, host: HostFacts) -> tuple[list[list[str]], list[str]]:
@@ -639,9 +690,18 @@ def host_units(facts: Facts, host: HostFacts, directory: str, al: Any) -> dict[s
     for kind in unit_kinds(facts.ir, al):
         loopback = "--bind 127.0.0.1" if kind == "dashboard" and dashboard["kind"] == "local" else ""
         units[f"al-{facts.name}-{kind}.service"] = al.systemd_unit(
-            kind, facts.name, f"{directory}/{facts.layer_rel}", facts.ir, header=UNIT_HEADER, path_env=host.path,
+            kind, facts.name, f"{directory}/{facts.layer_rel}", facts.ir, header=UNIT_HEADER, path_env=unit_path(host),
             env_file=f"%h/.config/al/{facts.name}.env", extra_args=loopback)
     return units
+
+
+def unit_path(host: HostFacts) -> str:
+    """The units' PATH: the folder of each tool found on the host, then the host's login PATH."""
+    return al_tools.search_path_from([os.path.dirname(p) for p in host.tools.values() if p], host.path)
+
+
+def tools_record(facts: Facts, host: HostFacts) -> str:
+    return f"{host.home}/.config/al/{facts.name}-tools.json"
 
 
 def units_status_script(units: list[str]) -> str:
@@ -684,12 +744,14 @@ def install_units(remote: Remote, facts: Facts, host: HostFacts, units: dict[str
 # al deploy
 # ------------------------------------------------------------------------------------------
 
-def generated_where(facts: Facts, al: Any) -> str:
+def generated_where(facts: Facts, al: Any, host: HostFacts | None = None) -> str:
     units = ", ".join(f"~/.config/systemd/user/{u}" for u in unit_names(facts, al)) or "nothing (the layer declares no cron or webhook trigger and no dashboard)"
+    racket = (host.tools.get("racket") if host is not None else "") or ""
     return ("generated here, committed, travels with the repository: agentic-layer.json, commands/, hops/, adws/ (the runtime), env/\n"
             f"generated on the host, for the host's paths, never committed: {units}\n"
             "not on the host, not needed to run: bin/al, .al-manifest.local.json, systemd/ in the layer\n"
-            "racket on the host: not needed (it compiles a definition; the host only runs the compiled layer)")
+            "racket on the host: needed only for the dashboard's actions (create, adopt, gen); "
+            + (f"found at {racket}" if racket else "not found"))
 
 
 def deploy(a: Any, al: Any) -> int:
@@ -698,7 +760,7 @@ def deploy(a: Any, al: Any) -> int:
     rows, host = preflight(remote, facts, a.path)
     directory = host.directory
     print(f"host: {remote.label}   directory: {directory}   layer: {facts.layer_rel}   commit: {facts.commit[:12]}")
-    print(generated_where(facts, al))
+    print(generated_where(facts, al, host))
     for note in facts.notes:
         print(f"note: {note}")
     print("preflight:")
@@ -729,6 +791,9 @@ def deploy(a: Any, al: Any) -> int:
                   "keep its secret set and put it behind a reverse proxy or a private network")
     if units:
         install_units(remote, facts, host, units, enable=not a.no_enable)
+    done = put(remote, tools_record(facts, host), json.dumps(host.tools, sort_keys=True) + "\n", "0600")
+    if done.returncode != 0:
+        print(f"warning: could not record the tools' paths in {tools_record(facts, host)}; --status cannot report drift")
     if a.dry_run:
         print(f"dry run: nothing was changed on {remote.label}")
         if misses:
@@ -789,6 +854,8 @@ def status(a: Any, al: Any) -> int:
     remote = Remote(transport_for(a.to), read_only=True)
     units = unit_names(facts, al)
     script = 'echo "home=$HOME"\n' + deployment_script(facts, a.path) + ("\n" + units_status_script(units) if units else "")
+    script += ("\n" + al_tools.shell_finder() + "\n" + "\n".join(tool_lines(facts))
+               + f'\necho "tools_json=$(cat "$HOME/.config/al/{facts.name}-tools.json" 2>/dev/null)"')
     done = remote.read(script, "what is deployed, and the units")
     host = HostFacts(parse_facts(done.stdout))
     if not host.home or not host.directory:
@@ -811,6 +878,7 @@ def status(a: Any, al: Any) -> int:
         print(f"note: the deployment has local changes ({host['dirty']} files); the next deploy stops until they are committed or discarded")
     if units:
         print("units:\n" + units_table(done.stdout))
+    print("\n".join(tool_drift(host)))
     agents = f'{directory_expr(facts, a.path)}/{shlex.quote(facts.layer_rel)}/agents'
     runs = remote.read(f"ls -t {agents}/*/state.json 2>/dev/null | head -n 30 | while read -r f; do cat \"$f\" 2>/dev/null; printf '\\n\\036\\n'; done",
                        "the newest run states")
@@ -824,6 +892,28 @@ def status(a: Any, al: Any) -> int:
             states.append(state)
     print("\n".join(run_lines(states, al)))
     return 0
+
+
+def tool_drift(host: HostFacts) -> list[str]:
+    """The tools table of --status (now, at deploy) and a `drift:` line per tool that moved or vanished."""
+    try:
+        recorded = json.loads(host["tools_json"]) if host["tools_json"] else None
+    except ValueError:
+        recorded = None
+    now = host.tools
+    if not isinstance(recorded, dict):
+        return ["tools:", table(["tool", "now", "at deploy"], [[t, p or "not found", "?"] for t, p in sorted(now.items())]),
+                "  (no record of the deploy's tools: deployed by an older al; the next deploy records them)"]
+    names = sorted(set(now) | set(recorded))
+    lines = ["tools:", table(["tool", "now", "at deploy"],
+                             [[t, now.get(t) or "not found", str(recorded.get(t) or "not found")] for t in names])]
+    for name in names:
+        was, is_now = str(recorded.get(name) or ""), now.get(name) or ""
+        if was and not is_now:
+            lines.append(f"drift: {name} vanished: was {was}")
+        elif was and is_now != was:
+            lines.append(f"drift: {name} moved: was {was}, now {is_now}; run al deploy again so the units' PATH follows")
+    return lines
 
 
 def main(a: Any, al: Any) -> int:

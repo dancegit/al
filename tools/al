@@ -18,9 +18,13 @@
                                    copy a kit template into LAYER/templates/ so your edits to it survive `al gen`
   al improve LAYER "request" [--dry-run] [--review human|agent] [--model-set T] [--model T=ID] [--max-cost USD]
                                    change the layer through al's own reviewed workflow: ends in a pull request
-  al author  LAYER [--agent claude-code|mock] [--mock F] [--preferences T]
+  al author  LAYER [--agent claude-code|mock] [--mock F] [--preferences T] [--accept-existing]
                                    have agentic.rkt written: hands meta/commands/author-layer.md to the agent CLI
                                    with the layer's LLM.txt, then compiles it; never overwrites an agentic.rkt
+                                   (--accept-existing: take one that is already there if it compiles)
+  al doctor  [LAYER] [--for CMD,…] [--agent A] [--json]
+                                   where al finds racket, raco, uv, git and the agent CLI, with versions;
+                                   --for: only whether CMD's prerequisites are there (exit 4 when not)
   al adopt   LAYER [--app APP] [--dry-run [--diff]] [--only rules|prompts|workflows …]
                                    bring a codebase's existing agent setup (rule files, prompts, workflow
                                    scripts) into the layer, deterministically; reports what a person must decide
@@ -55,6 +59,10 @@
 
 LAYER is the directory holding agentic.rkt. Nothing is ever written into APP, except with `al init APP --in-repo`,
 which puts the layer (a directory that is committed with the code) inside the application repository.
+
+al finds the programs it runs by a setting (AL_RACKET, AL_RACO, AL_UV, AL_GIT, AL_CLAUDE, AL_CODEX: the
+environment, LAYER/local.env, ~/.config/al/<layer>.env or ~/.config/al/tools.env), then PATH, then the usual
+per-user install folders. A command whose prerequisite is missing stops before any work with exit 4.
 """
 from __future__ import annotations
 
@@ -89,7 +97,12 @@ class AlError(Exception):
     pass
 
 
+class CompilerUnavailable(AlError):
+    """The compiler was found but could not be started: the definition was never checked."""
+
+
 def run(cmd: list[str], cwd: Path | None = None, check: bool = True, env: dict | None = None) -> subprocess.CompletedProcess:
+    cmd = tools_module().argv(cmd)   # a bare racket / git / uv … becomes the path al_tools finds
     return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True, env=env)
 
 
@@ -332,6 +345,14 @@ def deploy_module():
     return al_deploy
 
 
+def tools_module():
+    """tools/al_tools.py: where racket, raco, uv, git and the agent CLIs are (one search order for all of al)."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_tools
+    return al_tools
+
+
 def kit_template_names() -> list[str]:
     """Command and HOP template names of the kit (an adopted prompt must not take one)."""
     return sorted({p.stem for kind in ("commands", "hops") for p in (KIT / "templates" / kind).glob("*.md")})
@@ -433,8 +454,12 @@ def compile_layer(layer: Path) -> dict:
     src = layer if layer.suffix == ".rkt" else layer / "agentic.rkt"
     if not src.exists():
         raise AlError(f"{src} not found")
+    racket = tools_module().need(("racket",), src.parent)["racket"]   # ToolMissing goes up unchanged
     env = dict(os.environ, PLTCOLLECTS=f"{ROOT / 'racket'}:{os.environ.get('PLTCOLLECTS', '')}")
-    cp = run(["racket", str(src)], check=False, env=env)
+    try:
+        cp = run([racket, str(src)], check=False, env=env)
+    except OSError as exc:
+        raise CompilerUnavailable(f"the compiler could not be started ({racket}): {exc.strerror or exc}") from exc
     if cp.returncode != 0:
         raise AlError("agentic.rkt does not compile:\n" + cp.stderr.strip())
     ir = json.loads(cp.stdout)
@@ -2377,7 +2402,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("deploy", help="put an in-repo layer on another machine over ssh and keep it running there",
                        description="Put an in-repo layer and its repository on HOST over ssh (your own ssh configuration; "
                        "al stores no host name, key or password), check that HOST can run it, and keep its poller, webhook "
-                       "and dashboard running as systemd user units. Secrets are never copied. HOST needs no Racket and no al.")
+                       "and dashboard running as systemd user units. Secrets are never copied. HOST needs Racket only for the "
+                       "dashboard's actions (create, adopt, gen), and only when it has an al tool.")
     p.add_argument("layer", type=Path)
     p.add_argument("--to", required=True, metavar="HOST", help="whatever `ssh HOST` accepts (address, user, port, key: ~/.ssh/config)")
     p.add_argument("--path", metavar="DIR", help="the checkout on HOST, absolute (default: ~/al/<repository name>)")
@@ -2397,6 +2423,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--agent", choices=("claude-code", "mock"), default="claude-code")
     p.add_argument("--mock", type=Path, metavar="FILE", help="with --agent mock: a JSON file of the files to write")
     p.add_argument("--preferences", metavar="TEXT", help="PITER choices in plain language, and where the codebase is")
+    p.add_argument("--accept-existing", action="store_true",
+                   help="accept an agentic.rkt that is already there if it compiles; used by a dashboard retry")
+    p = sub.add_parser("doctor", help="where al finds racket, raco, uv, git and the agent CLI (exit 4 when one is missing)")
+    p.add_argument("layer", nargs="?", type=Path, help="a layer whose settings (local.env, ~/.config/al/<name>.env) count")
+    p.add_argument("--for", dest="for_", metavar="CMD,…", help="only check the prerequisites of these subcommands: "
+                   "print ok, or one sentence per missing tool; no versions")
+    p.add_argument("--agent", choices=("claude-code", "codex", "mock"), help="the agent kind whose CLI counts")
+    p.add_argument("--json", action="store_true", help="print the rows as JSON")
     p = sub.add_parser("verify", help="run the layer's codebase cmds on a throwaway worktree",
                        description=VERIFY_DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("layer", type=Path)
@@ -2429,11 +2463,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"layer: {layer}\n  LLM.txt          draft — complete it with meta/commands/scout-codebase.md\n"
                   f"  AL-DSL.llms.txt  language reference\nnext: author {layer}/agentic.rkt (meta/commands/author-layer.md), then `al gen {layer}`\n"
                   f"codebase root to use in agentic.rkt: {os.path.relpath(app, layer)}")
+        elif a.cmd == "doctor":
+            return doctor_cli(a)
         elif a.cmd == "compile":
+            tools_module().need(tools_module().NEEDS["compile"], a.layer.resolve())
             ir = compile_layer(a.layer.resolve())
             print(json.dumps(ir, indent=2, sort_keys=True))
         elif a.cmd == "gen":
             layer = a.layer.resolve()
+            tools_module().need(tools_module().NEEDS["gen"], layer)
             gen = Generator(layer, compile_layer(layer))
             try:
                 written = gen.generate(discard_edits=a.discard_edits)
@@ -2486,6 +2524,7 @@ def main(argv: list[str] | None = None) -> int:
             module = adopt_module()
             if a.diff and not a.dry_run:
                 raise AlError("--diff goes with --dry-run")
+            tools_module().need(tools_module().NEEDS["adopt"], a.layer.resolve())
             try:
                 return module.adopt(sys.modules[__name__], a.layer, a.app, set(a.only or ("rules", "prompts", "workflows")),
                                     a.dry_run, a.force, diff=a.diff)
@@ -2497,7 +2536,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise AlError("author: --agent mock needs --mock FILE")
             try:
                 return module.author(sys.modules[__name__], a.layer, a.agent, a.mock, a.preferences,
-                                     say=lambda line: print(line, flush=True))
+                                     say=lambda line: print(line, flush=True), accept_existing=a.accept_existing)
             except module.AuthorError as exc:
                 raise AlError(f"author: {exc}") from exc
         elif a.cmd == "verify":
@@ -2511,10 +2550,68 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if failed else 0
         elif a.cmd == "notify-test":
             return notify_test(a.layer.resolve(), a.event)
+    except tools_module().ToolMissing as e:
+        return tool_missing(a.cmd, e)
+    except CompilerUnavailable as e:
+        print(f"al: {a.cmd}: {e}", file=sys.stderr)
+        return 4
     except AlError as e:
         print(f"al: {e}", file=sys.stderr)
         return 1
+    except FileNotFoundError as e:
+        name = os.path.basename(str(e.filename or ""))
+        if name not in tools_module().TOOLS:
+            raise
+        return tool_missing(a.cmd, tools_module().ToolMissing([tools_module().find(name)]))
     return 0
+
+
+def tool_missing(cmd: str, e) -> int:
+    """A missing prerequisite: one `al: CMD: sentence` line per tool (and the caller's hint), exit 4."""
+    for sentence in e.sentences:
+        print(f"al: {cmd}: {sentence}", file=sys.stderr)
+    if e.hint:
+        print(f"al: {cmd}: {e.hint}", file=sys.stderr)
+    return 4
+
+
+def doctor_cli(a: argparse.Namespace) -> int:
+    """`al doctor [LAYER] [--for CMD,…] [--agent A] [--json]`: exit 0, or 4 when a tool is missing."""
+    tools = tools_module()
+    layer = a.layer.resolve() if a.layer else None
+    if a.for_:
+        names: list[str] = []
+        for cmd in (c.strip() for c in a.for_.split(",")):
+            if not cmd:
+                continue
+            if cmd not in tools.NEEDS:
+                raise AlError(f"doctor: --for {cmd}: not one of {', '.join(sorted(tools.NEEDS))}")
+            names += tools.NEEDS[cmd]
+            if cmd in ("author", "improve"):
+                names += tools.agent_bin(a.agent or "claude-code")
+        try:
+            tools.need(names, layer)
+        except tools.ToolMissing as e:
+            print("\n".join(e.sentences))
+            return 4
+        print("ok")
+        return 0
+    names = list(("racket", "raco", "uv", "git"))
+    if a.agent:
+        names += tools.agent_bin(a.agent)
+    elif layer is not None and (layer / "agentic-layer.json").is_file():
+        try:
+            ir = json.loads((layer / "agentic-layer.json").read_text())
+        except ValueError:
+            ir = {}
+        for agent in deploy_module().used_agents(ir):
+            names += tools.agent_bin(agent.get("kind"))
+    else:
+        names.append("claude")
+    rows = tools.doctor_rows(names, layer, versions=True)
+    ok = all(row["found"] for row in rows)
+    print(json.dumps({"ok": ok, "tools": rows}, indent=2) if a.json else tools.doctor_table(rows))
+    return 0 if ok else 4
 
 
 if __name__ == "__main__":

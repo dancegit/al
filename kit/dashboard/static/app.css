@@ -496,6 +496,14 @@ code.cmd { font: 12px/1.5 var(--mono); color: var(--text-2); background: #0b0e13
 .job-step { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-top: 1px solid var(--border); }
 .job-step .spacer { flex: 1; }
 .job-step .num { min-width: 64px; text-align: right; }
+.job-step { flex-wrap: wrap; }
+.job-step .why { flex-basis: 100%; margin: 2px 0 4px; color: var(--text-2); overflow-wrap: anywhere; }
+.job-retry { padding-top: 8px; display: flex; align-items: center; gap: 10px; }
+table.tools { width: 100%; border-collapse: collapse; margin: 6px 0 4px; font-size: 12px; }
+table.tools th { text-align: left; color: var(--dim); font-weight: normal; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--border); }
+table.tools td { padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+table.tools tr.missing td:first-child { color: var(--failed); }
+table.tools .why { padding: 4px 8px; }
 .job-changed .changed { margin: 0; padding-left: 0; list-style: none; }
 .badge.change-added { color: var(--passed); } .badge.change-removed { color: var(--failed); } .badge.change-modified { color: var(--waiting); }
 .s-interrupted, .s-refused { color: var(--failed); }

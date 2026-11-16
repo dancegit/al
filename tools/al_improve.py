@@ -31,6 +31,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import al_tools   # tools/ is on sys.path when tools/al loads this module
+
 SELF_TEMPLATE = "self/agentic.rkt.in"
 REVIEWS = ("human", "agent")
 NO_ZERO_TOUCH = ("there is no zero-touch mode for layer changes: a change to how agents work always passes a person. "
@@ -49,8 +51,8 @@ def main(a: argparse.Namespace, al: Any) -> int:
 
 def sh(argv: list[str], cwd: Path | None = None, env: dict | None = None, check: bool = False,
        timeout: float | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run([str(x) for x in argv], cwd=cwd, env=env, text=True, capture_output=True, check=check,
-                          timeout=timeout)
+    argv = al_tools.argv([str(x) for x in argv])   # a bare git / uv … becomes the path al_tools finds
+    return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True, check=check, timeout=timeout)
 
 
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -251,6 +253,8 @@ def improve(a: argparse.Namespace, al: Any) -> int:
         raise al.AlError("--mock-scripts only makes sense with --dry-run")
     layer = a.layer.resolve()
     target = Target(layer, al)
+    agent = al_tools.agent_bin(target.ir["agents"][0]["kind"]) if target.ir.get("agents") and not a.dry_run else ()
+    al_tools.need(al_tools.NEEDS["improve"] + agent, layer)   # before anything is written or started
     target.prepare_repo(al, say)
     self_dir = target.self_dir
     self_dir.mkdir(exist_ok=True)
@@ -269,7 +273,7 @@ def improve(a: argparse.Namespace, al: Any) -> int:
         + ("a person, in the pull request" if a.review == "human" else "an agent reviewer, then a person merges")
         + ("; DRY RUN: the mock agent does the work" if a.dry_run else ""))
     env = {k: v for k, v in os.environ.items() if k != "AL_APP_ROOT"}  # the workflow's own app root is its definition's
-    argv = ["uv", "run", "--quiet", str(self_dir / "adws" / "adw_improve.py"), a.request, "--adw-id", adw_id]
+    argv = al_tools.argv(["uv", "run", "--quiet", str(self_dir / "adws" / "adw_improve.py"), a.request, "--adw-id", adw_id])
     if a.dry_run:
         argv.append("--dry-run")
     # model and spending overrides for this run (AL_MODEL_SET / AL_MODELS / AL_MAX_COST pass through `env`)
@@ -432,8 +436,8 @@ def check_dry_runs(al, worktree, target, a, out) -> None:
     for adw in ir["adws"]:
         adw_id = secrets.token_hex(4)
         klass = (adw.get("classes") or ["chore"])[0]
-        argv = ["uv", "run", "--quiet", str(target / "adws" / f"adw_{adw['name']}.py"),
-                f"al improve: dry run of {adw['name']}", "--dry-run", "--class", klass, "--adw-id", adw_id]
+        argv = al_tools.argv(["uv", "run", "--quiet", str(target / "adws" / f"adw_{adw['name']}.py"),
+                              f"al improve: dry run of {adw['name']}", "--dry-run", "--class", klass, "--adw-id", adw_id])
         cp = sh(argv, cwd=target, env=env, timeout=3000)
         (logs / f"{adw['name']}.log").write_text(cp.stdout + cp.stderr)
         state = target / "agents" / adw_id / "state.json"

@@ -6,7 +6,8 @@
   fern    a README and one source file: none
 
 and `fake_al`, a standard-library stand-in for the al tool that records its argv and prints, sleeps,
-writes and exits as told (no Racket, no LLM)."""
+writes and exits as told (no Racket, no LLM). Its `doctor` (a job's prerequisite check) answers `ok` at
+once unless `fail` names it."""
 from __future__ import annotations
 
 import json
@@ -95,6 +96,16 @@ BEHAVIOUR = {behaviour}
 with open(HERE + ".calls", "a") as calls:
     calls.write(json.dumps(sys.argv[1:]) + "\\n")
 command = sys.argv[1] if len(sys.argv) > 1 else ""
+if command in BEHAVIOUR.get("fail", {{}}):
+    code, text = BEHAVIOUR["fail"][command]
+    if command == "doctor":
+        print(text, flush=True)
+    else:
+        print(text, file=sys.stderr, flush=True)
+    sys.exit(code)
+if command == "doctor":
+    print("ok")
+    sys.exit(0)
 for path, text in BEHAVIOUR.get("writes", {{}}).get(command, {{}}).items():
     path = path.replace("{{arg2}}", sys.argv[2] if len(sys.argv) > 2 else "")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -114,21 +125,27 @@ sys.exit(BEHAVIOUR.get("exit", 0))
 
 
 def fake_al(path: Path, *, sleep: float = 0, exit: int = 0, out: str = "", lines: list[str] | None = None,  # noqa: A002
-            line_sleep: float = 0, writes: dict[str, dict[str, str]] | None = None) -> Path:
+            line_sleep: float = 0, writes: dict[str, dict[str, str]] | None = None,
+            fail: dict[str, tuple[int, str]] | None = None) -> Path:
     """An executable stand-in for `al` at `path`: appends its argv as one JSON line to `<path>.calls`,
     writes `writes[command]` (path → text), prints `lines` (each followed by `line_sleep` seconds) and
-    `out`, sleeps `sleep` seconds and exits `exit`."""
+    `out`, sleeps `sleep` seconds and exits `exit`. `fail[command] = (code, text)`: that subcommand
+    (argv[1]) prints `text` on stderr (on stdout for `doctor`, like al doctor --for) and exits `code`.
+    `doctor` otherwise prints ok and exits 0 at once. It can be rewritten between runs."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     behaviour = {"sleep": sleep, "exit": exit, "out": out, "lines": lines or [], "line_sleep": line_sleep,
-                 "writes": writes or {}}
+                 "writes": writes or {}, "fail": {k: list(v) for k, v in (fail or {}).items()}}
     path.write_text(FAKE_AL.format(python=sys.executable, behaviour=repr(behaviour)))
     path.chmod(0o755)
     return path
 
 
-def calls(path: Path) -> list[list[str]]:
+def calls(path: Path, preflight: bool = False) -> list[list[str]]:
+    """Every argv the fake was called with; without `preflight`, the `doctor` checks a job runs before
+    its steps are left out (so a list is the job's steps)."""
     record = Path(str(path) + ".calls")
     if not record.is_file():
         return []
-    return [json.loads(line) for line in record.read_text().splitlines() if line.strip()]
+    found = [json.loads(line) for line in record.read_text().splitlines() if line.strip()]
+    return found if preflight else [c for c in found if c[:1] != ["doctor"]]

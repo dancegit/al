@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -83,3 +84,95 @@ def test_author_claude_argv_is_a_fixed_list(tmp_path):
     prompt = al_author.author_prompt(tmp_path, "some preferences")
     assert not any(prompt in x or "author-layer.md" in x for x in argv)   # the prompt goes on stdin
     assert "meta/commands/author-layer.md" in prompt and f"{tmp_path}/LLM.txt" in prompt
+
+
+def rendered_definition() -> str:
+    return DEFINITION.replace("${root}", "../notes").replace("${name}", "notes")
+
+
+def test_author_stops_before_the_agent_when_racket_is_missing(tmp_path):
+    (tmp_path / "notes" / ".git").mkdir(parents=True)
+    layer = tmp_path / "notes.al"
+    layer.mkdir()
+    (layer / "LLM.txt").write_text("# notes\n")
+    missing = al_author.al_tools.Found("racket", looked=["AL_RACKET (not set)", "PATH", "~/racket/bin"])
+
+    def need(names, where=None):
+        raise al_author.al_tools.ToolMissing([missing])
+
+    class FakeAl:
+        CompilerUnavailable = type("CompilerUnavailable", (Exception,), {})
+
+        def tools_module(self):
+            return type("Tools", (), {"need": staticmethod(need), "agent_bin": staticmethod(al_author.al_tools.agent_bin),
+                                      "ToolMissing": al_author.al_tools.ToolMissing})
+
+        def compile_layer(self, layer):
+            raise AssertionError("nothing is compiled when racket is missing")
+
+    said: list[str] = []
+    began = time.monotonic()
+    with pytest.raises(al_author.al_tools.ToolMissing) as caught:
+        al_author.author(FakeAl(), layer, "mock", mock_file(tmp_path, {"agentic.rkt": DEFINITION}), None, say=said.append)
+    assert time.monotonic() - began < 1
+    assert "racket is missing" in str(caught.value) and "AL_RACKET" in str(caught.value)
+    assert al_author.REPAIR_HINT not in str(caught.value) and caught.value.hint == ""
+    assert not (layer / "agentic.rkt").exists() and said == []
+
+
+def test_a_compiler_that_cannot_start_does_not_blame_the_file(app, tmp_path):
+    al("init", app)
+    layer = app.with_name("notes.al")
+    mock = mock_file(tmp_path, {"agentic.rkt": DEFINITION})
+    # a racket that is there and executable but cannot be started (its interpreter does not exist)
+    broken = tmp_path / "broken" / "racket"
+    broken.parent.mkdir()
+    broken.write_text("#!/nonexistent/interpreter\n")
+    broken.chmod(0o755)
+    cp = al("author", layer, "--agent", "mock", "--mock", mock, env={"AL_RACKET": str(broken)}, ok=False)
+    assert cp.returncode == 4, cp.stdout + cp.stderr
+    assert "racket" in cp.stderr and "--accept-existing" in cp.stderr and "could not be started" in cp.stderr
+    for blame in ("repair it", "delete it", "Errno", "does not compile"):
+        assert blame not in cp.stderr, cp.stderr
+    kept = (layer / "agentic.rkt").read_text()
+    assert '#:root "../notes"' in kept
+    # the same file, the next attempt, with a racket that is not an executable file at all
+    plain = tmp_path / "plain-racket"
+    plain.write_text("not a program\n")
+    cp = al("author", layer, "--agent", "mock", "--mock", mock, "--accept-existing", env={"AL_RACKET": str(plain)}, ok=False)
+    assert cp.returncode == 4 and "al: author: racket is missing: AL_RACKET names" in cp.stderr
+    assert "--accept-existing" in cp.stderr and "repair it" not in cp.stderr and "Errno" not in cp.stderr
+    assert (layer / "agentic.rkt").read_text() == kept
+
+
+def test_accept_existing_takes_a_definition_that_compiles(app, tmp_path):
+    al("init", app)
+    layer = app.with_name("notes.al")
+    (layer / "agentic.rkt").write_text(rendered_definition())
+    before = (layer / "agentic.rkt").read_bytes()
+    other = mock_file(tmp_path, {"agentic.rkt": "#lang al\n(something else)\n"}, output="the mock agent ran")
+    cp = al("author", layer, "--agent", "mock", "--mock", other, "--accept-existing")
+    assert "accepted (no agent was asked)" in cp.stdout and "the mock agent ran" not in cp.stdout
+    assert (layer / "agentic.rkt").read_bytes() == before
+
+
+def test_accept_existing_with_a_broken_definition_keeps_the_repair_hint(app, tmp_path):
+    al("init", app)
+    layer = app.with_name("notes.al")
+    bad = '#lang al\n(agentic-layer #:name "notes" (no-such-form))\n'
+    (layer / "agentic.rkt").write_text(bad)
+    cp = al("author", layer, "--agent", "mock", "--mock", mock_file(tmp_path, {"agentic.rkt": DEFINITION}),
+            "--accept-existing", ok=False)
+    assert cp.returncode == 1 and "does not compile" in cp.stderr
+    assert "meta/commands/repair-layer.md" in cp.stderr and "delete it" in cp.stderr
+    assert (layer / "agentic.rkt").read_text() == bad
+
+
+def test_author_without_accept_existing_still_refuses_an_existing_definition(app, tmp_path):
+    al("init", app)
+    layer = app.with_name("notes.al")
+    (layer / "agentic.rkt").write_text(rendered_definition())
+    before = (layer / "agentic.rkt").read_bytes()
+    cp = al("author", layer, "--agent", "mock", "--mock", mock_file(tmp_path, {"agentic.rkt": DEFINITION}), ok=False)
+    assert cp.returncode == 1 and "agentic.rkt already exists; it is never overwritten" in cp.stderr
+    assert (layer / "agentic.rkt").read_bytes() == before

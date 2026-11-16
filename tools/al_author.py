@@ -7,7 +7,12 @@ into the application checkout. `--agent mock --mock FILE` writes fixed files ins
     {"files": {"agentic.rkt": "#lang al … #:root \\"${root}\\" …"}, "output": "text the agent printed"}
 
 `${name}` (the application's directory name) and `${root}` (the application relative to the layer)
-are substituted; every path must stay inside the layer. Standard library only.
+are substituted; every path must stay inside the layer.
+
+Before any agent (or the mock) runs, the prerequisites are checked (racket, and the agent's CLI) through
+tools/al_tools.py: a missing one stops it at once with exit 4. A compiler that cannot be started is never
+blamed on the file. `--accept-existing` (a dashboard retry) takes an agentic.rkt that is already there
+when it compiles, and asks no agent. Standard library only.
 """
 from __future__ import annotations
 
@@ -16,6 +21,8 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Any
+
+import al_tools   # tools/ is on sys.path: tools/al loads this module from there
 
 ROOT = Path(__file__).resolve().parent.parent
 REPAIR_HINT = ("the file is kept: repair it with meta/commands/repair-layer.md (the compiler error above names the clause) "
@@ -40,18 +47,23 @@ def author_prompt(layer: Path, preferences: str, root: Path = ROOT) -> str:
             f"compile with {root}/tools/al compile {layer}.")
 
 
-def claude_argv(root: Path, layer: Path) -> list[str]:
-    """The agent CLI's argv: a fixed list, no shell; the prompt goes on stdin and the run's cwd is the layer."""
-    return ["claude", "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
+def claude_argv(root: Path, layer: Path, claude: str = "claude") -> list[str]:
+    """The agent CLI's argv: a fixed list, no shell; the prompt goes on stdin and the run's cwd is the layer.
+    `claude` is the program: run_claude passes the path tools/al_tools.py found."""
+    return [claude, "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
             "--add-dir", str(root / "docs"), "--add-dir", str(root / "meta")]
 
 
 def run_claude(layer: Path, prompt: str, say) -> None:
+    found = al_tools.find("claude", layer)
+    if not found.path:
+        raise al_tools.ToolMissing([found])
     try:
-        proc = subprocess.Popen(claude_argv(ROOT, layer), cwd=layer, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, shell=False)
-    except FileNotFoundError as exc:
-        raise AuthorError("the agent CLI `claude` was not found on PATH (or use --agent mock --mock FILE)") from exc
+        proc = subprocess.Popen(claude_argv(ROOT, layer, found.path), cwd=layer, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, shell=False)
+    except OSError as exc:
+        raise AuthorError(f"{al_tools.missing_sentence(found)} ({found.path} could not be started: "
+                          f"{exc.strerror or exc}; or use --agent mock --mock FILE)") from exc
     assert proc.stdin is not None and proc.stdout is not None
     proc.stdin.write(prompt)
     proc.stdin.close()
@@ -95,10 +107,16 @@ def run_mock(layer: Path, mock: Path, values: dict[str, str]) -> str:
     return str(spec.get("output") or "")
 
 
-def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str | None, say=print) -> int:
+def never_compiled(layer: Path) -> str:
+    return (f"the file is kept and was not checked: it was never compiled; when the compiler is found, "
+            f"run al author {layer} --accept-existing")
+
+
+def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str | None, say=print,
+           accept_existing: bool = False) -> int:
     layer = layer.resolve()
     definition = layer / "agentic.rkt"
-    if definition.exists():
+    if definition.exists() and not accept_existing:
         raise AuthorError(f"{definition} already exists; it is never overwritten")
     if not (layer / "LLM.txt").is_file():
         raise AuthorError(f"{layer} has no LLM.txt: create the layer with `al init APP` first")
@@ -112,6 +130,25 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
     app_rel = os.path.relpath(app, layer) if app is not None else ""
     adopted = (layer / "adopted").is_dir()
     prefs = preferences or default_preferences(app_rel, adopted)
+    tools = al.tools_module()
+    try:   # before any agent or mock runs: a missing compiler or agent CLI costs no agent time
+        tools.need(("racket",) + tools.agent_bin(agent), layer)
+    except tools.ToolMissing as exc:
+        if definition.exists():
+            exc.hint = never_compiled(layer)
+        raise
+    if definition.exists():   # accept_existing: take it when it compiles, ask no agent
+        try:
+            al.compile_layer(layer)
+        except al.CompilerUnavailable as exc:
+            raise al.CompilerUnavailable(f"{exc}\n{never_compiled(layer)}") from exc
+        except tools.ToolMissing as exc:
+            exc.hint = never_compiled(layer)
+            raise
+        except Exception as exc:  # noqa: BLE001 — AlError of tools/al: the compiler's own text
+            raise AuthorError(f"{exc}\n{REPAIR_HINT}") from exc
+        say(f"agentic.rkt already exists and compiles; accepted (no agent was asked); next: al gen {layer}")
+        return 0
     if agent == "mock":
         if mock is None:
             raise AuthorError("--agent mock needs --mock FILE")
@@ -127,6 +164,11 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
         raise AuthorError(f"the agent did not write {definition}")
     try:
         al.compile_layer(layer)
+    except al.CompilerUnavailable as exc:   # the file was never checked: not its fault
+        raise al.CompilerUnavailable(f"{exc}\n{never_compiled(layer)}") from exc
+    except al.tools_module().ToolMissing as exc:
+        exc.hint = never_compiled(layer)
+        raise
     except Exception as exc:  # noqa: BLE001 — AlError of tools/al: the compiler's own text
         raise AuthorError(f"{exc}\n{REPAIR_HINT}") from exc
     say(f"agentic.rkt compiles; next: al gen {layer}")
