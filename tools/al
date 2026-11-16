@@ -2187,9 +2187,7 @@ def decide_cli(a: argparse.Namespace) -> int:
     by = a.by
     if not by:
         ir = json.loads((layer / "agentic-layer.json").read_text())
-        found = subprocess.run(["git", "-C", str(app_root_of(layer, ir)), "config", "user.name"], capture_output=True,
-                               text=True, check=False)
-        by = found.stdout.strip()
+        by = git(Path(app_root_of(layer, ir)), "config", "user.name")
     if not by:
         print("al decide: --by NAME is required: who decides (git config user.name is not set)", file=sys.stderr)
         return 2
