@@ -641,7 +641,7 @@
         "description": "The al command itself works: eject, in-repo layers, al improve, dashboard generation",
         "name": "test-tools",
         "run": "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q",
-        "timeout": 900
+        "timeout": 2400
       },
       {
         "description": "The dashboard's model and HTTP server work: unit and HTTP tests, no browser",

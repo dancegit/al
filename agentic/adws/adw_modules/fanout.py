@@ -123,6 +123,9 @@ def _launch_all(layer: Any, state: Any, name: str, child: str, candidates: list[
                 env = {**os.environ, **models.environment(state.overrides),
                        "ADW_FANOUT_PARENT": state.adw_id, "ADW_FANOUT_STEP": name,
                        "ADW_FANOUT_INDEX": str(candidate["index"])}
+                if getattr(layer, "delivery", None):  # candidates start from the parent's stage head
+                    env["ADW_DELIVERY_STAGE"] = str(layer.delivery["stage"])
+                    env["ADW_DELIVERY_BRANCH"] = str(layer.delivery["branch"])
                 try:
                     process = launcher(layer, child, _child_args(state, candidate["id"]), env, log)
                 except StepFailed as exc:
