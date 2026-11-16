@@ -1371,7 +1371,7 @@
       const sw = (colour) => { const i = h("i"); i.style.background = colour; return i; };
       const wrap = h("div", { class: "tl-wrap" });
       const draw = () => replace(wrap, renderTimeline(detail.timeline, { width: wrap.clientWidth || 800, onBar: (bar) => {
-        if (bar.kind === "wait" || bar.kind === "limit") return;
+        if (bar.kind === "wait" || bar.kind === "limit" || bar.kind === "setup") return;
         if (bar.kind === "agent") go(link(["step", bar.step || bar.ref], { agent: bar.ref }));
         else if (bar.kind === "check" || bar.kind === "gate") go(link(["step", bar.step || bar.check], { attempt: bar.ref }));
         else go(link(["step", bar.step]));

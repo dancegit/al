@@ -29,6 +29,7 @@ TYPES = (
     "run.start", "run.end",
     "slot.wait", "slot.acquire", "slot.release",
     "env.container.start", "env.container.stop",
+    "env.build.start", "env.build.end", "env.preflight",
     "step.start", "step.end",
     "agent.start", "agent.end",
     "check.start", "check.end",

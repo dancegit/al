@@ -231,6 +231,10 @@ def test_readiness_times_out_with_the_sidecars_last_log_lines(make_layer, monkey
     pod = f"al-{layer.name}-{ADW_ID}"
     fake.on(lambda argv: argv[:3] == ["podman", "exec", f"{pod}-db"], code=1)
     fake.on(lambda argv: argv[:2] == ["podman", "logs"], stdout="line1\nFATAL: cannot bind\n")
+    state, stack = _stack(layer)
+    stack.setup()
+    # the fake clock starts after setup: `time` is one module for the process, and setup's real git
+    # calls (subprocess's own wait back-off sleeps 0.001, 0.002, …) must neither fill nor move it
     clock = {"now": 1000.0}
     sleeps: list[float] = []
     monkeypatch.setattr(envs.time, "monotonic", lambda: clock["now"])
@@ -238,8 +242,6 @@ def test_readiness_times_out_with_the_sidecars_last_log_lines(make_layer, monkey
         sleeps.append(seconds)
         clock["now"] += seconds
     monkeypatch.setattr(envs.time, "sleep", sleep)
-    state, stack = _stack(layer)
-    stack.setup()
     with pytest.raises(StepFailed, match=r"(?s)sidecar db not ready after 5s.*FATAL: cannot bind") as raised:
         stack.wrap("true")
     assert raised.value.step == "environment setup"

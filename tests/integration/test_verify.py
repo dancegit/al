@@ -20,7 +20,7 @@ REAL = {
 
 def _report(lay) -> dict[str, dict]:
     rows = json.loads((lay.dir / "agents" / "verify" / "report.json").read_text())
-    assert all(set(row) == {"name", "cmd", "exit", "seconds", "log", "at"} for row in rows), rows
+    assert all(set(row) == {"name", "cmd", "exit", "seconds", "log", "at", "workflow", "stack"} for row in rows), rows
     return {row["name"]: row for row in rows}
 
 

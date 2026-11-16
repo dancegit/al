@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import budget, envs, events, ir, models, notify, state as state_module, steps
+from . import budget, envs, events, ir, models, notify, sandbox, state as state_module, steps
 from . import slots
 from .agents import CLASSES
 from .errors import LayerError, StepFailed, StepWaiting
@@ -248,6 +248,8 @@ def _speak(layer: Any, line: str) -> None:
 
 def _execute(layer: Any, state: state_module.ADWState, adw: dict[str, Any], stack: envs.EnvStack) -> None:
     stack.setup()
+    state.save(layer.layer_dir)
+    sandbox.preflight(layer, state, adw, stack)  # podman stacks: current image, and what the workflow needs is there
     state.save(layer.layer_dir)
     for step in adw.get("steps", []):
         steps.run_step(layer, state, adw, step, stack)

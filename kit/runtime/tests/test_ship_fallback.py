@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import adw_modules
-from adw_modules import envs, gitsafe, review, ship
+from adw_modules import envs, gitsafe, review, sandbox, ship
 from adw_modules.errors import StepFailed
 from adw_modules.runner import main
 
@@ -30,6 +30,14 @@ def _git(repo: Path, *args: str, check: bool = True) -> str:
 
 
 def _layer(make_layer, *, ship_action="merge", forge=None, sandboxed=False) -> Path:
+    layer = _layer_ir(make_layer, ship_action=ship_action, forge=forge, sandboxed=sandboxed)
+    if sandboxed:
+        (layer / "env").mkdir(exist_ok=True)
+        (layer / "env" / "Containerfile").write_text("FROM debian\n")   # what `al gen` writes; the preflight hashes it
+    return layer
+
+
+def _layer_ir(make_layer, *, ship_action="merge", forge=None, sandboxed=False) -> Path:
     environments = [{"id": "wt", "kind": "worktree", "dir": "trees", "copyFiles": [], "portBase": 27600,
                      "portsPerRun": 0, "keep": "never", "status": "stable"}]
     if sandboxed:
@@ -177,6 +185,7 @@ def test_sandboxed_target_moved_after_the_gate_falls_back(make_layer, app_repo, 
     real_run = envs.subprocess.run
     monkeypatch.setattr(envs.subprocess, "run", lambda argv, **kw: SimpleNamespace(returncode=0, stdout="", stderr="")
                         if argv[0] == "podman" else real_run(argv, **kw))
+    monkeypatch.setattr(sandbox, "doctor", lambda *a, **k: [])  # the preflight finds everything it needs
     _build(layer)
     _after_gate(monkeypatch, lambda: _conflicting_commit(app_repo))
     assert main("demo", layer, ["Add a feature", "--adw-id", ADW_ID]) == 0

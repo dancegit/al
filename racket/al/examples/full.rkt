@@ -36,7 +36,9 @@
 
   (environment worktree #:copy-files (".env"))
   (environment nix-devshell #:packages ("bun" "nodejs_22" "python312" "uv" "ffmpeg"))
-  (environment podman #:id sandbox #:packages ("git" "curl") #:network slirp #:caches ("npm" "uv"))
+  (environment podman #:id sandbox #:packages ("git" "curl" "nodejs" "npm" "python3" "ffmpeg")
+               #:setup ("npm install -g bun" "curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh")
+               #:network slirp #:caches ("npm" "uv"))
 
   (artefact log)
   (artefact junit #:glob "reports/*.xml")

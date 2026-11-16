@@ -250,7 +250,7 @@ svg text { font-family: var(--sans); }
 .tl-bar.k-review { fill: var(--review); } .tl-bar.k-ship { fill: var(--ship); } .tl-bar.k-fan-out { fill: var(--fan); }
 .tl-bar.k-script { fill: var(--script); }
 .tl-bar.l0 { opacity: .28; }
-.tl-bar.k-wait { fill: var(--waiting); opacity: .55; }
+.tl-bar.k-wait, .tl-bar.k-setup { fill: var(--waiting); opacity: .55; }
 .tl-bar.k-limit { fill: var(--budget); }
 .tl-bar.st-failed { fill: var(--failed); }
 .tl-bar.st-running { animation: pulse 1.4s infinite; }

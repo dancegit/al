@@ -231,3 +231,47 @@ def build(root: Path, now: float | None = None) -> dict[str, Path]:
 
 if __name__ == "__main__":
     print(build(Path(sys.argv[1])))
+
+
+SETUP_RECIPE = "3f9c2a7b1d04"
+
+
+def add_setup_runs(layer: Path, now: float | None = None) -> None:
+    """Two runs whose setup shows on the timeline (env.build.* / env.preflight):
+      e1000005 failed: built the sandbox image (1–40 s, 312 MB), then the preflight missed `command:test`
+      e1000006 running: the sandbox image is being built right now (no step has started)"""
+    now = time.time() if now is None else now
+    agents, host = Path(layer) / "agents", socket.gethostname()
+    image = f"al-{NAME}:{SETUP_RECIPE}"
+
+    rid, run = "e1000005", agents / "e1000005"
+    ev = Events()
+    ev.add(0, "run.start", adw="zte", adw_id=rid, klass="chore", dry_run=False, resumed=False, pid=1, host=host,
+           fanout_parent=None)
+    ev.add(0.5, "slot.acquire", pool="runs", slot=0, waited=0.0, who=f"adw {rid}")
+    ev.add(1, "env.build.start", image=image, recipe=SETUP_RECIPE)
+    ev.add(40, "env.build.end", image=image, recipe=SETUP_RECIPE, status="passed", seconds=39.0, size=312_000_000,
+           error=None)
+    ev.add(43, "env.preflight", status="failed", seconds=3.0, checks=[
+        {"name": "command:test", "status": "miss", "detail": "pytest not found on PATH"},
+        {"name": "git", "status": "ok", "detail": "rev-parse and status work in the worktree"}])
+    ev.add(44, "run.end", status="failed", exit=1)
+    fixtures.write(run / "events.jsonl", ev.text(), 100_000.0)
+    fixtures.write(run / "state.json", json.dumps(state(rid, "zte", "Tidy the cart", "failed", 0, 44, [], pid=1, host=host,
+                                                        heartbeat=iso(43.9), image=image), indent=2), 100_000.0)
+    fixtures.write(run / "run.log", f"2026-11-01T10:00:00.000Z [adw {rid}] zte start: class=chore dry_run=False\n"
+                   f"2026-11-01T10:00:43.000Z [adw {rid}] preflight: 2 checks, 1 missed\n", 100_000.0)
+
+    rid, run = "e1000006", agents / "e1000006"
+    start = now - 30
+    stamp = lambda offset: fixtures.datetime.fromtimestamp(start + offset, fixtures.timezone.utc).isoformat(timespec="milliseconds")  # noqa: E731
+    ev = Events()
+    ev.add(stamp(0), "run.start", adw="zte", adw_id=rid, klass="chore", dry_run=False, resumed=False, pid=os.getpid(),
+           host=host, fanout_parent=None)
+    ev.add(stamp(2), "env.build.start", image=image, recipe=SETUP_RECIPE)
+    fixtures.write(run / "events.jsonl", ev.text(), 100_000.0)
+    fixtures.write(run / "state.json", json.dumps(dict(state(rid, "zte", "Speed up checkout", "running", 0, None, []),
+                                                       started=stamp(0), pid=os.getpid(), host=host,
+                                                       heartbeat=stamp(29)), indent=2), 100_000.0)
+    fixtures.write(run / "run.log", f"2026-11-01T10:00:00.000Z [adw {rid}] zte start: class=chore dry_run=False\n",
+                   100_000.0)

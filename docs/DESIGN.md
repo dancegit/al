@@ -56,6 +56,19 @@ Three properties matter when an LLM is the author:
    "an ADW that ships without a human must have a check step before its review step". The compiler
    can, and those rules are where an LLM-written layer usually goes wrong.
 
+**Compiler warnings.** Some declarations compile but do nothing, or not what was meant. They are not
+errors (the layer still works), so the compiler reports them on stderr as `warning: …` lines and
+leaves the IR unchanged; `al compile`, `al gen` and `al check` pass them on (`racket/al/private/warnings.rkt`):
+
+- an environment no workflow's `#:environment` names (home-manager excepted: it is installed, not run in);
+- `#:credentials` on a podman option with `#:agent-inside #f` (the credentials only reach an agent inside);
+- `#:publish` or `#:services` on a podman option with `#:scope command` (each command gets a fresh
+  container, so a server one command starts is gone before anything can reach it);
+- a workflow whose stack has a nix dev shell *and* a podman option, when a nix package is provided by
+  neither the container's base image, `#:packages` nor `#:setup` (commands run in the container, so
+  the dev shell's tools are not there). Names are compared loosely: `python312` → `python`,
+  `nodejs_20` → `nodejs`, with `node`/`nodejs` and `python`/`python3` as aliases.
+
 Racket gives this cheaply: s-expressions are trivial for an LLM to emit, `#lang` gives
 expansion-time compilation with source locations, and the standard `#lang` pattern fits exactly:
 a module reader, compilation at expansion time, and a `module+ main` that prints JSON. `racket/al`
@@ -247,7 +260,40 @@ the host. Consequences, each covered by a test against real podman:
 
 `al verify` is the counterpart for truth: the compiler proves the layer is coherent, `verify` runs
 every declared codebase command in its declared environment on a clean worktree and proves the
-descriptor is true.
+descriptor is true. It verifies every distinct environment stack of the workflows once (or one
+workflow's, with `--workflow NAME`) and labels each result with its stack.
+
+### Sandbox image
+
+The image of a layer's podman sandbox is `al-<layer>:<recipe hash>` (`adw_modules/sandbox.py`). The
+hash (12 hex digits of a sha256) covers the generated `env/Containerfile`, every file it `COPY`/`ADD`s
+from `env/` (content and executable bit; a source outside `env/` is refused) and the podman option's
+`#:base-image` string. Other files in `env/` (the nix flake) do not count, and a moved upstream tag of
+the base image is not a recipe change (`al sandbox LAYER build --no-cache` takes it). So a changed
+package or `#:setup` line is built at the next run with no manual step, and an unchanged recipe never
+is. The generator writes one Containerfile, from the first podman option; every podman option of the
+layer shares that image and differs only in how a container is started.
+
+- **Build.** At most once per recipe, also when several runs start together (a file lock per hash),
+  with the output streamed live (to the terminal, or to the run's `run.log`), labelled `al.layer`,
+  `al.layer-dir` and `al.recipe`. `al-<layer>:latest` is re-pointed at the current hash. A run
+  records the image it uses in `state.json` (`image`); a build is recorded as `env.build.start` /
+  `env.build.end`.
+- **Retention.** Old images stay while anything uses them: a container of the layer directory, or a
+  live run whose `state.json` names them. After every build the old images beyond the 2 newest unused
+  ones, and those older than 14 days, are untagged (`podman rmi`, never forced); `al sandbox LAYER
+  prune` removes every unused old one.
+- **Preflight.** Before a run's first step the runtime ensures the image and runs the fast checks
+  of `al sandbox doctor` in the run's own container (started exactly as its steps will use it): the
+  first executable of every codebase cmd the workflow runs (check and script steps, and the review's
+  `#:require-checks` when it ships), the agent CLI and a credential when the agent runs inside (variable names and
+  file paths only; values are never printed), git in the worktree, an init process, every cache
+  volume writable, enough free disk, and — when the workflow collects image, video or trace artefacts
+  — a headless browser, and the sidecars' ready commands. Any miss fails the run at once, before any
+  step, with a table naming each missing thing and the declaration to change (`env.preflight`).
+  A podman option's `preflight` list (default `["services", "browser"]`) turns those two optional
+  checks off for that environment. A workflow that runs nothing in the container (no codebase cmd, and its
+  agent outside it, or a dry run's stand-in agent) skips the preflight and builds nothing.
 
 ## Isolation per run
 
@@ -461,6 +507,9 @@ to its check, a re-check and the reviewers to the review step).
 | `slot.acquire` | `pool`, `slot`, `waited` (seconds), `who` |
 | `slot.release` | `pool`, `slot`, `held` (seconds), `who` |
 | `env.container.start` / `env.container.stop` | `name` |
+| `env.build.start` | `image` (`al-<layer>:<hash>`), `recipe` (the hash) |
+| `env.build.end` | `image`, `recipe`, `status` (passed / failed), `seconds`, `size` (bytes, or null), `error` (`exit N`, `timed out after …`, or null) |
+| `env.preflight` | `status` (passed / failed), `seconds`, `checks` (`[{name, status (ok / miss / skip), detail}]`) |
 | `step.start` | `step`, `kind`, `attempt` |
 | `step.end` | `step`, `kind`, `status` (passed / failed / skipped / waiting), `detail`, `seconds` |
 | `agent.start` | `step` (the agent's directory: `build`, `test-resolve-1`, `review-2-1`, `patch-1`, …), `owner`, `agent` (option id), `agent_kind` (claude-code / codex / custom / mock), `model`, `model_set` (= `tier`), `tier`, `tier_from` (override / request / step / command), `model_from` (agent / override), `effort`; emitted before the call waits for an `agents` slot (a `slot.wait` / `slot.acquire` with `who` = `adw <id> step <dir>` follows) |

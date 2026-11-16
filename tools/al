@@ -420,6 +420,9 @@ def compile_layer(layer: Path) -> dict:
     cp = run(["racket", str(src)], check=False, env=env)
     if cp.returncode != 0:
         raise AlError("agentic.rkt does not compile:\n" + cp.stderr.strip())
+    for line in cp.stderr.splitlines():  # declarations without effect: reported, never fatal
+        if line.startswith("warning:"):
+            print(f"al: {line}", file=sys.stderr)
     ir = json.loads(cp.stdout)
     import jsonschema
     errors = sorted(jsonschema.Draft202012Validator(json.loads(SCHEMA.read_text())).iter_errors(ir), key=lambda e: list(e.path))
@@ -1712,12 +1715,15 @@ def eject(layer: Path, kind: str, name: str, force: bool = False) -> list[tuple[
 
 VERIFY_DESCRIPTION = """\
 Run the layer's codebase cmds on a throwaway worktree of the default branch, in the environment of
-the layer's workflows, and report which are true.
+the layer's workflows, and report which are true. Every distinct environment stack of the workflows
+is verified once (each on its own worktree), named by the first workflow that uses it; --workflow
+NAME verifies only that workflow's stack. With several stacks every result line ends in [stack].
 
-The report, LAYER/agents/verify/report.json, keeps the latest result of every cmd: a cmd run now
-replaces its earlier row, the others keep theirs. Each row has name, cmd, exit, seconds, log (the
-cmd's full output, LAYER/agents/verify/NAME.log) and at (when it ran, UTC). --json prints only the
-rows of this invocation.
+The report, LAYER/agents/verify/report.json, keeps the latest result of every cmd in every stack: a
+cmd run now replaces its earlier row of the same stack, the others keep theirs. Each row has name,
+cmd, exit, seconds, log (the cmd's full output, LAYER/agents/verify/NAME.log, or NAME.STACK.log with
+several stacks), at (when it ran, UTC), workflow and stack. --json prints only the rows of this
+invocation.
 
 Verify fails if the application checkout's HEAD, branch or index changed while it ran (only a git
 command does that). Files edited in the checkout meanwhile are listed as a note: verify runs every
@@ -1817,8 +1823,10 @@ def notify_test(layer: Path, event: str) -> int:
     return 0 if accepted == len(rows) else 1
 
 
-def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print) -> tuple[list[dict], list[str]]:
-    """Run codebase cmds of a generated layer; returns (report rows, skipped names)."""
+def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print,
+                 workflow: str | None = None) -> tuple[list[dict], list[str]]:
+    """Run codebase cmds of a generated layer in its workflows' environment stacks (each distinct
+    stack once, or only `workflow`'s); returns (report rows, skipped names)."""
     if not (layer / "agentic-layer.json").is_file() or not (layer / "adws/adw_modules/envs.py").is_file():
         raise AlError(f"{layer} is not a generated layer: run `al gen {layer}` first")
     sys.path.insert(0, str(layer / "adws"))  # the layer's own runtime: identical environment semantics
@@ -1841,80 +1849,38 @@ def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print) 
     adws = loaded.ir.get("adws", [])
     if not adws:
         raise AlError("the layer declares no ADW, so there is no environment to verify in")
-    adw = next((a for a in adws if any(s.get("kind") == "check" for s in a.get("steps", []))), adws[0])
+    if workflow is not None:
+        chosen = next((a for a in adws if a["name"] == workflow), None)
+        if chosen is None:
+            raise AlError(f"no workflow `{workflow}`; workflows: {', '.join(a['name'] for a in adws)}")
+        stacks = [(tuple(chosen.get("environment", [])), chosen)]
+    else:
+        stacks = []
+        for adw in adws:   # every distinct environment stack once; the first workflow using it names it
+            if not any(tuple(adw.get("environment", [])) == env for env, _ in stacks):
+                stacks.append((tuple(adw.get("environment", [])), adw))
     app = Path(loaded.app_root)
     if not (app / ".git").exists():
         raise AlError(f"application checkout {app} not found")
-    env_ids = list(adw.get("environment", []))
-    tree_dir = "trees"
-    for env_id in env_ids:
-        option = loaded.option("environments", env_id)
-        if option["kind"] == "worktree":
-            tree_dir = str(option.get("dir") or "trees")
-    run_id = f"verify-{secrets.token_hex(4)}"
-    worktree = (layer / tree_dir / run_id).resolve()
-    inside_ignored = bool(loaded.in_repo_dir) and layer.resolve() in worktree.parents  # in-repo: an ignored dir of the layer
-    if (worktree == app or app in worktree.parents) and not inside_ignored:
-        raise AlError(f"refusing to verify: {worktree} is inside the application tree")
     out_dir = layer / "agents" / "verify"
     out_dir.mkdir(parents=True, exist_ok=True)
     before, files_before = app_fingerprint(app), worktree_status(app)
     heads_before = set(git(app, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines())
-    worktree.parent.mkdir(parents=True, exist_ok=True)
-    cp = run(["git", "-C", str(app), "worktree", "add", "--detach", str(worktree), loaded.default_branch], check=False)
-    if cp.returncode != 0:
-        raise AlError(f"cannot create the verify worktree: {cp.stderr.strip()}")
-    state = _VerifyState(run_id, adw["name"], worktree)
     report: list[dict] = []
-    stack = None
+    made_branches: set[str] = set()
+    problems: list[str] = []
     try:
-        try:
-            stack = envs.build(loaded, state, env_ids)
-            with contextlib.redirect_stdout(sys.stderr):  # runtime progress lines never mix into our stdout
-                stack.setup()
-        except (LayerError, StepFailed) as exc:
-            raise AlError(f"environment setup failed: {exc}") from exc
-        if Path(state.worktree).resolve() != worktree:
-            raise AlError(f"the runtime moved the run to {state.worktree}; refusing to continue")
-        stack.cwd = worktree  # also for host-only stacks: never the application's own working tree
-        say(f"verify: {len(selected)} cmd(s) of `{loaded.name}` in the environment of ADW `{adw['name']}` "
-            f"({' → '.join(env_ids) or 'host'}), worktree {worktree}")
-        for name in skipped:
-            say(f"  skip  {name}  (never run implicitly; name it with --cmd {name})")
-        for c in selected:
-            limit = int(timeout if timeout is not None else c.get("timeout", 900))
-            started = time.monotonic()
-            try:
-                with contextlib.redirect_stdout(sys.stderr):
-                    argv = stack.wrap(str(c["run"]))  # may build an image / start the run's container
-                code, output = _run_group(argv, worktree, stack.process_env(), limit)
-            except (LayerError, StepFailed) as exc:  # e.g. the podman image does not build
-                code, output = 125, f"environment failed before the command ran: {exc}\n"
-            seconds = round(time.monotonic() - started, 1)
-            log = out_dir / f"{c['name']}.log"
-            log.write_text(output)
-            report.append({"name": c["name"], "cmd": c["run"], "exit": code, "seconds": seconds,
-                           "log": log.relative_to(layer).as_posix(),
-                           "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
-            say(f"  {'ok  ' if code == 0 else 'FAIL'}  {c['name']}  exit {code}  {seconds}s")
-            if code != 0:
-                for line in output.splitlines()[-VERIFY_TAIL:]:
-                    say(f"        {line}")
+        for index, (env_ids, adw) in enumerate(stacks):
+            rows, branch, trouble = _verify_stack(loaded, layer, app, adw, list(env_ids), selected, timeout, say,
+                                                  out_dir, envs, (LayerError, StepFailed), several=len(stacks) > 1,
+                                                  skipped=skipped if index == 0 else [])
+            report += rows
+            problems += trouble
+            if branch:
+                made_branches.add(branch)
     finally:
-        problems: list[str] = []
-        if stack is not None:
-            try:
-                with contextlib.redirect_stdout(sys.stderr):
-                    stack.teardown(True)  # removes the run container, releases ports, usually removes the worktree
-            except Exception as exc:  # noqa: BLE001 — foreign runtime code; cleanup below must still happen
-                problems.append(f"environment teardown failed: {exc}")
-        for tree in {worktree, Path(state.worktree).resolve()}:
-            if tree.exists() and tree != app:
-                run(["git", "-C", str(app), "worktree", "remove", "--force", str(tree)], check=False)
-                shutil.rmtree(tree, ignore_errors=True)
-        run(["git", "-C", str(app), "worktree", "prune"], check=False)
         for branch in set(git(app, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines()) - heads_before:
-            if state.branch and branch == state.branch:  # only a branch the runtime made for this very run
+            if branch in made_branches:  # only a branch the runtime made for one of these very runs
                 run(["git", "-C", str(app), "branch", "-D", branch], check=False)
         write_verify_report(out_dir / "report.json", report, [c["name"] for c in declared])
         after = app_fingerprint(app)
@@ -1932,17 +1898,100 @@ def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print) 
     return report, skipped
 
 
+def stack_label(env_ids: list[str]) -> str:
+    return " → ".join(env_ids) or "host"
+
+
+def _verify_stack(loaded, layer: Path, app: Path, adw: dict, env_ids: list[str], selected: list[dict],
+                  timeout: int | None, say, out_dir: Path, envs, failures: tuple, *, several: bool,
+                  skipped: list[str]) -> tuple[list[dict], str, list[str]]:
+    """Run the selected cmds in one environment stack, on its own throwaway worktree. Returns
+    (rows, the branch the runtime made for this run or "", cleanup problems)."""
+    label = stack_label(env_ids)
+    tree_dir = "trees"
+    for env_id in env_ids:
+        option = loaded.option("environments", env_id)
+        if option["kind"] == "worktree":
+            tree_dir = str(option.get("dir") or "trees")
+    run_id = f"verify-{secrets.token_hex(4)}"
+    worktree = (layer / tree_dir / run_id).resolve()
+    inside_ignored = bool(loaded.in_repo_dir) and layer.resolve() in worktree.parents  # in-repo: an ignored dir of the layer
+    if (worktree == app or app in worktree.parents) and not inside_ignored:
+        raise AlError(f"refusing to verify: {worktree} is inside the application tree")
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    cp = run(["git", "-C", str(app), "worktree", "add", "--detach", str(worktree), loaded.default_branch], check=False)
+    if cp.returncode != 0:
+        raise AlError(f"cannot create the verify worktree: {cp.stderr.strip()}")
+    state = _VerifyState(run_id, adw["name"], worktree)
+    rows: list[dict] = []
+    stack = None
+    problems: list[str] = []
+    suffix = f"  [{label}]" if several else ""
+    try:
+        try:
+            stack = envs.build(loaded, state, env_ids)
+            with contextlib.redirect_stdout(sys.stderr):  # runtime progress lines never mix into our stdout
+                stack.setup()
+        except failures as exc:
+            raise AlError(f"environment setup failed ({label}): {exc}") from exc
+        if Path(state.worktree).resolve() != worktree:
+            raise AlError(f"the runtime moved the run to {state.worktree}; refusing to continue")
+        stack.cwd = worktree  # also for host-only stacks: never the application's own working tree
+        say(f"verify: {len(selected)} cmd(s) of `{loaded.name}` in the environment of ADW `{adw['name']}` "
+            f"({label}), worktree {worktree}")
+        for name in skipped:
+            say(f"  skip  {name}  (never run implicitly; name it with --cmd {name})")
+        for c in selected:
+            limit = int(timeout if timeout is not None else c.get("timeout", 900))
+            started = time.monotonic()
+            try:
+                with contextlib.redirect_stdout(sys.stderr):
+                    argv = stack.wrap(str(c["run"]))  # may build an image / start the run's container
+                code, output = _run_group(argv, worktree, stack.process_env(), limit)
+            except failures as exc:  # e.g. the podman image does not build
+                code, output = 125, f"environment failed before the command ran: {exc}\n"
+            seconds = round(time.monotonic() - started, 1)
+            slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", "-".join(env_ids) or "host")
+            log = out_dir / (f"{c['name']}.{slug}.log" if several else f"{c['name']}.log")
+            log.write_text(output)
+            rows.append({"name": c["name"], "cmd": c["run"], "exit": code, "seconds": seconds,
+                         "log": log.relative_to(layer).as_posix(),
+                         "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                         "workflow": adw["name"], "stack": label})
+            say(f"  {'ok  ' if code == 0 else 'FAIL'}  {c['name']}  exit {code}  {seconds}s{suffix}")
+            if code != 0:
+                for line in output.splitlines()[-VERIFY_TAIL:]:
+                    say(f"        {line}")
+    finally:
+        if stack is not None:
+            try:
+                with contextlib.redirect_stdout(sys.stderr):
+                    stack.teardown(True)  # removes the run container, releases ports, usually removes the worktree
+            except Exception as exc:  # noqa: BLE001 — foreign runtime code; cleanup below must still happen
+                problems.append(f"environment teardown failed ({label}): {exc}")
+        for tree in {worktree, Path(state.worktree).resolve()}:
+            if tree.exists() and tree != app:
+                run(["git", "-C", str(app), "worktree", "remove", "--force", str(tree)], check=False)
+                shutil.rmtree(tree, ignore_errors=True)
+        run(["git", "-C", str(app), "worktree", "prune"], check=False)
+    return rows, state.branch, problems
+
+
 def write_verify_report(path: Path, rows: list[dict], declared: list[str]) -> None:
-    """agents/verify/report.json keeps the latest result of every cmd: this invocation's rows
-    replace earlier rows of the same cmd, the others stay (each row says when it ran: `at`).
-    Rows are in declaration order; a cmd no longer declared is dropped."""
+    """agents/verify/report.json keeps the latest result of every cmd in every environment stack:
+    this invocation's rows replace earlier rows of the same cmd and stack, the others stay (each
+    row says when it ran: `at`). Rows are in declaration order, then by stack; a cmd no longer
+    declared is dropped. A row of an older report without `stack` counts as stack ""."""
     try:
         old = json.loads(path.read_text()) if path.is_file() else []
     except ValueError:
         old = []
-    latest = {row["name"]: row for row in old if isinstance(row, dict) and "name" in row}
-    latest.update({row["name"]: row for row in rows})
-    path.write_text(json.dumps([latest[name] for name in declared if name in latest], indent=2) + "\n")
+    key = lambda row: (row["name"], str(row.get("stack") or ""))  # noqa: E731
+    latest = {key(row): row for row in old if isinstance(row, dict) and "name" in row}
+    latest.update({key(row): row for row in rows})
+    order = {name: index for index, name in enumerate(declared)}
+    kept = sorted((k for k in latest if k[0] in order), key=lambda k: (order[k[0]], k[1]))
+    path.write_text(json.dumps([latest[k] for k in kept], indent=2) + "\n")
 
 
 # ------------------------------------------------------------------------------------------
@@ -2038,6 +2087,129 @@ def layer_launch_module(layer: Path):
     except ImportError as exc:
         raise AlError(f"cannot import the layer runtime from {layer / 'adws'}: {exc}") from exc
     return launch, ir_module, errors
+
+
+def layer_sandbox_module(layer: Path):
+    """The layer's own sandbox code (adw_modules/sandbox.py), so `al sandbox` builds, checks and
+    prunes exactly as the layer's runs do."""
+    if not (layer / "agentic-layer.json").is_file() or not (layer / "adws/adw_modules/sandbox.py").is_file():
+        if (layer / "agentic-layer.json").is_file() and (layer / "adws/adw_modules").is_dir():
+            raise AlError(f"{layer} was generated before `al sandbox`: run `al gen {layer}`")
+        raise AlError(f"{layer} is not a generated layer: run `al gen {layer}` first")
+    for name in [n for n in sys.modules if n == "adw_modules" or n.startswith("adw_modules.")]:
+        del sys.modules[name]   # another layer's runtime may have been imported before
+    sys.path.insert(0, str(layer / "adws"))
+    try:
+        from adw_modules import envs, errors, ir as ir_module, sandbox
+    except ImportError as exc:
+        raise AlError(f"cannot import the layer runtime from {layer / 'adws'}: {exc}") from exc
+    return sandbox, ir_module, errors, envs
+
+
+def _sandbox_stack(loaded, env_id: str | None, workflow: str | None) -> tuple[dict, dict | None, list[str]]:
+    """(podman option, ADW or None, environment ids) that `al sandbox doctor|shell` starts: the
+    workflow's own stack; by default the first workflow whose stack holds the chosen podman option."""
+    podman = [e for e in loaded.ir.get("environments") or [] if e.get("kind") == "podman"]
+    if not podman:
+        raise SandboxUsage(f"layer {loaded.name} declares no (environment podman …): there is no sandbox")
+    ids = [str(e["id"]) for e in podman]
+    if env_id is not None and env_id not in ids:
+        raise SandboxUsage(f"no podman environment `{env_id}`; podman environments: {', '.join(ids)}")
+    adws = loaded.ir.get("adws") or []
+    if workflow is not None:
+        adw = next((x for x in adws if x["name"] == workflow), None)
+        if adw is None:
+            raise SandboxUsage(f"no workflow `{workflow}`; workflows: {', '.join(x['name'] for x in adws)}")
+        mine = [i for i in adw.get("environment", []) if i in ids]
+        if not mine or (env_id is not None and env_id not in mine):
+            raise SandboxUsage(f"workflow `{workflow}` does not run in "
+                               f"{'podman environment `' + env_id + '`' if env_id else 'a podman environment'}")
+        return next(e for e in podman if e["id"] == mine[0]), adw, list(adw["environment"])
+    chosen = env_id or ids[0]
+    adw = next((x for x in adws if chosen in x.get("environment", [])), None)
+    option = next(e for e in podman if e["id"] == chosen)
+    if adw is not None:
+        return option, adw, list(adw["environment"])
+    worktree = next((e["id"] for e in loaded.ir.get("environments") or [] if e.get("kind") == "worktree"), None)
+    if worktree is None:
+        raise SandboxUsage(f"no workflow runs in podman environment `{chosen}` and the layer declares no worktree "
+                           "environment to start it on")
+    return option, None, [worktree, chosen]
+
+
+class SandboxUsage(AlError):
+    """`al sandbox` asked for something the layer does not have: exit 2."""
+
+
+def sandbox_cli(a: argparse.Namespace) -> int:
+    """al sandbox LAYER build|doctor|shell|prune|status."""
+    layer = a.layer.resolve()
+    sandbox, ir_module, errors, envs = layer_sandbox_module(layer)
+    say = lambda line: print(line, flush=True)  # noqa: E731
+    try:
+        loaded = ir_module.load(layer)
+    except errors.LayerError as exc:
+        raise AlError(str(exc)) from exc
+    try:
+        option, adw, env_ids = _sandbox_stack(loaded, getattr(a, "env", None),
+                                              getattr(a, "workflow", None))
+    except SandboxUsage as exc:
+        print(f"al sandbox: {exc}", file=sys.stderr)
+        return 2
+    try:
+        if a.action == "status":
+            rows = sandbox.image_status(loaded)
+            current = [r for r in rows if not r["old"]]
+            width = max(len(r["env"]) for r in current)
+            for r in current:
+                print(f"{r['env']:<{width}}  recipe {r['recipe']}  {'built' if r['built'] else 'not built':<9}  "
+                      f"{sandbox.human_size(r['size']):>8}  {r['age']:>4}  {r['image']}")
+            if len(current) > 1:
+                print(f"(one image for every podman environment: built from env/Containerfile, "
+                      f"which comes from `{current[0]['recipe_from']}`)")
+            for r in rows:
+                if r["old"]:
+                    print(f"old  recipe {r['recipe']}  {sandbox.human_size(r['size']):>8}  {r['age']:>4}  {r['image']}"
+                          + ("  (in use)" if r["in_use"] else ""))
+            return 0
+        if a.action == "prune":
+            removed = sandbox.prune_images(loaded)
+            for ref in removed:
+                print(f"removed {ref}")
+            print(f"pruned {len(removed)} image(s)")
+            return 0
+        if a.action == "build":
+            ref = sandbox.image_ref(loaded)
+            if not a.no_cache and sandbox.image_exists(ref):
+                sandbox.ensure_image(loaded, say=say)   # re-points :latest
+                print(f"image {ref} is current (recipe {sandbox.recipe_hash(loaded)})")
+                return 0
+            built = sandbox.build_image(loaded, no_cache=a.no_cache, say=say)
+            print(f"built {built['image']} in {built['seconds']:.0f}s, {sandbox.human_size(built['size'])}")
+            return 0
+        sandbox.ensure_image(loaded, say=say)
+        if a.action == "doctor":
+            with contextlib.redirect_stdout(sys.stderr):   # the runtime's progress lines; the table goes to stdout
+                with sandbox.throwaway(loaded, env_ids, "doctor") as stack:
+                    checks = sandbox.doctor(loaded, stack, adw)
+            print(f"doctor: workflow {adw['name'] if adw else '(none)'}, stack {' → '.join(env_ids)}, "
+                  f"image {sandbox.image_ref(loaded)}")
+            print(sandbox.format_table(checks))
+            print(f"doctor: {sandbox.summary(checks)}")
+            return 1 if any(c.status == "miss" for c in checks) else 0
+        if a.action == "shell":
+            with sandbox.throwaway(loaded, env_ids, "shell") as stack:
+                print(f"shell in {sandbox.image_ref(loaded)} (stack {' → '.join(env_ids)}), worktree {stack.cwd}; "
+                      "the worktree and the container are removed when the shell exits", flush=True)
+                code = subprocess.call(sandbox.shell_argv(stack))
+            print(f"removed the worktree {stack.cwd}")
+            return code
+    except errors.StepFailed as exc:
+        print(f"al sandbox: {exc}", file=sys.stderr)
+        return 1
+    except errors.LayerError as exc:
+        raise AlError(str(exc)) from exc
+    return 0
 
 
 def run_cli(a: argparse.Namespace) -> int:
@@ -2320,6 +2492,26 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cmd", dest="names", action="append", default=[], metavar="NAME", help="verify only this cmd (repeatable)")
     p.add_argument("--timeout", type=int, metavar="S", help="seconds per cmd (default: each cmd's own #:timeout)")
     p.add_argument("--json", action="store_true", help="print the report as JSON on stdout (progress goes to stderr)")
+    p.add_argument("--workflow", metavar="NAME", help="verify only in this workflow's environment stack "
+                   "(default: every distinct stack of the layer's workflows, once)")
+    p = sub.add_parser("sandbox", help="build, check, open and prune a layer's podman sandbox",
+                       description="The layer's podman sandbox image is al-<layer>:<recipe hash>: a changed "
+                       "env/Containerfile (or a file it copies, or the base image) is built at the next run, an "
+                       "unchanged one never. Every run checks its container before the first step (the preflight).")
+    p.add_argument("layer", type=Path)
+    actions = p.add_subparsers(dest="action", required=True)
+    q = actions.add_parser("build", help="build the image of the current recipe now, with live output")
+    q.add_argument("--env", metavar="ID", help="a podman environment (all share one image)")
+    q.add_argument("--no-cache", action="store_true", help="rebuild every layer, e.g. to take a moved base image tag")
+    q = actions.add_parser("doctor", help="start a throwaway container exactly as a run does and check it; "
+                           "exit 1 when something is missing")
+    q.add_argument("--env", metavar="ID", help="the podman environment (default: the first)")
+    q.add_argument("--workflow", metavar="NAME", help="check what this workflow needs (default: the first workflow "
+                   "that runs in the environment)")
+    q = actions.add_parser("shell", help="open a shell in a throwaway container, as a run's commands see it")
+    q.add_argument("--env", metavar="ID", help="the podman environment (default: the first)")
+    actions.add_parser("prune", help="remove every old image of this layer that no run or container uses")
+    actions.add_parser("status", help="the recipe hash and image of every podman environment, and the old images")
     p = sub.add_parser("notify-test", help="send one marked test message through every notifier of a layer")
     p.add_argument("layer", type=Path)
     p.add_argument("--event", default="needs-human", choices=("needs-human", "failed", "passed", "shipped"))
@@ -2417,8 +2609,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise AlError(f"author: {exc}") from exc
         elif a.cmd == "verify":
             say = (lambda line: print(line, file=sys.stderr, flush=True)) if a.json else (lambda line: print(line, flush=True))
-            report, _ = verify_layer(a.layer.resolve(), a.names, a.timeout, say)
-            failed = [r["name"] for r in report if r["exit"] != 0]
+            report, _ = verify_layer(a.layer.resolve(), a.names, a.timeout, say, workflow=a.workflow)
+            several = len({r.get("stack") for r in report}) > 1
+            failed = [r["name"] + (f" [{r['stack']}]" if several else "") for r in report if r["exit"] != 0]
             if a.json:
                 print(json.dumps(report, indent=2))
             say(f"verify: {len(report) - len(failed)}/{len(report)} ok" + (f"; failed: {', '.join(failed)}" if failed else "")
@@ -2426,6 +2619,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if failed else 0
         elif a.cmd == "notify-test":
             return notify_test(a.layer.resolve(), a.event)
+        elif a.cmd == "sandbox":
+            return sandbox_cli(a)
     except AlError as e:
         print(f"al: {e}", file=sys.stderr)
         return 1

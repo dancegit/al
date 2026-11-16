@@ -97,3 +97,18 @@ def test_a_candidate_links_to_its_parent(epage):
     link = epage.locator("a.badge", has_text="candidate 2 of e1000099")
     link.wait_for()
     assert "(race)" in link.inner_text() and link.get_attribute("href") == "#/run/events-shop/e1000099"
+
+
+def test_setup_bars_show_on_the_run_page(epage, esite):
+    _running, agents = esite
+    fixtures_events.add_setup_runs(agents.parent)
+    open_(epage, "/run/events-shop/e1000005")
+    epage.wait_for_selector(".tl-bar.k-setup")
+    assert epage.locator(".tl-bar.k-setup").count() == 2
+    titles = " ".join(epage.locator(".tl-row title").all_text_contents())
+    assert f"building sandbox image {fixtures_events.SETUP_RECIPE} (312 MB) · setup · done" in titles
+    assert "preflight: missing command:test · setup · failed" in titles
+    epage.locator(".tl-bar.k-setup").first.click()                    # a setup bar is not a link
+    assert epage.url.endswith("/run/events-shop/e1000005")
+    from test_browser_documents import shot
+    shot(epage, "run-setup-bars.png")

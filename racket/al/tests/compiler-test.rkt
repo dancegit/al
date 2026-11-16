@@ -1,7 +1,8 @@
 #lang racket/base
 (require rackunit racket/list racket/string racket/runtime-path racket/file json
          "../private/compiler.rkt" "../private/schema.rkt" "../private/reference.rkt"
-         "../private/meta.rkt" "../private/vocab.rkt" "../private/json-pretty.rkt")
+         "../private/meta.rkt" "../private/vocab.rkt" "../private/json-pretty.rkt"
+         "../private/warnings.rkt")
 
 (define-runtime-path fixtures "fixtures")
 (define-runtime-path examples "../examples")
@@ -596,3 +597,60 @@
   (for ([needle '("### `model-tier`" "### `step-script`" "(budget limits …)" "shorthand for the `heavy` entry of #:models"
                   "(include \"FILE\")" "claude-fable-5-2" "#:waiting-exit" "#:journal")])
     (check-true (string-contains? ref needle) needle)))
+
+;; --- warnings: declarations that compile but have no effect ---------------------------------
+
+(define (warnings . clauses) (layer-warnings (compile-layer-datum (apply layer plan clauses))))
+(define (warned? ws rx) (for/or ([w (in-list ws)]) (regexp-match? rx w)))
+
+(test-case "warning: an environment no workflow uses"
+  (define ws (warnings '(environment worktree) '(environment worktree #:id spare)
+                       '(environment home-manager #:packages ("git")) '(adw a #:environment (worktree) (steps (run plan #:command plan)))))
+  (check-equal? ws '("environment `spare` is used by no workflow"))
+  (check-equal? (warnings simple-adw) '()))   ; the implicit default worktree is every ADW's stack
+
+(test-case "warning: credentials without an agent inside"
+  (define (box inside)
+    (warnings '(environment worktree) `(environment podman #:id box #:agent-inside ,inside #:credentials (claude))
+              '(adw a #:environment (worktree box) (steps (run plan #:command plan)))))
+  (check-equal? (box #f) '("#:credentials on (environment podman #:id box) has no effect without #:agent-inside #t"))
+  (check-equal? (box #t) '()))
+
+(test-case "warning: publish or services with scope command"
+  (define ws (warnings '(environment worktree #:ports-per-run 1)
+                       '(environment podman #:id box #:scope command #:publish (8000))
+                       '(adw a #:environment (worktree box) (steps (run plan #:command plan)))))
+  (check-equal? (length ws) 1)
+  (check-regexp-match #rx"^#:publish on \\(environment podman #:id box\\) with #:scope command: each command gets a fresh container" (car ws))
+  (check-equal? (warnings '(environment worktree #:ports-per-run 1)
+                          '(environment podman #:id box #:publish (8000))
+                          '(adw a #:environment (worktree box) (steps (run plan #:command plan))))
+                '()))
+
+(test-case "warning: nix dev shell packages the container lacks"
+  (define (stack podman)
+    (warnings '(environment worktree) '(environment nix-devshell #:packages ("python312" "nodejs_20" "uv" "ffmpeg"))
+              podman
+              '(adw a #:environment (worktree nix-devshell box) (steps (run plan #:command plan)))
+              '(adw b #:environment (worktree nix-devshell box) (steps (run plan #:command plan)))))
+  (check-equal? (stack '(environment podman #:id box #:packages ("git")))
+                '("workflow a, b runs its commands in (environment podman #:id box), which does not provide what (environment nix-devshell #:id nix-devshell) declares: python312, nodejs_20, uv, ffmpeg"))
+  ;; aliases (python ↔ python3, nodejs ↔ node), a setup line, and the base image all provide
+  (check-equal? (stack '(environment podman #:id box #:base-image "docker.io/library/node:20" #:packages ("python3" "ffmpeg")
+                                     #:setup ("pip install uv")))
+                '()))
+
+(test-case "no warnings for the shipped examples"
+  (for ([f (in-list (directory-list examples))] #:when (regexp-match? #rx"[.]rkt$" (path->string f)))
+    (check-equal? (layer-warnings (dynamic-require (build-path examples f) 'layer-spec)) '() (path->string f))))
+
+(test-case "warnings never change the IR"
+  (define with-conditions
+    (layer plan '(environment worktree) '(environment worktree #:id spare)
+           '(environment podman #:id box #:agent-inside #f #:credentials (claude))
+           '(adw a #:environment (worktree box) (steps (run plan #:command plan)))))
+  (define ir (compile-layer-datum with-conditions))
+  (define before (json-pretty ir))
+  (check-equal? (length (layer-warnings ir)) 2)
+  (check-equal? (json-pretty ir) before)
+  (check-equal? (json-pretty (compile-layer-datum with-conditions)) before))

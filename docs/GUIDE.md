@@ -210,7 +210,12 @@ container the layer describes. This step can:
 ```bash
 al verify ~/code/myapp.al              # every command, on a clean throwaway copy, in the layer's environment
 al verify ~/code/myapp.al --cmd test   # one command
+al verify ~/code/myapp.al --workflow sdlc   # only in the environment stack of workflow sdlc
 ```
+
+Workflows can run in different environments (one on the host's worktree, another in a container). By
+default every distinct environment stack is verified once, on its own clean copy, and with more than one
+each result line ends with the stack it ran in (`ok    test  exit 0  3.1s  [worktree → box]`).
 
 The clean copy is made from your default branch (`#:default-branch` in `agentic.rkt`, `main` unless you
 say otherwise), not from whatever you have checked out. Commit and merge what you want checked first.
@@ -223,13 +228,71 @@ mistakes in layers that compiled perfectly.
 
 | Symptom | Usual cause | Fix |
 |---|---|---|
-| `command not found` in the container | the image lacks a tool | add it to the podman option's `#:packages` or `#:setup` in `agentic.rkt`, then `al gen` |
+| `command not found` in the container | the image lacks a tool | add it to the podman option's `#:packages` or `#:setup` in `agentic.rkt`, then `al gen`; `al sandbox LAYER doctor` lists every missing tool at once |
 | cannot write to `.git`, or `git submodule` fails | the container sees your repository's git data read-only, by design | change the command so it does not need to write there |
 | a test cannot bind a port that is busy on your machine | it ran on the host | run checks in a container: each run has its own network |
 | needs the network but has none | the podman option has `#:network none` | remove it, or add a `#:caches` entry and warm the cache |
 | Nix takes minutes or stalls | fetching nixpkgs | set `#:nixpkgs` to a local or pinned flake reference |
 | a command from your README fails on the clean copy although it works for you | your checkout has files the clean copy lacks (build output, caches), or the documented command was never run as written | find the command that works, put it in `LLM.txt` with its citation, and correct the document |
 | a command passes one time and fails the next | a test that depends on timing | do not use it as a check: an agent would be sent to "fix" it. Declare a deterministic variant, and fix the test |
+
+### The container: `al sandbox`
+
+With a podman environment, the layer's image is named after its recipe: `al-<layer>:<hash>`, where the
+hash covers the generated `env/Containerfile`, the files it copies and the base image. Change a package
+or a `#:setup` line, run `al gen`, and the next run builds the new image by itself; with no change
+nothing is built. Every run also checks its container before its first step (the *preflight*) and stops
+at once, with a table of what is missing, instead of an hour later inside a step. `al sandbox` does the
+same on demand. For a small layer named `notes` (a podman option `box`, a `test` command that needs
+pytest):
+
+```text
+$ al sandbox notes.al status
+box  recipe f79af0fccebd  not built         -     -  al-notes:f79af0fccebd
+
+$ al sandbox notes.al build
+[sandbox] building al-notes:f79af0fccebd (recipe f79af0fccebd)
+STEP 1/5: FROM docker.io/library/python:3.12-slim
+STEP 2/5: RUN apt-get update && apt-get install -y --no-install-recommends git curl
+...
+built al-notes:f79af0fccebd in 0s, 312 MB
+
+$ al sandbox notes.al doctor
+doctor: workflow change, stack worktree → box, image al-notes:f79af0fccebd
+check        | result | detail                                    | fix
+command:test | miss   | pytest not found on PATH                  | add the package that provides `pytest` to (environment podman #:id box #:packages …) or #:setup, or change (cmd test …)
+command:lint | ok     | /usr/local/bin/ruff                       |
+git          | ok     | rev-parse and status work in the worktree |
+init         | ok     | catatonit                                 |
+cache:uv     | ok     | /caches/uv is writable                    |
+disk         | ok     | 41210 MB free                             |
+agent        | ok     | /usr/local/bin/claude (on this machine)   |
+image        | ok     | al-notes:f79af0fccebd, 312 MB             |
+doctor: 7 ok, 1 missed, 0 skipped
+```
+
+- `status` — the recipe hash and image of every podman environment (they share one image), and the
+  old images, marked `(in use)` while a run or a container still uses them.
+- `doctor [--env ID] [--workflow NAME]` — starts a throwaway container exactly as a run starts it (same
+  mounts, sidecars, init) on a clean copy of your default branch, checks what the workflow needs (each
+  command's program, the agent CLI and its credential when the agent runs inside, git, caches, disk, a
+  browser when the workflow collects screenshots or videos, the sidecars) and exits 1 if anything is
+  missing. Credential values are never printed.
+- `shell [--env ID]` — a shell in such a container, to try a command the way a run would; the copy and
+  the container are removed when you leave it.
+- `build [--no-cache]` — build now, with the output as it happens (otherwise the next run does it).
+  `--no-cache` also picks up a newer base image under the same tag.
+- `prune` — remove every old image nothing uses. Runs keep the two newest old images and remove those
+  older than 14 days by themselves.
+
+A workflow that collects no screenshots does not need a browser; one whose environment has no sidecars
+skips that check. To turn the browser or sidecar check off for an environment anyway, give the podman
+option a `preflight` list without it (see `docs/DESIGN.md`, "Sandbox image").
+
+The compiler also warns (`warning: …` from `al compile`, `al gen` and `al check`) about declarations that
+have no effect: an environment no workflow uses, `#:credentials` without `#:agent-inside #t`,
+`#:publish`/`#:services` with `#:scope command`, and a nix dev shell whose packages the container of the
+same workflow does not provide.
 
 ## Step 8 — Check, then rehearse for free
 
@@ -728,7 +791,8 @@ on the way past. Layer changes go through `al improve`.
 | leftover branches or copies after experiments | runs you interrupted | `git -C ~/code/myapp worktree prune`, then delete the branches |
 | a run refuses to start with exit code 3 | today's spending limit is reached | raise `#:day-usd`, or wait until tomorrow |
 | `al adopt` refuses to write | a file it wrote earlier was edited by hand | move your change into `agentic.rkt`, or `--force` |
-| a container image is stale after you changed the recipe | images are built once and reused | `podman rmi al-<layer name>:latest`, then run again |
+| a run fails at `preflight` with a table | its container lacks something the workflow needs | the `fix` column names the declaration to change; `al gen`, then `al sandbox LAYER doctor` until it passes |
+| the image did not change although you changed `env/Containerfile` by hand | the Containerfile is generated: `al gen` overwrites it from `agentic.rkt` | change `#:packages` / `#:setup` in `agentic.rkt`; `al sandbox LAYER status` shows the recipe hash |
 
 Every run leaves `agents/<run id>/`: `state.json` (what happened), `run.log`, each step's exact prompt
 and raw agent output, and each check's log. Start there.
