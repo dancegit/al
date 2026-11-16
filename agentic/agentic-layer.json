@@ -587,7 +587,7 @@
       ],
       "id": "claude-code",
       "kind": "claude-code",
-      "maxTurns": 400,
+      "maxTurns": 480,
       "models": [
         {
           "effort": "default",
