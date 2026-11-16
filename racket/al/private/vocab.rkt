@@ -42,22 +42,22 @@
   [safe-mode boolean #t "Run with --safe-mode so user CLAUDE.md, hooks, plugins and skills are not loaded."]
   [allowed-tools (list-of string) ("Read" "Glob" "Grep" "Edit" "Write" "Bash")
    "Tools the headless agent may use without asking (passed as --allowedTools). Narrow it for read-only workflows."]
-  [max-turns integer 60 "Turn cap per step."]
-  [timeout integer 1800 "Wall-clock seconds per step."])
+  [max-turns integer 600 "Turn cap per step (about two and a half hours of work at a usual pace)."]
+  [timeout integer 9000 "Wall-clock seconds per step."])
 (define-kind agent codex
   "OpenAI Codex CLI (`codex exec`). It reports no cost, so spending limits count its calls as $0."
   [models (list-of (record model-tier)) () "Named model tiers (see claude-code)."]
   [model-base (shorthand models base) "gpt-5.4-mini" "Model of the `base` tier."]
   [model-heavy (shorthand models heavy) "gpt-5.4" "Model of the `heavy` tier."]
   [sandbox (enum read-only workspace-write danger-full-access) workspace-write "Codex sandbox mode."]
-  [timeout integer 1800 "Wall-clock seconds per step."])
+  [timeout integer 9000 "Wall-clock seconds per step."])
 (define-kind agent custom
   "Any CLI agent. The command receives the rendered prompt on stdin. It reports no cost, so spending limits count its calls as $0."
   [command string #:required "Shell command; {model} and {cwd} are substituted."]
   [models (list-of (record model-tier)) () "Named model tiers (see claude-code); #:effort is not available."]
   [model-base (shorthand models base) "" "Model of the `base` tier."]
   [model-heavy (shorthand models heavy) "" "Model of the `heavy` tier."]
-  [timeout integer 1800 "Wall-clock seconds per step."])
+  [timeout integer 9000 "Wall-clock seconds per step."])
 (define-kind agent mock
   "Deterministic stand-in used by tests and dry runs: no LLM, replays scripted responses. It accepts every tier name."
   [script-dir string "mock" "Directory (in the layer) holding <step>.json scripted responses and optional <step>.patch files."]

@@ -349,7 +349,7 @@
                 "const": "claude-code"
               },
               "maxTurns": {
-                "description": "Turn cap per step.",
+                "description": "Turn cap per step (about two and a half hours of work at a usual pace).",
                 "type": "integer"
               },
               "models": {

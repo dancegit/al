@@ -532,7 +532,7 @@
       ],
       "id": "claude-code",
       "kind": "claude-code",
-      "maxTurns": 60,
+      "maxTurns": 600,
       "models": [
         {
           "effort": "default",
@@ -553,7 +553,7 @@
       "permissionMode": "acceptEdits",
       "safeMode": true,
       "status": "stable",
-      "timeout": 1800
+      "timeout": 9000
     },
     {
       "id": "second-opinion",
@@ -572,7 +572,7 @@
       ],
       "sandbox": "workspace-write",
       "status": "stable",
-      "timeout": 1800
+      "timeout": 9000
     }
   ],
   "artefacts": [
