@@ -178,6 +178,12 @@ missing one costs no agent time. `al author ~/code/myapp.al --accept-existing` t
 is already there (say, one an earlier attempt wrote before the compiler could be found) when it compiles,
 and asks no agent; one that does not compile is reported with the repair hint below.
 
+While the agent works, `al author` prints one line per message, tool call and error (`  · read LLM.txt`,
+`  ! Bash failed`, `  = 14 turns, 3m 04s, $0.42`), never the hooks' output, and at the end the agent's
+report once, followed by its **Decisions** and **Left out and why** lists. `al author … --raw` prints
+Claude Code's event stream itself, line by line. A dashboard job runs the author step with `--raw` and
+shows the same condensed view on its page ("Work with several repositories from the dashboard" below).
+
 *If it goes wrong:* the error is always of the form `agentic.rkt:LINE:COL: … expected one of: …` or
 `… is not a declared …; declared: …`. Give it to the agent with
 `Follow meta/commands/repair-layer.md with $1 = ~/code/myapp.al/agentic.rkt  $2 = <the error text>`.
@@ -458,8 +464,14 @@ its state, each with the exact command line it runs:
 
 An action that writes asks first: it shows the command lines and the paths it writes (for adopt, the dry
 run's diff) and runs only after **Confirm**; if the repository changed in between, it asks again. Create
-and adopt never overwrite an `agentic.rkt`, wherever it is. Each action is a **job**: its steps with their
-exit codes, the live output, the files of the layer it changed and its documents. One action runs per
+and adopt never overwrite an `agentic.rkt`, wherever it is. Each action is a **job**. Its page shows, in
+this order: the outcome once it ended (what was created and what is unverified, or the failing step with
+its reason in one sentence, **Retry from STEP** and **Download log**); the steps, the running one saying
+what it is doing right now ("reading the CI files", "compiling, attempt 2"); the selected step's activity
+(the author step's messages, one line per tool call, errors in red; hooks and bookkeeping only with
+**show everything**; a plain step's own output), with a search box and its log, raw events and journal
+to download; the author's **Decisions** and **Left out and why**; the files of the layer it changed and
+its documents; and, collapsed, the full output of every step. One action runs per
 repository at a time. A job keeps running when you restart the dashboard; a job whose process is gone
 is shown as `interrupted`, never as running. Jobs are kept in `~/.local/state/al/dashboard-jobs`
 (`$XDG_STATE_HOME`), outside every repository.

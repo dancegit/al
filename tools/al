@@ -18,10 +18,11 @@
                                    copy a kit template into LAYER/templates/ so your edits to it survive `al gen`
   al improve LAYER "request" [--dry-run] [--review human|agent] [--model-set T] [--model T=ID] [--max-cost USD]
                                    change the layer through al's own reviewed workflow: ends in a pull request
-  al author  LAYER [--agent claude-code|mock] [--mock F] [--preferences T] [--accept-existing]
+  al author  LAYER [--agent claude-code|mock] [--mock F] [--preferences T] [--accept-existing] [--raw]
                                    have agentic.rkt written: hands meta/commands/author-layer.md to the agent CLI
                                    with the layer's LLM.txt, then compiles it; never overwrites an agentic.rkt
-                                   (--accept-existing: take one that is already there if it compiles)
+                                   (--accept-existing: take one that is already there if it compiles); prints
+                                   progress lines and the agent's report (--raw: the agent's event stream)
   al doctor  [LAYER] [--for CMD,…] [--agent A] [--json]
                                    where al finds racket, raco, uv, git and the agent CLI, with versions;
                                    --for: only whether CMD's prerequisites are there (exit 4 when not)
@@ -335,6 +336,23 @@ def author_module():
         sys.path.insert(0, str(ROOT / "tools"))
     import al_author
     return al_author
+
+
+def dashboard_kit_module():
+    """kit/dashboard/dashboard.py, loaded by path as `al_dashboard_kit`: its AgentJournal condenses the agent's
+    event stream for `al author`, as it does for a dashboard job (one parser for both)."""
+    if "al_dashboard_kit" in sys.modules:
+        return sys.modules["al_dashboard_kit"]
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("al_dashboard_kit", DASHBOARD_KIT / "dashboard.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["al_dashboard_kit"] = module    # before it runs: its dataclasses look their module up
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop("al_dashboard_kit", None)
+        raise
+    return module
 
 
 def deploy_module():
@@ -2597,6 +2615,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--preferences", metavar="TEXT", help="PITER choices in plain language, and where the codebase is")
     p.add_argument("--accept-existing", action="store_true",
                    help="accept an agentic.rkt that is already there if it compiles; used by a dashboard retry")
+    p.add_argument("--raw", action="store_true",
+                   help="print the agent's event stream as it comes (a dashboard job condenses it itself) instead of "
+                        "progress lines and the report")
     p = sub.add_parser("doctor", help="where al finds racket, raco, uv, git and the agent CLI (exit 4 when one is missing)")
     p.add_argument("layer", nargs="?", type=Path, help="a layer whose settings (local.env, ~/.config/al/<name>.env) count")
     p.add_argument("--for", dest="for_", metavar="CMD,…", help="only check the prerequisites of these subcommands: "
@@ -2728,7 +2749,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise AlError("author: --agent mock needs --mock FILE")
             try:
                 return module.author(sys.modules[__name__], a.layer, a.agent, a.mock, a.preferences,
-                                     say=lambda line: print(line, flush=True), accept_existing=a.accept_existing)
+                                     say=lambda line: print(line, flush=True), accept_existing=a.accept_existing,
+                                     raw=a.raw)
             except module.AuthorError as exc:
                 raise AlError(f"author: {exc}") from exc
         elif a.cmd == "verify":

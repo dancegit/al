@@ -996,6 +996,223 @@
     destroy() { this.source.close(); }
   }
 
+  // =========================================================================== components: a job step's activity
+  const ACTIVITY_WINDOW = 300;   // journal rows shown at first, and added by "show earlier"
+  const TEXT_WINDOW = 500;       // log lines shown at first, and added by "show earlier"
+
+  /** The toolbar both activity views share: a search box, an optional toggle and a count. */
+  function activityTools(view, extra) {
+    view.search = h("input", { type: "search", class: "act-search", placeholder: "search this step", "aria-label": "search this step's activity", "data-role": "search" });
+    view.search.addEventListener("input", debounce(() => { view.query = view.search.value.trim(); view.render(); }, 150));
+    view.count = h("span", { class: "count" });
+    view.earlier = h("button", { type: "button", class: "toggle", "data-role": "earlier", text: "show earlier", hidden: true });
+    return h("div", { class: "toolbar act-tools" }, view.search, extra, view.count);
+  }
+
+  /** Keep a scroll box at its bottom when it was there (or on the first draw), else where the reader left it. */
+  function keepScroll(box, draw, first) {
+    const atBottom = first || box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    const top = box.scrollTop;
+    draw();
+    box.scrollTop = atBottom ? box.scrollHeight : top;
+  }
+
+  /** An agent step's journal (/api/job/journal, condensed by the job runner): its messages as Markdown,
+   * each tool call as one line (tool, target, result size, duration), errors highlighted, the final
+   * report and the totals. Hook, system and bookkeeping events stay hidden until "show everything". The
+   * latest rows only, "show earlier" for more, and a search over every loaded row. */
+  class ActivityView {
+    constructor(container, opts) {
+      this.opts = opts;
+      this.events = [];
+      this.next = 0;
+      this.limit = ACTIVITY_WINDOW;
+      this.showAll = false;
+      this.query = "";
+      this.drawn = false;
+      this.gone = false;
+      this.all = h("button", { type: "button", class: "toggle", "data-role": "show-all", "aria-pressed": "false", text: "show everything",
+        title: "also show hooks, start-up, rate limits and other bookkeeping" });
+      this.all.addEventListener("click", () => {
+        this.showAll = !this.showAll;
+        this.all.setAttribute("aria-pressed", String(this.showAll));
+        this.all.classList.toggle("on", this.showAll);
+        this.render();
+      });
+      const tools = activityTools(this, this.all);
+      this.earlier.addEventListener("click", () => { this.limit += ACTIVITY_WINDOW; this.render(true); });
+      this.list = h("div", { class: "act-list", tabindex: 0, "aria-label": `activity of ${opts.step}` });
+      this.el = h("div", { class: "activity", "data-role": "activity", dataset: { step: opts.step, rows: "0", kind: "journal" } },
+        tools, this.earlier, this.list);
+      container.appendChild(this.el);
+      this.refresh();
+    }
+
+    url() { return `/api/job/journal?id=${enc(this.opts.job)}&step=${enc(this.opts.step)}&from=${this.next}`; }
+
+    /** Fetch the events after those already here (all of them after a retry started the journal afresh). */
+    async refresh() {
+      if (this.loading) { this.again = true; return; }
+      this.loading = true;
+      try {
+        for (let page = 0; page < 100; page += 1) {
+          const data = await api(this.url());
+          if (this.gone) return;
+          if (data.total < this.next) { this.events = []; this.next = 0; continue; }
+          this.events.push(...data.events);
+          const more = data.next_from > this.next && data.next_from < data.total;
+          this.next = data.next_from;
+          if (!more) break;
+        }
+        this.render();
+      } catch (_error) {
+        if (!this.drawn) this.render();   // no journal yet: the step has not started; the next job event asks again
+      } finally {
+        this.loading = false;
+        if (this.again && !this.gone) { this.again = false; this.refresh(); }
+      }
+    }
+
+    /** Events → rows: a tool call and its result are one row. */
+    rows() {
+      const calls = new Map();
+      const rows = [];
+      for (const event of this.events) {
+        if (event.kind === "tool") { const row = { ...event, done: null }; calls.set(event.id, row); rows.push(row); }
+        else if (event.kind === "tool.done") { const call = calls.get(event.id); if (call) call.done = event; }
+        else rows.push(event);
+      }
+      return rows;
+    }
+
+    static rowText(row) {
+      return [row.kind, row.what, row.tool, row.target, row.text].filter(Boolean).join(" ");
+    }
+
+    render(keepTop) {
+      const q = this.query.toLowerCase();
+      let rows = this.rows().filter((row) => this.showAll || row.kind !== "hidden");
+      if (q) rows = rows.filter((row) => ActivityView.rowText(row).toLowerCase().includes(q));
+      const shown = rows.slice(Math.max(0, rows.length - this.limit));
+      const draw = () => replace(this.list, shown.length ? shown.map((row) => this.row(row, q))
+        : h("div", { class: "faint act-empty", text: q ? `nothing matches “${this.query}”` : this.events.length ? "only bookkeeping so far (show everything)" : "nothing yet" }));
+      if (keepTop) { const top = this.list.scrollTop; draw(); this.list.scrollTop = top; } else keepScroll(this.list, draw, !this.drawn);
+      this.drawn = true;
+      const hidden = rows.length - shown.length;
+      this.earlier.hidden = hidden <= 0;
+      this.earlier.textContent = `show earlier (${hidden} more)`;
+      this.count.textContent = q ? `${rows.length} matching` : `${shown.length} of ${rows.length}`;
+      this.el.dataset.rows = String(shown.length);
+    }
+
+    row(row, q) {
+      const marked = (text, cls) => { const el = h("span", { class: cls || null }); highlight(el, text || "", q); return el; };
+      const at = row.t ? fmt.clock(row.t) : "";
+      const time = h("span", { class: "act-time faint", text: at });
+      switch (row.kind) {
+        case "message":
+          return h("div", { class: "act-row act-msg" }, time, q ? h("div", { class: "act-text" }, marked(row.text)) : h("div", { class: "act-text md" }, renderMarkdown(row.text)));
+        case "tool": {
+          const done = row.done;
+          return h("div", { class: `act-row act-tool${done && done.error ? " act-err" : ""}${done ? "" : " act-open"}`, title: row.text || "" },
+            time, h("span", { class: "act-name", text: row.tool }), marked(row.target || row.text, "act-target mono"),
+            h("span", { class: "act-size num dim", text: done ? `${fmt.bytes(done.bytes)}` : "…" }),
+            h("span", { class: "act-dur num dim", text: done ? fmt.dur((done.ms || 0) / 1000) : "" }));
+        }
+        case "error":
+          return h("div", { class: "act-row act-err" }, time, h("span", { class: "act-mark", text: "!" }), marked(row.text, "act-text"));
+        case "report":
+          return h("div", { class: "act-row act-report" }, h("div", { class: "act-report-head", text: "final report" }),
+            q ? marked(row.text, "act-text") : h("div", { class: "act-text md" }, renderMarkdown(row.text)));
+        case "result":
+          return h("div", { class: `act-row act-result${row.error ? " act-err" : ""}` }, time,
+            h("span", { text: [`${row.turns ?? "?"} turns`, fmt.dur((row.ms || 0) / 1000), fmt.cost(row.cost), row.error ? "ended with an error" : "finished"].join(" · ") }));
+        case "hidden":
+          return h("div", { class: "act-row act-hidden" }, time, h("span", { class: "act-name", text: row.what || "meta" }), marked(row.text, "act-text"));
+        default:
+          return h("div", { class: "act-row" }, time, marked(row.text, "act-text"));
+      }
+    }
+
+    destroy() { this.gone = true; }
+  }
+
+  /** A plain command step's log (/api/job/log: ANSI stripped, the home directory as ~): the latest lines,
+   * "show earlier" for more, and a search that keeps the matching lines and marks the matches. */
+  class TextWindow {
+    constructor(container, opts) {
+      this.opts = opts;
+      this.lines = [];
+      this.first = 0;
+      this.next = null;
+      this.query = "";
+      this.drawn = false;
+      this.gone = false;
+      const tools = activityTools(this, null);
+      this.earlier.addEventListener("click", () => this.showEarlier());
+      this.pre = h("div", { class: "text-window mono", tabindex: 0, "aria-label": `output of ${opts.step}` });
+      this.el = h("div", { class: "activity", "data-role": "activity", dataset: { step: opts.step, rows: "0", kind: "log" } },
+        tools, this.earlier, this.pre);
+      container.appendChild(this.el);
+      this.refresh();
+    }
+
+    url(params) { return `/api/job/log?id=${enc(this.opts.job)}&step=${enc(this.opts.step)}&${params}`; }
+
+    async refresh() {
+      if (this.loading) { this.again = true; return; }
+      this.loading = true;
+      try {
+        for (let page = 0; page < 100; page += 1) {
+          if (this.next === null) {
+            const data = await api(this.url(`tail=${TEXT_WINDOW}`));
+            if (this.gone) return;
+            Object.assign(this, { lines: data.lines, first: data.from, next: data.next_from });
+            break;
+          }
+          const data = await api(this.url(`from=${this.next}`));
+          if (this.gone) return;
+          if (data.total < this.next) { this.next = null; continue; }   // a retry started the log afresh
+          this.lines.push(...data.lines);
+          const more = data.next_from > this.next && data.next_from < data.total;
+          this.next = data.next_from;
+          if (!more) break;
+        }
+        this.render();
+      } catch (_error) {
+        if (!this.drawn) this.render();
+      } finally {
+        this.loading = false;
+        if (this.again && !this.gone) { this.again = false; this.refresh(); }
+      }
+    }
+
+    async showEarlier() {
+      const from = Math.max(0, this.first - TEXT_WINDOW);
+      try {
+        const data = await api(this.url(`from=${from}`));
+        this.lines = data.lines.slice(0, this.first - from).concat(this.lines);
+        this.first = from;
+        this.render(true);
+      } catch (_error) { /* kept as it is */ }
+    }
+
+    render(keepTop) {
+      const q = this.query.toLowerCase();
+      const shown = q ? this.lines.filter((line) => line.toLowerCase().includes(q)) : this.lines;
+      const draw = () => replace(this.pre, shown.length ? shown.map((line) => { const el = h("div", { class: "tw-line" }); highlight(el, line || " ", q); return el; })
+        : h("div", { class: "faint", text: q ? `nothing matches “${this.query}”` : "no output yet" }));
+      if (keepTop) { const top = this.pre.scrollTop; draw(); this.pre.scrollTop = top; } else keepScroll(this.pre, draw, !this.drawn);
+      this.drawn = true;
+      this.earlier.hidden = this.first <= 0;
+      this.earlier.textContent = `show earlier (${this.first} more lines)`;
+      this.count.textContent = q ? `${shown.length} matching lines` : `lines ${this.first + 1}–${this.first + this.lines.length}`;
+      this.el.dataset.rows = String(shown.length);
+    }
+
+    destroy() { this.gone = true; }
+  }
+
   // =========================================================================== views: Now
   function NowView(main, crumbs) {
     crumbs.textContent = "what the agents are doing now";
@@ -2427,37 +2644,74 @@
     };
   }
 
+  /** A workspace action's job, in the order a person reads it: the header (status, duration, how many
+   * items need a person), the outcome once it ended (what was created, or which step failed, why, and
+   * "Retry from STEP"), the steps row (what the running step is doing right now), the selected step's
+   * activity (an agent step's condensed journal, a plain step's log), the author's Decisions and Left out,
+   * the changed files and documents, and last the full output (collapsed; open for a job from before
+   * the steps/ files existed). */
   function JobView(main, crumbs, route) {
     const id = route.parts[1] || "";
+    let chosen = route.params.step || "";   // the step a person picked (kept in the route as ?step=)
+    let current = null;                      // the job as last loaded
+    let view = null, viewKey = "";           // the selected step's ActivityView or TextWindow
+    let log = null;                          // the full output's LogView, made when it is first opened
+    let outputSet = false;
+    let shownDoc = "";
+    const fileUrl = (name) => `/api/job/file?id=${enc(id)}&name=${enc(name)}`;
     const head = h("div", { class: "job-head" });
+    const outcome = h("div", { class: "job-outcome-slot" });
     const steps = h("div", { class: "card job-steps" });
-    const logCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", { text: "output" })));
+    const activityHead = h("div", { class: "card-head" });
+    const activityBody = h("div", { class: "activity-slot" });
+    const activityCard = h("div", { class: "card job-activity" }, activityHead, activityBody);
+    const reports = h("div", { class: "job-reports" });
     const changed = h("div", { class: "card job-changed" });
     const docs = h("div", { class: "card job-docs" });
     const docView = h("div", { class: "doc-view-slot" });
-    main.append(head, steps, logCard, changed, docs, docView);
-    const log = new LogView(logCard, { job: id, running: true, label: "job output" });
-    let shownDoc = "";
+    const outputBody = h("div", { class: "job-output-body" });
+    const output = h("details", { class: "card job-output", "data-role": "full-output" },
+      h("summary", {}, h("h3", { text: "Full output" }), h("span", { class: "dim", text: "every step, as it ran (an agent step condensed)" })), outputBody);
+    output.addEventListener("toggle", () => { if (output.open && !log) log = new LogView(outputBody, { job: id, running: true, label: "job output" }); });
+    main.append(head, outcome, steps, activityCard, reports, changed, docs, docView, output);
+
+    /** The step whose activity shows: the one picked, else the running one, else the failed one, else the agent step. */
+    function selected(job) {
+      if (chosen && job.steps.some((s) => s.name === chosen)) return chosen;
+      const failed = job.outcome && job.outcome.step;
+      const pick = job.steps.find((s) => s.status === "running") || job.steps.find((s) => failed && s.name === failed && s.activity)
+        || job.steps.find((s) => s.stream === "agent" && s.activity) || [...job.steps].reverse().find((s) => s.activity);
+      return pick ? pick.name : "";
+    }
+
+    function choose(name) {
+      chosen = name;
+      go(routeHash(["job", id], { step: name }), true);
+    }
 
     function render(job) {
+      current = job;
       replace(crumbs, h("a", { href: "#/repos", text: "repos" }), " / ", h("a", { href: `#/repo/${enc(job.repo)}`, text: job.repo_name || job.repo }),
         " / ", h("span", { text: `job ${job.id}` }));
       const duration = job.started ? (job.ended || now()) - job.started : null;
       replace(head, h("div", { class: "run-head" }, h("div", {},
         h("div", { class: "line1" }, h("h1", { text: `${job.action}${job.preview ? " (dry run)" : ""} · ${job.repo_name}` }), pill(job.status),
-          job.exit !== null && job.exit !== undefined ? h("span", { class: "badge", text: `exit ${job.exit}` }) : null),
+          job.exit !== null && job.exit !== undefined ? h("span", { class: "badge", text: `exit ${job.exit}` }) : null,
+          job.needs_person > 0 ? h("span", { class: "badge warn", "data-role": "needs-person", title: "items of the author's report left for a person (Left out and why)",
+            text: `needs a person: ${job.needs_person}` }) : null),
         h("div", { class: "dim" }, h("span", { class: "mono", text: job.repo_dir }), job.layer ? [" · layer ", h("span", { class: "mono", text: job.layer })] : null,
           ` · started ${fmt.time(job.started || job.created)} · `,
-          job.status === "running" && job.started ? h("span", { dataset: { since: job.started }, text: fmt.dur(duration) }) : fmt.dur(duration)),
-        job.reason ? h("div", { class: "why", text: job.reason }) : null,
-        job.retry_from && store.actions.enabled ? h("div", { class: "job-retry" }, retryButton(job)) : null)));
+          job.status === "running" && job.started ? h("span", { dataset: { since: job.started }, text: fmt.dur(duration) }) : fmt.dur(duration),
+          job.output_bytes ? [" · ", h("a", { href: fileUrl("output.log"), download: true, "data-role": "download-output", text: "Download full output" })] : null),
+        job.reason ? h("div", { class: `why${job.outcome ? " brief" : ""}`, text: job.reason }) : null)));
+      replace(outcome, outcomeCard(job));
+      const sel = selected(job);
       replace(steps, h("div", { class: "card-head" }, h("h3", { text: "Steps" }), h("span", { class: "dim", text: "run in order; the first that fails stops the job" })),
-        job.steps.map((step) => h("div", { class: `job-step s-${step.status}`, dataset: { step: step.name } },
-          pill(step.status), h("code", { class: "cmd", text: step.display }),
-          h("span", { class: "spacer" }),
-          h("span", { class: "num dim", text: step.exit !== null && step.exit !== undefined ? `exit ${step.exit}` : "" }),
-          h("span", { class: "num dim", text: step.started ? fmt.dur((step.ended || now()) - step.started) : "" }),
-          step.reason ? h("div", { class: "why", text: step.reason }) : null)));
+        h("div", { class: "job-steprow", "data-role": "steps" }, job.steps.map((step) => stepChip(step, step.name === sel))));
+      renderActivity(job, sel);
+      const report = job.report || { decisions: [], left_out: [] };
+      replace(reports, report.decisions.length ? reportCard("Decisions", "decisions", report.decisions) : null,
+        report.left_out.length ? reportCard("Left out and why", "left-out", report.left_out) : null);
       replace(changed, h("div", { class: "card-head" }, h("h3", { text: "Changed files" })),
         job.status === "running" ? h("div", { class: "faint", text: "listed when the job ends" })
           : [job.changed.length ? h("ul", { class: "changed" }, job.changed.map((c) => h("li", {}, h("span", { class: `badge change-${c.change}`, text: c.change }), " ",
@@ -2469,7 +2723,86 @@
           h("td", {}, h("span", { class: "doc-name", text: doc.name })), h("td", { class: "num", text: fmt.bytes(doc.bytes) }),
           h("td", { class: "actions" }, h("button", { type: "button", class: "toggle", "data-role": "view", text: "View", onclick: () => showDoc(doc.name) }))))))
           : h("div", { class: "faint", text: "none" }));
+      if (!outputSet) {   // a job from before the steps/ files: its combined log is all there is, open
+        outputSet = true;
+        if (!job.has_steps_dir) output.open = true;
+      }
       if (shownDoc) showDoc(shownDoc);
+    }
+
+    function outcomeCard(job) {
+      const o = job.outcome;
+      if (!o) return null;
+      if (o.status === "passed") {
+        const c = o.created || {};
+        const counts = [c.added ? `${c.added} added` : "", c.modified ? `${c.modified} changed` : "", c.removed ? `${c.removed} removed` : ""].filter(Boolean).join(", ");
+        const made = job.action === "create" || job.action === "adopt";
+        return h("div", { class: "card job-outcome s-passed", "data-role": "outcome" },
+          h("div", { class: "outcome-title" }, pill("passed"), h("span", { text: made ? " the layer is written" : " done" })),
+          h("dl", { class: "kv" },
+            c.layer ? [h("dt", { text: made ? "created" : "layer" }), h("dd", { "data-role": "created" }, h("span", { class: "mono", text: c.layer }),
+              counts ? h("span", { class: "dim", text: ` · ${counts}` }) : null)] : null,
+            o.adopted ? [h("dt", { text: "adopted" }), h("dd", { "data-role": "adopted", text: `${o.adopted} file${o.adopted === 1 ? "" : "s"} under adopted/` })] : null,
+            job.report ? [h("dt", { text: "unverified" }), h("dd", { "data-role": "unverified" }, o.unverified.length
+              ? h("ul", { class: "plain-list" }, o.unverified.map((item) => h("li", {}, inlineMarkdown(item)))) : h("span", { class: "faint", text: "nothing" }))] : null,
+            o.next ? [h("dt", { text: "next" }), h("dd", { "data-role": "next" }, inlineMarkdown(o.next))] : null));
+      }
+      return h("div", { class: `card job-outcome s-${o.status}`, "data-role": "outcome" },
+        h("div", { class: "outcome-title" }, pill(o.status), h("span", { text: " at step " }), h("strong", { class: "mono", "data-role": "outcome-step", text: o.step || "?" })),
+        h("div", { class: "outcome-reason", "data-role": "reason", text: o.reason }),
+        h("div", { class: "outcome-actions" },
+          job.retry_from && store.actions.enabled ? h("div", { class: "job-retry" }, retryButton(job)) : null,
+          o.log ? h("a", { class: "btn", href: fileUrl(`steps/${o.log}`), download: true, "data-role": "download-log", text: "Download log" }) : null),
+        o.lines.length ? h("pre", { class: "outcome-lines", "data-role": "lines", text: o.lines.join("\n") }) : null);
+    }
+
+    function stepChip(step, isSelected) {
+      const chip = h("div", { class: `job-step step-chip s-${step.status}${isSelected ? " selected" : ""}`, role: "button", tabindex: 0,
+        "aria-pressed": isSelected ? "true" : "false", dataset: { step: step.name } },
+        h("div", { class: "chip-top" }, pill(step.status), h("span", { class: "step-name", text: step.name }), h("span", { class: "spacer" }),
+          h("span", { class: "num dim", text: step.exit !== null && step.exit !== undefined ? `exit ${step.exit}` : "" }),
+          h("span", { class: "num dim", text: step.started ? fmt.dur((step.ended || now()) - step.started) : "" })),
+        h("code", { class: "cmd", text: step.display }),
+        step.doing ? h("div", { class: "doing", "data-role": "doing", text: step.doing }) : null,
+        step.reason ? h("div", { class: "why", text: step.reason }) : null);
+      chip.addEventListener("click", () => choose(step.name));
+      chip.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); choose(step.name); } });
+      return chip;
+    }
+
+    function renderActivity(job, name) {
+      const step = job.steps.find((s) => s.name === name);
+      activityCard.hidden = !job.has_steps_dir;
+      if (!job.has_steps_dir || !step) {
+        if (view) view.destroy();
+        view = null;
+        viewKey = "";
+        clear(activityBody);
+        return;
+      }
+      const file = `steps/${step.name}.log`;
+      replace(activityHead, h("h3", { text: `Activity · ${step.name}` }), step.doing ? h("span", { class: "dim doing", text: step.doing }) : null,
+        h("span", { class: "spacer" }),
+        h("span", { class: "downloads" },
+          step.raw ? h("a", { href: fileUrl(file), download: true, "data-role": "raw", title: "the agent's whole event stream", text: `raw events (${fmt.bytes(step.log_bytes)})` })
+            : step.activity ? h("a", { href: fileUrl(file), download: true, "data-role": "log", text: `log (${fmt.bytes(step.log_bytes)})` }) : null,
+          step.journal ? h("a", { href: fileUrl(`steps/${step.name}.journal.jsonl`), download: true, "data-role": "journal", text: "journal" }) : null));
+      const key = `${step.name}:${step.activity}`;
+      if (key !== viewKey) {
+        if (view) view.destroy();
+        clear(activityBody);
+        viewKey = key;
+        const opts = { job: id, step: step.name, running: step.status === "running" };
+        view = step.activity === "journal" ? new ActivityView(activityBody, opts) : step.activity === "log" ? new TextWindow(activityBody, opts) : null;
+        if (!view) activityBody.appendChild(h("div", { class: "faint", text: step.status === "pending" ? "not started yet"
+          : step.status === "skipped" ? "skipped: an earlier step did not pass" : "no output was recorded" }));
+      } else if (view) view.refresh();
+    }
+
+    function reportCard(title, role, items) {
+      return h("div", { class: "card job-report", "data-role": role },
+        h("div", { class: "card-head" }, h("h3", { text: title }), h("span", { class: "badge", text: String(items.length) })),
+        h("ul", { class: "md report-items" }, items.map((item) => h("li", {}, renderMarkdown(item)))));
     }
 
     /** "Retry from STEP": the steps that did not pass run again (a retried author accepts the agentic.rkt
@@ -2479,7 +2812,7 @@
       const names = job.steps.map((step) => step.name);
       const again = names.slice(names.indexOf(from));
       const note = h("span", { class: "dim" });
-      const button = h("button", { type: "button", class: "btn writes", text: `Retry from ${from}` });
+      const button = h("button", { type: "button", class: "btn writes", "data-role": "retry", text: `Retry from ${from}` });
       button.addEventListener("click", async () => {
         if (!window.confirm(`Run ${again.join(", ")} again for ${job.repo_name}? The steps that passed are kept.`)) return;
         button.disabled = true;
@@ -2509,11 +2842,19 @@
       try { render(await api(`/api/job?id=${enc(id)}`)); } catch (_error) {
         replace(head, h("div", { class: "empty", text: `No such job: ${id}` }));
       }
+      main.dataset.rendered = String(Number(main.dataset.rendered || 0) + 1);
     }
     const reload = throttle(load, 500);
     const off = store.on((kind, data) => { if (kind === "job" && data && data.id === id) reload(); if (kind === "snapshot") reload(); });
     load();
-    return { destroy() { off(); log.destroy(); }, toggleFollow: () => log.toggleFollow(), back: () => history.back() };
+    return {
+      destroy() { off(); if (view) view.destroy(); if (log) log.destroy(); },
+      accepts: (r) => r.view === "job" && r.parts[1] === id,
+      route(r) { chosen = r.params.step || ""; if (current) render(current); },
+      get searchInput() { return view && view.search; },
+      toggleFollow: () => { if (log) log.toggleFollow(); },
+      back: () => history.back(),
+    };
   }
 
   // =========================================================================== keyboard

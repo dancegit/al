@@ -5,8 +5,9 @@
   comet   a hand-built ADW suite (adws/adw_plan.py, adws/adw_build.py importing adws/adw_modules/): setup
   fern    a README and one source file: none
 
-and `fake_al`, a standard-library stand-in for the al tool that records its argv and prints, sleeps,
-writes and exits as told (no Racket, no LLM). Its `doctor` (a job's prerequisite check) answers `ok` at
+and `fake_al`, a standard-library stand-in for the al tool that records its argv and prints, replays a
+recorded agent stream (data/job-streams/, through `job_stream`), sleeps, writes and exits as told (no
+Racket, no LLM). Its `doctor` (a job's prerequisite check) answers `ok` at
 once unless `fail` names it."""
 from __future__ import annotations
 
@@ -96,13 +97,22 @@ BEHAVIOUR = {behaviour}
 with open(HERE + ".calls", "a") as calls:
     calls.write(json.dumps(sys.argv[1:]) + "\\n")
 command = sys.argv[1] if len(sys.argv) > 1 else ""
+if command in BEHAVIOUR.get("streams", {{}}):
+    with open(BEHAVIOUR["streams"][command], "rb") as stream:
+        for line in stream:
+            sys.stdout.buffer.write(line)
+            sys.stdout.buffer.flush()
+            time.sleep(BEHAVIOUR.get("line_sleep", 0))
+time.sleep(BEHAVIOUR.get("hold", {{}}).get(command, 0))
 if command in BEHAVIOUR.get("fail", {{}}):
     code, text = BEHAVIOUR["fail"][command]
-    if command == "doctor":
+    if text and command == "doctor":
         print(text, flush=True)
-    else:
+    elif text:
         print(text, file=sys.stderr, flush=True)
     sys.exit(code)
+if command in BEHAVIOUR.get("streams", {{}}):
+    sys.exit(BEHAVIOUR.get("exit", 0))
 if command == "doctor":
     print("ok")
     sys.exit(0)
@@ -126,19 +136,38 @@ sys.exit(BEHAVIOUR.get("exit", 0))
 
 def fake_al(path: Path, *, sleep: float = 0, exit: int = 0, out: str = "", lines: list[str] | None = None,  # noqa: A002
             line_sleep: float = 0, writes: dict[str, dict[str, str]] | None = None,
-            fail: dict[str, tuple[int, str]] | None = None) -> Path:
+            fail: dict[str, tuple[int, str]] | None = None, streams: dict[str, Path] | None = None,
+            hold: dict[str, float] | None = None) -> Path:
     """An executable stand-in for `al` at `path`: appends its argv as one JSON line to `<path>.calls`,
     writes `writes[command]` (path → text), prints `lines` (each followed by `line_sleep` seconds) and
-    `out`, sleeps `sleep` seconds and exits `exit`. `fail[command] = (code, text)`: that subcommand
-    (argv[1]) prints `text` on stderr (on stdout for `doctor`, like al doctor --for) and exits `code`.
+    `out`, sleeps `sleep` seconds and exits `exit`. `streams[command]`: that subcommand prints the file's
+    lines byte for byte (each followed by `line_sleep` seconds) and nothing else, then fails or exits; `hold[command]`: that subcommand
+    then sleeps that many seconds (which keeps its step running). `fail[command] = (code, text)`: that subcommand (argv[1]) then prints
+    `text`, when there is one, on stderr (on stdout for `doctor`, like al doctor --for) and exits `code`.
     `doctor` otherwise prints ok and exits 0 at once. It can be rewritten between runs."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     behaviour = {"sleep": sleep, "exit": exit, "out": out, "lines": lines or [], "line_sleep": line_sleep,
-                 "writes": writes or {}, "fail": {k: list(v) for k, v in (fail or {}).items()}}
+                 "writes": writes or {}, "fail": {k: list(v) for k, v in (fail or {}).items()},
+                 "streams": {k: str(v) for k, v in (streams or {}).items()}, "hold": dict(hold or {})}
     path.write_text(FAKE_AL.format(python=sys.executable, behaviour=repr(behaviour)))
     path.chmod(0o755)
     return path
+
+
+STREAMS = Path(__file__).resolve().parent / "data" / "job-streams"
+
+
+def job_stream(name: str, workspace: Path) -> Path:
+    """The recorded agent stream `name` (author-running, author-finished, author-failed) with its invented
+    paths made real: /tmp/ws becomes `workspace`, /tmp/home the home directory (which every page must show
+    as ~). Written beside the workspace; → its path."""
+    text = (STREAMS / f"{name}.jsonl").read_text(encoding="utf-8")
+    text = text.replace("/tmp/ws", str(Path(workspace).resolve())).replace("/tmp/home", str(Path.home()))
+    target = Path(workspace).parent / "streams" / f"{name}.jsonl"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    return target
 
 
 def calls(path: Path, preflight: bool = False) -> list[list[str]]:

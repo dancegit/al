@@ -62,8 +62,8 @@ COMPILE: tools/al compile $2 >/dev/null
 ## Report
 
 - The path of OUTPUT and the final compile result, with the number of repair rounds.
-- The decisions taken, as "fact, then choice" bullets, including every default you relied on (`#:root` above all).
-- What was left out and why: `UNVERIFIED` items, preferences the language cannot express, kit steps left out because a team rule forbids them (rule and source line).
+- Under a `### Decisions` heading: the decisions taken, as "fact, then choice" bullets, including every default you relied on (`#:root` above all).
+- Under a `### Left out and why` heading: what was left out and why, as bullets: `UNVERIFIED` items, preferences the language cannot express, kit steps left out because a team rule forbids them (rule and source line).
 
 ## Fabric patterns
 

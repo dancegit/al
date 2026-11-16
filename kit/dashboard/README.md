@@ -71,7 +71,7 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | **Documents** | what the run has written for people to read, as soon as each file exists: the plan, the `.md` / `.txt` / `.json` / `.log` outputs its steps recorded (a review's `patch-<n>` plans among them), review patch plans, `PR.md` (the handoff or PR text) and other text files in `agents/<id>/`, each reviewer's verdict (`review-*/output.txt`) and text artefacts; with the step that produced each, its size and time. **View** renders Markdown in the page (with a raw toggle), pretty-prints JSON and shows text as text; **Download** saves the exact file, **Download all** a zip of them all. A step's panel links the documents it produced (the plan on `plan-feature`). A new document appears live |
 | **Artefacts** | screenshots as thumbnails (click for full size), videos playable in the page with their keyframes, logs with their tail, all with the step that collected them |
 | **Repos** (`4`) | the workspace: every git repository of the folder(s), searchable, with its state badge (`layer`: an `agentic.rkt` in it or in a sibling `NAME.al`; `setup`: rule files, prompts, workflow scripts or a hand-built suite, the same detection as `al scout`; `none`), branch, a mark for uncommitted changes and its last activity; **refresh** rescans. A selected repository (`#/repo/<key>`) shows al scout's "Existing agent setup" summary, its layer with a link to its workflows and runs, its jobs, and the **al** panel: one button per action with the exact command line(s) it runs, disabled with the reason when it does not apply (`needs the al tool; looked for …`, `--read-only`, `--no-actions`, the state), and a tools table: what `al doctor` sees on this machine (racket, raco, uv, git, the author agent's CLI: where each was found, or the sentence saying where al looked, and its version; kept 5 minutes). A writing action first shows what it runs and writes (for adopt the dry run's diff, line by line) and runs on **Confirm** |
-| **Job** | one action (`#/job/<id>`): repository, action, status, exit code, duration, and why it failed; its steps in order with status, exit code and time, a failed step with its reason (its `al: …` lines, "timed out after N s", or "exited N; see the output"); for a failed or interrupted job a **Retry from STEP** button (asks first; the steps from the first that did not pass run again in the same job, a retried `author` with `--accept-existing`); the live output (ANSI colours, like a check log); the layer's files it added, changed or removed, and whether the repository changed; its documents (`LLM.txt` of scout, `preview.diff.txt` of an adopt preview, `verify.json`, `EXPLAIN.md`) |
+| **Job** | one action (`#/job/<id>`), in the order a person reads it: the header (repository, action, status, exit code, duration, why it failed, `needs a person: N` when the author left items out, **Download full output**); once it ended, the **outcome** card: for a passed job what was created (the layer with the files added, changed and removed) or adopted, what is `UNVERIFIED` and the next action (the last `next: …` line the steps printed), for a failed or interrupted job the failing step, the reason in one sentence (a generic "exited N" is replaced by the step's last error), up to 12 last relevant lines, **Retry from STEP** (asks first; the steps from the first that did not pass run again in the same job, a retried `author` with `--accept-existing`) and **Download log**; the **steps row**, one chip per step with status, exit code and time, a failed step's reason, and under the running one what it is doing right now ("reading the CI files", "compiling, attempt 2", "writing agentic.rkt", or a plain step's last line); the **activity** of the selected step (the running one, else the failed one, else the agent step; a click picks another and the address keeps it as `?step=`): an agent step's journal with its messages as Markdown, one line per tool call (tool, target, result size, duration), errors in red, the final report and the totals, hooks, start-up, rate limits and other bookkeeping only with **show everything**; a plain step's own output as text (ANSI stripped); both the latest rows with **show earlier** and a search box, and the step's log (an agent step's **raw events**) and journal to download; the author's **Decisions** and **Left out and why** cards; the layer's files it added, changed or removed, and whether the repository changed; its documents (`LLM.txt` of scout, `preview.diff.txt` of an adopt preview, `verify.json`, `EXPLAIN.md`); and, collapsed, **Full output** (every step as it ran, ANSI colours; an agent step condensed), opened by itself for a job from before the `steps/` files |
 | **Layers** (`3`) | a **Start work** panel (below), then each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists |
 
 The **Start work** panel (on the Layers view; a layer chooser when several are watched) takes a
@@ -140,7 +140,7 @@ actions run `al`, which writes what that command writes. `--read-only` turns all
 | `agents/<id>/request.md`, `agents/<id>/launch.log` | a started run's prompt (mode 0600) and the output of its detached process until the run's own `run.log` takes over; both are documents of the run |
 | `state.json` `definition` | a single-command run's one-step workflow (`command:<name>`), which the compiled layer does not declare: the run's graph is drawn from it |
 | workspace repositories | the Repos view, read-only: directories below each workspace folder (depth `--workspace-depth`; symlinked entries, hidden and pruned directories and a sibling `NAME.al` skipped; at most 500) that hold `.git`. Per repository `git ls-files -z` (at most 20 000 paths; a path whose real path leaves the repository is dropped, so a symlinked rule file pointing elsewhere is never read), given to `al scout`'s detection (`tools/al_adopt.py`, `tools/al_suite.py`, which read files and run nothing), `symbolic-ref`, `status --porcelain`, `log -1`. git runs with `core.fsmonitor=false`, `core.untrackedCache=false`, `core.hooksPath=/dev/null`, `--no-optional-locks` (the index is never rewritten), no prompt, no inherited `GIT_*` variables, and its process group is killed after 5 s. A repository is reread only when its signature changes (stats of `.git/HEAD`, `.git/index`, `.git/logs/HEAD`, its directory, the sibling `NAME.al/agentic.rkt` and its layer's IR); rescanned every 60 s and on **refresh** (at most once per 5 s). A layer of a workspace repository that has `agentic-layer.json` is watched like any other |
-| `<jobs-dir>/<id>/job.json`, `output.log`, `docs/` | the Job view: an action's steps (argv, the command line as shown, exit code, times, `reason` of a failed step), its status and `reason`, the runner's `pid` / `host` / `heartbeat` (as a run's `state.json`), `path` (the folders of the tools found by tools/al_tools.py, then the dashboard's `PATH`: the steps' `PATH`), `preflight` (the `al doctor LAYER --for …` argv run before the first pending step), `retries` (`{"from", "at"}` per retry), changed files; its output; its documents. `<jobs-dir>/locks/` holds one lock file per repository. The second place the dashboard writes, outside every repository and layer. Two dashboards with different `--jobs-dir` do not see each other's locks |
+| `<jobs-dir>/<id>/job.json`, `output.log`, `docs/`, `steps/` | the Job view: an action's steps (argv, the command line as shown, `stream` (`agent` for the author step), exit code, times, `reason` of a failed step), its status and `reason`, the runner's `pid` / `host` / `heartbeat` (as a run's `state.json`), `path` (the folders of the tools found by tools/al_tools.py, then the dashboard's `PATH`: the steps' `PATH`), `preflight` (the `al doctor LAYER --for …` argv run before the first pending step), `retries` (`{"from", "at"}` per retry), changed files; its output; its documents. `<jobs-dir>/locks/` holds one lock file per repository. The second place the dashboard writes, outside every repository and layer. Two dashboards with different `--jobs-dir` do not see each other's locks. `steps/<name>.log` is one step's whole output, stdout and stderr as they arrived (the author step's raw Claude Code event stream), started afresh when a retry runs the step again, while `output.log` keeps every attempt. `steps/<name>.journal.jsonl` is an agent step's journal, written by the runner as the stream arrives (`AgentJournal`, which wraps the run Step view's transcript normaliser): one event per line with `t`, `kind` and `text`, the kinds `message`, `tool` (`id`, `tool`, `target`, `doing`), `tool.done` (`bytes`, `lines`, `error`, `ms`), `error`, `report` (`decisions`, `left_out`), `result` (`cost`, `turns`, `ms`, `tokens`) and `hidden` (`what`: hook, init, system, rate, task, thinking, meta), every path shortened (the layer and repository as shown, the home directory as `~`); only its one-line form goes into `output.log`. The page reads a step through `/api/job/journal` and `/api/job/log`, never a step file whole |
 
 Transcripts (`raw.jsonl`) are read incrementally (only new bytes; a half-written last line waits
 for its newline; a truncated or replaced file restarts with a `reset`). Claude Code stream-json
@@ -202,8 +202,8 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
   | Action | States | Writes | argv |
   |---|---|---|---|
   | `scout` | all | no | `AL scout APP` (stdout = document `LLM.txt`) |
-  | `create` | none, setup | yes | `AL init APP`; `AL author LAYER [--agent …]`; `AL gen LAYER`; `AL check LAYER` |
-  | `adopt` | setup | yes | preview: `AL adopt LAYER --app APP --dry-run --diff` (stdout = `preview.diff.txt`); then `AL init APP`; `AL author LAYER`; `AL adopt LAYER`; `AL gen LAYER`; `AL check LAYER` |
+  | `create` | none, setup | yes | `AL init APP`; `AL author LAYER [--agent …] --raw`; `AL gen LAYER`; `AL check LAYER` |
+  | `adopt` | setup | yes | preview: `AL adopt LAYER --app APP --dry-run --diff` (stdout = `preview.diff.txt`); then `AL init APP`; `AL author LAYER --raw`; `AL adopt LAYER`; `AL gen LAYER`; `AL check LAYER` |
   | `gen` | layer | yes | `AL gen LAYER` |
   | `check` | layer | no | `AL check LAYER` |
   | `verify` | layer | yes | `AL verify LAYER --json` (stdout = `verify.json`) |
@@ -213,7 +213,8 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
   not a step): a missing tool fails the first step with that sentence and skips the rest, so no agent time
   is spent. The steps run with `PATH` = the folders of the tools al_tools finds, then the dashboard's own,
   so the al tool's `uv` shebang works under a unit's fixed `PATH`; when `uv` itself is not found the job is
-  written as failed at once and no runner starts.
+  written as failed at once and no runner starts. The author step runs with `--raw`, so the runner receives
+  the agent's event stream and condenses it itself (see `steps/` under "What it reads").
 
   `POST /api/job/retry {"job": ID, "from": STEP}` runs a failed or interrupted job again from STEP, which
   must be its first step that did not pass (409 otherwise, and for a preview, a running job, a repository
@@ -247,6 +248,15 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
   paths, NUL bytes and anything whose real path leaves that tree (symlinked files or directories)
   are refused. Files are sent with `Content-Security-Policy: sandbox`, `nosniff`, and unknown
   types as downloads, so an HTML artefact cannot run in the dashboard's origin.
+- **A job's files** (`/api/job/doc`, `/api/job/journal`, `/api/job/log`, `/api/job/file`) are read-only and
+  confined to that job's directory: the id must match the job id pattern, the step must be one of the
+  job's steps, the file a regular file whose real path stays in the job directory (a symlinked step file,
+  `..`, an encoded traversal, an absolute name, a NUL, another job's file and an unknown step are all 404).
+  `/api/job/journal?id&step&from=N` answers at most 5000 events with `next_from`; `/api/job/log?id&step&from=N`
+  (or `&tail=N`) at most 20 000 lines or 2 MB, ANSI stripped, the home directory as `~`, with `next_from`
+  and `total`; `/api/job/file?id&name` downloads only `output.log`, `steps/<step>.log` or
+  `steps/<step>.journal.jsonl`, as an attachment with a `sandbox` CSP. The job output's tail
+  (`/api/tail?what=job`) shows the home directory as `~` too.
 - **Documents** (`/api/doc`, `/api/doc/download`, `/api/doc/zip`) serve only files listed for that run:
   in `specs/`, or in the run's own `agents/<id>/` and `artefacts/<id>/`, regular files whose real path
   stays in the layer. Anything else (traversal, absolute paths, symlinks out, another run's file,
@@ -352,8 +362,22 @@ shown as `interrupted`, the job's tail, changed files, document confinement, nev
 definition, a missing al tool, a missing tool as a step's failure reason, the prerequisite check stopping a
 job before any step, "Retry from STEP" and its refusals, the tools table, the job's `PATH`), with
 `tests/workspace_fixtures.py`: four invented repositories (`pantry`, `quill`, `comet`, `fern`) and
-`fake_al`, a stand-in for al that records its argv and can fail a subcommand (`fail`; its `doctor` answers
-`ok` otherwise).
+`fake_al`, a stand-in for al that records its argv, can fail a subcommand (`fail`; its `doctor` answers
+`ok` otherwise), can replay a recorded agent stream for one (`streams`, with `job_stream`, which puts the
+test's workspace and home into it) and can keep one running (`hold`).
+`tests/test_job_journal.py` covers the job journal: the condenser on the invented streams of
+`tests/data/job-streams/` (`author-running`, `author-finished`, `author-failed`: hooks with long output,
+tool calls, failed compiles, a report with Decisions and Left out) — hidden bookkeeping, condensed tool
+calls, errors, the "doing" lines, plain and corrupt lines, the home directory as `~`, report parsing — then
+the runner's `steps/` files and condensed `output.log`, a retried step's fresh files, `job_detail` for a
+running, a finished and a failed job and for one from before `steps/`, the paged routes and every refusal
+of `/api/job/file`. `tests/test_browser_job_activity.py` (Chrome) opens a running, a finished and a failed
+create job at 1280 and 390 px: the steps row and its "doing" line, hooks hidden until **show everything**,
+search, the outcome card, Decisions and Left out, hostile agent text staying text, and a failed job's step,
+reason, **Retry from author** and **Download log** inside the first viewport, the download byte-equal to
+the raw stream; the page only reads `/api/job/journal` and `/api/job/log`. With `AL_DASHBOARD_SHOTS=DIR` it
+saves `job-running-1280.png`, `job-running-390.png`, `job-finished-1280.png`, `job-finished-390.png`,
+`job-failed-1280.png` and `job-failed-390.png`.
 `tests/test_browser_workspace.py` (Chrome) checks the Repos view, the selection in the URL, the filter,
 the adopt preview's diff (an injected `<script>` stays text), Confirm and a job streaming to `passed`, and
 disabled actions without al, and a failed job's reason with its Retry button; with `AL_DASHBOARD_SHOTS=DIR`

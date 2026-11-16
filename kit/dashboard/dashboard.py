@@ -905,6 +905,248 @@ def transcript_rows(path: Path, short: Shortener | None = None) -> tuple[list[di
     return transcript.feed(lines), transcript.agg
 
 
+# ============================================================================ job journal
+#
+# A job's agent step (`al author … --raw`) prints Claude Code's raw event stream. The job runner keeps it
+# whole in steps/<name>.log and condenses it once, line by line as it arrives, into
+# steps/<name>.journal.jsonl: one small event per line, each with `t` (the runner's clock), `kind` and
+# `text`. The page reads the journal and never parses the stream; `al author` prints the same events.
+#
+#   message    Markdown the agent wrote (plain and mock output too)
+#   tool       id, tool, target, text (summarise_tool's title), doing (what it is doing right now)
+#   tool.done  id, tool, bytes, lines, error, ms (since its `tool` event)
+#   error      a tool error's first line, an unreadable line, an `al: …` stderr line, an error result
+#   report     the final report's Markdown, with decisions: [str] and left_out: [str]
+#   result     cost, turns, ms, tokens, error
+#   hidden     what: hook | init | system | rate | task | thinking | meta (shown only with "show everything")
+
+JOURNAL_MESSAGE_CAP = 8000
+JOURNAL_TARGET_CAP = 240
+JOURNAL_HIDDEN_CAP = 300
+JOURNAL_TAIL = 64 * 1024
+CI_MARKERS = (".github/workflows/", ".gitlab-ci.yml", ".circleci/", "Jenkinsfile", ".forgejo/workflows/", ".woodpecker")
+COMPILE_RX = re.compile(r"(?:^|[\s/;&|])(?:al compile|raco make)\b")
+GENERIC_REASON = re.compile(r"^(?:\S+ exited -?\d+; see the output|the agent exited -?\d+)\.?$")
+REPORT_ITEM_CAP = 600
+_REPORT_BULLET = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,3}[.)])\s+(.*)$")
+
+
+def first_line(text: Any) -> str:
+    return next((line.strip() for line in str(text or "").splitlines() if line.strip()), "")
+
+
+def short_duration(ms: Any) -> str:
+    """Milliseconds as the page shows durations: 4.2s, 42s, 5m 01s, 1h 05m; "?" when unknown."""
+    if not isinstance(ms, (int, float)) or isinstance(ms, bool):
+        return "?"
+    sec = max(0.0, ms / 1000)
+    if sec < 10:
+        return f"{sec:.1f}s"
+    if sec < 60:
+        return f"{round(sec)}s"
+    minutes, rest = int(sec // 60), int(sec % 60)
+    return f"{minutes}m {rest:02d}s" if minutes < 60 else f"{minutes // 60}h {minutes % 60:02d}m"
+
+
+class AgentJournal:
+    """Condenses an agent's raw output, one line at a time, into journal events (see above). It wraps the
+    Transcript normaliser of the run Step view, so both read Claude Code's stream the same way."""
+
+    def __init__(self, short: Shortener | None = None, clock: Callable[[], float] = time.time) -> None:
+        self.short = short or Shortener()
+        self.clock = clock
+        self.transcript = Transcript(self.short)
+        self.open: dict[str, tuple[float, str]] = {}   # tool id → (t, tool) of a call without its result yet
+        self.compiles = 0
+        self.line_no = 0
+        self.reported = False
+        self.ended = False      # a `result` arrived: the agent's own end, with or without a report
+        self.last_message = ""
+        self.last_tool_error = ""
+
+    def feed_line(self, line: str) -> list[dict[str, Any]]:
+        """One line of the step's stdout → its journal events (none for an empty line)."""
+        self.line_no += 1
+        text = line.rstrip("\r\n")
+        if not text.strip():
+            return []
+        t = self.clock()
+        obj: Any = None
+        if text.lstrip().startswith("{"):
+            try:
+                obj = json.loads(text)
+            except ValueError:
+                obj = None
+        if isinstance(obj, dict) and obj.get("type") == "system" and str(obj.get("subtype") or "").startswith("hook"):
+            name = obj.get("hook_name") or obj.get("hook_event") or "hook"
+            body = first_line(obj.get("output") or obj.get("stdout") or obj.get("stderr") or "")
+            return [{"t": t, "kind": "hidden", "what": "hook",
+                     "text": clip(self.short(f"{obj.get('subtype')} {name}" + (f": {body}" if body else "")), JOURNAL_HIDDEN_CAP)}]
+        events: list[dict[str, Any]] = []
+        for row in self.transcript.feed([(self.line_no, 0, text)]):
+            events += self._event(row, obj if isinstance(obj, dict) else {}, t)
+        return events
+
+    def error(self, text: str) -> dict[str, Any]:
+        """An `error` event of the step from outside the stream (the runner's `al: …` stderr lines)."""
+        return {"t": self.clock(), "kind": "error", "text": clip(self.short(text.rstrip()), 1000)}
+
+    def finish(self) -> list[dict[str, Any]]:
+        """At the step's end: a stream that sent no result (the mock agent, a plain-text CLI) gets its
+        last message as the report."""
+        if self.reported or self.ended or not self.last_message.strip():
+            return []
+        self.reported = True
+        return [{"t": self.clock(), "kind": "report", "text": self.last_message, **parse_report(self.last_message)}]
+
+    def _event(self, row: dict[str, Any], obj: dict[str, Any], t: float) -> list[dict[str, Any]]:
+        k = row.get("k")
+        if k in ("text", "plain", "mock"):
+            text = clip(str(row.get("text") or ""), JOURNAL_MESSAGE_CAP)
+            if not text.strip():
+                return []
+            self.last_message = text
+            return [{"t": t, "kind": "message", "text": text}]
+        if k == "tool":
+            tid, tool = str(row.get("tid") or ""), str(row.get("tool") or "tool")
+            self.open[tid] = (t, tool)
+            target = row.get("path") or first_line(row.get("cmd")) or row.get("pattern") or ""
+            return [{"t": t, "kind": "tool", "id": tid, "tool": tool, "target": clip(str(target), JOURNAL_TARGET_CAP),
+                     "text": clip(str(row.get("title") or tool), JOURNAL_TARGET_CAP), "doing": doing_of(row, self)}]
+        if k == "result":
+            tid = str(row.get("tid") or "")
+            began, tool = self.open.pop(tid, (t, str(row.get("tool") or "")))
+            error = bool(row.get("err"))
+            events = [{"t": t, "kind": "tool.done", "id": tid, "tool": tool, "bytes": int(row.get("size") or 0),
+                       "lines": int(row.get("lines") or 0), "error": error, "ms": max(0, int(round((t - began) * 1000))),
+                       "text": ""}]
+            if error:
+                why = first_line(row.get("text")) or "(no output)"
+                self.last_tool_error = clip(why, 400)
+                events.append({"t": t, "kind": "error", "text": self.last_tool_error})
+            return events
+        if k == "final":
+            self.ended = True
+            error = bool(row.get("err"))
+            events = []
+            report = clip(self.short(str(obj.get("result") or row.get("text") or "")), JOURNAL_MESSAGE_CAP)
+            if report.strip():
+                self.reported = True
+                events.append({"t": t, "kind": "report", "text": report, **parse_report(report)})
+            events.append({"t": t, "kind": "result", "cost": row.get("cost"), "turns": row.get("turns"),
+                           "ms": row.get("duration_ms"), "tokens": row.get("tokens") or {}, "error": error,
+                           "text": f"{row.get('turns') or '?'} turns"})
+            if error:
+                said = first_line(report)
+                text = said or f"the agent ended with {obj.get('subtype') or 'an error'}"
+                if not said and self.last_tool_error:
+                    text += f"; its last error: {self.last_tool_error}"
+                events.append({"t": t, "kind": "error", "text": clip(text, 600)})
+            return events
+        if k == "corrupt":
+            return [{"t": t, "kind": "error", "text": f"{row.get('title')}: {clip(str(row.get('text') or ''), 200)}"}]
+        what = {"init": "init", "task": "task", "thinking": "thinking", "user": "meta"}.get(str(k), "meta")
+        if obj.get("type") == "rate_limit_event":
+            what = "rate"
+        elif obj.get("type") == "system" and k == "meta":
+            what = "system"
+        text = row.get("title") or ("thinking" if k == "thinking" else str(k))
+        if row.get("text") and k != "thinking":
+            text = f"{text}: {row.get('text')}"
+        return [{"t": t, "kind": "hidden", "what": what, "text": clip(str(text), JOURNAL_HIDDEN_CAP)}]
+
+
+def doing_of(summary: dict[str, Any], journal: AgentJournal) -> str:
+    """What a tool call says the agent is doing right now, in words a person reads at a glance."""
+    tool = str(summary.get("tool") or "")
+    if tool in ("Bash", "Shell") and COMPILE_RX.search(str(summary.get("cmd") or "")):
+        journal.compiles += 1
+        return f"compiling, attempt {journal.compiles}"
+    target = str(summary.get("path") or summary.get("pattern") or "")
+    if tool in ("Read", "Grep", "Glob") and any(m in f"{target} {summary.get('title') or ''}" for m in CI_MARKERS):
+        return "reading the CI files"
+    if tool == "Read" and target.endswith("LLM.txt"):
+        return "reading the codebase facts (LLM.txt)"
+    if tool in ("Write", "Edit", "MultiEdit") and target.endswith("agentic.rkt"):
+        return "writing agentic.rkt"
+    return str(summary.get("action") or f"using {tool}")
+
+
+def _report_heading(line: str) -> str | None:
+    """The title of a report line that opens a section (`### Title`, `**Title:**`, `Title:`), else None."""
+    text = line.strip()
+    if not text or _REPORT_BULLET.match(line):
+        return None
+    if text.startswith("#"):
+        return text.lstrip("#").strip()
+    bold = re.fullmatch(r"(\*\*|__)(.+?)\1\s*:?", text)
+    if bold:
+        return bold.group(2).strip().rstrip(":")
+    if text.endswith(":") and len(text) <= 80:
+        return text[:-1].strip()
+    return None
+
+
+def parse_report(text: str) -> dict[str, list[str]]:
+    """The Decisions and Left out sections of an agent's report: the bullets under a heading, a bold
+    line or a `…:` line that says "decision" or "left out", up to the next such line."""
+    out: dict[str, list[str]] = {"decisions": [], "left_out": []}
+    section: str | None = None
+    items: list[str] | None = None
+    for line in str(text or "").splitlines():
+        heading = _report_heading(line)
+        if heading is not None:
+            lower = heading.lower()
+            section = "decisions" if "decision" in lower else "left_out" if "left out" in lower else None
+            items = out[section] if section else None
+            continue
+        if items is None:
+            continue
+        bullet = _REPORT_BULLET.match(line)
+        if bullet:
+            items.append(bullet.group(1).strip())
+        elif items and line.strip() and line[:1].isspace():
+            items[-1] = f"{items[-1]} {line.strip()}"
+    return {key: [clip(item, REPORT_ITEM_CAP) for item in values if item] for key, values in out.items()}
+
+
+def journal_line(event: dict[str, Any]) -> str | None:
+    """One terminal (and output.log) line of a journal event, or None for what is not shown there."""
+    kind = event.get("kind")
+    if kind == "message":
+        line = first_line(event.get("text"))
+        return f"  {line}" if line else None
+    if kind == "tool":
+        return f"  · {event.get('text') or event.get('tool')}"
+    if kind == "tool.done":
+        return f"  ! {event.get('tool') or 'a tool'} failed" if event.get("error") else None
+    if kind == "error":
+        return f"  ! {event.get('text')}"
+    if kind == "result":
+        cost = event.get("cost")
+        money = f"${cost:.2f}" if isinstance(cost, (int, float)) and not isinstance(cost, bool) else "$?"
+        return f"  = {event.get('turns') if event.get('turns') is not None else '?'} turns, {short_duration(event.get('ms'))}, {money}"
+    return None
+
+
+def step_files(directory: Path, step: Any) -> dict[str, Path]:
+    """A job step's files: {"log": steps/<step>.log, "journal": steps/<step>.journal.jsonl}; {} for a name
+    that is not SAFE_NAME (nothing outside steps/ can be named)."""
+    if not isinstance(step, str) or not SAFE_NAME.match(step):
+        return {}
+    base = Path(directory) / "steps"
+    return {"log": base / f"{step}.log", "journal": base / f"{step}.journal.jsonl"}
+
+
+def confined_file(directory: Path, path: Path) -> bool:
+    """A regular file, not a symlink, whose real path stays inside the job directory."""
+    try:
+        return (not path.is_symlink() and path.is_file()
+                and os.path.realpath(path).startswith(os.path.realpath(directory) + os.sep))
+    except OSError:
+        return False
+
+
 # ============================================================================ layer and graph
 
 def build_graph(adw: dict[str, Any], layer_ir: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -3047,8 +3289,8 @@ class Model:
                "pid": None, "host": socket.gethostname(), "created": now, "heartbeat": now, "started": None,
                "ended": None, "exit": None, "layer_dir": str(layer), "layer_display": self.ws_display(layer),
                "steps": [{"name": s.name, "argv": s.argv, "display": display_argv(s.argv, self.ws_display, docs),
-                          "doc": s.doc, "timeout": s.timeout, "status": "pending", "exit": None, "started": None,
-                          "ended": None} for s in steps],
+                          "doc": s.doc, "timeout": s.timeout, "stream": s.stream, "status": "pending", "exit": None,
+                          "started": None, "ended": None} for s in steps],
                "changed": [], "repo_changes": [], "repo_unchanged": None,
                "path": self.job_path(),
                "preflight": [str(cfg.al), "doctor", str(layer),
@@ -3130,6 +3372,16 @@ class Model:
         self.hub.publish("job", job_summary(job))
         return 202, {"job": job_id, "from": step}
 
+    @staticmethod
+    def _job_sig(directory: Path, view: dict[str, Any] | None) -> tuple | None:
+        """A job's signature: its job.json, and while it runs its running step's log and journal."""
+        sig = stat_sig(directory / "job.json")
+        if not view or view.get("status") != "running":
+            return sig
+        running = next((s.get("name") for s in view.get("steps") or [] if s.get("status") == "running"), None)
+        files = step_files(directory, running)
+        return (sig, *(stat_sig(path) for path in files.values()))
+
     def tick_jobs(self, now: float) -> bool:
         """Publish changed jobs; a running job whose runner died is rewritten as interrupted. → any ended?"""
         if self.jobs is None:
@@ -3137,8 +3389,8 @@ class Model:
         ended = False
         for job_id in self.jobs.ids():
             directory = self.jobs.root / job_id
-            sig = stat_sig(directory / "job.json")
             last = self.job_views.get(job_id)
+            sig = self._job_sig(directory, last)
             stale = last is not None and last.get("status") == "running" and now - self.job_checked.get(job_id, 0) >= 2
             if sig == self.job_sigs.get(job_id) and not stale:
                 continue
@@ -3149,11 +3401,17 @@ class Model:
                 continue
             job = self.jobs.settle(job, now)
             view = job_summary(job)
+            if view["status"] == "running":     # what the running step is doing, live on the steps row
+                for step in view["steps"]:
+                    if step.get("status") == "running":
+                        step["doing"] = view["doing"] = step_doing(directory, str(step.get("name")))
+                        files = step_files(directory, step.get("name"))
+                        step["log_bytes"] = (stat_sig(files["log"]) or (0, 0))[1] if files else 0
             if view != last:
                 if last is not None and last.get("status") == "running" and view["status"] != "running":
                     ended = True
                 self.job_views[job_id] = view
-                self.job_sigs[job_id] = stat_sig(directory / "job.json")
+                self.job_sigs[job_id] = self._job_sig(directory, view)
                 if last is not None or now - (view.get("created") or 0) < 3600:
                     self.hub.publish("job", view)
         return ended
@@ -4008,6 +4266,7 @@ class Step:
     argv: list[str]
     doc: str | None = None
     timeout: int = 1800
+    stream: str = ""     # "agent": its stdout is an agent's event stream, condensed into a journal
 
 
 @dataclass
@@ -4030,7 +4289,8 @@ def _steps_scout(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
 
 def _steps_create(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
     al, app, layer = str(c.al), os.path.realpath(e.path), str(layer_of(e))
-    return [Step("init", [al, "init", app], None, 300), Step("author", [al, "author", layer, *c.author_flags], None, 3600),
+    return [Step("init", [al, "init", app], None, 300),
+            Step("author", [al, "author", layer, *c.author_flags, "--raw"], None, 3600, "agent"),
             Step("gen", [al, "gen", layer], None, 600), Step("check", [al, "check", layer], None, 600)]
 
 
@@ -4041,7 +4301,8 @@ def _steps_adopt_preview(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step
 
 def _steps_adopt(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
     al, app, layer = str(c.al), os.path.realpath(e.path), str(layer_of(e))
-    return [Step("init", [al, "init", app], None, 300), Step("author", [al, "author", layer, *c.author_flags], None, 3600),
+    return [Step("init", [al, "init", app], None, 300),
+            Step("author", [al, "author", layer, *c.author_flags, "--raw"], None, 3600, "agent"),
             Step("adopt", [al, "adopt", layer], None, 600), Step("gen", [al, "gen", layer], None, 600),
             Step("check", [al, "check", layer], None, 600)]
 
@@ -4308,6 +4569,203 @@ def retry_from(job: dict[str, Any]) -> str:
     return ""
 
 
+JOURNAL_PAGE = 5000              # journal events per /api/job/journal answer
+LOG_PAGE_LINES = 20_000          # lines per /api/job/log answer
+LOG_PAGE_BYTES = 2 * 1024 * 1024
+JOB_NEXT = {"create": "open the layer's workflows on the Layers view",
+            "adopt": "open the layer's workflows on the Layers view"}
+_NEXT_LINE = re.compile(r"(?:^\s*|;\s+)next:\s*(.+?)\s*$", re.IGNORECASE)   # "next: …", "… compiles; next: …"
+_RELEVANT = re.compile(r"^al: |error|failed|Traceback", re.IGNORECASE)
+
+
+def tail_bytes(path: Path, cap: int = JOURNAL_TAIL) -> bytes:
+    """The last `cap` bytes of a file, from its first whole line; b"" when it cannot be read."""
+    try:
+        with path.open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - cap))
+            data = handle.read(cap)
+    except OSError:
+        return b""
+    if size > cap:
+        data = data[data.find(b"\n") + 1:] if b"\n" in data else b""
+    return data
+
+
+def journal_events(path: Path, tail: bool = False) -> list[dict[str, Any]]:
+    """The complete events of a journal (only its last 64 KiB with `tail`); unreadable lines are skipped."""
+    if tail:
+        data = tail_bytes(path)
+    else:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return []
+    out = []
+    for line in data.split(b"\n")[:-1]:     # a last line without its newline is still being written
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            out.append(event)
+    return out
+
+
+def log_lines(path: Path, tail: bool = True) -> list[str]:
+    """A step log's non-empty lines, ANSI stripped and the home directory as ~ (its last 64 KiB with `tail`)."""
+    try:
+        data = tail_bytes(path) if tail else path.read_bytes()
+    except OSError:
+        return []
+    short = Shortener()
+    return [short(line).strip() for line in strip_ansi(data.decode("utf-8", "replace")).splitlines() if line.strip()]
+
+
+def first_sentence(text: Any) -> str:
+    line = first_line(text)
+    return re.split(r"(?<=[.!?])\s+(?=[A-Z(`'\"])", line, maxsplit=1)[0] if line else ""
+
+
+def step_doing(directory: Path, step: str) -> str:
+    """What a running step is doing, in one line: an agent step's last tool call ("compiling, attempt 2"),
+    "thinking" after a tool's result, "writing: …" after a message; a plain step's last line of output."""
+    files = step_files(directory, step)
+    if not files:
+        return ""
+    if confined_file(directory, files["journal"]):
+        for event in reversed(journal_events(files["journal"], tail=True)):
+            kind = event.get("kind")
+            if kind == "tool":
+                return clip(str(event.get("doing") or event.get("text") or ""), 120)
+            if kind == "tool.done":
+                return "thinking"
+            if kind == "message":
+                return clip("writing: " + " ".join(first_line(event.get("text")).split()[:8]), 120)
+        return ""
+    if confined_file(directory, files["log"]):
+        lines = log_lines(files["log"])
+        return clip(lines[-1], 120) if lines else ""
+    return ""
+
+
+def last_relevant_lines(directory: Path, step: str, n: int = 12) -> list[str]:
+    """What a person reads first about a failed step: an agent step's last errors, then its last message's
+    last lines; a plain step's last lines of output, with `al: …`, error, failed and Traceback lines first."""
+    files = step_files(directory, step)
+    if not files:
+        return []
+    if confined_file(directory, files["journal"]):
+        events = journal_events(files["journal"], tail=True)
+        errors = list(dict.fromkeys(str(e.get("text") or "") for e in events if e.get("kind") == "error"))
+        message = next((str(e.get("text") or "") for e in reversed(events) if e.get("kind") == "message"), "")
+        said = [line.strip() for line in message.splitlines() if line.strip()]
+        out = errors[-n:]
+        return out + said[-(n - len(out)):] if len(out) < n and said else out
+    if not confined_file(directory, files["log"]):
+        return []
+    lines = log_lines(files["log"])[-200:]
+    relevant = [line for line in lines if _RELEVANT.search(line)][-n:]
+    rest = [line for line in lines if not _RELEVANT.search(line)]
+    return [clip(line, 400) for line in relevant + (rest[-(n - len(relevant)):] if len(relevant) < n else [])]
+
+
+def job_report(job: dict[str, Any], directory: Path) -> dict[str, Any] | None:
+    """The agent step's last `report`: {text, decisions, left_out}, or None."""
+    for step in reversed([s for s in job.get("steps") or [] if isinstance(s, dict)]):
+        files = step_files(directory, step.get("name"))
+        if step.get("stream") != "agent" or not files or not confined_file(directory, files["journal"]):
+            continue
+        report = next((e for e in reversed(journal_events(files["journal"])) if e.get("kind") == "report"), None)
+        if report is not None:
+            return {"text": str(report.get("text") or ""), "decisions": list(report.get("decisions") or []),
+                    "left_out": list(report.get("left_out") or [])}
+    return None
+
+
+def job_next(job: dict[str, Any], directory: Path) -> str:
+    """The last `next: …` line the steps printed (an agent step's in its journal), else a fixed sentence."""
+    found = ""
+    for step in job.get("steps") or []:
+        files = step_files(directory, step.get("name")) if isinstance(step, dict) else {}
+        if not files:
+            continue
+        if confined_file(directory, files["journal"]):
+            lines = [line for e in journal_events(files["journal"]) if e.get("kind") in ("message", "report")
+                     for line in str(e.get("text") or "").splitlines()]
+        elif confined_file(directory, files["log"]):
+            short = Shortener([(str(job.get("layer_dir") or ""), str(job.get("layer_display") or "")),
+                               (str(job.get("repo_path") or ""), str(job.get("repo_dir") or ""))])
+            lines = [short(line) for line in log_lines(files["log"])]
+        else:
+            continue
+        for line in lines:
+            match = _NEXT_LINE.search(line)
+            if match:
+                found = match.group(1).strip("` ")
+    return clip(found, 300) or JOB_NEXT.get(str(job.get("action") or ""), "")
+
+
+def job_outcome(job: dict[str, Any], directory: Path, report: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """The outcome card of an ended job (None while it runs, or for a preview). Passed: what was created or
+    adopted, what is unverified, the next action. Failed or interrupted: the step, the reason in one
+    sentence, its last relevant lines, where a retry starts and the step's log."""
+    status = job.get("status")
+    if job.get("preview") or status in (None, "running"):
+        return None
+    if status == "passed":
+        changed = [c for c in job.get("changed") or [] if isinstance(c, dict)]
+        count = lambda kind: sum(1 for c in changed if c.get("change") == kind)  # noqa: E731
+        left_out = (report or {}).get("left_out") or []
+        return {"status": "passed",
+                "created": {"layer": str(job.get("layer_display") or ""), "added": count("added"),
+                            "modified": count("modified"), "removed": count("removed")},
+                "adopted": sum(1 for c in changed if "/adopted/" in "/" + str(c.get("path") or "")),
+                "unverified": [item for item in left_out if "UNVERIFIED" in item],
+                "next": job_next(job, directory)}
+    steps = [s for s in job.get("steps") or [] if isinstance(s, dict)]
+    failed = next((s for s in steps if s.get("status") in ("failed", "interrupted")), None)
+    name = str((failed or {}).get("name") or retry_from(job) or "")
+    reason = first_sentence((failed or {}).get("reason") or "")
+    files = step_files(directory, name)
+    if (not reason or GENERIC_REASON.match(reason)) and files and confined_file(directory, files["journal"]):
+        for event in reversed(journal_events(files["journal"], tail=True)):
+            text = first_sentence(event.get("text")) if event.get("kind") == "error" else ""
+            if text and not GENERIC_REASON.match(re.sub(r"^al: (?:\S+: )?", "", text)):
+                reason = text
+                break
+    if not reason:
+        reason = first_sentence(re.sub(r"^\S+: ", "", str(job.get("reason") or ""))) or f"{name} did not pass"
+    return {"status": status, "step": name, "reason": clip(reason, 400),
+            "lines": last_relevant_lines(directory, name) if name else [],
+            "retry_from": retry_from(job),
+            "log": f"{name}.log" if files and confined_file(directory, files["log"]) else ""}
+
+
+def job_detail(job: dict[str, Any], directory: Path) -> dict[str, Any]:
+    """The Job page's view: job_summary plus, per step, its stream, what it shows (activity: journal | log
+    | ""), its log's size, whether its raw events can be downloaded and what it is doing; and the job's
+    outcome, the author's report and how many items need a person. No absolute path."""
+    view = job_summary(job)
+    records = [s for s in job.get("steps") or [] if isinstance(s, dict)]
+    for shown, record in zip(view["steps"], records):
+        stream = str(record.get("stream") or "")
+        files = step_files(directory, record.get("name"))
+        has_log = bool(files) and confined_file(directory, files["log"])
+        has_journal = bool(files) and stream == "agent" and confined_file(directory, files["journal"])
+        shown.update(stream=stream, activity="journal" if has_journal else "log" if has_log else "",
+                     log_bytes=(stat_sig(files["log"]) or (0, 0))[1] if has_log else 0, raw=stream == "agent" and has_log,
+                     journal=has_journal,
+                     doing=step_doing(directory, str(record.get("name"))) if record.get("status") == "running" else "")
+    report = job_report(job, directory)
+    output = directory / "output.log"
+    view.update(outcome=job_outcome(job, directory, report), report=report,
+                needs_person=len(report["left_out"]) if report else 0,
+                output_bytes=(stat_sig(output) or (0, 0))[1] if confined_file(directory, output) else 0,
+                has_steps_dir=(directory / "steps").is_dir() and not (directory / "steps").is_symlink())
+    return view
+
+
 def step_reason(step: dict[str, Any], al_lines: list[str]) -> str:
     """Why a step failed, from its `al: …` stderr lines (without `al: ` and the subcommand's own name)."""
     argv = step.get("argv") or []
@@ -4334,7 +4792,12 @@ def merge_changed(earlier: list[dict[str, str]], now: list[dict[str, str]]) -> l
 
 def run_job(directory: Path) -> int:
     """`dashboard.py --run-job DIR`: run a recorded job's steps in order, detached from the dashboard (so a
-    restart does not stop it), holding the repository's lock; argv lists only, never a shell."""
+    restart does not stop it), holding the repository's lock; argv lists only, never a shell.
+
+    Every step's stdout and stderr go, as they arrive, to steps/<name>.log (started afresh when a retry
+    runs the step again) and to the job's output.log (every attempt). An agent step (stream "agent")
+    is condensed instead: its stdout becomes journal events in steps/<name>.journal.jsonl and only
+    their one-line form reaches output.log; the raw stream stays whole in its steps/<name>.log."""
     directory = Path(directory).resolve()
     path = directory / "job.json"
     job = read_json(path)
@@ -4389,6 +4852,9 @@ def run_job(directory: Path) -> int:
     env["PATH"] = job.get("path") or env.get("PATH", "")
     status, exit_code = "passed", 0
     log_lock = threading.Lock()
+    (directory / "steps").mkdir(mode=0o700, exist_ok=True)
+    short = Shortener([(str(job.get("layer_dir") or ""), str(job.get("layer_display") or "")),
+                       (str(job.get("repo_path") or ""), str(job.get("repo_dir") or ""))])
 
     def fail_before(index: int, reason: str, code: int) -> None:
         """Step `index` failed with `reason` before it ran; every later pending step is skipped."""
@@ -4444,16 +4910,27 @@ def run_job(directory: Path) -> int:
                 step.update(status="running", started=utc_stamp())
             save()
             doc = (directory / "docs" / step["doc"]).open("wb") if step.get("doc") else None
+            files = step_files(directory, step.get("name"))
+            step_log = files["log"].open("wb") if files else None
+            journal = AgentJournal(short) if files and step.get("stream") == "agent" else None
+            journal_file = files["journal"].open("wb") if journal is not None else None
+
+            def close_files() -> None:
+                for handle in (doc, step_log, journal_file):
+                    if handle is not None:
+                        handle.close()
+
             try:
                 proc = subprocess.Popen(step["argv"], shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, start_new_session=True, env=env, cwd=str(directory))
             except OSError as exc:
                 with log_lock:
                     log.write(f"cannot start: {exc}\n".encode())
+                    if step_log is not None:
+                        step_log.write(f"cannot start: {exc}\n".encode())
                 fail_before(index, f"cannot start: {exc}", 127)
                 status, exit_code = "failed", 127
-                if doc:
-                    doc.close()
+                close_files()
                 break
             current["proc"] = proc
             with io_lock:
@@ -4462,11 +4939,29 @@ def run_job(directory: Path) -> int:
 
             al_lines: list[str] = []      # the step's own `al: …` stderr lines: its failure reason
 
+            def record(events: list[dict[str, Any]], condensed: bool) -> None:
+                """Journal events of the agent step (log_lock held); `condensed`: their lines go to output.log."""
+                for event in events:
+                    journal_file.write(json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n")
+                    line = journal_line(event) if condensed else None
+                    if line is not None:
+                        log.write(line.encode("utf-8", "replace") + b"\n")
+                journal_file.flush()
+                log.flush()
+
             def pump(stream: Any, to_doc: bool) -> None:
                 for chunk in iter(stream.readline, b""):
                     with log_lock:
-                        log.write(chunk)
-                        log.flush()
+                        if step_log is not None:
+                            step_log.write(chunk)
+                            step_log.flush()
+                        if journal is not None and to_doc:     # the agent's stream: only its condensed lines
+                            record(journal.feed_line(chunk.decode("utf-8", "replace")), True)
+                        else:
+                            log.write(chunk)
+                            log.flush()
+                            if journal is not None and chunk.startswith(b"al: "):
+                                record([journal.error(chunk.decode("utf-8", "replace"))], False)
                     if to_doc and doc is not None:
                         doc.write(chunk)
                         doc.flush()
@@ -4493,8 +4988,10 @@ def run_job(directory: Path) -> int:
                 reader.join(timeout=5)
             kill_group(signal.SIGKILL)   # whatever the step left behind in its own group
             current["proc"] = None
-            if doc:
-                doc.close()
+            if journal is not None:
+                with log_lock:
+                    record(journal.finish(), True)
+            close_files()
             if timed_out.is_set():
                 with log_lock:
                     log.write(f"timed out after {step.get('timeout')} s\n".encode())
@@ -4930,6 +5427,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._job(query)
             if path == "/api/job/doc":
                 return self._job_doc(query)
+            if path == "/api/job/journal":
+                return self._job_journal(query)
+            if path == "/api/job/log":
+                return self._job_log(query)
+            if path == "/api/job/file":
+                return self._job_file(query)
             if path == "/api/doc":
                 return self._doc(query)
             if path == "/api/doc/download":
@@ -5062,7 +5565,106 @@ class Handler(BaseHTTPRequestHandler):
         if job is None:
             return self._error(404, "no such job")
         job = jobs.settle(job)
-        self._json({**job_summary(job), "docs": jobs.docs(str(job.get("id")))})
+        directory = jobs.dir(str(job.get("id") or ""))
+        if directory is None:
+            return self._error(404, "no such job")
+        self._json({**job_detail(job, directory), "docs": jobs.docs(str(job.get("id")))})
+
+    def _job_step(self, query: dict[str, list[str]], which: str) -> tuple[dict[str, Any], Path, Path] | None:
+        """A file of one step of a job (`log` or `journal`): the id matches JOB_ID, the step is one of the
+        job's, and the file is a regular file inside the job directory; else a 404 is sent and None returned."""
+        jobs = self.server.model.jobs
+        directory = jobs.dir(self._q(query, "id")) if jobs else None
+        job = jobs.read(self._q(query, "id")) if jobs and directory else None
+        step = self._q(query, "step")
+        names = [s.get("name") for s in (job or {}).get("steps") or [] if isinstance(s, dict)]
+        files = step_files(directory, step) if directory is not None and step in names else {}
+        if job is None or directory is None or not files or not confined_file(directory, files[which]):
+            self._error(404, "no such step file")
+            return None
+        return job, directory, files[which]
+
+    def _from(self, query: dict[str, list[str]], name: str = "from") -> int | None:
+        value = self._q(query, name)
+        return int(value) if value.isdigit() else None
+
+    def _job_journal(self, query: dict[str, list[str]]) -> None:
+        """GET /api/job/journal?id&step&from=N (or &tail=N): a step's journal events from index N, at most
+        JOURNAL_PAGE per answer; `next_from` is where the next answer starts."""
+        found = self._job_step(query, "journal")
+        if found is None:
+            return None
+        events = journal_events(found[2])
+        tail = self._from(query, "tail")
+        start = self._from(query) if self._from(query) is not None else max(0, len(events) - tail) if tail is not None else 0
+        page = events[start:start + JOURNAL_PAGE]
+        self._json({"events": page, "from": start, "next_from": start + len(page), "total": len(events)})
+
+    def _job_log(self, query: dict[str, list[str]]) -> None:
+        """GET /api/job/log?id&step&from=N (or &tail=N): a step's log as ANSI-stripped lines from line N,
+        the home directory as ~, at most LOG_PAGE_LINES lines or LOG_PAGE_BYTES per answer."""
+        found = self._job_step(query, "log")
+        if found is None:
+            return None
+        job, _directory, path = found
+        running = any(s.get("name") == self._q(query, "step") and s.get("status") == "running"
+                      for s in job.get("steps") or [] if isinstance(s, dict))
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return self._error(404, "no such step file")
+        raw = data.split(b"\n")
+        if raw and (raw[-1] == b"" or running):     # a running step's last line without its newline is not done
+            raw = raw[:-1]
+        total = len(raw)
+        tail = self._from(query, "tail")
+        start = self._from(query) if self._from(query) is not None else max(0, total - tail) if tail is not None else 0
+        short, lines, size = Shortener(), [], 0
+        for item in raw[start:]:
+            if len(lines) >= LOG_PAGE_LINES or size >= LOG_PAGE_BYTES:
+                break
+            size += len(item) + 1
+            lines.append(short(strip_ansi(item.decode("utf-8", "replace"))))
+        self._json({"lines": lines, "from": start, "next_from": start + len(lines), "total": total})
+
+    def _job_file(self, query: dict[str, list[str]]) -> None:
+        """GET /api/job/file?id&name: a download of the job's output.log or of one of its steps' files
+        (steps/<step>.log, steps/<step>.journal.jsonl); nothing else, never through a symlink."""
+        jobs = self.server.model.jobs
+        directory = jobs.dir(self._q(query, "id")) if jobs else None
+        job = jobs.read(self._q(query, "id")) if jobs and directory else None
+        name = self._q(query, "name")
+        allowed = {"output.log"} | {f"steps/{s.get('name')}{suffix}" for s in (job or {}).get("steps") or []
+                                    if isinstance(s, dict) and SAFE_NAME.match(str(s.get("name") or ""))
+                                    for suffix in (".log", ".journal.jsonl")}
+        if job is None or directory is None or name not in allowed or not confined_file(directory, directory / name):
+            return self._error(404, "no such file")
+        target = directory / name
+        filename = re.sub(r"[^A-Za-z0-9._-]", "_", f"job-{directory.name}-{target.name}")
+        try:
+            size = target.stat().st_size
+            handle = target.open("rb")
+        except OSError:
+            return self._error(404, "no such file")
+        with handle:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self._security_headers()
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Security-Policy", "sandbox; default-src 'none'")
+            self.end_headers()
+            if self.command == "HEAD":
+                return None
+            remaining = size
+            while remaining > 0:
+                chunk = handle.read(min(256 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+        return None
 
     def _job_doc(self, query: dict[str, list[str]]) -> None:
         """A file of a job's docs/ (and nothing else): a regular file whose real path stays there."""
@@ -5269,8 +5871,7 @@ class Handler(BaseHTTPRequestHandler):
             path = directory / "output.log"
             if path.is_symlink():
                 return self._error(403, "symlink")
-            short: Callable[[str], str] = lambda text: text  # noqa: E731
-            return self._stream(path, what, short, query)
+            return self._stream(path, what, Shortener(), query)    # the home directory as ~
         resolved = self._resolve_run(query)
         if not resolved:
             return

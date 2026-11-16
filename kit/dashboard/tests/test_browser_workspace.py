@@ -124,7 +124,8 @@ def test_adopt_preview_diff_and_confirm(tmp_path, workspace, tab):
         page.locator('.action-confirm [data-role="confirm"]').click()
         until(page, "location.hash.startsWith('#/job/')")
         page.wait_for_selector(".job-step")
-        until(page, "document.querySelector('.log') && document.querySelector('.log').textContent.includes('step output 2')", 20000)
+        # each step's output streams into the activity panel (the combined log is collapsed under "Full output")
+        until(page, "document.querySelector('[data-role=\"activity\"]') && document.getElementById('main').textContent.includes('step output 2')", 20000)
         until(page, "document.querySelector('.run-head .pill') && document.querySelector('.run-head .pill').textContent === 'passed'", 30000)
         steps = page.locator(".job-step code.cmd").all_inner_texts()
         assert steps[0] == "al init ws/comet" and steps[2] == "al adopt ws/comet.al"

@@ -517,3 +517,81 @@ table.tools .why { padding: 4px 8px; }
 .badge.change-added { color: var(--passed); } .badge.change-removed { color: var(--failed); } .badge.change-modified { color: var(--waiting); }
 .s-interrupted, .s-refused { color: var(--failed); }
 @media (max-width: 900px) { .repos { grid-template-columns: 1fr; } .repo-side { position: static; } }
+
+/* Job: outcome card, steps row, a step's activity (journal or log), the author's report */
+.run-head .why.brief { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 4px 8px; }
+.job-outcome { margin-bottom: 12px; border-left: 3px solid var(--passed); }
+.job-outcome.s-failed, .job-outcome.s-interrupted, .job-outcome.s-refused { border-left-color: var(--failed); background: rgba(242, 85, 90, .05); }
+.job-outcome .outcome-title { display: flex; align-items: center; gap: 6px; font-size: 14px; flex-wrap: wrap; }
+.job-outcome .outcome-title strong { font-size: 14px; }
+.job-outcome .outcome-reason { margin: 6px 0 8px; font-size: 14px; color: var(--text); overflow-wrap: anywhere; }
+.job-outcome .outcome-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.job-outcome .outcome-actions .job-retry { padding-top: 0; }
+.job-outcome a.btn { display: inline-block; color: var(--text); text-decoration: none; }
+.job-outcome .outcome-lines { margin: 10px 0 0; background: #0b0e13; border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px;
+  font: 12px/1.45 var(--mono); color: var(--text-2); max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.job-outcome .kv { margin: 8px 0 0; }
+.job-outcome .plain-list { margin: 0; padding-left: 16px; }
+.job-steprow { display: flex; gap: 8px; align-items: stretch; padding-top: 4px; }
+.job-steprow .step-chip { flex: 1 1 0; min-width: 150px; flex-direction: column; align-items: stretch; gap: 4px; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel-2); cursor: pointer; flex-wrap: nowrap; }
+.job-steprow .step-chip:hover { border-color: var(--border-2); }
+.job-steprow .step-chip.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.job-steprow .step-chip.s-running { border-left: 3px solid var(--running); }
+.job-steprow .step-chip.s-failed, .job-steprow .step-chip.s-interrupted { border-left: 3px solid var(--failed); }
+.step-chip .chip-top { display: flex; align-items: center; gap: 6px; }
+.step-chip .step-name { font-weight: 600; }
+.step-chip .num { min-width: 0; }
+.step-chip code.cmd { font-size: 11px; color: var(--dim); }
+.step-chip .doing { color: var(--running); font-size: 12px; overflow-wrap: anywhere; }
+.step-chip .why { margin: 0; font-size: 12px; }
+.job-activity { margin-top: 12px; }
+.job-activity .card-head .doing { color: var(--running); }
+.job-activity .downloads { display: flex; gap: 10px; font-size: 12px; }
+.activity .act-tools { border-bottom: 0; padding-top: 0; }
+.activity .act-search { min-width: 220px; }
+.activity [data-role="earlier"] { margin: 4px 0; }
+.act-list, .text-window { max-height: calc(100vh - var(--top) - 260px); min-height: 220px; overflow: auto; background: #0b0e13;
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 0; }
+.act-row { display: flex; gap: 8px; align-items: baseline; padding: 3px 10px; border-bottom: 1px solid rgba(37, 45, 56, .6); min-width: 0; }
+.act-row .act-time { font: 11px var(--mono); flex: none; }
+.act-row .act-text { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.act-row .act-text.md { white-space: normal; font-size: 13px; }
+.act-msg { color: var(--text); }
+.act-tool { font-size: 12px; }
+.act-tool .act-name { color: var(--agent); font-weight: 600; flex: none; min-width: 44px; }
+.act-tool .act-target { flex: 1; min-width: 0; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.act-tool .act-size, .act-tool .act-dur { flex: none; font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+.act-tool.act-open .act-size { color: var(--running); }
+.act-err { background: rgba(242, 85, 90, .08); color: #fca5a5; }
+.act-err .act-name { color: var(--failed); }
+.act-err .act-mark { color: var(--failed); font-weight: 700; flex: none; }
+.act-report { flex-direction: column; align-items: stretch; background: rgba(63, 185, 80, .05); border-left: 3px solid var(--passed); }
+.act-report .act-report-head { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--passed); }
+.act-result { font-size: 12px; color: var(--text-2); }
+.act-hidden { font-size: 11.5px; color: var(--faint); }
+.act-hidden .act-name { flex: none; min-width: 44px; }
+.act-empty { padding: 10px; }
+.text-window { font: 12px/1.45 var(--mono); color: var(--text-2); padding: 6px 10px; }
+.text-window .tw-line { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 1.45em; }
+.job-reports { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-top: 12px; }
+.job-reports:empty { display: none; }
+.job-report .report-items { margin: 0; padding-left: 18px; font-size: 13px; }
+.job-report .report-items li p { margin: .2em 0; }
+.job-changed, .job-docs, .job-output { margin-top: 12px; }
+.job-output summary { cursor: pointer; display: flex; align-items: baseline; gap: 10px; }
+.job-output summary h3 { display: inline; margin: 0; }
+.job-output[open] summary { margin-bottom: 8px; }
+@media (max-width: 600px) {
+  .job-outcome { margin-left: 0; margin-right: 0; width: 100%; }
+  .job-outcome .outcome-lines { max-height: 140px; }
+  .job-steprow { overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x proximity; }
+  .job-steprow .step-chip { flex: 0 0 auto; min-width: 140px; max-width: 220px; scroll-snap-align: start; }
+  .job-activity .card-head { flex-wrap: wrap; }
+  .activity .act-search { min-width: 0; flex: 1; }
+  .act-tool .act-size, .act-tool .act-dur { min-width: 0; }
+  .act-row .act-time { display: none; }
+  .run-head .line1 { flex-wrap: wrap; }
+}
+.act-row .act-text.md > :first-child { margin-top: 0; }
+.act-row .act-text.md > :last-child { margin-bottom: 0; }
