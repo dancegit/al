@@ -525,7 +525,10 @@ class EnvStack:
         subprocess.run(["podman", "rm", "-f", "-t", "0", name], capture_output=True, text=True, timeout=120, check=False)
         env_flags = ["-e", f"HOME={CONTAINER_HOME}"]
         try:
-            result = subprocess.run(["podman", "run", "-d", "--name", name, *self._podman_base(), *env_flags,
+            # --init: a small init is process 1 and collects orphaned processes. Without it every
+            # process whose parent exited stays a zombie for the whole run, and a long run with test
+            # suites reaches the process limit ("cannot spawn thread") hours in.
+            result = subprocess.run(["podman", "run", "-d", "--init", "--name", name, *self._podman_base(), *env_flags,
                                      self.image, "sleep", "infinity"], capture_output=True, text=True, timeout=300,
                                     check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
