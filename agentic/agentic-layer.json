@@ -930,9 +930,9 @@
   "concurrency": {
     "id": "slots",
     "kind": "slots",
-    "maxAgents": 5,
-    "maxChecks": 2,
-    "maxRuns": 5,
+    "maxAgents": 10,
+    "maxChecks": 3,
+    "maxRuns": 10,
     "status": "stable",
     "waitSeconds": 3600
   },

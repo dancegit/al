@@ -6,20 +6,30 @@
 """al work dashboard: a live view of what the agents of one or more layers are doing.
 
   dashboard.py --layer path/to/app.al [--layer …] [--scan DIR …] [--port 8765] [--bind 127.0.0.1]
-               [--token T] [--open] [--read-only] [--no-start]
+               [--token T] [--open] [--read-only] [--no-start] [--workspace DIR …] [--workspace-depth N]
+               [--no-workspace] [--no-actions] [--jobs-dir DIR] [--al PATH]
 
 It watches each layer's `agents/` (run state, run.log, step transcripts, check logs, slot locks,
 port leases) and `artefacts/` by polling mtimes and sizes, and serves one page that updates over
-Server-Sent Events. Standard library only. It changes two things, both guarded: a layer's local
-model setting (agents/settings/models.json), from the Models panel, and it starts work (a workflow
-or one command) through the layer's own `adws/dispatch.py --start`. --read-only turns both off,
---no-start only starting.
+Server-Sent Events. Standard library only. It changes two things in a layer, both guarded: a layer's
+local model setting (agents/settings/models.json), from the Models panel, and it starts work (a
+workflow or one command) through the layer's own `adws/dispatch.py --start`.
+
+It also lists the git repositories of a workspace (the folder holding each layer's repository, or
+--workspace DIR) with their al state (layer / setup / none), read-only, and runs allow-listed `al`
+commands on one of them from the page (scout, create, adopt, gen, check, verify, explain) as recorded
+jobs in --jobs-dir.
+
+--read-only turns every write off; --no-start and --no-actions each turn off their own.
 """
 from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import difflib
+import fcntl
+import hashlib
 import hmac
 import http.client
 import io
@@ -30,6 +40,7 @@ import mimetypes
 import os
 import queue
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -99,6 +110,17 @@ API_KEY_SOURCES = ("ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key")
 HEARTBEAT_STALE = 20.0      # older than this and its process is gone: the run died
 HEARTBEAT_UNSEEN = 300.0    # its process cannot be checked (other host, container): died after this long
 HEARTBEAT_REUSED = 3600.0   # a live pid with a heartbeat this old is another process that got the same pid
+# The workspace (folders of git repositories side by side) and the actions run on them:
+WORKSPACE_DEPTH = 1            # how deep below a workspace folder repositories are looked for
+WORKSPACE_RESCAN = 60          # seconds between rescans (a repository whose signature is unchanged is not reread)
+WORKSPACE_REFRESH_MIN = 5      # at most one rescan asked for by the page per this many seconds
+WORKSPACE_FILE_CAP = 20_000    # tracked paths read per repository
+WORKSPACE_REPO_CAP = 500       # repositories listed
+WORKSPACE_GIT_TIMEOUT = 5      # seconds per git call of the scan
+JOB_ID = re.compile(r"^[0-9a-f]{8}$")
+JOB_HEARTBEAT = 5              # seconds between a job runner's heartbeats
+ACTION_KEYS = {"repo", "action", "confirm"}
+PREVIEW_TTL = 600              # seconds a preview's confirmation stays valid
 _STAMP = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ")   # run.log line prefix since run events
 
 
@@ -2675,7 +2697,22 @@ def sse_frame(kind: str, payload: bytes | str, event_id: str | int | None = None
 class Model:
     def __init__(self, layer_dirs: list[Path], scan_dirs: list[Path], *, poll: float = 0.75, scan_depth: int = 4,
                  probe: ContainerProbe | None = None, in_container: bool = False, read_only: bool = False,
-                 no_start: bool = False, allow_start: bool = False) -> None:
+                 no_start: bool = False, allow_start: bool = False,
+                 workspace: Workspace | None = None, jobs: Jobs | None = None, al: Path | None = None,
+                 al_looked: list[str] | None = None, no_actions: bool = False,
+                 author_flags: list[str] | None = None) -> None:
+        self.workspace = workspace
+        self.jobs = jobs
+        self.al = al
+        self.al_looked = list(al_looked or [])
+        self.no_actions = no_actions
+        self.author_flags = list(author_flags or [])
+        self.previews: dict[str, tuple[str, str, tuple, float]] = {}   # nonce → (repo, action, signature, expires)
+        self.action_lock = threading.Lock()
+        self.workspace_version = workspace.version if workspace else 0
+        self.job_sigs: dict[str, tuple | None] = {}
+        self.job_views: dict[str, dict[str, Any]] = {}
+        self.job_checked: dict[str, float] = {}
         self.layer_dirs = [Path(p) for p in layer_dirs]
         self.scan_dirs = [Path(p) for p in scan_dirs]
         self.poll = poll
@@ -2710,6 +2747,8 @@ class Model:
             if (directory / LAYER_FILE).is_file():
                 paths.append(Path(os.path.realpath(directory)))
         paths += find_layers(self.scan_dirs, self.scan_depth)
+        if self.workspace is not None:   # the generated layers of workspace repositories are watched like any layer
+            paths += self.workspace.layer_paths()
         changed = False
         with self.lock:
             known = {str(layer.path): layer for layer in self.layers.values()}
@@ -2751,6 +2790,189 @@ class Model:
                 relative = path.relative_to(real).as_posix()
                 return f"{real.name}/{relative}" if relative != "." else real.name
         return path.name
+
+    def ws_display(self, path: Path) -> str:
+        """A path in the workspace as shown: relative to its workspace folder, prefixed with that
+        folder's name; anything else with the home directory as ~."""
+        real = os.path.realpath(path)
+        for root in (self.workspace.roots if self.workspace else []):
+            if real == str(root):
+                return root.name
+            if real.startswith(str(root) + os.sep):
+                return f"{root.name}/{os.path.relpath(real, root)}"
+        return home_short(real)
+
+    # ---------------------------------------------------------------- workspace and actions
+    def actions_state(self) -> dict[str, Any]:
+        why = ("the dashboard was started with --read-only" if self.read_only else
+               "actions are off (--no-actions)" if self.no_actions else
+               "no workspace" if self.workspace is None else
+               f"needs the al tool; looked for: {', '.join(self.al_looked)}" if self.al is None else "")
+        return {"enabled": not why, "why": why}
+
+    def repo_view(self, entry: RepoEntry, layer_keys: dict[str, str] | None = None) -> dict[str, Any]:
+        if layer_keys is None:
+            with self.lock:
+                layer_keys = {str(l.path): l.key for l in self.layers.values()}
+        running = next((v["id"] for v in list(self.job_views.values())
+                        if v.get("repo") == entry.key and v.get("status") == "running"), "")
+        return {"key": entry.key, "name": entry.name, "dir": self.ws_display(entry.path), "state": entry.state,
+                "branch": entry.branch, "dirty": entry.dirty, "last_activity": entry.last_activity,
+                "layer": self.ws_display(entry.layer_dir) if entry.layer_dir else "", "layer_kind": entry.layer_kind,
+                "layer_generated": entry.layer_generated,
+                "layer_key": layer_keys.get(os.path.realpath(entry.layer_dir), "") if entry.layer_dir else "",
+                "suite": entry.suite, "setup": entry.setup, "setup_checked": entry.setup_checked, "files": entry.files,
+                "truncated": entry.truncated, "error": entry.error, "running_job": running}
+
+    def workspace_view(self) -> dict[str, Any]:
+        ws = self.workspace
+        if ws is None:
+            return {"enabled": False, "roots": [], "depth": 0, "scanned_at": None, "repos": []}
+        with self.lock:
+            layer_keys = {str(l.path): l.key for l in self.layers.values()}
+        return {"enabled": True, "roots": [root.name for root in ws.roots], "depth": ws.depth, "scanned_at": ws.scanned_at,
+                "repos": [self.repo_view(e, layer_keys) for e in ws.as_list()]}
+
+    def action_views(self, entry: RepoEntry) -> list[dict[str, Any]]:
+        cfg = ActionConfig(self.al or Path("al"), self.author_flags)
+        docs = Path("/<job>/docs")
+        out = []
+        for name, action in ACTIONS.items():
+            why, needs = "", ""
+            if self.al is None:
+                why, needs = f"needs the al tool; looked for: {', '.join(self.al_looked)}", "al"
+            elif self.read_only:
+                why = "the dashboard was started with --read-only"
+            elif self.no_actions:
+                why = "actions are off (--no-actions)"
+            elif entry.state not in action.states:
+                why = f"not for this state ({entry.state}); it is for: {', '.join(action.states)}"
+            show = lambda steps: [display_argv(s.argv, self.ws_display, docs) for s in steps]  # noqa: E731
+            out.append({"name": name, "description": action.description, "writes": action.writes,
+                        "available": not why, "why": why, "needs": needs, "states": list(action.states),
+                        "commands": show(action.steps(entry, cfg, docs)),
+                        "preview": show(action.preview(entry, cfg, docs)) if action.preview else [],
+                        "paths": [p if isinstance(p, str) else self.ws_display(p) for p in action.writes_paths(entry)]})
+        return out
+
+    def job_list(self, repo: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        if self.jobs is None:
+            return []
+        out = []
+        for job_id in self.jobs.ids():
+            job = self.jobs.read(job_id)
+            if job and (repo is None or job.get("repo") == repo):
+                out.append(job_summary(job))
+        out.sort(key=lambda j: -(j.get("created") or 0))
+        return out[:limit]
+
+    def repo_detail(self, key: str) -> dict[str, Any] | None:
+        entry = self.workspace.entry(key) if self.workspace else None
+        if entry is None:
+            return None
+        return {"repo": self.repo_view(entry), "summary": entry.summary, "actions": self.action_views(entry),
+                "jobs": self.job_list(entry.key, limit=20), "al": {"found": self.al is not None, "looked": self.al_looked}}
+
+    def start_action(self, entry: RepoEntry, name: str, nonce: str | None) -> tuple[int, dict[str, Any]]:
+        """Every guard, then a preview (a writing action without a confirmation) or a job. → (status, body)."""
+        action = ACTIONS[name]
+        if self.al is None:
+            return 409, {"error": f"this action needs the al tool; looked for: {', '.join(self.al_looked)}"}
+        if self.jobs is None or self.workspace is None:
+            return 409, {"error": "actions are off"}
+        if entry.state not in action.states:
+            return 409, {"error": f"{name} is not for {entry.name}: its state is {entry.state} "
+                                  f"({name} is for: {', '.join(action.states)})"}
+        app = os.path.realpath(entry.path)
+        if not self.workspace.inside(app) or not os.path.lexists(os.path.join(app, ".git")):
+            return 409, {"error": f"{entry.name} is no longer a git repository inside the workspace"}
+        layer = layer_of(entry)
+        if not self.workspace.inside(str(layer)) and not str(layer).startswith(app + os.sep):
+            return 409, {"error": f"{entry.name}'s layer is outside the workspace"}
+        if action.definition:
+            problem = definition_problem(Path(app), layer, self.ws_display)
+            if problem:
+                return 409, {"error": problem}
+        cfg = ActionConfig(self.al, self.author_flags)
+        with self.action_lock:
+            busy = self.jobs.running_for(app)
+            if busy is not None or lock_held(lock_file(self.jobs.root, app)):
+                return 409, {"error": f"an action is already running on {entry.name} (job {(busy or {}).get('id', '?')})"}
+            now = time.time()
+            for old in [n for n, v in self.previews.items() if v[3] < now]:
+                del self.previews[old]
+            if action.writes:
+                sig = confirm_signature(Path(app), layer)
+                if not nonce:
+                    nonce = secrets.token_urlsafe(18)
+                    self.previews[nonce] = (entry.key, name, sig, now + PREVIEW_TTL)
+                    docs = Path("/<job>/docs")
+                    body: dict[str, Any] = {
+                        "preview": True, "repo": entry.key, "action": name, "nonce": nonce,
+                        "commands": [display_argv(s.argv, self.ws_display, docs) for s in action.steps(entry, cfg, docs)],
+                        "writes": [p if isinstance(p, str) else self.ws_display(p) for p in action.writes_paths(entry)]}
+                    if action.preview:
+                        body["job"] = self._spawn(entry, name, action.preview, cfg, layer, preview=True)
+                    return 200, body
+                stored = self.previews.pop(nonce, None)
+                if stored is None or stored[0] != entry.key or stored[1] != name or stored[3] < now:
+                    return 409, {"error": "this confirmation is unknown, used or expired: preview the action again"}
+                if stored[2] != sig:
+                    return 409, {"error": f"{entry.name} changed since the preview: preview the action again"}
+            job_id = self._spawn(entry, name, action.steps, cfg, layer)
+        return 202, {"job": job_id, "repo": entry.key, "action": name}
+
+    def _spawn(self, entry: RepoEntry, name: str, build: Callable[[RepoEntry, ActionConfig, Path], list[Step]],
+               cfg: ActionConfig, layer: Path, preview: bool = False) -> str:
+        assert self.jobs is not None
+        job_id, directory = self.jobs.allocate()
+        docs = directory / "docs"
+        steps = build(entry, cfg, docs)
+        app = os.path.realpath(entry.path)
+        now = utc_stamp()
+        job = {"version": 1, "id": job_id, "repo": entry.key, "repo_name": entry.name, "repo_path": app,
+               "repo_dir": self.ws_display(Path(app)), "action": name, "preview": preview, "status": "running",
+               "pid": None, "host": socket.gethostname(), "created": now, "heartbeat": now, "started": None,
+               "ended": None, "exit": None, "layer_dir": str(layer), "layer_display": self.ws_display(layer),
+               "steps": [{"name": s.name, "argv": s.argv, "display": display_argv(s.argv, self.ws_display, docs),
+                          "doc": s.doc, "timeout": s.timeout, "status": "pending", "exit": None, "started": None,
+                          "ended": None} for s in steps],
+               "changed": [], "repo_changes": [], "repo_unchanged": None}
+        write_json_atomic(directory / "job.json", job)
+        proc = subprocess.Popen([sys.executable, "-I", str(Path(__file__).resolve()), "--run-job", str(directory)],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True, close_fds=True)
+        threading.Thread(target=proc.wait, name=f"job-{job_id}", daemon=True).start()   # no zombie runner
+        self.hub.publish("job", job_summary(job))
+        return job_id
+
+    def tick_jobs(self, now: float) -> bool:
+        """Publish changed jobs; a running job whose runner died is rewritten as interrupted. → any ended?"""
+        if self.jobs is None:
+            return False
+        ended = False
+        for job_id in self.jobs.ids():
+            directory = self.jobs.root / job_id
+            sig = stat_sig(directory / "job.json")
+            last = self.job_views.get(job_id)
+            stale = last is not None and last.get("status") == "running" and now - self.job_checked.get(job_id, 0) >= 2
+            if sig == self.job_sigs.get(job_id) and not stale:
+                continue
+            self.job_sigs[job_id] = sig
+            self.job_checked[job_id] = now
+            job = self.jobs.read(job_id)
+            if job is None:
+                continue
+            job = self.jobs.settle(job, now)
+            view = job_summary(job)
+            if view != last:
+                if last is not None and last.get("status") == "running" and view["status"] != "running":
+                    ended = True
+                self.job_views[job_id] = view
+                self.job_sigs[job_id] = stat_sig(directory / "job.json")
+                if last is not None or now - (view.get("created") or 0) < 3600:
+                    self.hub.publish("job", view)
+        return ended
 
     def layer_list(self) -> list[dict[str, Any]]:
         with self.lock:
@@ -2819,10 +3041,18 @@ class Model:
     def tick(self) -> None:
         now = time.time()
         self.ticks += 1
-        if now - self.last_scan > (10 if self.scan_dirs else 5) or not self.layers:
+        if self.tick_jobs(now) and self.workspace is not None:
+            self.workspace.refresh()   # a job ended: its repository's state may have changed
+        rediscover = False
+        if self.workspace is not None and self.workspace.version != self.workspace_version:
+            self.workspace_version = self.workspace.version
+            rediscover = True
+        if rediscover or now - self.last_scan > (10 if self.scan_dirs else 5) or not self.layers:
             self.last_scan = now
             if self.discover():
                 self.hub.publish("layers", self.layer_list())
+            if rediscover:
+                self.hub.publish("workspace", self.workspace_view())
         locks = None
         with self.lock:
             layers = list(self.layers.values())
@@ -2947,7 +3177,9 @@ class Model:
             return {"version": VERSION, "now": time.time(), "layers": self.layer_list(),
                     "runs": sorted(runs, key=lambda r: -(r.get("started") or 0)),
                     "slots": dict(self.slots), "containers": self.containers(),
-                    "in_container": self.in_container}
+                    "in_container": self.in_container, "workspace": self.workspace_view(),
+                    "al": {"found": self.al is not None, "looked": self.al_looked},
+                    "actions": self.actions_state(), "jobs": self.job_list()}
 
     def run_detail(self, layer_key: str, run_id: str) -> dict[str, Any] | None:
         layer = self.layers.get(layer_key)
@@ -2988,6 +3220,8 @@ class Model:
                 "explain_text": read_text(layer.path / explain, cap=200_000) if explain else ""}
 
     def run_forever(self) -> None:
+        if self.workspace is not None:
+            threading.Thread(target=self.workspace.run_forever, args=(self.stop,), name="workspace", daemon=True).start()
         while not self.stop.is_set():
             started = time.monotonic()
             try:
@@ -3178,6 +3412,800 @@ INLINE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"
                 ".xml": "text/plain; charset=utf-8", ".rkt": "text/plain; charset=utf-8"}
 
 
+# ============================================================================ workspace: repositories beside each other
+
+KIT_AL = HERE.parent.parent / "tools" / "al"   # the al tool of the checkout this kit belongs to
+WS_KEY_BAD = re.compile(r"[\s\x00-\x1f\x7f]")
+
+
+def home_short(text: str) -> str:
+    """A path as shown: the home directory as `~`."""
+    home = str(Path.home())
+    if home and home != "/" and (text == home or text.startswith(home + os.sep)):
+        return "~" + text[len(home):]
+    return text
+
+
+def utc_stamp(when: float | None = None) -> str:
+    return datetime.fromtimestamp(time.time() if when is None else when, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def find_al_tool(explicit: Path | None) -> tuple[Path | None, list[str]]:
+    """The al tool: --al PATH, else tools/al of the checkout the kit belongs to, else `al` on PATH.
+    → (the first executable one, every place looked at, the home directory shown as ~)."""
+    looked: list[str] = []
+    for candidate in ([Path(explicit)] if explicit is not None else []) + [KIT_AL]:
+        looked.append(home_short(str(candidate)))
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return Path(os.path.realpath(candidate)), looked
+    looked.append("PATH")
+    found = shutil.which("al")
+    return (Path(os.path.realpath(found)), looked) if found else (None, looked)
+
+
+@dataclass
+class Detectors:
+    detect: Callable[..., Any]
+    detect_suite: Callable[..., Any]
+    render_section: Callable[..., str]
+    render_suite: Callable[..., str]
+
+
+def load_detectors(al: Path | None) -> Detectors | None:
+    """`al scout`'s own detection (tools/al_adopt.py, tools/al_suite.py: standard library only, they
+    read files and execute nothing), from beside the al tool or the kit's checkout; None without it."""
+    import importlib.util
+    for tools in dict.fromkeys(([al.parent] if al else []) + [KIT_AL.parent]):
+        if not ((tools / "al_adopt.py").is_file() and (tools / "al_suite.py").is_file()):
+            continue
+        added = str(tools) not in sys.path
+        if added:
+            sys.path.insert(0, str(tools))
+        try:
+            modules = {}
+            for name in ("al_suite", "al_adopt"):
+                source = tools / f"{name}.py"
+                loaded = sys.modules.get(name)
+                if loaded is not None and os.path.realpath(getattr(loaded, "__file__", "") or "") == os.path.realpath(source):
+                    modules[name] = loaded
+                    continue
+                spec = importlib.util.spec_from_file_location(name, source)
+                if spec is None or spec.loader is None:
+                    raise ImportError(name)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[name] = module
+                spec.loader.exec_module(module)
+                modules[name] = module
+            return Detectors(modules["al_adopt"].detect, modules["al_suite"].detect_suite,
+                             modules["al_adopt"].render_section, modules["al_suite"].render_suite)
+        except Exception as exc:  # noqa: BLE001 — without them the states are only layer / not checked
+            print(f"[dashboard] cannot load al's detection from {home_short(str(tools))}: {exc}", file=sys.stderr)
+        finally:
+            if added and str(tools) in sys.path:
+                sys.path.remove(str(tools))
+    return None
+
+
+def safe_git(repo: Path, *args: str, timeout: float | None = None, errors: list[str] | None = None) -> str | None:
+    """git in a repository that may be hostile: no fsmonitor, untracked cache or hooks from its config,
+    no optional locks (the index is never rewritten), no prompt, its own process group killed after
+    `timeout` seconds. → stdout, or None on an error or a timeout (recorded in `errors`)."""
+    limit = WORKSPACE_GIT_TIMEOUT if timeout is None else timeout
+    argv = ["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null",
+            "--no-optional-locks", "-C", str(repo), *args]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                env=env, start_new_session=True)
+    except OSError:
+        if errors is not None:
+            errors.append("git not found")
+        return None
+    try:
+        out, _ = proc.communicate(timeout=limit)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        with contextlib.suppress(Exception):
+            proc.communicate(timeout=2)
+        if errors is not None:
+            errors.append("git timed out")
+        return None
+    if proc.returncode != 0:
+        return None
+    return out.decode("utf-8", errors="surrogateescape")
+
+
+def git_dir(repo: Path) -> Path:
+    """The repository's git directory (.git, or where a worktree's .git file points)."""
+    dot = repo / ".git"
+    if dot.is_file() and not dot.is_symlink():
+        text = read_text(dot, cap=4096).strip()
+        if text.startswith("gitdir:"):
+            target = Path(text[len("gitdir:"):].strip())
+            return target if target.is_absolute() else repo / target
+    return dot
+
+
+def repo_signature(repo: Path, layer_dir: Path | None = None) -> tuple:
+    """Cheap: stats of what changes when a repository's al state can change (a commit, the index, a
+    sibling definition, the layer's generated IR) and of the repository's top directory."""
+    gd = git_dir(repo)
+    paths = [repo, gd / "HEAD", gd / "index", gd / "logs" / "HEAD", repo.parent / f"{repo.name}.al" / "agentic.rkt"]
+    if layer_dir is not None:
+        paths += [layer_dir / LAYER_FILE, layer_dir / "agentic.rkt"]
+    return tuple(stat_sig(p) for p in paths)
+
+
+def confirm_signature(repo: Path, layer: Path) -> tuple:
+    """What a confirmation is bound to: the commit, the branch, the working tree's status and the layer's
+    definition. Read with safe_git (which never rewrites the index), so a preview cannot change it."""
+    return (safe_git(repo, "rev-parse", "-q", "--verify", "HEAD"), safe_git(repo, "symbolic-ref", "-q", "HEAD"),
+            hashlib.sha256((safe_git(repo, "status", "--porcelain", "-z", "--untracked-files=normal") or "").encode(
+                "utf-8", errors="surrogateescape")).hexdigest(),
+            stat_sig(layer / "agentic.rkt"), stat_sig(layer / LAYER_FILE))
+
+
+def scan_root(root: Path, depth: int) -> list[Path]:
+    """Git repositories below `root`, at most `depth` levels down; a repository is not looked into.
+    Symlinked entries, PRUNE_DIRS, hidden directories and a sibling layer `X.al` beside `X` are
+    skipped, and nothing whose real path leaves the root is listed."""
+    base = os.path.realpath(root)
+    found: list[Path] = []
+
+    def walk(directory: str, level: int) -> None:
+        try:
+            entries = sorted(os.scandir(directory), key=lambda e: e.name)
+        except OSError:
+            return
+        names = {e.name for e in entries}
+        for entry in entries:
+            if len(found) >= WORKSPACE_REPO_CAP:
+                return
+            try:
+                if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            if entry.name in PRUNE_DIRS or entry.name.startswith("."):
+                continue
+            if entry.name.endswith(".al") and entry.name[:-3] in names:
+                continue
+            real = os.path.realpath(entry.path)
+            if not real.startswith(base + os.sep):
+                continue
+            if os.path.lexists(os.path.join(entry.path, ".git")):
+                found.append(Path(entry.path))
+            elif level + 1 < depth:
+                walk(entry.path, level + 1)
+
+    walk(base, 0)
+    return found
+
+
+@dataclass
+class RepoEntry:
+    key: str
+    name: str
+    path: Path
+    root: Path
+    state: str = "none"                 # layer | setup | none
+    branch: str = ""
+    dirty: bool = False
+    last_activity: float | None = None
+    layer_dir: Path | None = None
+    layer_kind: str = ""                # sibling | in-repo
+    layer_generated: bool = False
+    suite: str = ""                     # the hand-built suite's directory, when there is one
+    setup: list[str] = field(default_factory=list)   # rules / prompts / workflows / suite found
+    summary: str = ""                   # al scout's "Existing agent setup" section
+    setup_checked: bool = True          # False: al's detection was not available
+    files: int = 0
+    truncated: bool = False
+    error: str = ""
+
+
+def classify_repo(repo: Path, root: Path, detectors: Detectors | None, key: str = "") -> RepoEntry:
+    """A repository's al state, read-only and bounded: its tracked files (at most WORKSPACE_FILE_CAP,
+    every one whose real path leaves the repository dropped) through al scout's detection."""
+    entry = RepoEntry(key=key or repo.name, name=repo.name, path=repo, root=root)
+    errors: list[str] = []
+    real_repo = os.path.realpath(repo)
+    listed = safe_git(repo, "ls-files", "-z", errors=errors)
+    files: list[str] = []
+    if listed is not None:
+        names = [f for f in listed.split("\0") if f]
+        entry.truncated = len(names) > WORKSPACE_FILE_CAP
+        for rel in names[:WORKSPACE_FILE_CAP]:
+            real = os.path.realpath(os.path.join(real_repo, rel))
+            if real.startswith(real_repo + os.sep):
+                files.append(rel)
+    entry.files = len(files)
+    sibling = repo.parent / f"{repo.name}.al"
+    if not sibling.is_symlink() and (sibling / "agentic.rkt").is_file():
+        entry.layer_dir, entry.layer_kind = sibling, "sibling"
+    else:
+        definitions = [f for f in files if f == "agentic.rkt" or f.endswith("/agentic.rkt")]
+        default = os.path.join(real_repo, "agentic", "agentic.rkt")
+        if "agentic/agentic.rkt" not in definitions and os.path.isfile(default) \
+                and os.path.realpath(default).startswith(real_repo + os.sep):
+            definitions.append("agentic/agentic.rkt")   # an in-repo layer not committed yet
+        definitions.sort(key=lambda f: (f.count("/"), len(f), f))
+        generated = [f for f in definitions if (repo / f).parent.joinpath(LAYER_FILE).is_file()]
+        chosen = (generated or definitions)[:1]
+        if chosen:
+            entry.layer_dir, entry.layer_kind = (repo / chosen[0]).parent, "in-repo"
+    if entry.layer_dir is not None:
+        entry.layer_generated = (entry.layer_dir / LAYER_FILE).is_file()
+    if detectors is None:
+        entry.setup_checked = False
+    elif listed is not None:
+        try:
+            items = detectors.detect(repo, files)
+            suite = detectors.detect_suite(repo, files)
+        except Exception as exc:  # noqa: BLE001 — one odd repository must not stop the scan
+            items, suite = [], None
+            errors.append(f"detection failed: {type(exc).__name__}: {exc}"[:200])
+        entry.setup = sorted({str(it.get("category")) for it in items if it.get("category") in ("rules", "prompts", "workflows")})
+        if suite:
+            entry.setup.append("suite")
+            entry.suite = str(suite.get("root") or "")
+        entry.summary = detectors.render_section(items) + ("\n\n" + detectors.render_suite(suite) if suite else "")
+    entry.state = "layer" if entry.layer_dir is not None else ("setup" if entry.setup else "none")
+    if not errors:
+        head = safe_git(repo, "symbolic-ref", "--short", "-q", "HEAD", errors=errors)
+        entry.branch = head.strip() if head and head.strip() else "detached"
+    if not errors:
+        status = safe_git(repo, "status", "--porcelain", "-z", "--untracked-files=normal", errors=errors)
+        entry.dirty = bool(status)
+    times = [t for t in [mtime(git_dir(repo) / "index")] if t]
+    if not errors:
+        log = (safe_git(repo, "log", "-1", "--format=%ct", errors=errors) or "").strip()
+        if log.isdigit():
+            times.append(float(log))
+    entry.last_activity = max(times) if times else None
+    entry.error = errors[0] if errors else ""
+    return entry
+
+
+def repo_key(name: str, taken: set[str]) -> str:
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.") or "repo"
+    key, suffix = base, 2
+    while key in taken:
+        key, suffix = f"{base}-{suffix}", suffix + 1
+    return key
+
+
+class Workspace:
+    """The git repositories in one or more folders, each with its al state; cached per repository by
+    `repo_signature`, rescanned every WORKSPACE_RESCAN seconds and on request."""
+
+    def __init__(self, roots: Iterable[Path], depth: int = WORKSPACE_DEPTH, detectors: Detectors | None = None) -> None:
+        self.roots = list(dict.fromkeys(Path(os.path.realpath(r)) for r in roots))
+        self.depth = max(1, int(depth))
+        self.detectors = detectors
+        self.entries: dict[str, RepoEntry] = {}
+        self.sigs: dict[str, tuple] = {}
+        self.lock = threading.RLock()
+        self.refreshing = threading.Lock()
+        self.scanned_at: float | None = None
+        self.scans = 0
+        self.version = 0
+        self.last_requested = -math.inf
+
+    def refresh(self, force: bool = False) -> bool:
+        """Rescan; a repository whose signature did not change keeps its entry unless `force`. → changed?"""
+        with self.refreshing:
+            found: list[tuple[Path, Path]] = []
+            for root in self.roots:
+                found += [(root, repo) for repo in scan_root(root, self.depth)]
+            found = found[:WORKSPACE_REPO_CAP]
+            with self.lock:
+                old_entries = dict(self.entries)
+            by_path = {str(e.path): e for e in old_entries.values()}
+            taken: set[str] = set()
+            keys: dict[str, str] = {}
+            for _root, repo in found:   # a repository keeps its key while it exists
+                old = by_path.get(str(repo))
+                if old and old.key not in taken:
+                    keys[str(repo)] = old.key
+                    taken.add(old.key)
+            for _root, repo in found:
+                if str(repo) not in keys:
+                    keys[str(repo)] = repo_key(repo.name, taken)
+                    taken.add(keys[str(repo)])
+            fresh: dict[str, RepoEntry] = {}
+            sigs: dict[str, tuple] = {}
+            changed = False
+            for root, repo in found:
+                old = by_path.get(str(repo))
+                key = keys[str(repo)]
+                sig = repo_signature(repo, old.layer_dir if old else None)
+                if old is not None and not force and self.sigs.get(str(repo)) == sig and old.key == key:
+                    entry = old
+                else:
+                    entry = classify_repo(repo, root, self.detectors, key)
+                    sig = repo_signature(repo, entry.layer_dir)
+                    changed = changed or entry != old
+                fresh[key] = entry
+                sigs[str(repo)] = sig
+            changed = changed or set(fresh) != set(old_entries)
+            with self.lock:
+                self.entries, self.sigs = fresh, sigs
+                self.scanned_at = time.time()
+                self.scans += 1
+                if changed:
+                    self.version += 1
+            return changed
+
+    def request_refresh(self) -> bool:
+        """A rescan asked for by the page: at most one per WORKSPACE_REFRESH_MIN seconds. → rescanned?"""
+        now = time.monotonic()
+        with self.lock:
+            if now - self.last_requested < WORKSPACE_REFRESH_MIN:
+                return False
+            self.last_requested = now
+        self.refresh(force=True)
+        return True
+
+    def run_forever(self, stop: threading.Event) -> None:
+        while not stop.wait(WORKSPACE_RESCAN):
+            try:
+                self.refresh()
+            except Exception as exc:  # noqa: BLE001 — keep scanning
+                print(f"[dashboard] workspace scan error: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    def layer_paths(self) -> list[Path]:
+        with self.lock:
+            return [Path(os.path.realpath(e.layer_dir)) for e in self.entries.values()
+                    if e.layer_dir is not None and (e.layer_dir / LAYER_FILE).is_file()]
+
+    def as_list(self) -> list[RepoEntry]:
+        with self.lock:
+            return sorted(self.entries.values(), key=lambda e: (e.name.lower(), e.key))
+
+    def entry(self, key: str) -> RepoEntry | None:
+        with self.lock:
+            return self.entries.get(key)
+
+    def inside(self, path: str) -> bool:
+        return any(path.startswith(str(root) + os.sep) for root in self.roots)
+
+
+# ============================================================================ actions and jobs
+
+@dataclass
+class Step:
+    name: str
+    argv: list[str]
+    doc: str | None = None
+    timeout: int = 1800
+
+
+@dataclass
+class ActionConfig:
+    al: Path
+    author_flags: list[str]
+
+
+def layer_of(entry: RepoEntry) -> Path:
+    """The layer an action works on: the repository's layer, else the sibling `<name>.al` al creates."""
+    if entry.layer_dir is not None:
+        return Path(os.path.realpath(entry.layer_dir))
+    app = Path(os.path.realpath(entry.path))
+    return app.parent / f"{app.name}.al"
+
+
+def _steps_scout(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    return [Step("scout", [str(c.al), "scout", os.path.realpath(e.path)], "LLM.txt", 300)]
+
+
+def _steps_create(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    al, app, layer = str(c.al), os.path.realpath(e.path), str(layer_of(e))
+    return [Step("init", [al, "init", app], None, 300), Step("author", [al, "author", layer, *c.author_flags], None, 3600),
+            Step("gen", [al, "gen", layer], None, 600), Step("check", [al, "check", layer], None, 600)]
+
+
+def _steps_adopt_preview(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    return [Step("adopt-dry-run", [str(c.al), "adopt", str(layer_of(e)), "--app", os.path.realpath(e.path), "--dry-run",
+                                   "--diff"], "preview.diff.txt", 300)]
+
+
+def _steps_adopt(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    al, app, layer = str(c.al), os.path.realpath(e.path), str(layer_of(e))
+    return [Step("init", [al, "init", app], None, 300), Step("author", [al, "author", layer, *c.author_flags], None, 3600),
+            Step("adopt", [al, "adopt", layer], None, 600), Step("gen", [al, "gen", layer], None, 600),
+            Step("check", [al, "check", layer], None, 600)]
+
+
+def _one(name: str, *extra: str, doc: str | None = None, timeout: int = 600):
+    def steps(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+        return [Step(name, [str(c.al), name, str(layer_of(e)), *extra], doc, timeout)]
+    return steps
+
+
+def _steps_explain(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    return [Step("explain", [str(c.al), "explain", str(layer_of(e)), "--md", str(docs / "EXPLAIN.md")], None, 300)]
+
+
+@dataclass
+class Action:
+    states: tuple[str, ...]
+    writes: bool
+    description: str
+    steps: Callable[[RepoEntry, ActionConfig, Path], list[Step]]
+    writes_paths: Callable[[RepoEntry], list[Path | str]] = lambda e: []
+    preview: Callable[[RepoEntry, ActionConfig, Path], list[Step]] | None = None
+    definition: bool = False     # writes agentic.rkt: refused when any definition exists
+
+
+# The allow-list: a fixed name → the fixed argv lists it runs, built from the scanned repository only.
+ACTIONS: dict[str, Action] = {
+    "scout": Action(("layer", "setup", "none"), False, "draft LLM.txt facts of the repository (read-only)", _steps_scout),
+    "create": Action(("none", "setup"), True, "create a layer beside the repository and have its definition written",
+                     _steps_create, lambda e: [layer_of(e)], definition=True),
+    "adopt": Action(("setup",), True, "create a layer that adopts the repository's existing agent setup",
+                    _steps_adopt, lambda e: [layer_of(e), layer_of(e) / "adopted", layer_of(e) / "templates" / "custom"],
+                    preview=_steps_adopt_preview, definition=True),
+    "gen": Action(("layer",), True, "compile the definition and generate the layer's files",
+                  _one("gen"), lambda e: [layer_of(e)]),
+    "check": Action(("layer",), False, "verify the generated layer (read-only)", _one("check")),
+    "verify": Action(("layer",), True, "run the layer's codebase cmds on a throwaway worktree",
+                     _one("verify", "--json", doc="verify.json", timeout=3600),
+                     lambda e: [layer_of(e) / "agents" / "verify", "a throwaway git worktree (removed afterwards)"]),
+    "explain": Action(("layer",), False, "explain the layer definition in plain language (read-only)", _steps_explain),
+}
+
+
+def display_argv(argv: list[str], shown: Callable[[Path], str], docs: Path | None = None) -> str:
+    """A step's command line as shown: `al …`, paths relative to the workspace (the home directory as ~)."""
+    out = ["al"]
+    for arg in argv[1:]:
+        if docs is not None and arg.startswith(str(docs) + os.sep):
+            out.append("<job>/docs/" + arg[len(str(docs)) + 1:])
+        elif arg.startswith("/"):
+            out.append(shown(Path(arg)))
+        else:
+            out.append(arg)
+    return " ".join(shlex.quote(a) if not a.startswith("<job>") else a for a in out)
+
+
+def definition_problem(app: Path, layer: Path, shown: Callable[[Path], str]) -> str | None:
+    """Why `create` / `adopt` may not write agentic.rkt here, or None: any definition, in the layer
+    they would write or anywhere in the repository (committed or not), is never overwritten."""
+    if (layer / "agentic.rkt").exists() or (layer / "agentic.rkt").is_symlink():
+        return f"{shown(layer / 'agentic.rkt')} already exists; it is never overwritten"
+    listed = safe_git(app, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    if listed is None:
+        return f"cannot list the files of {app.name} (git failed or timed out)"
+    found = sorted((f for f in listed.split("\0") if f == "agentic.rkt" or f.endswith("/agentic.rkt")),
+                   key=lambda f: (f.count("/"), f))
+    if not found:
+        return None
+    status = safe_git(app, "status", "--porcelain", "-z", "--untracked-files=all", "--", *found) or ""
+    dirty = {item[3:] for item in status.split("\0") if len(item) > 3}
+    for rel in found:
+        if rel in dirty:
+            return f"{app.name}/{rel} has uncommitted changes; a definition is never overwritten"
+    return f"{app.name}/{found[0]} already exists; it is never overwritten"
+
+
+def default_jobs_dir() -> Path:
+    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(base) / "al" / "dashboard-jobs"
+
+
+def write_json_atomic(path: Path, data: Any) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def lock_file(jobs_root: Path, repo_path: str) -> Path:
+    """The per-repository lock every job runner holds while it runs."""
+    return jobs_root / "locks" / (hashlib.sha1(os.path.realpath(repo_path).encode()).hexdigest() + ".lock")
+
+
+def lock_held(path: Path) -> bool:
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+
+
+def job_liveness(job: dict[str, Any], now: float) -> dict[str, Any] | None:
+    """For a job that says `running`: has its runner died? Like a run's `liveness`, except that a
+    runner on this host whose pid is gone is dead at once."""
+    if not isinstance(job, dict) or job.get("status") != "running":
+        return None
+    seen = parse_time(job.get("heartbeat"))
+    pid = job.get("pid") if isinstance(job.get("pid"), int) else 0
+    if pid > 0 and job.get("host") == socket.gethostname() and pid_alive(pid) is False:
+        return {"died": True, "last_seen": seen}
+    if seen is None:
+        return {"died": True, "last_seen": None}
+    if pid <= 0:
+        return {"died": now - seen > HEARTBEAT_STALE, "last_seen": seen}
+    return liveness(job, now)
+
+
+def layer_files_snapshot(layer: Path) -> dict[str, tuple[int, int]]:
+    """rel → (size, mtime_ns) of a layer's files, without agents/, trees/ and .git; at most 20 000."""
+    out: dict[str, tuple[int, int]] = {}
+    if not layer.is_dir():
+        return out
+    for directory, dirs, files in os.walk(layer):
+        rel_dir = os.path.relpath(directory, layer)
+        dirs[:] = sorted(d for d in dirs if d != ".git" and not (rel_dir == "." and d in ("agents", "trees"))
+                         and not os.path.islink(os.path.join(directory, d)))
+        for name in sorted(files):
+            path = os.path.join(directory, name)
+            try:
+                info = os.lstat(path)
+            except OSError:
+                continue
+            out[os.path.normpath(os.path.join(rel_dir, name))] = (info.st_size, info.st_mtime_ns)
+            if len(out) >= WORKSPACE_FILE_CAP:
+                return out
+    return out
+
+
+def changed_files(before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]], prefix: str) -> list[dict[str, str]]:
+    out = []
+    for rel in sorted(set(before) | set(after)):
+        change = "added" if rel not in before else "removed" if rel not in after else \
+            "modified" if before[rel] != after[rel] else ""
+        if change:
+            out.append({"path": f"{prefix}/{rel}" if prefix else rel, "change": change})
+    return out
+
+
+def repo_status(repo: Path) -> list[str]:
+    return sorted(item for item in (safe_git(repo, "status", "--porcelain", "-z", "--untracked-files=all") or "").split("\0")
+                  if item)
+
+
+class Jobs:
+    """Recorded actions: <root>/<id>/{job.json, output.log, docs/}; <root>/locks/ holds the per-repository locks."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root)
+
+    def allocate(self) -> tuple[str, Path]:
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (self.root / "locks").mkdir(exist_ok=True, mode=0o700)
+        while True:
+            job_id = secrets.token_hex(4)
+            try:
+                (self.root / job_id).mkdir(mode=0o700)
+                break
+            except FileExistsError:
+                continue
+        (self.root / job_id / "docs").mkdir()
+        (self.root / job_id / "output.log").touch()
+        return job_id, self.root / job_id
+
+    def dir(self, job_id: str) -> Path | None:
+        if not isinstance(job_id, str) or not JOB_ID.match(job_id):
+            return None
+        path = self.root / job_id
+        if path.is_symlink() or not path.is_dir():
+            return None
+        return path
+
+    def read(self, job_id: str) -> dict[str, Any] | None:
+        directory = self.dir(job_id)
+        data = read_json(directory / "job.json") if directory else None
+        return data if isinstance(data, dict) else None
+
+    def ids(self) -> list[str]:
+        try:
+            return [e.name for e in os.scandir(self.root) if JOB_ID.match(e.name) and e.is_dir(follow_symlinks=False)]
+        except OSError:
+            return []
+
+    def settle(self, job: dict[str, Any], now: float | None = None) -> dict[str, Any]:
+        """A job that says running but whose runner is gone is rewritten as interrupted (never shown alive)."""
+        now = time.time() if now is None else now
+        verdict = job_liveness(job, now)
+        if verdict and verdict["died"]:
+            directory = self.dir(str(job.get("id") or ""))
+            job = {**job, "status": "interrupted", "ended": utc_stamp(now),
+                   "reason": "its runner is gone (the machine restarted or the process was killed)",
+                   "steps": [{**s, "status": "interrupted" if s.get("status") == "running" else s.get("status")}
+                             for s in job.get("steps") or []]}
+            if directory:
+                with contextlib.suppress(OSError):
+                    write_json_atomic(directory / "job.json", job)
+        return job
+
+    def load(self) -> None:
+        for job_id in self.ids():
+            job = self.read(job_id)
+            if job:
+                self.settle(job)
+
+    def docs(self, job_id: str) -> list[dict[str, Any]]:
+        directory = self.dir(job_id)
+        out = []
+        try:
+            for e in sorted(os.scandir(directory / "docs"), key=lambda e: e.name) if directory else []:
+                if e.is_file(follow_symlinks=False) and SAFE_NAME.match(e.name):
+                    out.append({"name": e.name, "bytes": e.stat(follow_symlinks=False).st_size})
+        except OSError:
+            pass
+        return out
+
+    def running_for(self, repo_path: str) -> dict[str, Any] | None:
+        for job_id in self.ids():
+            job = self.read(job_id)
+            if job and job.get("repo_path") == repo_path and job.get("status") == "running":
+                job = self.settle(job)
+                if job.get("status") == "running":
+                    return job
+        return None
+
+
+def job_summary(job: dict[str, Any]) -> dict[str, Any]:
+    """What the page sees of a job: no argv and no absolute path."""
+    return {"id": job.get("id"), "repo": job.get("repo"), "repo_name": job.get("repo_name"), "action": job.get("action"),
+            "preview": bool(job.get("preview")), "status": job.get("status"), "exit": job.get("exit"),
+            "reason": job.get("reason") or "", "created": parse_time(job.get("created")),
+            "started": parse_time(job.get("started")), "ended": parse_time(job.get("ended")),
+            "layer": job.get("layer_display") or "", "repo_dir": job.get("repo_dir") or "",
+            "steps": [{"name": s.get("name"), "display": s.get("display"), "status": s.get("status"), "exit": s.get("exit"),
+                       "doc": s.get("doc"), "started": parse_time(s.get("started")), "ended": parse_time(s.get("ended"))}
+                      for s in job.get("steps") or [] if isinstance(s, dict)],
+            "changed": job.get("changed") or [], "repo_changes": job.get("repo_changes") or [],
+            "repo_unchanged": job.get("repo_unchanged")}
+
+
+def run_job(directory: Path) -> int:
+    """`dashboard.py --run-job DIR`: run a recorded job's steps in order, detached from the dashboard (so a
+    restart does not stop it), holding the repository's lock; argv lists only, never a shell."""
+    directory = Path(directory).resolve()
+    path = directory / "job.json"
+    job = read_json(path)
+    if not isinstance(job, dict):
+        print(f"run-job: no job at {directory}", file=sys.stderr)
+        return 2
+    io_lock = threading.RLock()
+
+    def save(**changes: Any) -> None:
+        with io_lock:
+            job.update(changes)
+            write_json_atomic(path, job)
+
+    jobs_root = directory.parent
+    (jobs_root / "locks").mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_file(jobs_root, job["repo_path"]), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        save(status="refused", reason=f"an action is already running on {job.get('repo_name')}", ended=utc_stamp(),
+             pid=os.getpid(), host=socket.gethostname())
+        os.close(fd)
+        return 1
+    save(status="running", pid=os.getpid(), host=socket.gethostname(), heartbeat=utc_stamp(), started=utc_stamp())
+    stop = threading.Event()
+    interrupted = threading.Event()
+    current: dict[str, subprocess.Popen | None] = {"proc": None}
+
+    def beat() -> None:
+        while not stop.wait(JOB_HEARTBEAT):
+            with contextlib.suppress(OSError):
+                save(heartbeat=utc_stamp())
+
+    def kill_group(sig: int = signal.SIGTERM) -> None:
+        proc = current["proc"]
+        if proc is not None:
+            with contextlib.suppress(OSError):
+                os.killpg(proc.pid, sig)
+
+    def on_term(*_args: Any) -> None:
+        interrupted.set()
+        kill_group()
+
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
+    threading.Thread(target=beat, daemon=True).start()
+    layer, repo = Path(job["layer_dir"]), Path(job["repo_path"])
+    prefix = os.path.relpath(layer, repo.parent)
+    before_layer, before_repo = layer_files_snapshot(layer), repo_status(repo)
+    env = {k: v for k, v in os.environ.items() if k != "AL_APP_ROOT"}
+    status, exit_code = "passed", 0
+    log_lock = threading.Lock()
+    with (directory / "output.log").open("ab") as log:
+        for index, step in enumerate(job["steps"]):
+            if interrupted.is_set():
+                break
+            with log_lock:
+                log.write(f"$ {step['display']}\n".encode())
+                log.flush()
+            with io_lock:
+                step.update(status="running", started=utc_stamp())
+            save()
+            doc = (directory / "docs" / step["doc"]).open("wb") if step.get("doc") else None
+            try:
+                proc = subprocess.Popen(step["argv"], shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, start_new_session=True, env=env, cwd=str(directory))
+            except OSError as exc:
+                with log_lock:
+                    log.write(f"cannot start: {exc}\n".encode())
+                with io_lock:
+                    step.update(status="failed", exit=127, ended=utc_stamp())
+                status, exit_code = "failed", 127
+                if doc:
+                    doc.close()
+                break
+            current["proc"] = proc
+            with io_lock:
+                step["pid"] = proc.pid   # its process group: what a timeout or an interruption kills
+            save()
+
+            def pump(stream: Any, to_doc: bool) -> None:
+                for chunk in iter(stream.readline, b""):
+                    with log_lock:
+                        log.write(chunk)
+                        log.flush()
+                    if to_doc and doc is not None:
+                        doc.write(chunk)
+                        doc.flush()
+
+            readers = [threading.Thread(target=pump, args=(proc.stdout, True), daemon=True),
+                       threading.Thread(target=pump, args=(proc.stderr, False), daemon=True)]
+            for reader in readers:
+                reader.start()
+            timed_out = threading.Event()
+
+            def expire() -> None:
+                timed_out.set()
+                kill_group(signal.SIGKILL)
+
+            timer = threading.Timer(float(step.get("timeout") or 1800), expire)
+            timer.daemon = True
+            timer.start()
+            code = proc.wait()
+            timer.cancel()
+            for reader in readers:
+                reader.join(timeout=5)
+            kill_group(signal.SIGKILL)   # whatever the step left behind in its own group
+            current["proc"] = None
+            if doc:
+                doc.close()
+            if timed_out.is_set():
+                with log_lock:
+                    log.write(f"timed out after {step.get('timeout')} s\n".encode())
+            with io_lock:
+                step.update(exit=code, ended=utc_stamp(),
+                            status="passed" if code == 0 else "interrupted" if interrupted.is_set() else "failed")
+            save()
+            if code != 0:
+                status, exit_code = ("interrupted" if interrupted.is_set() else "failed"), code
+                for rest in job["steps"][index + 1:]:
+                    rest["status"] = "skipped"
+                break
+    if interrupted.is_set():
+        status = "interrupted"
+    stop.set()
+    after_repo = repo_status(repo)
+    save(status=status, exit=exit_code, ended=utc_stamp(), heartbeat=utc_stamp(),
+         changed=changed_files(before_layer, layer_files_snapshot(layer), prefix),
+         repo_changes=sorted(set(after_repo) - set(before_repo)), repo_unchanged=after_repo == before_repo)
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+    return 0 if status == "passed" else 1
+
+
 # ============================================================================ HTTP
 
 class DashboardServer(ThreadingHTTPServer):
@@ -3265,13 +4293,15 @@ class Handler(BaseHTTPRequestHandler):
         origin, host = self.headers.get("Origin"), (self.headers.get("Host") or "").strip()
         return bool(origin and host) and origin == f"http://{host}"
 
-    def do_POST(self) -> None:  # noqa: N802 — two writes: the local model setting, and starting work
+    def do_POST(self) -> None:  # noqa: N802 — three writes: the local model setting, starting work, and the workspace actions
         path = urllib.parse.urlsplit(self.path).path
         try:
             if path == "/api/models":
                 return self._set_models()
             if path == "/api/start":
                 return self._start()
+            if path == "/api/action":
+                return self._action()
         except (BrokenPipeError, ConnectionResetError):
             return None
         self._refuse()
@@ -3320,6 +4350,34 @@ class Handler(BaseHTTPRequestHandler):
         if self.server.read_only:
             return self._error(403, "the dashboard was started with --read-only")
         return body
+
+    def _action(self) -> None:
+        """POST /api/action {"repo": KEY, "action": NAME[, "confirm": NONCE]}: an allow-listed al action."""
+        body = self._write_guard(MAX_WRITE_BODY)
+        if body is None:
+            return None
+        model = self.server.model
+        if model.no_actions:
+            return self._error(403, "actions are off (--no-actions)")
+        try:
+            request = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        usage = 'expected {"repo": KEY, "action": NAME}, and "confirm": NONCE to confirm a preview; nothing else'
+        if not isinstance(request, dict) or not set(request) <= ACTION_KEYS or not {"repo", "action"} <= set(request) \
+                or not all(isinstance(v, str) for v in request.values()):
+            return self._error(400, usage)
+        if request["action"] not in ACTIONS:
+            return self._error(400, "unknown action")
+        if not request["repo"] or WS_KEY_BAD.search(request["repo"]) or WS_KEY_BAD.search(request.get("confirm", "")):
+            return self._error(400, usage)
+        if model.workspace is None:
+            return self._error(404, "no workspace")
+        entry = model.workspace.entry(request["repo"])
+        if entry is None:
+            return self._error(404, "unknown repository")
+        status, answer = model.start_action(entry, request["action"], request.get("confirm") or None)
+        return self._json(answer, status)
 
     def _set_models(self) -> None:
         """POST /api/models {"layer", "tier", "model"} or {"layer", "tier"|null, "reset": true}."""
@@ -3521,6 +4579,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._startable(query)
             if path in ("/api/start", "/api/models"):
                 return self._error(405, "POST only")
+            if path == "/api/workspace":
+                return self._workspace(query)
+            if path == "/api/repo":
+                return self._repo(query)
+            if path == "/api/job":
+                return self._job(query)
+            if path == "/api/job/doc":
+                return self._job_doc(query)
             if path == "/api/doc":
                 return self._doc(query)
             if path == "/api/doc/download":
@@ -3632,6 +4698,47 @@ class Handler(BaseHTTPRequestHandler):
         if detail is None:
             return self._error(404, "no such layer")
         self._json(detail)
+
+    def _workspace(self, query: dict[str, list[str]]) -> None:
+        model = self.server.model
+        refreshed = False
+        if self._q(query, "refresh") == "1" and model.workspace is not None:
+            refreshed = model.workspace.request_refresh()
+        self._json({**model.workspace_view(), "refreshed": refreshed, "al": {"found": model.al is not None,
+                    "looked": model.al_looked}, "actions": model.actions_state()})
+
+    def _repo(self, query: dict[str, list[str]]) -> None:
+        detail = self.server.model.repo_detail(self._q(query, "repo"))
+        if detail is None:
+            return self._error(404, "unknown repository")
+        self._json(detail)
+
+    def _job(self, query: dict[str, list[str]]) -> None:
+        jobs = self.server.model.jobs
+        job = jobs.read(self._q(query, "id")) if jobs else None
+        if job is None:
+            return self._error(404, "no such job")
+        job = jobs.settle(job)
+        self._json({**job_summary(job), "docs": jobs.docs(str(job.get("id")))})
+
+    def _job_doc(self, query: dict[str, list[str]]) -> None:
+        """A file of a job's docs/ (and nothing else): a regular file whose real path stays there."""
+        jobs = self.server.model.jobs
+        directory = jobs.dir(self._q(query, "id")) if jobs else None
+        name = self._q(query, "name")
+        if directory is None or not SAFE_NAME.match(name) or not name.lower().endswith(DOC_SUFFIXES):
+            return self._error(404, "no such document")
+        docs = os.path.realpath(directory / "docs")
+        target = directory / "docs" / name
+        if target.is_symlink() or not target.is_file() or not os.path.realpath(target).startswith(docs + os.sep):
+            return self._error(404, "no such document")
+        try:
+            size = target.stat().st_size
+            text = target.read_bytes()[:DOC_VIEW_CAP].decode("utf-8", errors="replace")
+        except OSError:
+            return self._error(404, "no such document")
+        self._json({"name": name, "bytes": size, "text": text, "too_large": size > DOC_VIEW_CAP, "viewable": True,
+                    "type": _doc_type(target.suffix.lower())})
 
     def _doc_target(self, query: dict[str, list[str]]) -> tuple[Layer, RunFiles, dict[str, Any], Path] | None:
         """A document the run lists, or a 404 (never 403: what is not listed does not exist here)."""
@@ -3807,13 +4914,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def _tail(self, query: dict[str, list[str]]) -> None:
         """Stream one file as it grows. what=transcript (an agent's raw.jsonl, normalised),
-        what=check (checks/<file>, ANSI → segments) or what=runlog. Resumes from Last-Event-ID
-        (`offset:line`), so a reconnect only gets what it missed."""
+        what=check (checks/<file>, ANSI → segments), what=runlog, or what=job (a workspace action's
+        output.log, job=<id>). Resumes from Last-Event-ID (`offset:line`), so a reconnect only gets what
+        it missed."""
+        what = self._q(query, "what")
+        if what == "job":
+            jobs = self.server.model.jobs
+            directory = jobs.dir(self._q(query, "job")) if jobs else None
+            if directory is None:
+                return self._error(404, "no such job")
+            path = directory / "output.log"
+            if path.is_symlink():
+                return self._error(403, "symlink")
+            short: Callable[[str], str] = lambda text: text  # noqa: E731
+            return self._stream(path, what, short, query)
         resolved = self._resolve_run(query)
         if not resolved:
             return
         layer, run = resolved
-        what = self._q(query, "what")
         state = read_json(run.dir / "state.json") or {}
         short = layer.shortener(state)
         if what == "transcript":
@@ -3831,7 +4949,10 @@ class Handler(BaseHTTPRequestHandler):
         elif what == "runlog":
             path = run.dir / "run.log"
         else:
-            return self._error(400, "what=transcript|check|runlog")
+            return self._error(400, "what=transcript|check|runlog|job")
+        return self._stream(path, what, short, query)
+
+    def _stream(self, path: Path, what: str, short: Callable[[str], str], query: dict[str, list[str]]) -> None:
         offset, line_no = 0, 0
         last_id = self.headers.get("Last-Event-ID", "") or self._q(query, "from")
         if re.match(r"^\d+:\d+$", last_id):
@@ -3893,8 +5014,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="dashboard.py", description="Live work dashboard for al layers: "
-                                     "watches runs; writes model settings and starts work "
-                                     "(off with --read-only / --no-start).")
+                                     "watches runs; writes model settings, starts work and runs al "
+                                     "actions (off with --read-only / --no-start / --no-actions).")
     parser.add_argument("--layer", action="append", default=[], type=Path, metavar="DIR",
                         help="a layer directory (contains agentic-layer.json); repeatable")
     parser.add_argument("--scan", action="append", default=[], type=Path, metavar="DIR",
@@ -3913,15 +5034,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--in-container", action="store_true",
                         help="running in a container: pids and locks of the host are not visible")
     parser.add_argument("--read-only", action="store_true",
-                        help="refuse every change: no model settings, no starting work")
+                        help="refuse every change: no model settings, no starting work, no actions")
     parser.add_argument("--no-start", action="store_true",
                         help="never start work from the page (the Models panel still writes)")
     parser.add_argument("--allow-start-in-container", action="store_true",
                         help="with --in-container: allow starting work (only for an image that has uv, the "
                              "checkout and a writable layer)")
+    parser.add_argument("--workspace", action="append", default=[], type=Path, metavar="DIR",
+                        help="a folder of git repositories side by side: list them with their al state and act on them; "
+                             "repeatable (default: the folder holding each --layer's repository)")
+    parser.add_argument("--workspace-depth", type=int, default=WORKSPACE_DEPTH, metavar="N",
+                        help=f"how deep below a workspace folder repositories are looked for (default {WORKSPACE_DEPTH})")
+    parser.add_argument("--no-workspace", action="store_true", help="list no repositories, only layers")
+    parser.add_argument("--no-actions", action="store_true", help="run no al action from the page")
+    parser.add_argument("--jobs-dir", type=Path, default=None, metavar="DIR",
+                        help="where actions are recorded (default $XDG_STATE_HOME/al/dashboard-jobs)")
+    parser.add_argument("--al", type=Path, default=None, metavar="PATH",
+                        help="the al tool the actions run (default: tools/al beside the kit, else al on PATH)")
+    parser.add_argument("--author-agent", choices=("claude-code", "mock"), default="claude-code",
+                        help="the agent `al author` uses in the create and adopt actions (default claude-code)")
+    parser.add_argument("--author-mock", type=Path, default=None, metavar="FILE",
+                        help="`al author --agent mock --mock FILE` in the create and adopt actions (tests)")
     args = parser.parse_args(argv)
-    if not args.layer and not args.scan:
-        parser.error("give at least one --layer DIR or --scan DIR")
+    if not args.layer and not args.scan and not args.workspace:
+        parser.error("give at least one --layer DIR, --scan DIR or --workspace DIR")
     if not is_loopback(args.bind) and not args.token:
         parser.error(f"--bind {args.bind} is not a loopback address: refusing without --token")
     return args
@@ -3937,11 +5073,39 @@ def start_banner(args: argparse.Namespace) -> str:
     return "work can be started from the Layers view"
 
 
+def workspace_roots(args: argparse.Namespace) -> list[Path]:
+    """--workspace DIR …, else the folder holding each --layer's repository (its codebase root's parent)."""
+    if args.no_workspace or args.in_container:
+        return []
+    if args.workspace:
+        return [Path(w) for w in args.workspace if Path(w).is_dir()]
+    roots = []
+    for layer in args.layer:
+        ir = read_json(Path(layer) / LAYER_FILE)
+        root = ((ir or {}).get("codebase") or {}).get("root") if isinstance(ir, dict) else None
+        if isinstance(root, str) and root:
+            app = (Path(layer) / root).resolve()
+            if app.is_dir():
+                roots.append(app.parent)
+    return list(dict.fromkeys(roots))
+
+
 def make_server(args: argparse.Namespace, static_dir: Path = STATIC_DIR) -> DashboardServer:
     probe = ContainerProbe(args.podman_socket, enabled=not args.no_podman)
+    roots = workspace_roots(args)
+    al, looked = find_al_tool(args.al)
+    workspace = jobs = None
+    if roots:
+        workspace = Workspace(roots, args.workspace_depth, load_detectors(al))
+        workspace.refresh()
+        jobs = Jobs(args.jobs_dir or default_jobs_dir())
+        jobs.load()
+    author_flags = (["--agent", "mock", "--mock", str(Path(args.author_mock).resolve())] if args.author_mock
+                    else ["--agent", args.author_agent] if args.author_agent != "claude-code" else [])
     model = Model(args.layer, args.scan, poll=args.poll, scan_depth=args.scan_depth, probe=probe,
                   in_container=args.in_container, read_only=args.read_only, no_start=args.no_start,
-                  allow_start=args.allow_start_in_container)
+                  allow_start=args.allow_start_in_container, workspace=workspace, jobs=jobs, al=al,
+                  al_looked=looked, no_actions=args.no_actions or args.in_container, author_flags=author_flags)
     model.discover()
     probe.poll(want_stats=True)   # so the first snapshot already knows the containers
     model.tick()
@@ -3950,6 +5114,12 @@ def make_server(args: argparse.Namespace, static_dir: Path = STATIC_DIR) -> Dash
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else argv
+    if raw[:1] == ["--run-job"]:   # the detached runner of one workspace action (spawned by the server)
+        if len(raw) != 2:
+            print("usage: dashboard.py --run-job DIR", file=sys.stderr)
+            return 2
+        return run_job(Path(raw[1]))
     args = parse_args(argv)
     try:
         server = make_server(args)
@@ -3972,9 +5142,15 @@ def main(argv: list[str] | None = None) -> int:
         url += f"?token={urllib.parse.quote(args.token)}"
     layers = ", ".join(f"{l['key']} ({l['runs']} runs)" for l in server.model.layer_list()) or "none yet"
     where = f"listening inside the container on port {server.server_address[1]}" if args.in_container else f"on {url}"
+    ws = server.model.workspace
+    workspace = (f"{len(ws.entries)} repositories in {', '.join(home_short(str(r)) for r in ws.roots)} "
+                 f"(depth {ws.depth})" if ws else "off")
+    actions = server.model.actions_state()
     print(f"al dashboard {where}\n  watching: {layers}\n"
           f"  models: {'read-only' if args.read_only else 'switchable from the Now view'}\n"
           f"  start: {start_banner(args)}\n"
+          f"  workspace: {workspace}\n"
+          f"  actions: {'on (al: ' + home_short(str(server.model.al)) + ')' if actions['enabled'] else 'off: ' + actions['why']}\n"
           f"  containers: {server.model.probe.info()['note']}", flush=True)
     if args.open:
         webbrowser.open(url)

@@ -54,9 +54,9 @@
 
   (layer in-repo #:dir "agentic")
   (forge none)
-  ;; Up to five runs at once, and five agent calls so they do not queue on each other. Checks stay at
-  ;; two at a time: they run this repository's test suites, which are the CPU-heavy part.
-  (concurrency slots #:max-runs 5 #:max-agents 5 #:max-checks 2)
+  ;; Up to ten runs at once, and ten agent calls so they do not queue on each other. Checks stay at
+  ;; three at a time: they run this repository's test suites, which are the CPU-heavy part.
+  (concurrency slots #:max-runs 10 #:max-agents 10 #:max-checks 3)
   (agent claude-code #:model-base "claude-opus-5-5" #:model-heavy "claude-opus-5-5")
 
   (prompt-input cli)

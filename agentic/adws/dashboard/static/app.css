@@ -448,3 +448,55 @@ table.inner td { padding: 2px 8px 2px 0; vertical-align: top; }
 .md blockquote { margin: .7em 0; padding: 2px 12px; border-left: 3px solid var(--border-2); color: var(--text-2); }
 .md hr { border: 0; border-top: 1px solid var(--border-2); margin: 1.2em 0; }
 .md a { color: var(--accent); }
+
+/* Repos (the workspace) and Job */
+.repos { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 12px; align-items: start; }
+.repo-side { position: sticky; top: calc(var(--top) + 12px); display: flex; flex-direction: column; gap: 8px; }
+.repo-tools { display: flex; gap: 6px; }
+.repo-filter { flex: 1; background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 5px; color: var(--text); padding: 4px 8px; }
+.repo-list { display: flex; flex-direction: column; max-height: calc(100vh - var(--top) - 80px); overflow: auto;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); }
+.repo-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; color: var(--text); border-bottom: 1px solid var(--border); }
+.repo-row:hover { background: var(--panel-2); text-decoration: none; }
+.repo-row.selected { background: rgba(110, 168, 254, .12); box-shadow: inset 3px 0 0 var(--accent); }
+.repo-row .spacer { flex: 1; }
+.repo-name { font-weight: 600; overflow-wrap: anywhere; }
+.badge.badge-layer { color: var(--passed); border-color: rgba(63, 185, 80, .4); background: rgba(63, 185, 80, .08); }
+.badge.badge-setup { color: var(--waiting); border-color: rgba(214, 162, 58, .45); background: rgba(214, 162, 58, .08); }
+.badge.badge-none { color: var(--dim); }
+.dirty { color: var(--waiting); font-size: 10px; }
+.repo-panel { min-width: 0; }
+.repo-layer { color: var(--text-2); }
+.al-panel .action { padding: 8px 0; border-top: 1px solid var(--border); }
+.al-panel .action.off .commands { opacity: .55; }
+.al-panel .action-head { display: flex; align-items: center; gap: 10px; }
+.btn { padding: 3px 12px; border-radius: 4px; border: 1px solid var(--border-2); background: var(--panel-3); cursor: pointer; font-size: 12px; min-width: 70px; }
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.writes { border-color: rgba(214, 162, 58, .45); }
+.btn.primary { border-color: var(--accent); background: rgba(110, 168, 254, .18); }
+.commands { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+code.cmd { font: 12px/1.5 var(--mono); color: var(--text-2); background: #0b0e13; border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 8px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.al-panel .why, .action-confirm .why { color: var(--waiting); padding-top: 4px; overflow-wrap: anywhere; }
+.why.error { color: var(--failed); }
+.action-confirm { max-width: 900px !important; }
+.action-confirm h4 { margin: 12px 0 4px; color: var(--text-2); font-weight: 600; }
+.action-confirm .writes { margin: 0; padding-left: 18px; }
+.action-confirm .actions-row { display: flex; gap: 8px; margin-top: 12px; }
+.diff { font-size: 12px; line-height: 1.45; background: #0b0e13; border: 1px solid var(--border); border-radius: 4px; padding: 6px 0;
+  max-height: 50vh; overflow: auto; white-space: pre; }
+.diff > div { padding: 0 10px; min-height: 1.45em; }
+.diff .diff-add { color: var(--passed); background: rgba(63, 185, 80, .08); }
+.diff .diff-del { color: var(--failed); background: rgba(242, 85, 90, .08); }
+.diff .diff-hunk { color: var(--review); }
+.diff .diff-file { color: var(--text); font-weight: 600; }
+.job-list { display: flex; flex-direction: column; }
+.job-row { display: flex; gap: 10px; align-items: center; padding: 4px 0; color: var(--text); }
+.job-step { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-top: 1px solid var(--border); }
+.job-step .spacer { flex: 1; }
+.job-step .num { min-width: 64px; text-align: right; }
+.job-changed .changed { margin: 0; padding-left: 0; list-style: none; }
+.badge.change-added { color: var(--passed); } .badge.change-removed { color: var(--failed); } .badge.change-modified { color: var(--waiting); }
+.s-interrupted, .s-refused { color: var(--failed); }
+@media (max-width: 900px) { .repos { grid-template-columns: 1fr; } .repo-side { position: static; } }

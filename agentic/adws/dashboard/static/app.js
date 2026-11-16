@@ -1,7 +1,7 @@
 /* al work dashboard — vanilla JS, no dependencies, no build step.
  *
  * Modules (in order): util · store · live (SSE) · router · components (graph, timeline, transcript,
- * log) · views (now, runs, run, layers, layer) · keyboard · boot.
+ * log) · views (now, runs, run, layers, layer, repos, job) · keyboard · boot.
  *
  * Safety rule for this file: agent output is untrusted. Text only ever reaches the page through
  * textContent / createTextNode / SVG attributes; nothing is parsed as HTML (a test enforces it).
@@ -314,18 +314,23 @@
     const note = h("div", { class: `model-note faint${last && last.error ? " error" : ""}`, text: last ? last.text : "" });
     const el = h("div", { class: "models-panel", dataset: { layer: layer.key } },
       h("div", { class: "name" }, h("a", { href: `#/layer/${enc(layer.key)}`, text: layer.name || layer.key })));
+    // the live update can rebuild this block while the POST is in flight: write the answer to every
+    // note of this layer in the document (the rebuilt one), not only to this block's own
+    const show = (text, error) => {
+      modelNotes.set(layer.key, { text, error });
+      const live = [...document.querySelectorAll(".models-panel .model-note")]
+        .filter((n) => n.closest(".models-panel").dataset.layer === layer.key);
+      for (const n of new Set([note, ...live])) { n.textContent = text; n.classList.toggle("error", error); }
+    };
     const send = async (body, button) => {
       button.disabled = true;
       note.textContent = "";
       note.classList.remove("error");
       try {
         const answer = await api.post("/api/models", { layer: layer.key, ...body });
-        note.textContent = answer.note || "saved; applies to runs started from now on";
-        modelNotes.set(layer.key, { text: note.textContent, error: false });
+        show(answer.note || "saved; applies to runs started from now on", false);
       } catch (err) {
-        note.textContent = String(err.message || err);
-        note.classList.add("error");
-        modelNotes.set(layer.key, { text: note.textContent, error: true });
+        show(String(err.message || err), true);
       } finally {
         button.disabled = false;
       }
@@ -400,6 +405,8 @@
   // =========================================================================== store
   const store = {
     layers: [], runs: new Map(), slots: {}, containers: {}, inContainer: false, loaded: false,
+    workspace: { enabled: false, roots: [], repos: [] }, al: { found: false, looked: [] }, actions: { enabled: false, why: "" },
+    jobs: new Map(),
     listeners: new Set(),
     on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); },
     emit(kind, data) { for (const fn of this.listeners) fn(kind, data); },
@@ -429,6 +436,10 @@
         store.slots = snap.slots || {};
         store.containers = snap.containers || {};
         store.inContainer = !!snap.in_container;
+        store.workspace = snap.workspace || { enabled: false, roots: [], repos: [] };
+        store.al = snap.al || { found: false, looked: [] };
+        store.actions = snap.actions || { enabled: false, why: "" };
+        store.jobs = new Map((snap.jobs || []).map((job) => [job.id, job]));
         store.loaded = true;
         status("conn-live", "live");
         store.emit("snapshot");
@@ -455,6 +466,15 @@
       source.addEventListener("containers", (event) => {
         store.containers = JSON.parse(event.data);
         store.emit("containers");
+      });
+      source.addEventListener("workspace", (event) => {
+        store.workspace = JSON.parse(event.data);
+        store.emit("workspace");
+      });
+      source.addEventListener("job", (event) => {
+        const job = JSON.parse(event.data);
+        store.jobs.set(job.id, job);
+        store.emit("job", job);
       });
     },
   };
@@ -485,18 +505,21 @@
   function router() {
     const route = parseRoute();
     for (const link of document.querySelectorAll(".views a")) {
-      link.classList.toggle("active", link.dataset.view === route.view || (route.view === "run" && link.dataset.view === "runs") || (route.view === "layer" && link.dataset.view === "layers"));
+      link.classList.toggle("active", link.dataset.view === route.view || (route.view === "run" && link.dataset.view === "runs") || (route.view === "layer" && link.dataset.view === "layers")
+        || ((route.view === "repo" || route.view === "job") && link.dataset.view === "repos"));
     }
-    if (current && current.name === route.view && current.accepts && current.accepts(route)) {
+    const group = route.view === "repo" ? "repos" : route.view;   // the Repos view keeps its list while a repository is selected
+    if (current && current.name === group && current.accepts && current.accepts(route)) {
       current.route(route);
       return;
     }
     if (current && current.destroy) current.destroy();
     const main = clear(document.getElementById("main"));
     const crumbs = clear(document.getElementById("crumbs"));
-    const make = { now: NowView, runs: RunsView, run: RunView, layers: LayersView, layer: LayerView }[route.view] || NowView;
+    const make = { now: NowView, runs: RunsView, run: RunView, layers: LayersView, layer: LayerView, repos: ReposView, repo: ReposView,
+      job: JobView }[route.view] || NowView;
     current = make(main, crumbs, route);
-    current.name = route.view in { now: 1, runs: 1, run: 1, layers: 1, layer: 1 } ? route.view : "now";
+    current.name = group in { now: 1, runs: 1, run: 1, layers: 1, layer: 1, repos: 1, job: 1 } ? group : "now";
     main.focus({ preventScroll: true });
     window.scrollTo(0, 0);
   }
@@ -935,7 +958,8 @@
       container.appendChild(this.pre);
       const o = opts;
       const what = o.what === "runlog" ? "what=runlog" : `what=check&file=${enc(o.file)}`;
-      this.source = new EventSource(`/api/tail?layer=${enc(o.layer)}&run=${enc(o.run)}&${what}`);
+      this.source = new EventSource(o.job ? `/api/tail?job=${enc(o.job)}&what=job`
+        : `/api/tail?layer=${enc(o.layer)}&run=${enc(o.run)}&${what}`);
       this.source.addEventListener("text", (event) => this.add(JSON.parse(event.data).segments));
       this.source.addEventListener("reset", () => clear(this.pre));
     }
@@ -2143,10 +2167,286 @@
     return { destroy: off };
   }
 
+  // =========================================================================== views: Repos (the workspace) and Job
+  const STATE_TITLE = { layer: "has an al layer (in the repository or a sibling NAME.al)",
+    setup: "has an agent setup al can adopt (rule files, prompts, workflow scripts or a hand-built suite)",
+    none: "no layer and no agent setup found" };
+
+  function stateBadge(state) {
+    return h("span", { class: `badge badge-${state || "none"}`, title: STATE_TITLE[state] || "", text: state || "none" });
+  }
+
+  /** A unified diff as one div per line, classed by its kind; every line is text. */
+  function renderDiff(text) {
+    return h("div", { class: "diff mono" }, String(text || "").split("\n").map((line) => {
+      const kind = line.startsWith("+++") || line.startsWith("---") ? "diff-file" : line.startsWith("@@") ? "diff-hunk"
+        : line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-del" : "";
+      return h("div", { class: kind || null, text: line || " " });
+    }));
+  }
+
+  /** A job's document as the run documents are shown: Markdown rendered as text nodes, JSON pretty, a diff by line. */
+  function jobDocument(name, data) {
+    if (data.too_large) return h("div", { class: "empty", text: `too large to show here (${fmt.bytes(data.bytes)})` });
+    if (name.endsWith(".diff.txt")) return renderDiff(data.text);
+    if (name.endsWith(".md")) return h("div", { class: "md" }, renderMarkdown(data.text));
+    if (name.endsWith(".json")) {
+      let pretty = data.text;
+      try { pretty = JSON.stringify(JSON.parse(data.text), null, 2); } catch (_error) { /* shown as written */ }
+      return h("pre", { text: pretty });
+    }
+    return h("pre", { class: "doc-raw", text: data.text });
+  }
+
+  async function waitForJob(id, until, timeoutMs = 120000) {
+    const end = Date.now() + timeoutMs;
+    for (;;) {
+      const job = await api(`/api/job?id=${enc(id)}`);
+      if (until(job) || Date.now() > end) return job;
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }
+
+  /** The confirmation of a writing action: its command lines, what it writes and (adopt) the dry run's diff. */
+  function confirmAction(repo, action, preview, done) {
+    const overlay = document.getElementById("overlay");
+    const close = () => { overlay.hidden = true; clear(overlay); };
+    const status = h("div", { class: "dim", "data-role": "preview-status" });
+    const diff = h("div", { class: "preview-diff" });
+    const confirm = h("button", { type: "button", class: "btn primary", "data-role": "confirm", text: "Confirm", disabled: !!preview.job });
+    const cancel = h("button", { type: "button", class: "btn", "data-role": "cancel", text: "Cancel", onclick: close });
+    confirm.addEventListener("click", async () => {
+      confirm.disabled = true;
+      try {
+        const answer = await api.post("/api/action", { repo: repo.key, action: action.name, confirm: preview.nonce });
+        close();
+        done(answer.job);
+      } catch (error) {
+        status.className = "why error";
+        status.textContent = error.message;
+      }
+    });
+    replace(overlay, h("div", { class: "panel action-confirm", onclick: (e) => e.stopPropagation() },
+      h("div", { class: "card-head" }, h("h3", { text: `${action.name} · ${repo.name}` }), h("span", { class: "spacer" }), cancel),
+      h("div", { class: "dim", text: action.description }),
+      h("h4", { text: "It runs" }), h("div", { class: "commands" }, preview.commands.map((line) => h("code", { class: "cmd", text: line }))),
+      h("h4", { text: "It writes" }), h("ul", { class: "writes" }, (preview.writes.length ? preview.writes : ["nothing outside the jobs directory"]).map((path) => h("li", { class: "mono", text: path }))),
+      preview.job ? [h("h4", { text: "What the dry run would write" }), diff] : null,
+      status, h("div", { class: "actions-row" }, confirm, cancel)));
+    overlay.hidden = false;
+    overlay.onclick = close;
+    if (preview.job) {
+      status.textContent = "running the dry run…";
+      waitForJob(preview.job, (job) => job.status !== "running").then(async (job) => {
+        if (job.status !== "passed") {
+          status.className = "why error";
+          status.textContent = `the dry run ${job.status} (exit ${job.exit}); see job ${job.id}`;
+          return;
+        }
+        const doc = await api(`/api/job/doc?id=${enc(job.id)}&name=preview.diff.txt`);
+        replace(diff, renderDiff(doc.text));
+        status.textContent = "";
+        confirm.disabled = false;
+      }).catch((error) => { status.className = "why error"; status.textContent = error.message; });
+    }
+  }
+
+  function ReposView(main, crumbs, route) {
+    const filter = h("input", { type: "search", class: "repo-filter", placeholder: "filter repositories  /", "aria-label": "filter repositories" });
+    const list = h("div", { class: "repo-list", role: "listbox", "aria-label": "repositories" });
+    const panel = h("div", { class: "repo-panel" });
+    const refresh = h("button", { type: "button", class: "toggle", "data-role": "refresh", text: "refresh", title: "rescan the workspace" });
+    main.append(h("div", { class: "repos" }, h("div", { class: "repo-side" }, h("div", { class: "repo-tools" }, filter, refresh), list), panel));
+    let selected = route.view === "repo" ? route.parts[1] || "" : "";
+    let loaded = null;
+
+    function setCrumbs() {
+      const roots = (store.workspace.roots || []).join(", ");
+      replace(crumbs, h("a", { href: "#/repos", text: "repos" }), roots ? h("span", { class: "dim", text: ` in ${roots}` }) : null,
+        selected ? [" / ", h("span", { text: selected })] : null);
+    }
+
+    function renderList() {
+      clear(list);
+      const ws = store.workspace;
+      if (!ws.enabled) {
+        list.appendChild(h("div", { class: "empty", text: store.loaded ? "No workspace: start with --workspace DIR, or with --layer for a layer whose repository sits in a folder of repositories." : "connecting…" }));
+        return;
+      }
+      const q = filter.value.trim().toLowerCase();
+      const repos = ws.repos.filter((r) => !q || r.name.toLowerCase().includes(q) || r.state.includes(q));
+      for (const repo of repos) {
+        list.appendChild(h("a", { class: `repo-row${repo.key === selected ? " selected" : ""}`, href: `#/repo/${enc(repo.key)}`, role: "option",
+          dataset: { repo: repo.key }, "aria-selected": repo.key === selected ? "true" : "false" },
+          h("span", { class: "repo-name", text: repo.name }), stateBadge(repo.state),
+          repo.running_job ? h("span", { class: "pill s-running", text: "running" }) : null,
+          h("span", { class: "spacer" }),
+          h("span", { class: "mono dim", text: repo.branch || "" }), repo.dirty ? h("span", { class: "dirty", title: "uncommitted changes", text: "●" }) : null,
+          h("span", { class: "faint", text: fmt.ago(repo.last_activity) })));
+      }
+      if (!repos.length) list.appendChild(h("div", { class: "empty", text: q ? `no repository matches “${q}”` : "no git repositories in the workspace" }));
+    }
+
+    async function loadPanel() {
+      if (!selected) {
+        replace(panel, h("div", { class: "empty", text: store.workspace.enabled ? "Choose a repository." : "" }));
+        return;
+      }
+      let data;
+      try { data = await api(`/api/repo?repo=${enc(selected)}`); } catch (_error) {
+        replace(panel, h("div", { class: "empty", text: `No repository ${selected} in the workspace.` }));
+        return;
+      }
+      loaded = data;
+      renderPanel(data);
+    }
+
+    function runAction(repo, action, button) {
+      return async () => {
+        button.disabled = true;
+        try {
+          const answer = await api.post("/api/action", { repo: repo.key, action: action.name });
+          if (answer.preview) confirmAction(repo, action, answer, (job) => go(`#/job/${enc(job)}`));
+          else go(`#/job/${enc(answer.job)}`);
+        } catch (error) {
+          const note = panel.querySelector(`[data-action="${action.name}"] .why`);
+          if (note) { note.className = "why error"; note.textContent = error.message; }
+        } finally { button.disabled = !action.available; }
+      };
+    }
+
+    function renderPanel(data) {
+      const repo = data.repo;
+      const layer = repo.layer_key ? store.layer(repo.layer_key) : null;
+      const actions = data.actions.map((action) => {
+        const button = h("button", { type: "button", class: `btn${action.writes ? " writes" : ""}`, text: action.name, disabled: !action.available,
+          title: action.available ? action.description : action.why });
+        button.addEventListener("click", runAction(repo, action, button));
+        return h("div", { class: `action${action.available ? "" : " off"}`, dataset: { action: action.name } },
+          h("div", { class: "action-head" }, button, h("span", { class: "dim", text: action.description }),
+            action.writes ? h("span", { class: "badge warn", text: "writes · asks first" }) : null),
+          h("div", { class: "commands" }, action.commands.map((line) => h("code", { class: "cmd", text: line }))),
+          h("div", { class: "why", text: action.available ? "" : action.why }));
+      });
+      replace(panel,
+        h("div", { class: "card" },
+          h("div", { class: "card-head" }, h("h2", { text: repo.name }), stateBadge(repo.state), h("span", { class: "mono dim", text: repo.branch }),
+            repo.dirty ? h("span", { class: "badge warn", text: "uncommitted changes" }) : null, h("span", { class: "spacer" }),
+            h("span", { class: "dim mono", text: repo.dir })),
+          repo.error ? h("div", { class: "why error", text: repo.error }) : null,
+          repo.truncated ? h("div", { class: "faint", text: `classified from the first ${repo.files} tracked files` }) : null,
+          repo.layer ? h("div", { class: "repo-layer" }, "layer: ", h("span", { class: "mono", text: repo.layer }),
+            layer ? [" · ", h("a", { href: `#/layer/${enc(layer.key)}`, text: "workflows and runs" }), " ",
+              h("span", { class: "piter" }, layer.adws.map((name) => h("span", { class: "badge", text: name })))]
+              : h("span", { class: "faint", text: repo.layer_generated ? " (not watched yet)" : " (not generated yet: run gen)" })) : null),
+        h("div", { class: "card al-panel" }, h("div", { class: "card-head" }, h("h3", { text: "al" }),
+          h("span", { class: "dim", text: "each button runs exactly the command line shown under it" })),
+          data.al.found ? null : h("div", { class: "why", text: `The al tool was not found; the actions need it. Looked for: ${data.al.looked.join(", ")}` }),
+          actions),
+        data.jobs.length ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", { text: "Jobs" })),
+          h("div", { class: "job-list" }, data.jobs.map((job) => h("a", { class: "job-row", href: `#/job/${enc(job.id)}` },
+            pill(job.status), h("span", { class: "mono", text: job.id }), h("span", { text: job.action + (job.preview ? " (dry run)" : "") }),
+            h("span", { class: "faint", text: fmt.ago(job.created) }))))) : null,
+        data.summary ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", { text: "Existing agent setup" })),
+          h("div", { class: "md" }, renderMarkdown(data.summary))) : null);
+    }
+
+    filter.addEventListener("input", renderList);
+    refresh.addEventListener("click", async () => {
+      refresh.disabled = true;
+      try { store.workspace = await api("/api/workspace?refresh=1"); renderList(); loadPanel(); } finally { refresh.disabled = false; }
+    });
+    const reload = throttle(() => { if (selected) loadPanel(); }, 1000);
+    const off = store.on((kind, data) => {
+      if (kind === "snapshot" || kind === "workspace") { renderList(); setCrumbs(); reload(); }
+      if (kind === "job" && data && data.repo === selected) reload();
+      if (kind === "layers" && loaded) renderPanel(loaded);
+    });
+    setCrumbs();
+    renderList();
+    loadPanel();
+    return {
+      destroy: off,
+      searchInput: filter,
+      accepts: (r) => r.view === "repos" || r.view === "repo",
+      route(r) {
+        selected = r.view === "repo" ? r.parts[1] || "" : "";
+        setCrumbs();
+        renderList();
+        loadPanel();
+      },
+      back() { if (selected) go("#/repos"); },
+    };
+  }
+
+  function JobView(main, crumbs, route) {
+    const id = route.parts[1] || "";
+    const head = h("div", { class: "job-head" });
+    const steps = h("div", { class: "card job-steps" });
+    const logCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", { text: "output" })));
+    const changed = h("div", { class: "card job-changed" });
+    const docs = h("div", { class: "card job-docs" });
+    const docView = h("div", { class: "doc-view-slot" });
+    main.append(head, steps, logCard, changed, docs, docView);
+    const log = new LogView(logCard, { job: id, running: true, label: "job output" });
+    let shownDoc = "";
+
+    function render(job) {
+      replace(crumbs, h("a", { href: "#/repos", text: "repos" }), " / ", h("a", { href: `#/repo/${enc(job.repo)}`, text: job.repo_name || job.repo }),
+        " / ", h("span", { text: `job ${job.id}` }));
+      const duration = job.started ? (job.ended || now()) - job.started : null;
+      replace(head, h("div", { class: "run-head" }, h("div", {},
+        h("div", { class: "line1" }, h("h1", { text: `${job.action}${job.preview ? " (dry run)" : ""} · ${job.repo_name}` }), pill(job.status),
+          job.exit !== null && job.exit !== undefined ? h("span", { class: "badge", text: `exit ${job.exit}` }) : null),
+        h("div", { class: "dim" }, h("span", { class: "mono", text: job.repo_dir }), job.layer ? [" · layer ", h("span", { class: "mono", text: job.layer })] : null,
+          ` · started ${fmt.time(job.started || job.created)} · `,
+          job.status === "running" && job.started ? h("span", { dataset: { since: job.started }, text: fmt.dur(duration) }) : fmt.dur(duration)),
+        job.reason ? h("div", { class: "why", text: job.reason }) : null)));
+      replace(steps, h("div", { class: "card-head" }, h("h3", { text: "Steps" }), h("span", { class: "dim", text: "run in order; the first that fails stops the job" })),
+        job.steps.map((step) => h("div", { class: `job-step s-${step.status}`, dataset: { step: step.name } },
+          pill(step.status), h("code", { class: "cmd", text: step.display }),
+          h("span", { class: "spacer" }),
+          h("span", { class: "num dim", text: step.exit !== null && step.exit !== undefined ? `exit ${step.exit}` : "" }),
+          h("span", { class: "num dim", text: step.started ? fmt.dur((step.ended || now()) - step.started) : "" }))));
+      replace(changed, h("div", { class: "card-head" }, h("h3", { text: "Changed files" })),
+        job.status === "running" ? h("div", { class: "faint", text: "listed when the job ends" })
+          : [job.changed.length ? h("ul", { class: "changed" }, job.changed.map((c) => h("li", {}, h("span", { class: `badge change-${c.change}`, text: c.change }), " ",
+            h("span", { class: "mono", text: c.path })))) : h("div", { class: "faint", text: "no file of the layer changed" }),
+          h("div", { class: job.repo_unchanged === false ? "why" : "faint", text: job.repo_unchanged === false
+            ? `the repository's working tree changed: ${job.repo_changes.join(", ")}` : "the repository itself is unchanged" })]);
+      replace(docs, h("div", { class: "card-head" }, h("h3", { text: "Documents" })),
+        (job.docs || []).length ? h("table", { class: "docs" }, h("tbody", {}, job.docs.map((doc) => h("tr", { dataset: { doc: doc.name } },
+          h("td", {}, h("span", { class: "doc-name", text: doc.name })), h("td", { class: "num", text: fmt.bytes(doc.bytes) }),
+          h("td", { class: "actions" }, h("button", { type: "button", class: "toggle", "data-role": "view", text: "View", onclick: () => showDoc(doc.name) }))))))
+          : h("div", { class: "faint", text: "none" }));
+      if (shownDoc) showDoc(shownDoc);
+    }
+
+    async function showDoc(name) {
+      shownDoc = name;
+      try {
+        const data = await api(`/api/job/doc?id=${enc(id)}&name=${enc(name)}`);
+        replace(docView, h("div", { class: "card doc-view" }, h("div", { class: "card-head" }, h("h2", { text: name }),
+          h("span", { class: "dim num", text: fmt.bytes(data.bytes) }), h("span", { class: "spacer" }),
+          h("button", { type: "button", class: "toggle", text: "close", onclick: () => { shownDoc = ""; clear(docView); } })), jobDocument(name, data)));
+      } catch (error) { replace(docView, h("div", { class: "empty", text: `Could not load ${name}: ${error.message}` })); }
+    }
+
+    async function load() {
+      try { render(await api(`/api/job?id=${enc(id)}`)); } catch (_error) {
+        replace(head, h("div", { class: "empty", text: `No such job: ${id}` }));
+      }
+    }
+    const reload = throttle(load, 500);
+    const off = store.on((kind, data) => { if (kind === "job" && data && data.id === id) reload(); if (kind === "snapshot") reload(); });
+    load();
+    return { destroy() { off(); log.destroy(); }, toggleFollow: () => log.toggleFollow(), back: () => history.back() };
+  }
+
   // =========================================================================== keyboard
   function help() {
     const overlay = document.getElementById("overlay");
-    const keys = [["1 · 2 · 3", "Now · Runs · Layers"], ["j / k", "next / previous run, step or transcript event"], ["Enter", "open the selection / expand an event"],
+    const keys = [["1 · 2 · 3 · 4", "Now · Runs · Layers · Repos"], ["j / k", "next / previous run, step or transcript event"], ["Enter", "open the selection / expand an event"],
       ["/", "search (runs or transcript)"], ["f", "follow the running step's transcript or log"], ["Esc", "back / close"], ["?", "this help"]];
     replace(overlay, h("div", { class: "panel", onclick: (e) => e.stopPropagation() }, h("h3", { text: "Keyboard" }),
       h("div", { class: "shortcuts" }, keys.map(([k, v]) => [h("span", {}, h("kbd", { text: k })), h("span", { text: v })])),
@@ -2169,6 +2469,7 @@
     if (event.key === "1") return go("#/now");
     if (event.key === "2") return go("#/runs");
     if (event.key === "3") return go("#/layers");
+    if (event.key === "4") return go("#/repos");
     if (event.key === "?") return help();
     if (event.key === "j" && current && current.move) { event.preventDefault(); return current.move(1); }
     if (event.key === "k" && current && current.move) { event.preventDefault(); return current.move(-1); }

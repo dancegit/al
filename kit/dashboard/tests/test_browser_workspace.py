@@ -71,7 +71,9 @@ def tab(browser):
 def no_personal_paths(page) -> None:
     text = page.evaluate("document.body.innerText")
     home = str(Path.home())
-    assert home not in text and os.environ.get("USER", "\0") not in text.split()
+    # The home directory must not show. The bare user name is only checked as part of a path: a short
+    # name can be an ordinary word of the page ("per", "dev", "user").
+    assert home not in text and f"/{os.environ.get('USER', chr(0))}/" not in text
 
 
 def test_repos_view_lists_states_and_keeps_the_selection_in_the_url(tmp_path, workspace, tab):
