@@ -954,7 +954,7 @@
                 "type": "string"
               },
               "timeout": {
-                "description": "Seconds.",
+                "description": "Seconds one run of the command may take; allow for several runs sharing the machine.",
                 "type": "integer"
               }
             },

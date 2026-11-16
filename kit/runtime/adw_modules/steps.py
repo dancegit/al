@@ -118,7 +118,7 @@ def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
         events.emit("check.start", **span)
         started = time.monotonic()
         exit_code, _output = run_command(argv, env_stack.cwd, env_stack.process_env(),
-                                          int(command.get("timeout", 900)), log_path=log_path)
+                                          int(command.get("timeout", 1800)), log_path=log_path)
         events.emit("check.end", **span, exit=exit_code, seconds=round(time.monotonic() - started, 3))
     state.checks[name] = {"cmd": cmd, "exit": exit_code, "log": relative_log}
     state.save(layer.layer_dir)
@@ -139,7 +139,7 @@ def run_logged(layer: Any, state: Any, env_stack: Any, command: dict[str, Any], 
     argv = env_stack.wrap(str(command["run"]))
     events.emit("check.start", **span)
     started = time.monotonic()
-    code, _output = run_command(argv, env_stack.cwd, env_stack.process_env(), int(command.get("timeout", 900)),
+    code, _output = run_command(argv, env_stack.cwd, env_stack.process_env(), int(command.get("timeout", 1800)),
                                 log_path=log_path)
     events.emit("check.end", **span, exit=code, seconds=round(time.monotonic() - started, 3))
     return code
@@ -235,7 +235,7 @@ def run_script(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> 
     log_dir = Path(layer.layer_dir) / "agents" / state.adw_id / "scripts"
     log_path = log_dir / f"{name}.{_log_number(log_dir, name) if log_dir.is_dir() else 1}.log"
     relative = log_path.relative_to(layer.layer_dir).as_posix()
-    timeout = int(step.get("timeout") or 0) or int(command.get("timeout", 900))
+    timeout = int(step.get("timeout") or 0) or int(command.get("timeout", 1800))
     waiting = [int(code) for code in step.get("waitingExit") or []]
     span = {"step": name, "owner": running_step(state), "cmd": str(step["cmd"]), "log": relative}
     follower = None

@@ -471,7 +471,7 @@ The application the layer wraps. Everything codebase-specific that templates nee
 
 A named shell command of the codebase: (cmd NAME "shell" …). Check steps and validation sections refer to these names.
   - `#:run` (string; default REQUIRED) — Shell command, run from the worktree root.
-  - `#:timeout` (integer; default 900) — Seconds.
+  - `#:timeout` (integer; default 1800) — Seconds one run of the command may take; allow for several runs sharing the machine.
   - `#:description` (string; default "") — What the command proves.
 
 ### `paths`

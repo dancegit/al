@@ -3431,11 +3431,21 @@ def utc_stamp(when: float | None = None) -> str:
 
 
 def find_al_tool(explicit: Path | None) -> tuple[Path | None, list[str]]:
-    """The al tool: --al PATH, else tools/al of the checkout the kit belongs to, else `al` on PATH.
+    """The al tool: --al PATH, else $AL_TOOL, else tools/al of the checkout the kit belongs to, else
+    tools/al in a folder above it (a layer generated inside al's own repository has its dashboard
+    several folders below the checkout), else `al` on PATH.
     → (the first executable one, every place looked at, the home directory shown as ~)."""
     looked: list[str] = []
-    for candidate in ([Path(explicit)] if explicit is not None else []) + [KIT_AL]:
+    named = [Path(explicit)] if explicit is not None else []
+    if os.environ.get("AL_TOOL"):
+        named.append(Path(os.environ["AL_TOOL"]).expanduser())
+    for candidate in named + [KIT_AL]:
         looked.append(home_short(str(candidate)))
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return Path(os.path.realpath(candidate)), looked
+    looked.append("tools/al in a folder above it")
+    for folder in KIT_AL.parent.parent.parents:
+        candidate = folder / "tools" / "al"
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return Path(os.path.realpath(candidate)), looked
     looked.append("PATH")

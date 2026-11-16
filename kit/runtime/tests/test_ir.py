@@ -19,7 +19,7 @@ def test_layer_lookups_and_full_ir(make_layer: object) -> None:
     full = load(Path(__file__).with_name("full.layer.json"))
     assert full.adw("sdlc")["name"] == "sdlc"
     assert full.command("implement")["isHop"] is True
-    assert full.cmd("test")["timeout"] == 900
+    assert full.cmd("test")["timeout"] == 1800
 
 
 def test_planned_option_is_refused(make_layer: object) -> None:

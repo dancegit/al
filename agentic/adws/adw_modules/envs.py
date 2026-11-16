@@ -15,7 +15,7 @@ from typing import Any, Iterator
 from . import events, gitsafe, slots
 from .errors import LayerError, StepFailed
 
-PODMAN_BUILD_TIMEOUT = 1800
+PODMAN_BUILD_TIMEOUT = 3600
 IMPROVE_DIR = ".al-improve"  # run state of `al improve` inside a layer: never visible to an ordinary run
 
 
