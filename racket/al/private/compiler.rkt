@@ -345,6 +345,80 @@
     (fail "(layer in-repo #:dir ~s): (codebase #:root …) must lead from the layer directory back to the repository root, i.e. ~s (got ~s)"
           dir expected root)))
 
+;; --- delivery: presets, stages, cycles ----------------------------------------------------
+
+(define preset-names "trunk, sprint, gitflow, release-train, phase-gate")
+
+(define (head-of c) (let ([d (cdr c)]) (and (pair? d) (symbol? (car d)) (car d))))
+(define (stage-name-of c) (let ([d (cdr c)]) (and (eq? (head-of c) 'stage) (pair? (cdr d)) (cadr d))))
+
+;; The indexed clause list with a (delivery PRESET …) clause replaced by the clauses it stands for
+;; (each carrying the delivery clause's index), a declared (stage NAME …) of the same name moved into
+;; its preset stage's place. Returns (values clauses delivery-record-or-#f origins), where origins
+;; maps each preset-made clause datum (eq?) to "preset NAME".
+(define (expand-delivery clauses)
+  (define deliveries (filter (lambda (c) (eq? (head-of c) 'delivery)) clauses))
+  (define origins (make-hasheq))
+  (cond
+    [(null? deliveries) (values clauses #f origins)]
+    [else
+     (when (pair? (cdr deliveries))
+       (parameterize ([current-clause (car (cadr deliveries))])
+         (fail "(delivery …) is declared twice; declare one preset and add or replace stages with (stage …)")))
+     (define dc (car deliveries))
+     (define-values (expanded record)
+       (parameterize ([current-clause (car dc)])
+         (define d (cdr dc))
+         (unless (and (pair? (cdr d)) (symbol? (cadr d)))
+           (fail "(delivery …): expected (delivery PRESET #:param value …); presets are: ~a" preset-names))
+         (define p (find-preset 'delivery (cadr d)))
+         (unless p (fail "unknown delivery preset ~a; presets are: ~a" (cadr d) preset-names))
+         (define who (format "(delivery ~a)" (cadr d)))
+         (define-values (pos kws) (split-kwargs (cddr d) who))
+         (unless (null? pos) (fail "~a: unexpected ~s; parameters are given as #:keyword value" who (car pos)))
+         (define params (compile-fields (preset-fields p) kws who))
+         (define exp (preset-expansion p params))
+         (values exp (hasheq 'preset (symbol->string (cadr d)) 'params params
+                             'expansion (for/list ([x (in-list exp)]) (format "~s" x))))))
+     (define origin (format "preset ~a" (hash-ref record 'preset)))
+     (when (findf (lambda (x) (eq? (car x) 'cycle)) expanded)
+       (define declared-cycle (findf (lambda (c) (eq? (head-of c) 'cycle)) clauses))
+       (when declared-cycle
+         (parameterize ([current-clause (car declared-cycle)])
+           (fail "(cycle …): (delivery ~a) already declares a cycle; remove this (cycle …) or declare the stages yourself"
+                 (hash-ref record 'preset)))))
+     (define declared-stages
+       (for/list ([c (in-list clauses)] #:when (symbol? (stage-name-of c))) c))
+     (define moved '())
+     (define replacement
+       (for/list ([x (in-list expanded)])
+         (define own (and (eq? (car x) 'stage)
+                          (findf (lambda (c) (eq? (stage-name-of c) (cadr x))) declared-stages)))
+         (cond [own (set! moved (cons own moved)) own]
+               [else (hash-set! origins x origin) (cons (car dc) x)])))
+     (values (append* (for/list ([c (in-list clauses)])
+                        (cond [(eq? c dc) replacement]
+                              [(memq c moved) '()]
+                              [else (list c)])))
+             record origins)]))
+
+(define cycle-placeholders '("{year}" "{week}" "{n}" "{date}" "{version}"))
+(define (placeholders-in s) (regexp-match* #rx"{[^}]*}" s))
+
+;; A branch name git accepts once its placeholders are filled (git check-ref-format, the common rules).
+(define (valid-branch-pattern? s)
+  (define b (regexp-replace* #rx"{[^}]*}" s "x1"))
+  (not (or (string=? b "")
+           (regexp-match? #rx"[.][.]|//|@[{]|[ ~^:?*\\[\\\\]" b)
+           (regexp-match? #rx"^[/.]|[/.]$" b)
+           (regexp-match? #rx"[.]lock$" b)
+           (regexp-match? #rx"/[.]" b)
+           (regexp-match? #rx"[\u0000-\u001f\u007f]" b))))
+
+(define (stage-next s)
+  (define into (hash-ref s 'into))
+  (if (string=? into "") (hash-ref s 'from) into))
+
 ;; --- whole layer ------------------------------------------------------------------------
 
 ;; --- dashboard ----------------------------------------------------------------------------
@@ -370,13 +444,14 @@
       (fail "expected (agentic-layer #:name \"…\" CLAUSE …)"))
     ;; walk the raw list so clause indices match the syntax object in main.rkt
     (define raw (cdr datum))
-    (define-values (clauses kws)
+    (define-values (clauses0 kws)
       (let loop ([l raw] [i 0] [cl '()] [kws '()])
         (cond [(null? l) (values (reverse cl) (reverse kws))]
               [(keyword? (car l))
                (when (null? (cdr l)) (fail "agentic-layer: keyword ~a has no value" (car l)))
                (loop (cddr l) (+ i 2) cl (cons (cons (car l) (cadr l)) kws))]
               [else (loop (cdr l) (add1 i) (cons (cons i (car l)) cl) kws)])))
+    (define-values (clauses delivery stage-origins) (expand-delivery clauses0))
     (define top
       (compile-fields (list (field 'name 'string '#:required "Layer name (usually the repository name).")
                             (field 'description 'string "" "One line.")
@@ -393,8 +468,9 @@
     (define experts '())
     (define adw-clauses '())
     (define layer-clause #f)
+    (define stages '())
     (define clause-heads
-      (append (map family-name (all-families)) '(codebase command hop expert adw include)))
+      (append (map family-name (all-families)) '(codebase command hop expert adw stage delivery include)))
 
     (for ([c (in-list clauses)])
       (parameterize ([current-clause (car c)])
@@ -414,6 +490,7 @@
            (when (eq? (family-name fam) 'layer) (set! layer-clause (car c)))
            (when (eq? (family-name fam) 'dashboard) (hash-set! clause-of 'dashboard-clause (car c)))
            (when (eq? (family-name fam) 'budget) (hash-set! clause-of 'budget-clause (car c)))
+           (when (eq? (family-name fam) 'cycle) (hash-set! clause-of 'cycle-clause (car c)))
            (when (eq? (family-name fam) 'agent) (hash-set! clause-of (cons 'agent (hash-ref o 'id)) (car c)))
            (when (eq? (family-name fam) 'notify) (hash-set! clause-of (cons 'notify (hash-ref o 'id)) (car c)))
            (hash-set! options (family-name fam) (cons o existing))]
@@ -433,6 +510,12 @@
              (fail "(command ~a): #:template custom needs #:file" (hash-ref r 'name)))
            (if (eq? (car d) 'command) (set! commands (cons r commands)) (set! hops (cons r hops)))]
           [(eq? (car d) 'expert) (set! experts (cons (compile-named 'expert d) experts))]
+          [(eq? (car d) 'stage)
+           (define st (hash-set (compile-named 'stage d) 'origin (hash-ref stage-origins d "declared")))
+           (when (findf (lambda (x) (equal? (hash-ref x 'name) (hash-ref st 'name))) stages)
+             (fail "(stage ~a): declared twice" (hash-ref st 'name)))
+           (hash-set! clause-of (cons 'stage (hash-ref st 'name)) (car c))
+           (set! stages (cons st stages))]
           [(eq? (car d) 'adw) (set! adw-clauses (cons c adw-clauses))]
           [(eq? (car d) 'include) (fail include-unexpanded)]
           [else (fail "unknown clause (~a …); clauses are: ~a" (car d) (names clause-heads))])))
@@ -471,11 +554,13 @@
         [(command-or-hop) (map (lambda (c) (hash-ref c 'name)) (append (reverse commands) (reverse hops)))]
         [(cmd) (map (lambda (c) (hash-ref c 'name)) (hash-ref codebase 'commands))]
         [(adw) (map (lambda (a) (hash-ref a 'name)) adws)]
+        [(stage) (map (lambda (st) (hash-ref st 'name)) (reverse stages))]
         [else (map (lambda (o) (hash-ref o 'id)) (opts target))]))
     (for ([r (in-list (reverse (unbox (pending-refs))))])
       (define-values (target id who clause) (apply values r))
       (define known (ids-of target))
-      (unless (member id known)
+      ;; a stage named while none is declared is reported by the delivery rules below, in their words
+      (unless (or (member id known) (and (eq? target 'stage) (null? known)))
         (parameterize ([current-clause clause])
           (fail "~a: `~a` is not a declared ~a; declared: ~a" who id
                 (case target [(cmd) "codebase cmd"] [(command-or-hop) "command or hop"] [else target])
@@ -624,6 +709,91 @@
                       (format "step `~a` (the #:model-set of its #:~a command `~a`)" name k (hash-ref st k))))))]
           [else (void)])))
 
+    ;; ---- delivery: stages and the cycle ----------------------------------------------------
+    (define stage-list (reverse stages))
+    (define (stage-by-name n) (findf (lambda (st) (equal? (hash-ref st 'name) n)) stage-list))
+    (define (in-stage name thunk)
+      (parameterize ([current-clause (hash-ref clause-of (cons 'stage name) #f)]) (thunk)))
+    (define cyc (let ([c (opts 'cycle)]) (and (pair? c) (not (equal? (hash-ref (car c) 'kind) "none")) (car c))))
+    (define cycle-stage (and cyc (hash-ref cyc 'stage)))
+    (define final-stage
+      (and (pair? stage-list)
+           (let ()
+             ;; every stage reaches the final stage by following #:into (default #:from), without a cycle
+             (for ([st (in-list stage-list)])
+               (let walk ([cur st] [path (list (hash-ref st 'name))])
+                 (define next (stage-next cur))
+                 (unless (string=? next "")
+                   (when (member next path)
+                     (in-stage (hash-ref st 'name)
+                               (lambda () (fail "stages ~a form a cycle; following #:into (default #:from) must end at the one final stage (no #:from, no #:into)"
+                                                (string-join (reverse (cons next path)) " → ")))))
+                   (walk (stage-by-name next) (cons next path)))))
+             (define finals (filter (lambda (st) (string=? (stage-next st) "")) stage-list))
+             (when (> (length finals) 1)
+               (in-stage (hash-ref (cadr finals) 'name)
+                         (lambda () (fail "two final stages: ~a; exactly one stage has neither #:from nor #:into (the one that holds (codebase #:default-branch …)); give the others #:from"
+                                          (names (map (lambda (st) (hash-ref st 'name)) finals))))))
+             (car finals))))
+    (when cyc
+      (parameterize ([current-clause (hash-ref clause-of 'cycle-clause #f)])
+        (define who (format "(cycle ~a)" (hash-ref cyc 'kind)))
+        (when (null? stage-list)
+          (fail "~a: declare the stage it repeats: (stage ~a #:branch \"…/{cycle}\" #:from …), or use a (delivery …) preset" who cycle-stage))
+        (when (eq? (stage-by-name cycle-stage) final-stage)
+          (fail "~a: #:stage ~a is the final stage, which never repeats; name the stage that is cut anew each cycle" who cycle-stage))
+        (define b (hash-ref (stage-by-name cycle-stage) 'branch))
+        (define release? (equal? (hash-ref cyc 'kind) "release"))
+        (unless (or (regexp-match? #rx"{cycle}" b) (and release? (regexp-match? #rx"{version}" b)))
+          (fail "~a: the #:branch ~s of stage ~a must contain {cycle}~a, so each cycle gets its own branch"
+                who b cycle-stage (if release? " or {version}" "")))
+        (when (and (not release?) (not (<= 1 (hash-ref cyc 'lengthDays) 366)))
+          (fail "~a: #:length-days must be 1–366 (got ~a)" who (hash-ref cyc 'lengthDays)))
+        (define n (hash-ref cyc 'name))
+        (for ([ph (in-list (placeholders-in n))])
+          (unless (member ph cycle-placeholders)
+            (fail "~a: #:name ~s: unknown placeholder ~a; placeholders are ~a" who n ph (string-join cycle-placeholders " "))))
+        (when (and release? (not (regexp-match? #rx"{version}" n)))
+          (fail "~a: #:name ~s must contain {version}: a release cycle is named after the version it is started with" who n))))
+    (when final-stage
+      (define default-branch (hash-ref codebase 'defaultBranch))
+      (in-stage (hash-ref final-stage 'name)
+                (lambda ()
+                  (define b (hash-ref final-stage 'branch))
+                  (unless (null? (placeholders-in b))
+                    (fail "(stage ~a): the final stage's #:branch ~s has a placeholder; it is one fixed branch, (codebase #:default-branch …)"
+                          (hash-ref final-stage 'name) b))
+                  (unless (equal? b default-branch)
+                    (fail "(stage ~a): the final stage's #:branch ~s must equal (codebase #:default-branch …) ~s"
+                          (hash-ref final-stage 'name) b default-branch))))
+      (for ([st (in-list stage-list)])
+        (define name (hash-ref st 'name))
+        (in-stage name
+                  (lambda ()
+                    (define b (hash-ref st 'branch))
+                    (define who (format "(stage ~a)" name))
+                    (for ([ph (in-list (placeholders-in b))])
+                      (unless (member ph delivery-placeholders)
+                        (fail "~a: #:branch ~s: unknown placeholder ~a; placeholders are ~a" who b ph (string-join delivery-placeholders " ")))
+                      (when (and (member ph '("{cycle}" "{version}")) (not (equal? name cycle-stage)))
+                        (fail "~a: #:branch ~s: ~a is filled by the cycle, so it is only on the stage of (cycle …) #:stage; ~a"
+                              who b ph (if cycle-stage (format "that is `~a`" cycle-stage) "declare (cycle sprint|release #:stage …) or use {date}"))))
+                    (unless (valid-branch-pattern? b)
+                      (fail "~a: #:branch ~s is not a valid git branch name (no spaces, `..`, `//`, ~~ ^ : ? * [ \\, leading or trailing / or ., `.lock` at the end, or a component starting with .)" who b))
+                    (define twin (findf (lambda (o) (and (not (eq? o st)) (equal? (hash-ref o 'branch) b))) stage-list))
+                    (when twin
+                      (fail "~a: branch ~s is used by two stages, ~a and ~a; a stage is one branch" who b (hash-ref twin 'name) name))
+                    (when (and (equal? (hash-ref st 'entry) "fast-forward") (equal? (hash-ref forge 'kind) "github"))
+                      (fail "~a: #:entry fast-forward is not possible with (forge github …): GitHub cannot merge a pull request by fast-forward; use merge, squash or rebase" who))))))
+    (define all-four '("chore" "bug" "feature" "patch"))
+    ;; (class . stage) for every class the ADW can produce
+    (define (stage-routes a)
+      (define to (hash-ref a 'deliverTo ""))
+      (for/list ([k (in-list (if (null? (hash-ref a 'classes)) all-four (hash-ref a 'classes)))])
+        (cons k (if (string=? to "")
+                    (or (findf (lambda (st) (member k (hash-ref st 'accepts))) stage-list) final-stage)
+                    (stage-by-name to)))))
+
     (for ([a (in-list adws)])
       (parameterize ([current-clause (hash-ref clause-of (hash-ref a 'name))])
         (define who (format "(adw ~a)" (hash-ref a 'name)))
@@ -638,6 +808,24 @@
         (when (and ship-i (or (not review-i) (> review-i ship-i)))
           (fail "~a: (ship) must come after a (review) step" who))
         (define rv (opt 'review (hash-ref a 'review)))
+        (define deliver-to (hash-ref a 'deliverTo))
+        (when (and (null? stage-list) (not (string=? deliver-to "")))
+          (fail "~a: #:deliver-to needs declared stages: add (stage …) clauses or a (delivery PRESET …) clause, or remove #:deliver-to ~a"
+                who deliver-to))
+        (when (pair? stage-list)
+          (define routes (stage-routes a))
+          (when (and ship-i (equal? (hash-ref rv 'kind) "auto") (member (hash-ref rv 'ship) '("merge" "deploy")))
+            (for ([r (in-list routes)])
+              (unless (hash-ref (cdr r) 'agentsMayMerge)
+                (define open (findf (lambda (st) (hash-ref st 'agentsMayMerge)) stage-list))
+                (fail "~a: review `~a` ships without a human, but class ~a is delivered to stage `~a` (branch ~a), where agents may not merge; deliver to a stage with #:agents-may-merge #t~a or use a human or agent review"
+                      who (hash-ref rv 'id) (car r) (hash-ref (cdr r) 'name) (hash-ref (cdr r) 'branch)
+                      (if open (format " (e.g. #:deliver-to ~a)" (hash-ref open 'name)) "")))))
+          (when (and ship-i (not (string=? deliver-to "")))
+            (for ([r (in-list routes)])
+              (unless (member (car r) (hash-ref (cdr r) 'accepts))
+                (fail "~a: #:deliver-to ~a, but stage `~a` does not accept class ~a (its #:accepts is (~a)); add the class to the stage's #:accepts or narrow the ADW's #:classes"
+                      who deliver-to deliver-to (car r) (string-join (hash-ref (cdr r) 'accepts) " "))))))
         (when (equal? (hash-ref rv 'kind) "auto")
           (define shipping? (member (hash-ref rv 'ship) '("merge" "deploy")))
           (when shipping?
@@ -649,7 +837,12 @@
               (fail "~a: review `~a` ships without a human; #:require-checks must list at least one codebase cmd"
                     who (hash-ref rv 'id))))
           (when (and (equal? (hash-ref rv 'ship) "deploy") (string=? (hash-ref rv 'deployCmd) ""))
-            (fail "~a: review `~a` has #:ship deploy but no #:deploy-cmd" who (hash-ref rv 'id))))
+            (if (null? stage-list)
+                (fail "~a: review `~a` has #:ship deploy but no #:deploy-cmd" who (hash-ref rv 'id))
+                (for ([r (in-list (stage-routes a))])
+                  (when (string=? (hash-ref (cdr r) 'deployCmd) "")
+                    (fail "~a: review `~a` has #:ship deploy but no #:deploy-cmd, and stage `~a` it delivers to has none either; add #:deploy-cmd to the review or to the stage"
+                          who (hash-ref rv 'id) (hash-ref (cdr r) 'name)))))))
         (for ([id (in-list (hash-ref a 'input))])
           (define o (opt 'prompt-input id))
           (when (and no-forge? (equal? (hash-ref o 'kind) "issue"))
@@ -710,7 +903,8 @@
           (fail "~a: review `~a` ships without a human, so the ADW's #:environment must include a podman option (declare (environment podman …) and list its id)" who (hash-ref rv 'id)))))
 
     (define (single fname) (let ([l (opts fname)]) (if (null? l) 'null (car l))))
-    (hash-set* top
+    (define ir-out
+      (hash-set* top
                'schemaVersion "agentic-layer-v1"
                'codebase codebase
                'layer (single 'layer)
@@ -731,4 +925,11 @@
                'commands (reverse commands)
                'hops (reverse hops)
                'experts (reverse experts)
-               'adws adws)))
+               'adws adws))
+    ;; no stage: exactly the IR of before (no stages, cycle or delivery key, no deliverTo)
+    (if (null? stage-list)
+        (hash-set ir-out 'adws (for/list ([a (in-list adws)]) (hash-remove a 'deliverTo)))
+        (hash-set* ir-out
+                   'stages stage-list
+                   'cycle (single 'cycle)
+                   'delivery (or delivery 'null)))))

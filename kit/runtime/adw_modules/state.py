@@ -70,6 +70,9 @@ class ADWState:
     # the synthetic ADW of a single-command run (launch.single_command_adw), so a reader can draw it
     # without the compiled layer knowing it; empty for every run of a declared workflow
     definition: dict[str, Any] = field(default_factory=dict)
+    # where the run delivers when the layer declares stages (delivery.record + delivered/target, or
+    # {stage, branch, refused}); empty, and then left out of state.json, for a layer without stages
+    delivery: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -97,6 +100,8 @@ class ADWState:
         with _SAVE_LOCK:
             target.parent.mkdir(parents=True, exist_ok=True)
             data = asdict(self)
+            if not data.get("delivery"):
+                data.pop("delivery", None)  # a layer without stages writes the state.json of before
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")

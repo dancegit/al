@@ -91,6 +91,8 @@ def http_request(method: str, url: str, headers: Mapping[str, str], body: bytes 
 
 class ForgeClient:
     kind = "base"
+    # how ship merges a pull request; a run that delivers into a stage gets the stage's #:entry
+    merge_method = "squash"
 
     def __init__(self, option: Mapping[str, Any], layer_dir: Path | None = None,
                  env: Mapping[str, str] | None = None):
@@ -127,8 +129,13 @@ class ForgeClient:
                   reviewers: Iterable[str] = ()) -> dict:
         raise NotImplementedError
 
-    def merge_pr(self, number: int, method: str = "squash") -> None:
+    def merge_pr(self, number: int, method: str | None = None) -> None:
         raise NotImplementedError
+
+    def branch_protection(self, branch: str) -> dict:
+        """{"protected": bool, "linear_history": bool|None, "push_allowed": bool|None} of a branch;
+        {"protected": False} when it has no protection, {} when the forge cannot tell."""
+        return {}
 
     can_attach = False  # True when attach() really uploads (see ship.post_proof)
 
@@ -191,7 +198,7 @@ class NoneForge(ForgeClient):
     def create_pr(self, branch, base, title, body, draft=False, reviewers=()):
         return {"number": 0, "url": ""}
 
-    def merge_pr(self, number, method="squash"):
+    def merge_pr(self, number, method=None):
         return None
 
 
@@ -279,10 +286,26 @@ class GitHubForge(ForgeClient):
         m = re.search(r"/pull/(\d+)", url)
         return {"number": int(m.group(1)) if m else 0, "url": url}
 
-    def merge_pr(self, number, method="squash"):
+    def merge_pr(self, number, method=None):
+        method = method or self.merge_method
         if method not in ("squash", "merge", "rebase"):
             raise ForgeError(f"unknown merge method {method!r}")
         self.gh("pr", "merge", str(number), f"--{method}")
+
+    def branch_protection(self, branch):
+        argv = ["gh", "api", f"repos/{self.repo}/branches/{urllib.parse.quote(branch, safe='')}/protection"]
+        run = self._run or subprocess.run
+        try:
+            proc = run(argv, capture_output=True, text=True, env=self._env(), check=False)
+        except FileNotFoundError as exc:
+            raise ForgeError("the `gh` CLI is not installed or not on PATH") from exc
+        if proc.returncode != 0:
+            if "404" in (proc.stderr or "") or "Not Found" in (proc.stderr or "") or "not protected" in (proc.stderr or ""):
+                return {"protected": False}
+            raise ForgeError(f"gh api …/protection failed ({proc.returncode}): {(proc.stderr or '').strip()[:500]}")
+        data = json.loads(proc.stdout or "{}")
+        linear = (data.get("required_linear_history") or {}).get("enabled") if isinstance(data, dict) else None
+        return {"protected": True, "linear_history": None if linear is None else bool(linear), "push_allowed": None}
 
     def attach(self, n, path, name=None, comment_id=None):
         # GitHub has no API (nor `gh` command) for uploading files to issues or pull requests.
@@ -384,10 +407,24 @@ class ForgejoForge(ForgeClient):
             self.request("POST", f"/pulls/{number}/requested_reviewers", {"reviewers": reviewers})
         return {"number": number, "url": data.get("html_url") or data.get("url") or ""}
 
-    def merge_pr(self, number, method="squash"):
+    def merge_pr(self, number, method=None):
+        method = method or self.merge_method
         if method not in ("squash", "merge", "rebase"):
             raise ForgeError(f"unknown merge method {method!r}")
         self.request("POST", f"/pulls/{int(number)}/merge", {"Do": method})
+
+    def branch_protection(self, branch):
+        try:
+            data = self.request("GET", f"/branch_protections/{urllib.parse.quote(branch, safe='')}")
+        except ForgeError as exc:
+            if "HTTP 404" in str(exc):
+                return {"protected": False}
+            raise
+        repo = self.request("GET", "")
+        merges = repo.get("allow_merge_commits") if isinstance(repo, dict) else None
+        push = data.get("enable_push") if isinstance(data, dict) else None
+        return {"protected": True, "linear_history": None if merges is None else not merges,
+                "push_allowed": None if push is None else bool(push)}
 
     can_attach = True
 
@@ -422,4 +459,8 @@ def get_client(layer: Any, env: Mapping[str, str] | None = None) -> ForgeClient:
     cls = CLIENTS.get(kind)
     if cls is None:
         raise ForgeError(f"forge kind {kind!r} is not supported by this runtime")
-    return cls(option, layer_dir=lay.layer_dir, env=os.environ if env is None else env)
+    client = cls(option, layer_dir=lay.layer_dir, env=os.environ if env is None else env)
+    entry = (getattr(lay, "delivery", None) or {}).get("entry")
+    if entry in ("merge", "squash", "rebase"):
+        client.merge_method = entry  # the run delivers into a stage that takes changes this way
+    return client

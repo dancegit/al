@@ -5,7 +5,8 @@
 ;; and the LLM reference pick it up automatically. Runtime support lives in kit/runtime.
 
 (require racket/list "meta.rkt")
-(provide kit-command-templates kit-hop-templates artefact-types singleton-families semantic-rules)
+(provide kit-command-templates kit-hop-templates artefact-types singleton-families semantic-rules
+         delivery-placeholders)
 
 ;; ---------------------------------------------------------------------------------------
 ;; Singletons
@@ -172,6 +173,19 @@
   [run string #:required "Shell command (sh -c). Refer to anything private as $VARIABLE; never write an address, a URL with a token or a password here."]
   [events (list-of (enum needs-human failed passed shipped)) (needs-human failed) "Events this notifier reports."]
   [timeout integer 10 "Seconds one attempt may take, 1–60; after that the command is killed and the run goes on."])
+
+(define-family cycle #:key "cycle" #:letter "" #:default #f
+  "A stage that repeats: its branch is opened anew for each cycle (a sprint, a release). The current cycle is state of the layer (agents/cycle.json), changed with `al cycle LAYER status|start|close`.")
+(define-kind cycle none "No stage repeats.")
+(define-kind cycle sprint
+  "A time-boxed cycle (a sprint, a release train): a new branch every #:length-days days."
+  [stage (ref stage) #:required "The stage whose branch repeats; its #:branch contains {cycle}."]
+  [length-days integer 14 "Days per cycle, 1–366; `al cycle status` reports when it is due."]
+  [name string "{year}-s{week}" "Name of a cycle: {year}, {week} (ISO week), {n} (sequence number), {date} (YYYY-MM-DD)."])
+(define-kind cycle release
+  "A cycle per version: a new branch when a release is started with `al cycle LAYER start --version V`."
+  [stage (ref stage) #:required "The stage whose branch repeats; its #:branch contains {cycle} or {version}."]
+  [name string "{version}" "Name of a cycle; must contain {version}."])
 
 ;; ---------------------------------------------------------------------------------------
 ;; P — Prompt input
@@ -452,7 +466,20 @@
   [review (ref review) #:first "Review option."]
   [agent (ref agent) #:first "Agent the steps run on."]
   [classes (list-of (enum chore bug feature patch)) () "Work classes routed to this ADW by classification; empty = any."]
-  [changes (enum codebase layer) codebase "What the ADW changes. `codebase`: the application. `layer`: an agentic layer (its codebase is the repository that holds a layer, as in the workflow `al improve` runs); such an ADW never ships without a person and is exempt from the in-repo layer protection."])
+  [changes (enum codebase layer) codebase "What the ADW changes. `codebase`: the application. `layer`: an agentic layer (its codebase is the repository that holds a layer, as in the workflow `al improve` runs); such an ADW never ships without a person and is exempt from the in-repo layer protection."]
+  [deliver-to (optional-ref stage) "" "Stage this workflow delivers into; \"\" = the first stage that accepts the run's class. Only with declared stages."])
+
+(define-record stage
+  "(stage NAME #:branch \"…\" …): a named place where work accumulates."
+  [branch string #:required "Branch name or pattern; placeholders {cycle} and {version} (only on the cycle's stage) and {date} (the cycle's opening date on the cycle's stage, else the run's UTC start date)."]
+  [from (optional-ref stage) "" "Stage this one is cut from; \"\" = none (the final stage)."]
+  [into (optional-ref stage) "" "Stage it is delivered into when accepted; \"\" = #:from."]
+  [accepts (list-of (enum chore bug feature patch)) (chore bug feature patch) "Work classes routed here by default (the first declared stage that accepts a class gets it)."]
+  [agents-may-merge boolean #t "Whether a zero-touch workflow may merge into it; #f = only people change it (runs end in a pull request)."]
+  [entry (enum merge squash rebase fast-forward) merge "How a change enters it."]
+  [checks (list-of (ref cmd)) () "Codebase cmds that must hold on it: added to the review's #:require-checks for runs delivering here."]
+  [deploy-cmd (optional-ref cmd) "" "Codebase cmd that deploys this stage; used by a review with #:ship deploy that has no #:deploy-cmd of its own."]
+  [environment-name string "" "Where the deploy lands, in words (e.g. staging, production); shown in the run summary and by al explain."])
 
 (define-record model-tier #:positional (tier model)
   "One model tier of an agent, written (TIER \"MODEL-ID\" [#:effort LEVEL]) inside #:models."
@@ -517,7 +544,75 @@
 (define artefact-types (map kind-name (family-kinds (find-family 'artefact))))
 
 ;; Families that hold exactly one option (emitted as an object, not an array).
-(define singleton-families '(layer forge storage voice concurrency dashboard budget))
+(define singleton-families '(layer forge storage voice concurrency dashboard budget cycle))
+
+;; Placeholders a stage #:branch may contain.
+(define delivery-placeholders '("{cycle}" "{version}" "{date}"))
+
+;; ---------------------------------------------------------------------------------------
+;; Delivery presets: (delivery PRESET #:param value …) stands for (stage …) and (cycle …) clauses
+;; ---------------------------------------------------------------------------------------
+
+(define all-classes '(feature bug chore patch))
+(define (sym x) (if (string? x) (string->symbol x) x))
+(define (syms xs) (map sym xs))
+(define (final-stage p) `(stage main #:branch ,(hash-ref p 'main) #:accepts () #:agents-may-merge #f))
+
+(define-preset delivery trunk
+  "Trunk-based: every change goes straight into the main branch (through a pull request where a forge exists)."
+  #:expand (lambda (p) (list `(stage main #:branch ,(hash-ref p 'main) #:entry ,(sym (hash-ref p 'entry)))))
+  [main string "main" "The main branch; equals (codebase #:default-branch …)."]
+  [entry (enum merge squash rebase fast-forward) squash "How a change enters the main branch."])
+
+(define-preset delivery sprint
+  "Sprints: work collects in a branch per sprint (sprint/{cycle}); a person accepts the sprint into main. Agents never merge into main."
+  #:expand (lambda (p)
+             (list `(cycle sprint #:stage sprint #:length-days ,(hash-ref p 'lengthDays) #:name ,(hash-ref p 'name))
+                   `(stage sprint #:branch "sprint/{cycle}" #:from main #:accepts ,(syms (hash-ref p 'accepts)) #:entry merge)
+                   (final-stage p)))
+  [main string "main" "The main branch; equals (codebase #:default-branch …)."]
+  [length-days integer 14 "Days per sprint."]
+  [name string "{year}-s{week}" "Name of a sprint (see (cycle sprint …) #:name)."]
+  [accepts (list-of (enum chore bug feature patch)) (feature bug chore patch) "Work classes that go into the sprint."])
+
+(define-preset delivery gitflow
+  "Gitflow: work collects in develop; a release branch per version is cut from develop and merged into main by a person; hotfix branches are cut from main. Agents only merge into develop."
+  #:expand (lambda (p)
+             (list `(cycle release #:stage release #:name "{version}")
+                   `(stage develop #:branch ,(hash-ref p 'develop) #:from main #:accepts ,all-classes #:entry merge)
+                   `(stage release #:branch "release/{version}" #:from develop #:into main #:accepts () #:agents-may-merge #f)
+                   `(stage hotfix #:branch "hotfix/{date}" #:from main #:into main #:accepts () #:agents-may-merge #f)
+                   (final-stage p)))
+  [main string "main" "The main branch; equals (codebase #:default-branch …)."]
+  [develop string "develop" "The integration branch work is delivered into."])
+
+(define-preset delivery release-train
+  "A release train: work collects in a train branch that leaves on a schedule (every #:length-days days) or per version (#:length-days 0); a person merges the train into main."
+  #:expand (lambda (p)
+             (define days (hash-ref p 'lengthDays))
+             (list (if (= days 0)
+                       `(cycle release #:stage train #:name ,(hash-ref p 'name))
+                       `(cycle sprint #:stage train #:length-days ,days #:name ,(hash-ref p 'name)))
+                   `(stage train #:branch "train/{cycle}" #:from main #:accepts ,all-classes #:entry merge)
+                   (final-stage p)))
+  [main string "main" "The main branch; equals (codebase #:default-branch …)."]
+  [length-days integer 14 "Days per train; 0 = a versioned train (one per `al cycle start --version V`), whose #:name must contain {version}."]
+  [name string "{date}" "Name of a train (see (cycle …) #:name)."])
+
+(define-preset delivery phase-gate
+  "Phase gates: work enters the first phase branch (phase/NAME); a person promotes it through each later phase and finally into main."
+  #:expand (lambda (p)
+             (define phases (syms (hash-ref p 'phases)))
+             (append
+              (for/list ([ph (in-list phases)] [i (in-naturals)])
+                (define next (if (< (add1 i) (length phases)) (list-ref phases (add1 i)) 'main))
+                (define branch (format "phase/~a" ph))
+                (if (= i 0)
+                    `(stage ,ph #:branch ,branch #:from main #:into ,next #:accepts ,all-classes)
+                    `(stage ,ph #:branch ,branch #:from main #:into ,next #:accepts () #:agents-may-merge #f)))
+              (list (final-stage p))))
+  [main string "main" "The main branch; equals (codebase #:default-branch …)."]
+  [phases (list-of symbol) (build verify accept) "Phase names in order; agents deliver into the first."])
 
 (define semantic-rules
   '("Exactly one (codebase …) clause and at least one (adw …) clause."
@@ -526,7 +621,7 @@
     "Command and hop names share one namespace; step names are unique within an ADW (after compose expansion)."
     "A (ship) step must come after a (review) step in the same ADW."
     "An ADW whose review option is `auto` with #:ship merge or deploy must contain at least one (check …) step before its (review) step, and #:require-checks must not be empty: zero-touch needs a closed loop."
-    "#:ship deploy needs #:deploy-cmd."
+    "#:ship deploy needs #:deploy-cmd on the review option or on every stage the ADW delivers to."
     "prompt-input `issue`, trigger `forge-actions`, and webhook issue events need a forge other than `none`."
     "prompt-input `voice` and trigger `voice` need a (voice …) declaration."
     "An ADW's environment stack has at most one option per kind; `host` cannot be combined with `worktree`; an ADW with run steps that write needs `worktree`."
@@ -543,4 +638,11 @@
     "(notify …): #:to-env, #:from-env and #:smtp-url-env of `email` take the NAME of an environment variable in capitals (A–Z, 0–9, _); a value that looks like an e-mail address, a URL or a host name is rejected, because the layer file is committed. #:events lists at least one event and #:timeout is 1–60. Two notifiers of the same kind need #:id."
     "A (script …) step needs a `worktree` environment in the ADW's stack, like check and ship. #:waiting-exit codes are 1–255; #:journal is a path relative to the worktree, without `..` or a leading `/`, whose only placeholder is `{adw_id}`."
     "(include \"FILE\") splices the clauses of FILE (plain s-expressions, no #lang line; a path relative to agentic.rkt) where it stands: at the top level of (agentic-layer …), or inside (codebase …) for cmd, paths and conditional-doc clauses. Errors point into FILE. An included file cannot include another. `al adopt` writes its declarations this way."
+    "Stages: names are unique; #:from and #:into name declared stages; following #:into (default #:from) from every stage reaches the one final stage (no #:from, no #:into) without a cycle; the final stage's #:branch has no placeholder and equals (codebase #:default-branch …); stage branches are unique."
+    "A stage #:branch is a valid git branch name after its placeholders are filled; placeholders are {cycle}, {version} (only on the (cycle …) #:stage) and {date}."
+    "(cycle sprint|release …) needs declared stages; its #:stage is a declared stage that is not the final one and whose #:branch contains {cycle} (release: {cycle} or {version}); sprint #:length-days is 1–366; #:name uses only {year} {week} {n} {date} {version}, and a release #:name contains {version}."
+    "#:deliver-to names a declared stage and needs stages. Every class an ADW with a (ship) step can produce (#:classes, or all four) routes to a stage: its #:deliver-to, which must accept each of those classes, else the first declared stage that accepts the class, else the final stage. Without any stage, runs use (codebase #:default-branch …) exactly as before, and the IR has no stages, cycle or delivery key."
+    "A zero-touch ADW (review auto with #:ship merge or deploy) may only deliver to stages with #:agents-may-merge #t."
+    "#:entry fast-forward is rejected with (forge github …): GitHub cannot merge a pull request by fast-forward."
+    "(delivery PRESET #:param value …) is declared at most once and expands to (stage …) and (cycle …) clauses (see Delivery presets); a (stage NAME …) with the name of a preset's stage replaces it, another name adds a stage; a (cycle …) next to a preset that declares one is an error."
     "Kinds marked planned compile but are refused by the generator."))

@@ -21,14 +21,15 @@
   (define s (hash-set (type->schema (field-type f)) 'description (field-doc f)))
   (if (field-none? f) (hash-set s 'type (list (hash-ref s 'type) "null")) s))
 
-(define (object doc fields #:extra [extra (hasheq)])
+;; #:optional lists JSON keys (symbols) that are left out of `required`.
+(define (object doc fields #:extra [extra (hasheq)] #:optional [optional '()])
   (define props
     (for/fold ([h extra]) ([f (in-list (emitted-fields fields))])
       (hash-set h (field-json-key f) (field-schema f))))
   (hasheq 'type "object"
           'description doc
           'additionalProperties #f
-          'required (sort (map symbol->string (hash-keys props)) string<?)
+          'required (sort (map symbol->string (filter (lambda (k) (not (memq k optional))) (hash-keys props))) string<?)
           'properties props))
 
 (define (kind-schema k)
@@ -45,9 +46,9 @@
              'oneOf (if (family-default-kind fam) alts (cons (hasheq 'type "null") alts)))]
     [else (hasheq 'type "array" 'description (family-doc fam) 'items (hasheq 'oneOf alts))]))
 
-(define (rec name #:extra [extra (hasheq)])
+(define (rec name #:extra [extra (hasheq)] #:optional [optional '()])
   (define r (find-record name))
-  (object (record-doc r) (record-fields r) #:extra extra))
+  (object (record-doc r) (record-fields r) #:extra extra #:optional optional))
 
 (define name-prop (hasheq 'name (hasheq 'type "string")))
 (define (step name kind) (rec name #:extra (hash-set name-prop 'kind (hasheq 'const kind))))
@@ -71,13 +72,21 @@
                    'adws
                    (array-of
                     (rec 'adw
+                         #:optional '(deliverTo)
                          #:extra (hash-set name-prop 'steps
                                            (array-of (hasheq 'oneOf (list (step 'step-run "run")
                                                                           (step 'step-check "check")
                                                                           (step 'step-script "script")
                                                                           (step 'step-review "review")
                                                                           (step 'step-ship "ship")
-                                                                          (step 'step-fan-out "fan-out"))))))))])
+                                                                          (step 'step-fan-out "fan-out")))))))
+                   'stages
+                   (array-of (rec 'stage #:extra (hash-set name-prop 'origin
+                                                           (hasheq 'type "string"
+                                                                   'description "\"declared\", or \"preset NAME\" for a stage a (delivery …) preset made."))))
+                   'delivery
+                   (hasheq 'type (list "object" "null")
+                           'description "The (delivery PRESET …) clause: {preset, params, expansion (the clauses it stands for, one string each)}; null when stages are declared by hand only."))])
               ([fam (in-list (all-families))])
       (hash-set h (string->symbol (family-key fam)) (family-schema fam))))
   (hasheq '$schema "https://json-schema.org/draft/2020-12/schema"
@@ -86,5 +95,6 @@
           'description "IR emitted by #lang al. Generated from racket/al/private/vocab.rkt — do not edit."
           'type "object"
           'additionalProperties #f
-          'required (sort (map symbol->string (hash-keys props)) string<?)
+          ;; stages, cycle and delivery exist only in the IR of a layer that declares a stage
+          'required (sort (map symbol->string (filter (lambda (k) (not (memq k '(stages cycle delivery)))) (hash-keys props))) string<?)
           'properties props))

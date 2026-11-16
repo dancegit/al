@@ -35,6 +35,17 @@ def test_the_runtime_s_full_example_ir_equals_the_compiled_full_example(tmp_path
                                    "kit/runtime/tests/full.layer.json")
 
 
+def test_the_runtime_s_delivery_fixture_equals_the_compiled_fixture(tmp_path) -> None:
+    """kit/runtime/tests/data/delivery-sprint.json is the `stages`, `cycle` and `delivery` of the compiled
+    racket/al/tests/fixtures/delivery-sprint.rkt, so the runtime's delivery tests run on the real IR shape."""
+    shutil.copy(ROOT / "racket" / "al" / "tests" / "fixtures" / "delivery-sprint.rkt", tmp_path / "agentic.rkt")
+    compiled = json.loads(al("compile", tmp_path).stdout)
+    committed = json.loads((ROOT / "kit" / "runtime" / "tests" / "data" / "delivery-sprint.json").read_text())
+    assert {key: compiled[key] for key in ("stages", "cycle", "delivery")} == committed, (
+        "kit/runtime/tests/data/delivery-sprint.json is stale; regenerate it from the stages, cycle and delivery "
+        "of `tools/al compile` on racket/al/tests/fixtures/delivery-sprint.rkt (copied as agentic.rkt)")
+
+
 VOCABULARY_LAYER = """#lang al
 (agentic-layer #:name "defaults"
   (codebase #:root "../app" #:languages (python) (cmd test "true"))

@@ -1,0 +1,5 @@
+(cycle release #:stage release #:name "{version}")
+(stage develop #:branch "develop" #:from main #:accepts (feature bug chore patch) #:entry merge)
+(stage release #:branch "release/{version}" #:from develop #:into main #:accepts () #:agents-may-merge #f)
+(stage hotfix #:branch "hotfix/{date}" #:from main #:into main #:accepts () #:agents-may-merge #f)
+(stage main #:branch "main" #:accepts () #:agents-may-merge #f)

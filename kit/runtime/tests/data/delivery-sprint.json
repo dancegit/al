@@ -1,0 +1,62 @@
+{
+  "cycle": {
+    "id": "sprint",
+    "kind": "sprint",
+    "lengthDays": 14,
+    "name": "{year}-s{week}",
+    "stage": "sprint",
+    "status": "stable"
+  },
+  "delivery": {
+    "expansion": [
+      "(cycle sprint #:stage sprint #:length-days 14 #:name \"{year}-s{week}\")",
+      "(stage sprint #:branch \"sprint/{cycle}\" #:from main #:accepts (feature bug chore patch) #:entry merge)",
+      "(stage main #:branch \"main\" #:accepts () #:agents-may-merge #f)"
+    ],
+    "params": {
+      "accepts": [
+        "feature",
+        "bug",
+        "chore",
+        "patch"
+      ],
+      "lengthDays": 14,
+      "main": "main",
+      "name": "{year}-s{week}"
+    },
+    "preset": "sprint"
+  },
+  "stages": [
+    {
+      "accepts": [
+        "feature",
+        "bug",
+        "chore",
+        "patch"
+      ],
+      "agentsMayMerge": true,
+      "branch": "sprint/{cycle}",
+      "checks": [],
+      "deployCmd": "",
+      "entry": "merge",
+      "environmentName": "",
+      "from": "main",
+      "into": "",
+      "name": "sprint",
+      "origin": "preset sprint"
+    },
+    {
+      "accepts": [],
+      "agentsMayMerge": false,
+      "branch": "main",
+      "checks": [],
+      "deployCmd": "",
+      "entry": "merge",
+      "environmentName": "",
+      "from": "",
+      "into": "",
+      "name": "main",
+      "origin": "preset sprint"
+    }
+  ]
+}

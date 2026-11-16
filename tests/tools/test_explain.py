@@ -154,3 +154,29 @@ def test_describe_review_without_patch():
 
 def test_describe_ship():
     assert explain.describe_step({"kind": "ship"}) == "ship"
+
+
+# --- delivery ------------------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+FULL_IR = json.loads((Path(__file__).resolve().parents[2] / "kit" / "runtime" / "tests" / "full.layer.json").read_text())
+
+
+def test_explain_delivery_preset_lists_its_stages_and_expansion():
+    heading, text, bullets = explain.explain({"head": "delivery", "first": "  (delivery sprint #:length-days 14)"}, FULL_IR)
+    joined = " ".join([heading, text, *bullets])
+    assert heading == "How work is delivered"
+    assert "sprint/{cycle}" in joined
+    assert "agents may not merge into main" in joined
+    for clause in FULL_IR["delivery"]["expansion"]:
+        assert clause in joined
+    _, _, declared = explain.explain({"head": "stage", "first": "  (stage hotfix"}, FULL_IR)
+    assert any("`hotfix`: branch `hotfix/{date}`" in line and "lands in production" in line for line in declared)
+
+
+def test_explain_adw_says_where_it_delivers():
+    _, text, _ = explain.explain({"head": "adw", "first": "  (adw hotfix #:description"}, FULL_IR)
+    assert "delivers into hotfix (`hotfix/{date}`)" in text
+    _, zte, _ = explain.explain({"head": "adw", "first": "  (adw zte #:description"}, FULL_IR)
+    assert "delivers into sprint (`sprint/{cycle}`)" in zte
