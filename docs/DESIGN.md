@@ -147,6 +147,29 @@ against it (`deliver-patch-1`, `deliver-implement-1`, the checks again, the revi
 handed to a person like any stopped run, with `delivery:<reason>` as the reason. The target is recorded in
 `state.json` (`delivery`), so a resumed run keeps it.
 
+The `deliver` step runs only for a ship step that runs: a ship step skipped by `#:when` records no `deliver`
+step. The compiler rejects `#:entry fast-forward` with any forge, because through a forge a pull request is
+merged by merge, squash or rebase.
+
+**Follow-ups for a person (protected modules).**
+
+- **`ship.py`, entry methods without a forge.** (1) Add `ENTRY_METHODS = ("merge", "squash", "rebase",
+  "fast-forward")` at module level; `delivery.entry_supported` reads it and then accepts those methods with
+  no other change. (2) In `_integrate`, read `entry = (getattr(layer, "delivery", {}) or {}).get("entry",
+  "merge")`: for `rebase`, replace `_merge(worktree, base, sandbox)` with `git rebase <base>` (abort on
+  conflict, like `_merge`); for `fast-forward`, do not merge, require `git merge-base --is-ancestor <base>
+  HEAD` and otherwise raise `StepFailed("ship", "fast-forward impossible: <branch> moved")`; for `squash`,
+  merge as today. (3) In `_merge_locally` and `_merge_via_remote`, for `squash` first create one commit with
+  `git commit-tree HEAD^{tree} -p <base> -m <title>` and update or push that commit instead of HEAD
+  (sandboxed: `gitsafe.import_objects` on it before `gitsafe.update_ref`). (4) In `ship()`, call
+  `client.merge_pr(pr["number"], method=entry)` when `entry != "fast-forward"`.
+- **`review.py`, a public patch round.** Offer `patch_round(layer, state, step, request, prefix="",
+  env_stack=None) -> dict` (today's `_patch_round` with the request text and the step-name prefix as
+  parameters: step names `{prefix}patch-1` / `{prefix}implement-1`), returning `{"patch_plan",
+  "implement_output", "checks_rerun"}`, plus public `checks_that_ran(state, adw)` and `model_set(layer,
+  command)`. `delivery._conflict_round` would then call `review.patch_round(…, prefix="deliver-")` and drop
+  its own `_model_set` and `_checks_that_ran`.
+
 ## Separation from the application
 
 The layer is its own directory (default `<app>.al`, its own git repo). The app is referenced by

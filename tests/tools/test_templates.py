@@ -156,3 +156,10 @@ def test_a_focus_line_is_rendered_where_it_takes_precedence_and_the_output_contr
             < text.index("## Report") < text.index("Finish with a concise report"))
     plan = (sibling / "commands" / "plan.md").read_text()                   # no focus: the section stays, empty
     assert plan.index("## Codebase-specific instructions") < plan.index("## Report") < plan.index("ONLY the path")
+
+
+def test_implement_reports_each_validation_command_with_exit_code_and_log() -> None:
+    text = (KIT / "templates" / "commands" / "implement.md").read_text()
+    assert "${artefacts_dir}/validation/" in text and "-rs" in text
+    report = text[text.index("## Report"):]
+    assert "exit code" in report and "log" in report

@@ -365,6 +365,18 @@ def _review_step(adw: Mapping[str, Any]) -> dict[str, Any] | None:
     return next((dict(step) for step in adw.get("steps", []) if step.get("kind") == "review"), None)
 
 
+def _model_set(layer: Any, command_name: str) -> str:
+    """The model tier of a command (its #:model-set, else base)."""
+    return str(layer.command(command_name).get("modelSet") or "base")
+
+
+def _checks_that_ran(state: Any, adw: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The ADW's check steps that already ran in this run, in order."""
+    ran = {record["name"] for record in state.steps if record.get("kind") == "check"
+           and record.get("status") in {"passed", "failed"}}
+    return [step for step in adw.get("steps", []) if step.get("kind") == "check" and step.get("name") in ran]
+
+
 def _conflict_round(layer: Any, state: Any, adw: Mapping[str, Any], files: list[str], head: str,
                     env_stack: Any) -> None:
     """Merge the stage head into the worktree and let the review's patch and implement commands
@@ -386,10 +398,10 @@ def _conflict_round(layer: Any, state: Any, adw: Mapping[str, Any], files: list[
     request = (f"- merge conflict with {branch} in {listed}\n"
                "  Resolution: resolve the conflict markers keeping both intents; do not change unrelated code")
     patch_plan = agents.run_agent(layer, state, "deliver-patch-1", str(step["patch"]), [request, state.plan or ""],
-                                  review._model_set(layer, str(step["patch"])), env_stack)
+                                  _model_set(layer, str(step["patch"])), env_stack)
     state.outputs["deliver-patch-1"] = patch_plan
     implemented = agents.run_agent(layer, state, "deliver-implement-1", str(step["implement"]), [patch_plan],
-                                   review._model_set(layer, str(step["implement"])), env_stack)
+                                   _model_set(layer, str(step["implement"])), env_stack)
     state.outputs["deliver-implement-1"] = implemented
     marked = [name for name in files if (worktree / name).is_file()
               and CONFLICT_MARKER in (worktree / name).read_text(encoding="utf-8", errors="replace")]
@@ -402,7 +414,7 @@ def _conflict_round(layer: Any, state: Any, adw: Mapping[str, Any], files: list[
         raise StepFailed("deliver", f"delivery:conflict: {', '.join(remaining)} still conflict with {branch} "
                                  "after the patch round")
     rerun = []
-    for check in review._checks_that_ran(state, layer.adw(state.adw)):
+    for check in _checks_that_ran(state, layer.adw(state.adw)):
         steps.run_check_with_resolve(layer, state, check, env_stack)
         rerun.append(check["name"])
     ship.commit_pending(worktree, state, _never_commit(layer, state), sandbox,

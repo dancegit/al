@@ -310,13 +310,6 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
     record = state.step_record(name, kind)
     if record.get("status") == "passed":
         return
-    if kind == "ship" and getattr(layer, "delivery", None):
-        # The delivery checks (delivery.before_ship) are a step of their own, recorded as `deliver`
-        # before the ship step: a run they stop is handed to a person like any other stopped run.
-        from . import delivery
-
-        _run_recorded(layer, state, DELIVER_STEP, DELIVER_STEP,
-                      lambda: delivery.before_ship(layer, state, adw, step, env_stack))
     when = str(step.get("when", "always"))
     if when.startswith("class-") and state.klass != when.removeprefix("class-"):
         stamp = _timestamp()
@@ -325,6 +318,14 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
         events.say(f"[adw {state.adw_id}] step {name} ({kind}) skipped: {record['detail']}", "step.end",
                    step=name, kind=kind, status="skipped", detail=record["detail"], seconds=0.0)
         return
+    if kind == "ship" and getattr(layer, "delivery", None):
+        # The delivery checks (delivery.before_ship) are a step of their own, recorded as `deliver`
+        # before the ship step, only for a ship step that runs (a ship step skipped by `#:when` has none):
+        # a run they stop is handed to a person like any other stopped run.
+        from . import delivery
+
+        _run_recorded(layer, state, DELIVER_STEP, DELIVER_STEP,
+                      lambda: delivery.before_ship(layer, state, adw, step, env_stack))
     _run_recorded(layer, state, name, kind, lambda: _execute_step(layer, state, adw, step, env_stack), step)
 
 

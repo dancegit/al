@@ -783,8 +783,9 @@
                     (define twin (findf (lambda (o) (and (not (eq? o st)) (equal? (hash-ref o 'branch) b))) stage-list))
                     (when twin
                       (fail "~a: branch ~s is used by two stages, ~a and ~a; a stage is one branch" who b (hash-ref twin 'name) name))
-                    (when (and (equal? (hash-ref st 'entry) "fast-forward") (equal? (hash-ref forge 'kind) "github"))
-                      (fail "~a: #:entry fast-forward is not possible with (forge github …): GitHub cannot merge a pull request by fast-forward; use merge, squash or rebase" who))))))
+                    (when (and (equal? (hash-ref st 'entry) "fast-forward") (not (equal? (hash-ref forge 'kind) "none")))
+                      (fail "~a: #:entry fast-forward is not possible with (forge ~a …): a pull request is merged by merge, squash or rebase; use one of those"
+                            who (hash-ref forge 'kind)))))))
     (define all-four '("chore" "bug" "feature" "patch"))
     ;; (class . stage) for every class the ADW can produce
     (define (stage-routes a)

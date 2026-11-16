@@ -47,7 +47,7 @@ Protected paths:
 
 1. Read PLAN_FILE and every file it names.
 2. Implement the steps in order.
-3. Run the plan's validation commands, then the Validation Commands below, from the worktree root.
+3. Run the plan's validation commands, then the Validation Commands below, from the worktree root, each with its output saved to its own log, `${artefacts_dir}/validation/NN-NAME.log` (NN its position, NAME a short slug of the command), and note its exit code. Add `-rs` to every pytest command so the log ends with the test summary and the reason of each skip; for another test runner keep its summary line. A re-run overwrites the command's log.
 4. On any failure: read the output, find the cause, fix the code, re-run from the first command. Repeat until every command exits 0.
 5. Re-read the plan once more and confirm each step and each acceptance criterion is satisfied by the diff.
 
@@ -60,7 +60,7 @@ All must exit 0 before you report.
 ## Report
 
 - A bullet summary of what you implemented, one bullet per plan step, with deviations and `REQUIRES HUMAN` lines called out.
-- The pass/fail result of each validation command.
+- One line per validation command from its last run: the command, its exit code, its log path, and for a test command the summary line from the log (e.g. `412 passed, 3 skipped`). A reviewer reads these instead of running the commands again.
 - The output of `git diff --stat` (plus `git status --short` if you created files).
 
 {{output_contract}}
