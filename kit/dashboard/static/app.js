@@ -2342,6 +2342,7 @@
         h("div", { class: "card al-panel" }, h("div", { class: "card-head" }, h("h3", { text: "al" }),
           h("span", { class: "dim", text: "each button runs exactly the command line shown under it" })),
           data.al.found ? null : h("div", { class: "why", text: `The al tool was not found; the actions need it. Looked for: ${data.al.looked.join(", ")}` }),
+          toolsTable(data.al.tools || []),
           actions),
         data.jobs.length ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", { text: "Jobs" })),
           h("div", { class: "job-list" }, data.jobs.map((job) => h("a", { class: "job-row", href: `#/job/${enc(job.id)}` },
@@ -2349,6 +2350,18 @@
             h("span", { class: "faint", text: fmt.ago(job.created) }))))) : null,
         data.summary ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", { text: "Existing agent setup" })),
           h("div", { class: "md" }, renderMarkdown(data.summary))) : null);
+    }
+
+    /** What al doctor sees on this machine: each tool, where it was found (or why not), its version. */
+    function toolsTable(tools) {
+      if (!tools.length) return null;
+      return h("table", { class: "tools" },
+        h("thead", {}, h("tr", {}, ["tool", "found where", "version"].map((text) => h("th", { text })))),
+        h("tbody", {}, tools.map((tool) => h("tr", { class: tool.found ? "" : "missing", dataset: { tool: tool.tool } },
+          h("td", { class: "mono", text: tool.tool }),
+          h("td", {}, tool.found ? [h("span", { class: "mono", text: tool.path }), " ", h("span", { class: "faint", text: `(${tool.source})` })]
+            : h("div", { class: "why", text: tool.sentence })),
+          h("td", { class: "dim", text: tool.version || "" })))));
     }
 
     filter.addEventListener("input", renderList);
@@ -2401,13 +2414,15 @@
         h("div", { class: "dim" }, h("span", { class: "mono", text: job.repo_dir }), job.layer ? [" · layer ", h("span", { class: "mono", text: job.layer })] : null,
           ` · started ${fmt.time(job.started || job.created)} · `,
           job.status === "running" && job.started ? h("span", { dataset: { since: job.started }, text: fmt.dur(duration) }) : fmt.dur(duration)),
-        job.reason ? h("div", { class: "why", text: job.reason }) : null)));
+        job.reason ? h("div", { class: "why", text: job.reason }) : null,
+        job.retry_from && store.actions.enabled ? h("div", { class: "job-retry" }, retryButton(job)) : null)));
       replace(steps, h("div", { class: "card-head" }, h("h3", { text: "Steps" }), h("span", { class: "dim", text: "run in order; the first that fails stops the job" })),
         job.steps.map((step) => h("div", { class: `job-step s-${step.status}`, dataset: { step: step.name } },
           pill(step.status), h("code", { class: "cmd", text: step.display }),
           h("span", { class: "spacer" }),
           h("span", { class: "num dim", text: step.exit !== null && step.exit !== undefined ? `exit ${step.exit}` : "" }),
-          h("span", { class: "num dim", text: step.started ? fmt.dur((step.ended || now()) - step.started) : "" }))));
+          h("span", { class: "num dim", text: step.started ? fmt.dur((step.ended || now()) - step.started) : "" }),
+          step.reason ? h("div", { class: "why", text: step.reason }) : null)));
       replace(changed, h("div", { class: "card-head" }, h("h3", { text: "Changed files" })),
         job.status === "running" ? h("div", { class: "faint", text: "listed when the job ends" })
           : [job.changed.length ? h("ul", { class: "changed" }, job.changed.map((c) => h("li", {}, h("span", { class: `badge change-${c.change}`, text: c.change }), " ",
@@ -2420,6 +2435,29 @@
           h("td", { class: "actions" }, h("button", { type: "button", class: "toggle", "data-role": "view", text: "View", onclick: () => showDoc(doc.name) }))))))
           : h("div", { class: "faint", text: "none" }));
       if (shownDoc) showDoc(shownDoc);
+    }
+
+    /** "Retry from STEP": the steps that did not pass run again (a retried author accepts the agentic.rkt
+     * the earlier attempt left, when it compiles); the passed ones and the output stay. */
+    function retryButton(job) {
+      const from = job.retry_from;
+      const names = job.steps.map((step) => step.name);
+      const again = names.slice(names.indexOf(from));
+      const note = h("span", { class: "dim" });
+      const button = h("button", { type: "button", class: "btn writes", text: `Retry from ${from}` });
+      button.addEventListener("click", async () => {
+        if (!window.confirm(`Run ${again.join(", ")} again for ${job.repo_name}? The steps that passed are kept.`)) return;
+        button.disabled = true;
+        try {
+          await api.post("/api/job/retry", { job: job.id, from });
+          await load();
+        } catch (error) {
+          note.className = "why error";
+          note.textContent = error.message;
+          button.disabled = false;
+        }
+      });
+      return [button, " ", note];
     }
 
     async function showDoc(name) {

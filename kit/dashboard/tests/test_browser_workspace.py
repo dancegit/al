@@ -6,7 +6,8 @@ looked.
     uv run --with pytest --with playwright pytest kit/dashboard/tests/test_browser_workspace.py
 
 Skipped without Playwright or Chrome (nothing is downloaded). With AL_DASHBOARD_SHOTS=<directory> the
-tests save workspace-repos.png, workspace-adopt-preview.png and workspace-job.png there."""
+tests save workspace-repos.png, workspace-adopt-preview.png, workspace-job.png, job-missing-tool.png and
+job-retried.png there."""
 from __future__ import annotations
 
 import os
@@ -150,5 +151,38 @@ def test_actions_disabled_without_al_say_where_it_looked(tmp_path, workspace, ta
         why = page.locator('.al-panel [data-action="scout"] .why').inner_text()
         assert why.startswith("needs the al tool; looked for: /nonexistent")
         assert "The al tool was not found" in page.locator(".al-panel").inner_text()
+    finally:
+        stop_server(running)
+
+
+def test_a_failed_job_shows_its_reason_and_retry_button(tmp_path, workspace, tab):
+    from test_actions import post, wait_job
+    sentence = "racket is missing: al looked at AL_RACKET (not set), PATH, ~/.nix-profile/bin, ~/racket/bin; install Racket."
+    al = wf.fake_al(tmp_path / "bin" / "al", fail={"author": (4, f"al: author: {sentence}")})
+    running = serve(tmp_path, workspace, al)
+    try:
+        status, preview = post(running, {"repo": "quill", "action": "adopt"})
+        assert status == 200
+        wait_job(running, preview["job"])
+        status, body = post(running, {"repo": "quill", "action": "adopt", "confirm": preview["nonce"]})
+        assert status == 202
+        job_id = body["job"]
+        assert wait_job(running, job_id)["status"] == "failed"
+        page = tab(running)
+        page.on("dialog", lambda dialog: dialog.accept())
+        open_(page, f"/job/{job_id}")
+        page.wait_for_selector('.job-step[data-step="author"] .why')
+        assert page.locator('.job-step[data-step="author"] .why').inner_text() == sentence
+        assert page.locator(".run-head .why").inner_text().startswith("author: racket is missing")
+        button = page.locator(".job-retry button")
+        assert button.inner_text() == "Retry from author"
+        no_personal_paths(page)
+        shot(page, "job-missing-tool.png")
+        wf.fake_al(al)                                  # the tool is there now
+        button.click()
+        until(page, "document.querySelector('.run-head .pill') && document.querySelector('.run-head .pill').textContent === 'passed'", 30000)
+        page.wait_for_function("document.querySelectorAll('.job-step.s-passed').length === 5", timeout=10000)
+        assert page.locator(".job-retry").count() == 0 and page.locator(".job-step .why").count() == 0
+        shot(page, "job-retried.png")
     finally:
         stop_server(running)

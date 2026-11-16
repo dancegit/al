@@ -316,7 +316,9 @@ def test_job_output_streams_on_the_tail(ws, tmp_path, workspace_server):
                 seen += segment[0]
                 if segment[0].strip() == "red line":
                     colours.add(segment[1])
-        assert seen.startswith("$ al scout ws/fern") and "red line" in seen and colours - {None, ""}
+        # the prerequisite check (al doctor), then the step
+        assert seen.startswith("$ al doctor fern.al --for scout\nok\n$ al scout ws/fern\n"), seen
+        assert "red line" in seen and colours - {None, ""}
     finally:
         reader.close()
     wait_job(running, job_id)
@@ -383,3 +385,141 @@ def test_actions_say_when_al_is_missing(ws, tmp_path, monkeypatch, workspace_ser
     running = workspace_server(ws, al="/nonexistent")
     status, body = post(running, {"repo": "fern", "action": "scout"})
     assert status == 409 and body["error"].startswith("this action needs the al tool; looked for: /nonexistent, ")
+
+
+# --- failure reasons, the prerequisite check and "Retry from STEP" --------------------------------------
+
+RACKET_MISSING = "al: author: racket is missing: al looked at AL_RACKET (not set), PATH; set AL_RACKET."
+
+
+def adopt_job(running: Running) -> str:
+    """A confirmed adopt of quill (init, author, adopt, gen, check), after its preview job has ended."""
+    status, preview = post(running, {"repo": "quill", "action": "adopt"})
+    assert status == 200 and preview["nonce"], preview
+    wait_job(running, preview["job"])
+    status, body = post(running, {"repo": "quill", "action": "adopt", "confirm": preview["nonce"]})
+    assert status == 202, body
+    return body["job"]
+
+
+def test_a_missing_tool_is_the_failure_reason_of_its_step(ws, tmp_path, workspace_server):
+    al = wf.fake_al(tmp_path / "bin" / "al", fail={"author": (4, RACKET_MISSING)})
+    running = workspace_server(ws, al=al)
+    view = wait_job(running, adopt_job(running))
+    assert view["status"] == "failed"
+    steps = {s["name"]: s for s in view["steps"]}
+    assert steps["init"]["status"] == "passed" and steps["author"]["status"] == "failed"
+    assert steps["author"]["reason"].startswith("racket is missing: al looked at AL_RACKET")
+    assert [steps[n]["status"] for n in ("adopt", "gen", "check")] == ["skipped"] * 3
+    assert view["reason"].startswith("author: racket is missing") and view["retry_from"] == "author"
+    assert "Errno" not in json.dumps(view)
+    assert [c[0] for c in wf.calls(al)] == ["adopt", "init", "author"]     # the preview's dry run, then the job
+
+
+def test_preflight_stops_the_job_before_any_step(ws, tmp_path, workspace_server):
+    sentence = "racket is missing: al looked at AL_RACKET (not set), PATH; install Racket."
+    al = wf.fake_al(tmp_path / "bin" / "al", fail={"doctor": (4, sentence)})
+    running = workspace_server(ws, al=al)
+    began = time.monotonic()
+    job_id = adopt_job(running)
+    view = wait_job(running, job_id)
+    record = job_file(tmp_path / "jobs", job_id)
+    assert view["status"] == "failed" and record["ended"]
+    assert time.monotonic() - began < 2 + 1      # the confirmation round trip aside
+    assert wf.calls(al) == []                       # no step ran: neither the preview's dry run nor init
+    doctor = wf.calls(al, preflight=True)[-1:]
+    assert all(c[0] == "doctor" for c in wf.calls(al, preflight=True))
+    assert doctor[0][1] == real(ws) + "/quill.al"                   # the layer that does not exist yet
+    assert doctor[0][doctor[0].index("--for") + 1] == "init,author,adopt,gen,check"
+    steps = {s["name"]: s for s in view["steps"]}
+    assert steps["init"]["status"] == "failed" and steps["init"]["reason"] == sentence
+    assert all(steps[n]["status"] == "skipped" for n in ("author", "adopt", "gen", "check"))
+    assert view["reason"] == f"init: {sentence}"
+
+
+def test_retry_from_the_failed_step_runs_only_the_remaining_steps(ws, tmp_path, workspace_server):
+    al = wf.fake_al(tmp_path / "bin" / "al", fail={"author": (4, RACKET_MISSING)})
+    running = workspace_server(ws, al=al)
+    job_id = adopt_job(running)
+    first = wait_job(running, job_id)
+    assert first["status"] == "failed" and first["retry_from"] == "author"
+    init_before = job_file(tmp_path / "jobs", job_id)["steps"][0]
+    seen = len(wf.calls(al, preflight=True))
+    wf.fake_al(al)                                                   # the tool is there now
+    status, body = post(running, {"job": job_id, "from": "author"}, "/api/job/retry")
+    assert (status, body) == (202, {"job": job_id, "from": "author"})
+    view = wait_job(running, job_id)
+    assert view["status"] == "passed", view
+    after = wf.calls(al, preflight=True)[seen:]
+    assert [c[0] for c in after] == ["doctor", "author", "adopt", "gen", "check"]
+    assert after[1][-1] == "--accept-existing"
+    record = job_file(tmp_path / "jobs", job_id)
+    assert record["steps"][0]["started"] == init_before["started"] and record["steps"][0]["ended"] == init_before["ended"]
+    assert len(record["retries"]) == 1 and record["retries"][0]["from"] == "author"
+    assert all(s["status"] == "passed" for s in record["steps"]) and view["retry_from"] == "" and view["reason"] == ""
+    assert "--- retry from author" in (tmp_path / "jobs" / job_id / "output.log").read_text()
+    assert record["steps"][1]["display"].endswith("--accept-existing")
+
+
+def test_retry_is_refused_unless_it_starts_at_the_first_step_that_did_not_pass(ws, tmp_path, workspace_server):
+    al = wf.fake_al(tmp_path / "bin" / "al", fail={"author": (4, RACKET_MISSING)})
+    running = workspace_server(ws, al=al)
+    job_id = adopt_job(running)
+    wait_job(running, job_id)
+    retry = lambda body: post(running, body, "/api/job/retry")  # noqa: E731
+    status, body = retry({"job": job_id, "from": "init"})
+    assert status == 409 and "first step that did not pass: author" in body["error"]
+    assert retry({"job": job_id, "from": "gen"})[0] == 409
+    assert retry({"job": "0000ffff", "from": "author"})[0] == 404
+    for bad in ({"job": job_id, "from": "author", "extra": "x"}, {"job": job_id}, {"job": job_id, "from": ["author"]},
+                {"job": job_id, "from": "author now"}, ["x"]):
+        assert retry(bad)[0] == 400, bad
+    status, preview = post(running, {"repo": "comet", "action": "adopt"})        # a preview job
+    wait_job(running, preview["job"])
+    status, body = retry({"job": preview["job"], "from": "adopt-dry-run"})
+    assert status == 409 and "only a failed or interrupted job" in body["error"]
+    wf.fake_al(al, sleep=3)
+    assert retry({"job": job_id, "from": "author"})[0] == 202
+    status, body = retry({"job": job_id, "from": "author"})            # it is running now
+    assert status == 409
+    assert wait_job(running, job_id)["status"] == "passed"
+
+
+def test_retry_obeys_read_only_and_no_actions(ws, al, workspace_server):
+    for flag, error in (("--read-only", "the dashboard was started with --read-only"), ("--no-actions", "actions are off (--no-actions)")):
+        running = workspace_server(ws, flag, al=al)
+        assert post(running, {"job": "0000ffff", "from": "author"}, "/api/job/retry") == (403, {"error": error})
+
+
+def test_repo_detail_lists_the_tools(ws, al, workspace_server):
+    running = workspace_server(ws, al=al)
+    tools = running.json("/api/repo?repo=fern")["al"]["tools"]
+    rows = {row["tool"]: row for row in tools}
+    assert {"racket", "uv", "git"} <= set(rows)
+    assert all({"found", "looked", "path", "version", "sentence"} <= set(row) for row in tools)
+    assert rows["git"]["found"] is True and rows["git"]["looked"]
+
+
+def test_jobs_run_with_the_tool_folders_on_path(ws, al, tmp_path, workspace_server, monkeypatch):
+    real_uv = subprocess.run(["sh", "-c", "command -v uv"], capture_output=True, text=True).stdout.strip()
+    tools = tmp_path / "tool-folder"
+    tools.mkdir()
+    os.symlink(real_uv, tools / "uv")
+    monkeypatch.setenv("AL_UV", str(tools / "uv"))
+    running = workspace_server(ws, al=al)
+    job_id = start(running, "fern", "scout")
+    wait_job(running, job_id)
+    record = job_file(tmp_path / "jobs", job_id)
+    assert record["path"].startswith(str(tools) + os.pathsep) and record["path"].endswith(os.environ["PATH"])
+    assert record["status"] == "passed"
+
+    monkeypatch.setenv("AL_UV", str(tmp_path / "no-uv-here"))      # what the finder sees: no uv
+    calls = len(wf.calls(al, preflight=True))
+    nowhere = workspace_server(ws, al=al)
+    job_id = start(nowhere, "fern", "scout")
+    record = job_file(tmp_path / "jobs", job_id)                     # failed at once, no runner
+    assert record["status"] == "failed" and record["pid"] is None and record["ended"]
+    assert record["steps"][0]["reason"].startswith("uv is missing: AL_UV names")
+    assert record["reason"].startswith("scout: uv is missing") and job(nowhere, job_id)["retry_from"] == "scout"
+    time.sleep(0.5)
+    assert len(wf.calls(al, preflight=True)) == calls

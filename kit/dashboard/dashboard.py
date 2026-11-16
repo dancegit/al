@@ -120,6 +120,9 @@ WORKSPACE_GIT_TIMEOUT = 5      # seconds per git call of the scan
 JOB_ID = re.compile(r"^[0-9a-f]{8}$")
 JOB_HEARTBEAT = 5              # seconds between a job runner's heartbeats
 ACTION_KEYS = {"repo", "action", "confirm"}
+RETRY_KEYS = {"job", "from"}
+PREFLIGHT_TIMEOUT = 10      # seconds `al doctor --for …` may take before a job's first pending step
+TOOL_ROWS_TTL = 300         # seconds the Repos view's tools table (with versions) is kept
 PREVIEW_TTL = 600              # seconds a preview's confirmation stays valid
 _STAMP = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ")   # run.log line prefix since run events
 
@@ -2707,6 +2710,8 @@ class Model:
         self.al_looked = list(al_looked or [])
         self.no_actions = no_actions
         self.author_flags = list(author_flags or [])
+        self.finder = load_tool_finder(al)
+        self._tool_rows: tuple[float, list[dict[str, Any]]] | None = None
         self.previews: dict[str, tuple[str, str, tuple, float]] = {}   # nonce → (repo, action, signature, expires)
         self.action_lock = threading.Lock()
         self.workspace_version = workspace.version if workspace else 0
@@ -2871,7 +2876,33 @@ class Model:
         if entry is None:
             return None
         return {"repo": self.repo_view(entry), "summary": entry.summary, "actions": self.action_views(entry),
-                "jobs": self.job_list(entry.key, limit=20), "al": {"found": self.al is not None, "looked": self.al_looked}}
+                "jobs": self.job_list(entry.key, limit=20),
+                "al": {"found": self.al is not None, "looked": self.al_looked, "tools": self.tool_rows()}}
+
+    def author_agent(self) -> str:
+        """The agent kind `author` steps run with: --agent in the author flags, else claude-code."""
+        flags = self.author_flags
+        return flags[flags.index("--agent") + 1] if "--agent" in flags[:-1] else "claude-code"
+
+    def job_tools(self) -> tuple[str, ...]:
+        """The tools a job's steps run besides the al tool: uv (its shebang), git, racket and the agent CLI."""
+        agent = self.finder.agent_bin(self.author_agent()) if self.finder else ()
+        return ("uv", "git", "racket") + tuple(agent)
+
+    def tool_rows(self) -> list[dict[str, Any]]:
+        """al doctor's rows (tool, found where, version) for the Repos view; kept TOOL_ROWS_TTL seconds."""
+        if self.finder is None:
+            return []
+        now = time.monotonic()
+        if self._tool_rows is None or now - self._tool_rows[0] >= TOOL_ROWS_TTL:
+            agent = self.finder.agent_bin(self.author_agent())
+            try:
+                rows = self.finder.doctor_rows(("racket", "raco", "uv", "git") + tuple(agent), None, versions=True)
+            except Exception as exc:  # noqa: BLE001 — the table is a help; never a failed page
+                print(f"[dashboard] cannot list the tools: {exc}", file=sys.stderr)
+                rows = []
+            self._tool_rows = (now, rows)
+        return self._tool_rows[1]
 
     def start_action(self, entry: RepoEntry, name: str, nonce: str | None) -> tuple[int, dict[str, Any]]:
         """Every guard, then a preview (a writing action without a confirmation) or a job. → (status, body)."""
@@ -2930,6 +2961,7 @@ class Model:
         steps = build(entry, cfg, docs)
         app = os.path.realpath(entry.path)
         now = utc_stamp()
+        agent_flag = ["--agent", self.author_agent()] if "--agent" in self.author_flags[:-1] else []
         job = {"version": 1, "id": job_id, "repo": entry.key, "repo_name": entry.name, "repo_path": app,
                "repo_dir": self.ws_display(Path(app)), "action": name, "preview": preview, "status": "running",
                "pid": None, "host": socket.gethostname(), "created": now, "heartbeat": now, "started": None,
@@ -2937,14 +2969,86 @@ class Model:
                "steps": [{"name": s.name, "argv": s.argv, "display": display_argv(s.argv, self.ws_display, docs),
                           "doc": s.doc, "timeout": s.timeout, "status": "pending", "exit": None, "started": None,
                           "ended": None} for s in steps],
-               "changed": [], "repo_changes": [], "repo_unchanged": None}
+               "changed": [], "repo_changes": [], "repo_unchanged": None,
+               "path": self.job_path(),
+               "preflight": [str(cfg.al), "doctor", str(layer),
+                             "--for", ",".join(dict.fromkeys(s.argv[1] for s in steps if len(s.argv) > 1)), *agent_flag],
+               "retries": []}
+        uv = self.finder.find("uv") if self.finder is not None else None
+        if uv is not None and not uv.path and job["steps"]:
+            # the al tool starts through uv (its shebang): without it no step can run; say so at once
+            sentence = self.finder.missing_sentence(uv)
+            first, *rest = job["steps"]
+            first.update(status="failed", reason=sentence, ended=now)
+            for step in rest:
+                step["status"] = "skipped"
+            job.update(status="failed", reason=f"{first['name']}: {sentence}", ended=now, exit=127)
+            write_json_atomic(directory / "job.json", job)
+            self.hub.publish("job", job_summary(job))
+            return job_id
         write_json_atomic(directory / "job.json", job)
+        self._launch(directory)
+        self.hub.publish("job", job_summary(job))
+        return job_id
+
+    def job_path(self) -> str:
+        """A job's PATH: the folders of the tools it runs, then the dashboard's own PATH."""
+        base = os.environ.get("PATH", "")
+        if self.finder is None:
+            return base
+        try:
+            return self.finder.search_path(self.job_tools(), base)
+        except Exception:  # noqa: BLE001 — a PATH without the extra folders is still a PATH
+            return base
+
+    def _launch(self, directory: Path) -> None:
+        """The detached runner of the job in `directory` (dashboard.py --run-job)."""
         proc = subprocess.Popen([sys.executable, "-I", str(Path(__file__).resolve()), "--run-job", str(directory)],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 start_new_session=True, close_fds=True)
-        threading.Thread(target=proc.wait, name=f"job-{job_id}", daemon=True).start()   # no zombie runner
+        threading.Thread(target=proc.wait, name=f"job-{directory.name}", daemon=True).start()   # no zombie runner
+
+    def retry_job(self, job_id: str, step: str) -> tuple[int, dict[str, Any]]:
+        """Run a failed or interrupted job again from its first step that did not pass, in place: the
+        passed steps, their times and the output log stay. A retried `author` gets --accept-existing.
+        → (status, body)."""
+        if self.al is None:
+            return 409, {"error": f"retrying needs the al tool; looked for: {', '.join(self.al_looked)}"}
+        if self.jobs is None or self.workspace is None:
+            return 409, {"error": "actions are off"}
+        directory = self.jobs.dir(job_id)
+        job = self.jobs.read(job_id) if directory else None
+        if job is None or directory is None:
+            return 404, {"error": "unknown job"}
+        job = self.jobs.settle(job)
+        if job.get("preview") or job.get("status") not in ("failed", "interrupted"):
+            return 409, {"error": "only a failed or interrupted job can be retried"}
+        first = job_summary(job)["retry_from"]
+        if step != first:
+            return 409, {"error": f"retry starts at the first step that did not pass: {first}"}
+        app = str(job.get("repo_path") or "")
+        if not app or not self.workspace.inside(app) or not os.path.lexists(os.path.join(app, ".git")):
+            return 409, {"error": f"{job.get('repo_name')} is no longer a git repository inside the workspace"}
+        with self.action_lock:
+            busy = self.jobs.running_for(app)
+            if busy is not None or lock_held(lock_file(self.jobs.root, app)):
+                return 409, {"error": f"an action is already running on {job.get('repo_name')} "
+                                      f"(job {(busy or {}).get('id', '?')})"}
+            names = [s.get("name") for s in job["steps"]]
+            for s in job["steps"][names.index(step):]:
+                for key in ("exit", "started", "ended", "reason", "pid"):
+                    s.pop(key, None)
+                s.update(status="pending", exit=None, started=None, ended=None)
+                if s.get("name") == "author" and "--accept-existing" not in s["argv"]:
+                    s["argv"] = [*s["argv"], "--accept-existing"]
+                    s["display"] = display_argv(s["argv"], self.ws_display, directory / "docs")
+            now = utc_stamp()
+            job.update(status="running", reason="", exit=None, ended=None, pid=None, heartbeat=now,
+                       retries=[*(job.get("retries") or []), {"from": step, "at": now}], path=self.job_path())
+            write_json_atomic(directory / "job.json", job)
+            self._launch(directory)
         self.hub.publish("job", job_summary(job))
-        return job_id
+        return 202, {"job": job_id, "from": step}
 
     def tick_jobs(self, now: float) -> bool:
         """Publish changed jobs; a running job whose runner died is rewritten as interrupted. → any ended?"""
@@ -3493,6 +3597,38 @@ def load_detectors(al: Path | None) -> Detectors | None:
         finally:
             if added and str(tools) in sys.path:
                 sys.path.remove(str(tools))
+    return None
+
+
+def load_tool_finder(al: Path | None) -> Any:
+    """tools/al_tools.py (where al finds racket, uv, git and the agent CLI; standard library only, it
+    reads files and runs only `--version`), from beside the al tool or the kit's checkout; None without it."""
+    import importlib.util
+    for tools in dict.fromkeys(([al.parent] if al else []) + [KIT_AL.parent]):
+        source = tools / "al_tools.py"
+        if not source.is_file():
+            continue
+        loaded = sys.modules.get("al_tools")
+        if loaded is not None and os.path.realpath(getattr(loaded, "__file__", "") or "") == os.path.realpath(source):
+            return loaded
+        try:
+            spec = importlib.util.spec_from_file_location("al_tools", source)
+            if spec is None or spec.loader is None:
+                raise ImportError("al_tools")
+            module = importlib.util.module_from_spec(spec)
+            previous = sys.modules.get("al_tools")
+            sys.modules["al_tools"] = module          # its dataclasses look their module up while it loads
+            try:
+                spec.loader.exec_module(module)
+            except BaseException:
+                if previous is not None:
+                    sys.modules["al_tools"] = previous
+                else:
+                    sys.modules.pop("al_tools", None)
+                raise
+            return module
+        except Exception as exc:  # noqa: BLE001 — without it jobs run under the dashboard's PATH as is
+            print(f"[dashboard] cannot load al's tool finder from {home_short(str(tools))}: {exc}", file=sys.stderr)
     return None
 
 
@@ -4073,10 +4209,46 @@ def job_summary(job: dict[str, Any]) -> dict[str, Any]:
             "started": parse_time(job.get("started")), "ended": parse_time(job.get("ended")),
             "layer": job.get("layer_display") or "", "repo_dir": job.get("repo_dir") or "",
             "steps": [{"name": s.get("name"), "display": s.get("display"), "status": s.get("status"), "exit": s.get("exit"),
-                       "doc": s.get("doc"), "started": parse_time(s.get("started")), "ended": parse_time(s.get("ended"))}
+                       "doc": s.get("doc"), "started": parse_time(s.get("started")), "ended": parse_time(s.get("ended")),
+                       "reason": s.get("reason") or ""}
                       for s in job.get("steps") or [] if isinstance(s, dict)],
             "changed": job.get("changed") or [], "repo_changes": job.get("repo_changes") or [],
-            "repo_unchanged": job.get("repo_unchanged")}
+            "repo_unchanged": job.get("repo_unchanged"), "retry_from": retry_from(job),
+            "retries": len(job.get("retries") or [])}
+
+
+def retry_from(job: dict[str, Any]) -> str:
+    """The step a retry starts at (the first that did not pass), for a failed or interrupted job; else ""."""
+    if job.get("preview") or job.get("status") not in ("failed", "interrupted"):
+        return ""
+    for step in job.get("steps") or []:
+        if isinstance(step, dict) and step.get("status") != "passed":
+            return str(step.get("name") or "")
+    return ""
+
+
+def step_reason(step: dict[str, Any], al_lines: list[str]) -> str:
+    """Why a step failed, from its `al: …` stderr lines (without `al: ` and the subcommand's own name)."""
+    argv = step.get("argv") or []
+    command = f"{argv[1]}: " if len(argv) > 1 else "\0"
+    out = []
+    for line in al_lines:
+        line = line.removeprefix("al: ")
+        out.append(line.removeprefix(command))
+    return "\n".join(out)
+
+
+def merge_changed(earlier: list[dict[str, str]], now: list[dict[str, str]]) -> list[dict[str, str]]:
+    """The files a job changed over its attempts: a file added by an earlier attempt stays added."""
+    merged = {c["path"]: c for c in earlier if isinstance(c, dict) and "path" in c}
+    for change in now:
+        was = merged.get(change["path"])
+        if was is not None and was.get("change") == "added":
+            if change["change"] == "removed":
+                del merged[change["path"]]
+            continue
+        merged[change["path"]] = change
+    return [merged[p] for p in sorted(merged)]
 
 
 def run_job(directory: Path) -> int:
@@ -4105,7 +4277,8 @@ def run_job(directory: Path) -> int:
              pid=os.getpid(), host=socket.gethostname())
         os.close(fd)
         return 1
-    save(status="running", pid=os.getpid(), host=socket.gethostname(), heartbeat=utc_stamp(), started=utc_stamp())
+    save(status="running", pid=os.getpid(), host=socket.gethostname(), heartbeat=utc_stamp(),
+         started=job.get("started") or utc_stamp())
     stop = threading.Event()
     interrupted = threading.Event()
     current: dict[str, subprocess.Popen | None] = {"proc": None}
@@ -4132,10 +4305,55 @@ def run_job(directory: Path) -> int:
     prefix = os.path.relpath(layer, repo.parent)
     before_layer, before_repo = layer_files_snapshot(layer), repo_status(repo)
     env = {k: v for k, v in os.environ.items() if k != "AL_APP_ROOT"}
+    env["PATH"] = job.get("path") or env.get("PATH", "")
     status, exit_code = "passed", 0
     log_lock = threading.Lock()
+
+    def fail_before(index: int, reason: str, code: int) -> None:
+        """Step `index` failed with `reason` before it ran; every later pending step is skipped."""
+        with io_lock:
+            job["steps"][index].update(status="failed", exit=code, reason=reason, ended=utc_stamp())
+            for rest in job["steps"][index + 1:]:
+                if rest.get("status") != "passed":
+                    rest["status"] = "skipped"
+            job["reason"] = f"{job['steps'][index]['name']}: {reason.splitlines()[0] if reason else ''}"
+        save()
+
     with (directory / "output.log").open("ab") as log:
+        retries = job.get("retries") or []
+        if retries:
+            log.write(f"--- retry from {retries[-1].get('from')} at {utc_stamp()} ---\n".encode())
+            log.flush()
+        pending = [i for i, s in enumerate(job["steps"]) if s.get("status") != "passed"]
+        preflight = job.get("preflight")
+        if preflight and pending:
+            shown = " ".join(["al"] + [os.path.basename(a) if str(a).startswith("/") else shlex.quote(str(a))
+                                       for a in preflight[1:]])
+            log.write(f"$ {shown}\n".encode())
+            try:
+                cp = subprocess.run(preflight, shell=False, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                    env=env, cwd=str(directory), timeout=PREFLIGHT_TIMEOUT)
+                code, out, err = cp.returncode, cp.stdout, cp.stderr
+            except subprocess.TimeoutExpired:
+                code, out, err = 124, "", f"the prerequisite check did not answer within {PREFLIGHT_TIMEOUT} s"
+            except OSError as exc:
+                code, out, err = 127, "", str(exc)
+            log.write((out + err).encode())
+            log.flush()
+            if code != 0:
+                lines = [line.strip() for line in out.splitlines() if line.strip()]
+                last = next((line.strip() for line in reversed(err.splitlines()) if line.strip()), "")
+                if code in (126, 127) or not lines:
+                    lines = [f"cannot start the al tool: {last}" if code in (126, 127)
+                             else f"the prerequisite check failed (exit {code}): {last}".rstrip(": ")]
+                fail_before(pending[0], "\n".join(lines), code)
+                status, exit_code = "failed", code
+                pending = []
         for index, step in enumerate(job["steps"]):
+            if not pending:
+                break
+            if step.get("status") == "passed":
+                continue
             if interrupted.is_set():
                 break
             with log_lock:
@@ -4151,8 +4369,7 @@ def run_job(directory: Path) -> int:
             except OSError as exc:
                 with log_lock:
                     log.write(f"cannot start: {exc}\n".encode())
-                with io_lock:
-                    step.update(status="failed", exit=127, ended=utc_stamp())
+                fail_before(index, f"cannot start: {exc}", 127)
                 status, exit_code = "failed", 127
                 if doc:
                     doc.close()
@@ -4162,6 +4379,8 @@ def run_job(directory: Path) -> int:
                 step["pid"] = proc.pid   # its process group: what a timeout or an interruption kills
             save()
 
+            al_lines: list[str] = []      # the step's own `al: …` stderr lines: its failure reason
+
             def pump(stream: Any, to_doc: bool) -> None:
                 for chunk in iter(stream.readline, b""):
                     with log_lock:
@@ -4170,6 +4389,9 @@ def run_job(directory: Path) -> int:
                     if to_doc and doc is not None:
                         doc.write(chunk)
                         doc.flush()
+                    if not to_doc and chunk.startswith(b"al: "):
+                        al_lines.append(chunk.decode("utf-8", "replace").rstrip("\n"))
+                        del al_lines[:-5]
 
             readers = [threading.Thread(target=pump, args=(proc.stdout, True), daemon=True),
                        threading.Thread(target=pump, args=(proc.stderr, False), daemon=True)]
@@ -4198,6 +4420,11 @@ def run_job(directory: Path) -> int:
             with io_lock:
                 step.update(exit=code, ended=utc_stamp(),
                             status="passed" if code == 0 else "interrupted" if interrupted.is_set() else "failed")
+                if code != 0 and not interrupted.is_set():
+                    reason = (f"timed out after {step.get('timeout')} s" if timed_out.is_set() else
+                              step_reason(step, al_lines) or f"{step['name']} exited {code}; see the output")
+                    step["reason"] = reason
+                    job["reason"] = f"{step['name']}: {reason.splitlines()[0]}"
             save()
             if code != 0:
                 status, exit_code = ("interrupted" if interrupted.is_set() else "failed"), code
@@ -4208,9 +4435,11 @@ def run_job(directory: Path) -> int:
         status = "interrupted"
     stop.set()
     after_repo = repo_status(repo)
+    earlier_unchanged = job.get("repo_unchanged") if job.get("retries") else None
     save(status=status, exit=exit_code, ended=utc_stamp(), heartbeat=utc_stamp(),
-         changed=changed_files(before_layer, layer_files_snapshot(layer), prefix),
-         repo_changes=sorted(set(after_repo) - set(before_repo)), repo_unchanged=after_repo == before_repo)
+         changed=merge_changed(job.get("changed") or [], changed_files(before_layer, layer_files_snapshot(layer), prefix)),
+         repo_changes=sorted(set(job.get("repo_changes") or []) | (set(after_repo) - set(before_repo))),
+         repo_unchanged=after_repo == before_repo and earlier_unchanged is not False)
     fcntl.flock(fd, fcntl.LOCK_UN)
     os.close(fd)
     return 0 if status == "passed" else 1
@@ -4312,6 +4541,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._start()
             if path == "/api/action":
                 return self._action()
+            if path == "/api/job/retry":
+                return self._retry()
         except (BrokenPipeError, ConnectionResetError):
             return None
         self._refuse()
@@ -4387,6 +4618,27 @@ class Handler(BaseHTTPRequestHandler):
         if entry is None:
             return self._error(404, "unknown repository")
         status, answer = model.start_action(entry, request["action"], request.get("confirm") or None)
+        return self._json(answer, status)
+
+    def _retry(self) -> None:
+        """POST /api/job/retry {"job": ID, "from": STEP}: run a failed job again from its first step that
+        did not pass. The same write checks as /api/action."""
+        body = self._write_guard(MAX_WRITE_BODY)
+        if body is None:
+            return None
+        model = self.server.model
+        if model.no_actions:
+            return self._error(403, "actions are off (--no-actions)")
+        try:
+            request = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        usage = 'expected {"job": ID, "from": STEP}; nothing else'
+        if not isinstance(request, dict) or set(request) != RETRY_KEYS or not all(isinstance(v, str) for v in request.values()):
+            return self._error(400, usage)
+        if not request["job"] or not request["from"] or any(WS_KEY_BAD.search(v) for v in request.values()):
+            return self._error(400, usage)
+        status, answer = model.retry_job(request["job"], request["from"])
         return self._json(answer, status)
 
     def _set_models(self) -> None:

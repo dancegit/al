@@ -440,6 +440,7 @@ Then give two prompts to an LLM agent (for example Claude Code), in this reposit
 ```bash
 tools/al gen    ~/code/myapp.al       # compile and generate; errors say what to fix
 tools/al verify ~/code/myapp.al       # run every declared command for real: is the description true?
+tools/al doctor ~/code/myapp.al       # where al finds racket, uv, git and the agent CLI (exit 4 when one is missing)
 tools/al explain ~/code/myapp.al      # read the layer back in plain language
 tools/al check  ~/code/myapp.al       # the layer is complete and nothing leaked into your repository
 

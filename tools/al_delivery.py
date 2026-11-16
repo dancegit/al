@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import al_tools   # tools/ is on sys.path when tools/al (or the dashboard) loads this module
+
 STYLES = ("trunk", "sprint", "gitflow", "release-branch", "phase-gate")
 PRESET = {"trunk": "trunk", "sprint": "sprint", "gitflow": "gitflow", "release-branch": "release-train",
           "phase-gate": "phase-gate"}
@@ -36,7 +38,8 @@ DAY = 86400
 
 
 def _git(app: Path, *args: str) -> str:
-    result = subprocess.run(["git", "-C", str(app), *args], capture_output=True, text=True, timeout=120, check=False)
+    result = subprocess.run(al_tools.argv(["git", "-C", str(app), *args]), capture_output=True, text=True, timeout=120,
+                            check=False)
     return result.stdout if result.returncode == 0 else ""
 
 

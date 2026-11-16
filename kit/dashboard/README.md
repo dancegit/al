@@ -70,8 +70,8 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | **Step** | the exact prompt (sections collapsible), the transcript as one row per event: what the agent said, tool calls summarised (file read / edit with a diff / write, shell command, search pattern), results collapsed with size, errors marked, thinking as a marker, the final cost / turns / time. Filters (kind, errors only, tool), search with highlight, follow mode, raw JSON of any event, download of the raw `.jsonl`. Checks: every attempt's log with ANSI colours, its exit code and the resolve agent that followed |
 | **Documents** | what the run has written for people to read, as soon as each file exists: the plan, the `.md` / `.txt` / `.json` / `.log` outputs its steps recorded (a review's `patch-<n>` plans among them), review patch plans, `PR.md` (the handoff or PR text) and other text files in `agents/<id>/`, each reviewer's verdict (`review-*/output.txt`) and text artefacts; with the step that produced each, its size and time. **View** renders Markdown in the page (with a raw toggle), pretty-prints JSON and shows text as text; **Download** saves the exact file, **Download all** a zip of them all. A step's panel links the documents it produced (the plan on `plan-feature`). A new document appears live |
 | **Artefacts** | screenshots as thumbnails (click for full size), videos playable in the page with their keyframes, logs with their tail, all with the step that collected them |
-| **Repos** (`4`) | the workspace: every git repository of the folder(s), searchable, with its state badge (`layer`: an `agentic.rkt` in it or in a sibling `NAME.al`; `setup`: rule files, prompts, workflow scripts or a hand-built suite, the same detection as `al scout`; `none`), branch, a mark for uncommitted changes and its last activity; **refresh** rescans. A selected repository (`#/repo/<key>`) shows al scout's "Existing agent setup" summary, its layer with a link to its workflows and runs, its jobs, and the **al** panel: one button per action with the exact command line(s) it runs, disabled with the reason when it does not apply (`needs the al tool; looked for …`, `--read-only`, `--no-actions`, the state). A writing action first shows what it runs and writes (for adopt the dry run's diff, line by line) and runs on **Confirm** |
-| **Job** | one action (`#/job/<id>`): repository, action, status, exit code, duration; its steps in order with status, exit code and time; the live output (ANSI colours, like a check log); the layer's files it added, changed or removed, and whether the repository changed; its documents (`LLM.txt` of scout, `preview.diff.txt` of an adopt preview, `verify.json`, `EXPLAIN.md`) |
+| **Repos** (`4`) | the workspace: every git repository of the folder(s), searchable, with its state badge (`layer`: an `agentic.rkt` in it or in a sibling `NAME.al`; `setup`: rule files, prompts, workflow scripts or a hand-built suite, the same detection as `al scout`; `none`), branch, a mark for uncommitted changes and its last activity; **refresh** rescans. A selected repository (`#/repo/<key>`) shows al scout's "Existing agent setup" summary, its layer with a link to its workflows and runs, its jobs, and the **al** panel: one button per action with the exact command line(s) it runs, disabled with the reason when it does not apply (`needs the al tool; looked for …`, `--read-only`, `--no-actions`, the state), and a tools table: what `al doctor` sees on this machine (racket, raco, uv, git, the author agent's CLI: where each was found, or the sentence saying where al looked, and its version; kept 5 minutes). A writing action first shows what it runs and writes (for adopt the dry run's diff, line by line) and runs on **Confirm** |
+| **Job** | one action (`#/job/<id>`): repository, action, status, exit code, duration, and why it failed; its steps in order with status, exit code and time, a failed step with its reason (its `al: …` lines, "timed out after N s", or "exited N; see the output"); for a failed or interrupted job a **Retry from STEP** button (asks first; the steps from the first that did not pass run again in the same job, a retried `author` with `--accept-existing`); the live output (ANSI colours, like a check log); the layer's files it added, changed or removed, and whether the repository changed; its documents (`LLM.txt` of scout, `preview.diff.txt` of an adopt preview, `verify.json`, `EXPLAIN.md`) |
 | **Layers** (`3`) | a **Start work** panel (below), then each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists |
 
 The **Start work** panel (on the Layers view; a layer chooser when several are watched) takes a
@@ -132,7 +132,7 @@ actions run `al`, which writes what that command writes. `--read-only` turns all
 | `agents/<id>/request.md`, `agents/<id>/launch.log` | a started run's prompt (mode 0600) and the output of its detached process until the run's own `run.log` takes over; both are documents of the run |
 | `state.json` `definition` | a single-command run's one-step workflow (`command:<name>`), which the compiled layer does not declare: the run's graph is drawn from it |
 | workspace repositories | the Repos view, read-only: directories below each workspace folder (depth `--workspace-depth`; symlinked entries, hidden and pruned directories and a sibling `NAME.al` skipped; at most 500) that hold `.git`. Per repository `git ls-files -z` (at most 20 000 paths; a path whose real path leaves the repository is dropped, so a symlinked rule file pointing elsewhere is never read), given to `al scout`'s detection (`tools/al_adopt.py`, `tools/al_suite.py`, which read files and run nothing), `symbolic-ref`, `status --porcelain`, `log -1`. git runs with `core.fsmonitor=false`, `core.untrackedCache=false`, `core.hooksPath=/dev/null`, `--no-optional-locks` (the index is never rewritten), no prompt, no inherited `GIT_*` variables, and its process group is killed after 5 s. A repository is reread only when its signature changes (stats of `.git/HEAD`, `.git/index`, `.git/logs/HEAD`, its directory, the sibling `NAME.al/agentic.rkt` and its layer's IR); rescanned every 60 s and on **refresh** (at most once per 5 s). A layer of a workspace repository that has `agentic-layer.json` is watched like any other |
-| `<jobs-dir>/<id>/job.json`, `output.log`, `docs/` | the Job view: an action's steps (argv, the command line as shown, exit code, times), its status and the runner's `pid` / `host` / `heartbeat` (as a run's `state.json`), changed files; its output; its documents. `<jobs-dir>/locks/` holds one lock file per repository. The second place the dashboard writes, outside every repository and layer. Two dashboards with different `--jobs-dir` do not see each other's locks |
+| `<jobs-dir>/<id>/job.json`, `output.log`, `docs/` | the Job view: an action's steps (argv, the command line as shown, exit code, times, `reason` of a failed step), its status and `reason`, the runner's `pid` / `host` / `heartbeat` (as a run's `state.json`), `path` (the folders of the tools found by tools/al_tools.py, then the dashboard's `PATH`: the steps' `PATH`), `preflight` (the `al doctor LAYER --for …` argv run before the first pending step), `retries` (`{"from", "at"}` per retry), changed files; its output; its documents. `<jobs-dir>/locks/` holds one lock file per repository. The second place the dashboard writes, outside every repository and layer. Two dashboards with different `--jobs-dir` do not see each other's locks |
 
 Transcripts (`raw.jsonl`) are read incrementally (only new bytes; a half-written last line waits
 for its newline; a truncated or replaced file restarts with a `reset`). Claude Code stream-json
@@ -158,7 +158,7 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
 ## Safety
 
 - **Three writes, guarded.** Only GET and HEAD, plus `POST /api/models`, `POST /api/start` and
-  `POST /api/action`; every other method and path is 405 (GET on `/api/models` or `/api/start` is
+  `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions); every other method and path is 405 (GET on `/api/models` or `/api/start` is
   405 too), and no endpoint stops or changes a run. All three writes pass one guard
   (`Handler._write_guard`): the token as for every request, but from the `Authorization` header or
   the cookie only (a token in the query string is refused); a loopback `Host` when there is no
@@ -200,6 +200,21 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
   | `check` | layer | no | `AL check LAYER` |
   | `verify` | layer | yes | `AL verify LAYER --json` (stdout = `verify.json`) |
   | `explain` | layer | no | `AL explain LAYER --md <job>/docs/EXPLAIN.md` |
+
+  Before its first step a job runs `AL doctor LAYER --for <its subcommands> [--agent …]` (10 s at most,
+  not a step): a missing tool fails the first step with that sentence and skips the rest, so no agent time
+  is spent. The steps run with `PATH` = the folders of the tools al_tools finds, then the dashboard's own,
+  so the al tool's `uv` shebang works under a unit's fixed `PATH`; when `uv` itself is not found the job is
+  written as failed at once and no runner starts.
+
+  `POST /api/job/retry {"job": ID, "from": STEP}` runs a failed or interrupted job again from STEP, which
+  must be its first step that did not pass (409 otherwise, and for a preview, a running job, a repository
+  that is no longer a git repository in the workspace, or another job on it; 404 for an unknown job; 400
+  for any other key, a non-string value or whitespace). It has the same write guard as `/api/action` and
+  is refused by `--read-only` and `--no-actions` (403). The job is rewritten in place: STEP and the steps
+  after it go back to pending, a reset `author` step gets `--accept-existing`, `retries` gets an entry,
+  and the runner is launched again; it skips the steps that passed and writes `--- retry from STEP ---`
+  into `output.log`.
 
   The request passes the same checks as `POST /api/models`, in the same order and with the same
   messages; any other key, a non-string value or whitespace in a value is 400, an unknown action 400,
@@ -322,12 +337,16 @@ refresh limit, the default workspace, the al lookup, escaping); `tests/test_acti
 allow-list and every refusal, the write checks shared with `/api/models`, `--read-only`, `--no-actions`,
 preview and nonce, the adopt dry run, the per-repository lock, a job surviving a restart, a dead runner
 shown as `interrupted`, the job's tail, changed files, document confinement, never overwriting a
-definition, a missing al tool), with `tests/workspace_fixtures.py`: four invented repositories (`pantry`,
-`quill`, `comet`, `fern`) and `fake_al`, a stand-in for al that records its argv.
+definition, a missing al tool, a missing tool as a step's failure reason, the prerequisite check stopping a
+job before any step, "Retry from STEP" and its refusals, the tools table, the job's `PATH`), with
+`tests/workspace_fixtures.py`: four invented repositories (`pantry`, `quill`, `comet`, `fern`) and
+`fake_al`, a stand-in for al that records its argv and can fail a subcommand (`fail`; its `doctor` answers
+`ok` otherwise).
 `tests/test_browser_workspace.py` (Chrome) checks the Repos view, the selection in the URL, the filter,
 the adopt preview's diff (an injected `<script>` stays text), Confirm and a job streaming to `passed`, and
-disabled actions without al; with `AL_DASHBOARD_SHOTS=DIR` it saves `workspace-repos.png`,
-`workspace-adopt-preview.png` and `workspace-job.png`. `tests/tools/test_dashboard_workspace.py` (at the
+disabled actions without al, and a failed job's reason with its Retry button; with `AL_DASHBOARD_SHOTS=DIR`
+it saves `workspace-repos.png`, `workspace-adopt-preview.png`, `workspace-job.png`, `job-missing-tool.png`
+and `job-retried.png`. `tests/tools/test_dashboard_workspace.py` (at the
 repository root) runs the same flows end to end with the real al and the mock author agent.
 `tests/test_writes_together.py` runs both features in one server: `--read-only` refuses all three
 writes, `--no-start` and `--no-actions` each refuse only their own, each write has its body limit,
