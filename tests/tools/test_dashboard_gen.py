@@ -180,3 +180,31 @@ def test_al_dashboard_watches_layers_and_scans_directories(sibling, app, tmp_pat
     assert run["token"] is True and "tok" not in run["argv"]
     podman = json.loads(al("dashboard", sibling, "--podman", env=env).stdout)["argv"]
     assert podman == [str(KIT / "dashboard" / "run-in-podman.sh"), "--port", "8765", str(sibling.resolve())]
+
+
+def test_al_dashboard_passes_the_workspace_flags(sibling, tmp_path) -> None:
+    env = {"AL_DASHBOARD_DRY_RUN": "1"}
+    workspace = tmp_path / "code"
+    workspace.mkdir()
+    argv = json.loads(al("dashboard", sibling, "--workspace", workspace, "--workspace-depth", "2", "--no-actions",
+                         env=env).stdout)["argv"]
+    tail = argv[argv.index("--workspace"):]
+    assert tail[:5] == ["--workspace", str(workspace.resolve()), "--workspace-depth", "2", "--no-actions"]
+    off = json.loads(al("dashboard", sibling, "--no-workspace", env=env).stdout)["argv"]
+    assert "--no-workspace" in off and "--workspace" not in off
+    cp = al("dashboard", sibling, "--podman", "--workspace", workspace, env=env, ok=False)
+    assert cp.returncode == 1 and "--workspace and actions need the host (git and al); not with --podman" in cp.stderr
+    cp = al("dashboard", sibling, "--podman", "--no-actions", env=env, ok=False)
+    assert cp.returncode == 1 and "not with --podman" in cp.stderr
+
+
+def test_al_dashboard_passes_start_and_workspace_flags_together(sibling, tmp_path) -> None:
+    env = {"AL_DASHBOARD_DRY_RUN": "1"}
+    workspace = tmp_path / "code"
+    workspace.mkdir()
+    argv = json.loads(al("dashboard", sibling, "--no-start", "--workspace", workspace, "--no-actions",
+                         env=env).stdout)["argv"]
+    assert "--no-start" in argv and "--no-actions" in argv
+    assert argv[argv.index("--workspace") + 1] == str(workspace.resolve())
+    usage = al("--help").stdout
+    assert "al run" in usage and "--workspace" in usage

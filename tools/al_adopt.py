@@ -30,6 +30,7 @@ whole, regenerated as a unit and protected against hand edits like generated fil
 """
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import hashlib
 import json
@@ -870,9 +871,9 @@ def render_suite_parts(suite: dict[str, Any]) -> list[str]:
 
 
 def adopt(al: Any, layer: Path, app: Path | None, only: set[str], dry_run: bool, force: bool = False,
-          say=print) -> int:
+          say=print, diff: bool = False) -> int:
     layer = layer.resolve()
-    if not layer.is_dir():
+    if not layer.is_dir() and not dry_run:   # a dry run of a layer not created yet: an empty layer
         raise AdoptError(f"{layer} is not a directory (create the layer with `al init` first)")
     has_definition = (layer / "agentic.rkt").is_file()
     if app is None:
@@ -904,6 +905,8 @@ def adopt(al: Any, layer: Path, app: Path | None, only: set[str], dry_run: bool,
             raise AdoptError(str(exc)) from exc
     say(report_text(result, changed, stale, added, dry_run, has_definition))
     if dry_run:
+        if diff:
+            say(dry_run_diff(layer, result, changed, stale, new_definition, added))
         return 0
     old = {rel: (layer / rel).read_text(encoding="utf-8") if (layer / rel).is_file() else None
            for rel in [*changed, *stale]}
@@ -973,6 +976,29 @@ def report_text(result: dict[str, Any], changed: list[str], stale: list[str], ad
     elif not dry_run and (changed or added):
         lines.append("  next: al gen LAYER (and read adopted/REPORT.md)")
     return "\n".join(lines)
+
+
+def dry_run_diff(layer: Path, result: dict[str, Any], changed: list[str], stale: list[str], new_definition: str,
+                 added: list[str]) -> str:
+    """The unified diff of everything a real run would write: each changed file, each removed one and the
+    include lines added to agentic.rkt (paths a/<rel> and b/<rel>, /dev/null for a new or removed file)."""
+    def old_text(rel: str) -> str | None:
+        path = layer / rel
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    def one(rel: str, old: str | None, new: str | None) -> list[str]:
+        return list(difflib.unified_diff((old or "").splitlines(keepends=True), (new or "").splitlines(keepends=True),
+                                         fromfile="/dev/null" if old is None else f"a/{rel}",
+                                         tofile="/dev/null" if new is None else f"b/{rel}"))
+
+    out: list[str] = []
+    for rel in changed:
+        out += one(rel, old_text(rel), result["outputs"][rel])
+    for rel in stale:
+        out += one(rel, old_text(rel), None)
+    if added:
+        out += one("agentic.rkt", old_text("agentic.rkt"), new_definition)
+    return "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in out).rstrip("\n")
 
 
 def check(layer: Path, app: Path) -> tuple[list[str], list[str]]:

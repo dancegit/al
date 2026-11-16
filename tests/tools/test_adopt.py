@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import existing_setup
+import suite_setup
 from conftest import ROOT, al, sh, status
 
 BASE = """#lang al
@@ -196,3 +197,21 @@ def test_check_notices_a_missing_adopted_rule_file(larder, layer):
     (layer / "adopted" / "RULES.md").unlink()
     out = al("check", layer, ok=False).stdout
     assert "adopted/RULES.md (written by `al adopt`) is missing" in out
+
+
+def test_adopt_dry_run_diff_before_the_layer_exists(tmp_path):
+    orbit = suite_setup.build(tmp_path)
+    before = tree(orbit)
+    out = al("adopt", tmp_path / "orbit.al", "--app", orbit, "--dry-run", "--diff").stdout
+    assert "would write:" in out and "adopted/" in out
+    assert "--- /dev/null" in out and "+++ b/adopted/REPORT.md" in out
+    assert any(line.startswith("+") and not line.startswith("+++") for line in out.splitlines())
+    assert not (tmp_path / "orbit.al").exists()
+    assert tree(orbit) == before and status(orbit) == ""
+
+
+def test_adopt_diff_without_dry_run_is_refused(larder, layer):
+    cp = al("adopt", layer, "--diff", ok=False)
+    assert cp.returncode in (1, 2)
+    assert cp.returncode == 2 or "al: --diff goes with --dry-run" in cp.stderr
+    assert not (layer / "adopted").exists()

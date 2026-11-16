@@ -86,6 +86,7 @@ table listing it. Check its "in use?" column, then bring it into the layer:
 
 ```bash
 al adopt ~/code/myapp.al --app ~/code/myapp --dry-run     # shows what it would do, changes nothing
+al adopt ~/code/myapp.al --app ~/code/myapp --dry-run --diff   # … and the unified diff of every file it would write
 al adopt ~/code/myapp.al --app ~/code/myapp
 ```
 
@@ -154,6 +155,11 @@ lists the valid choices, and the agent fixes it. When it reports success, check 
 ```bash
 al compile ~/code/myapp.al > /dev/null && echo "compiles"
 ```
+
+`al author ~/code/myapp.al --preferences "…"` does the same hand-off with the agent CLI (`claude`): it gives
+the agent `meta/commands/author-layer.md` with the layer's `LLM.txt`, then compiles what it wrote. Without
+`--preferences` it uses the conservative answers above and the codebase root beside the layer. It never
+overwrites an existing `agentic.rkt`.
 
 *If it goes wrong:* the error is always of the form `agentic.rkt:LINE:COL: … expected one of: …` or
 `… is not a declared …; declared: …`. Give it to the agent with
@@ -333,6 +339,57 @@ The prompt is the rest of the line (or stdin with `-`). `--class`, `--model-set`
 `--request-key K` makes a retry safe. Exit codes: the run's own (0 with `--detach`), 2 for an unknown
 name, 3 refused by a limit, 4 needs `--yes`. The prompt is written to `agents/<run id>/request.md` and
 never put on a command line.
+
+## Work with several repositories from the dashboard
+
+If you keep your repositories side by side in one folder (`~/code/myapp`, `~/code/orbit`, `~/code/fern`),
+the dashboard lists all of them. Start it for one layer:
+
+```bash
+al dashboard ~/code/myapp.al --open
+```
+
+and press `4` (**Repos**). Every git repository in the folder that holds `myapp` is listed with its
+branch, uncommitted changes, last activity and its al state:
+
+| State | Means |
+|---|---|
+| `layer` | it has a layer: an `agentic.rkt` in the repository, or a sibling `NAME.al/agentic.rkt` |
+| `setup` | no layer, but an agent setup al can adopt: rule files, prompts, workflow scripts or a hand-built suite |
+| `none` | neither |
+
+The states come from the same detection as `al scout`, read-only: tracked files only, git run without
+the repository's hooks or fsmonitor, nothing outside the folder (symlinks are not followed). The list is
+rescanned every minute and with **refresh**. A layer that is generated is watched like any other, so
+its workflows and runs appear in the Layers and Runs views and the repository's panel links to them.
+
+Choose a repository (the address keeps it: `#/repo/orbit`). Its **al** panel offers the actions that fit
+its state, each with the exact command line it runs:
+
+| Action | For | Runs |
+|---|---|---|
+| scout | any | `al scout ~/code/orbit` (read-only; its output is the job's `LLM.txt`) |
+| create | `none`, `setup` | `al init ~/code/fern` → `al author ~/code/fern.al` → `al gen ~/code/fern.al` → `al check ~/code/fern.al` |
+| adopt | `setup` | first `al adopt ~/code/orbit.al --app ~/code/orbit --dry-run --diff`, shown as a diff; on Confirm `al init` → `al author` → `al adopt` → `al gen` → `al check` |
+| gen | `layer` | `al gen LAYER` |
+| check | `layer` | `al check LAYER` (read-only) |
+| verify | `layer` | `al verify LAYER --json` (writes the report and a throwaway worktree) |
+| explain | `layer` | `al explain LAYER --md …` (read-only; its output is the job's `EXPLAIN.md`) |
+
+An action that writes asks first: it shows the command lines and the paths it writes (for adopt, the dry
+run's diff) and runs only after **Confirm**; if the repository changed in between, it asks again. Create
+and adopt never overwrite an `agentic.rkt`, wherever it is. Each action is a **job**: its steps with their
+exit codes, the live output, the files of the layer it changed and its documents. One action runs per
+repository at a time. A job keeps running when you restart the dashboard; a job whose process is gone
+is shown as `interrupted`, never as running. Jobs are kept in `~/.local/state/al/dashboard-jobs`
+(`$XDG_STATE_HOME`), outside every repository.
+
+- `--workspace ~/code` (repeatable) lists that folder instead; `--workspace-depth 2` looks one level deeper;
+  `--no-workspace` lists none.
+- `--no-actions` lists the repositories but runs nothing; `--read-only` turns off every write.
+- The actions run the al tool of the checkout the dashboard comes from (or `al` on `PATH`). Without one,
+  every action is disabled and the panel says where it looked. The create and adopt actions run
+  `al author`, which needs the agent CLI (`claude`).
 
 ## Step 9 — The first real run
 

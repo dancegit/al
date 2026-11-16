@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import shutil
@@ -114,6 +115,27 @@ def start_site(tmp_path: Path, fake_forgejo: FakeForgejo, monkeypatch: pytest.Mo
         monkeypatch.delenv(name, raising=False)
     fake_forgejo.reset()
     return start_layer.build_site(tmp_path / "site", fake_forgejo.url)
+
+
+@pytest.fixture()
+def workspace_server(tmp_path: Path) -> Iterator[Any]:
+    """A factory: start(root, *extra, al=None, jobs=None) → a server over the workspace `root` with its
+    jobs in tmp_path/jobs (or `jobs`) and, when given, `--al al`; every server is stopped afterwards."""
+    started: list[Running] = []
+
+    def start(root: Path | None, *extra: str, al: Path | str | None = None, jobs: Path | None = None) -> Running:
+        args = [*(["--workspace", str(root)] if root is not None else []), "--jobs-dir", str(jobs or tmp_path / "jobs"),
+                *(["--al", str(al)] if al is not None else []), *extra]
+        running = start_server(args)
+        started.append(running)
+        return running
+
+    try:
+        yield start
+    finally:
+        for running in started:
+            with contextlib.suppress(Exception):
+                stop_server(running)
 
 
 class SSEReader:

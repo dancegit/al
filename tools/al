@@ -17,13 +17,21 @@
                                    copy a kit template into LAYER/templates/ so your edits to it survive `al gen`
   al improve LAYER "request" [--dry-run] [--review human|agent] [--model-set T] [--model T=ID] [--max-cost USD]
                                    change the layer through al's own reviewed workflow: ends in a pull request
-  al adopt   LAYER [--app APP] [--dry-run] [--only rules|prompts|workflows …]
+  al author  LAYER [--agent claude-code|mock] [--mock F] [--preferences T]
+                                   have agentic.rkt written: hands meta/commands/author-layer.md to the agent CLI
+                                   with the layer's LLM.txt, then compiles it; never overwrites an agentic.rkt
+  al adopt   LAYER [--app APP] [--dry-run [--diff]] [--only rules|prompts|workflows …]
                                    bring a codebase's existing agent setup (rule files, prompts, workflow
                                    scripts) into the layer, deterministically; reports what a person must decide
+                                   (--dry-run --diff also prints the unified diff of every file it would write)
   al dashboard [LAYER_OR_DIR …] [--port N] [--open] [--podman] [--read-only] [--no-start]
                                    watch the runs of any layers (or every layer below a directory) live; it writes
-                                   model settings (the Models panel) and starts work (the Layers view), off with
-                                   --read-only (both) or --no-start (starting only)
+                                   model settings (the Models panel), starts work (the Layers view) and runs al on a
+                                   repository (the Repos view), off with --read-only (all of them), --no-start
+                                   (starting) or --no-actions (actions)
+  al dashboard … [--workspace DIR …] [--workspace-depth N] [--no-workspace] [--no-actions]
+                                   also list the git repositories beside the layer's (or in DIR) with their al state,
+                                   and run al on one from the page (scout, create, adopt, gen, check, verify, explain)
   al run     LAYER /NAME [ARGS …] [--class C] [--model-set T] [--model T=ID …] [--detach] [--dry-run] [--yes]
                                    start one of the layer's workflows, or one command or hop as a recorded run
                                    that never ships, exactly as the dashboard does; ARGS (or stdin) are the prompt
@@ -293,6 +301,14 @@ def suite_module():
         sys.path.insert(0, str(ROOT / "tools"))
     import al_suite
     return al_suite
+
+
+def author_module():
+    """tools/al_author.py: `al author` (the layer definition written by the agent CLI from LLM.txt)."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_author
+    return al_author
 
 
 def deploy_module():
@@ -2147,6 +2163,12 @@ def dashboard_command(a: argparse.Namespace) -> tuple[list[str], dict[str, str]]
         if not d.is_dir():
             raise AlError(f"not a directory: {d}")
     env = dict(os.environ)
+    workspace = [w.resolve() for w in (a.workspace or [])]
+    for w in workspace:
+        if not w.is_dir():
+            raise AlError(f"not a directory: {w}")
+    if a.podman and (workspace or a.workspace_depth is not None or a.no_workspace or a.no_actions):
+        raise AlError("--workspace and actions need the host (git and al); not with --podman")
     if a.podman:
         if a.bind or a.token or a.open:
             raise AlError("--podman publishes on 127.0.0.1 with its own token; --bind, --token and --open do not apply")
@@ -2160,6 +2182,11 @@ def dashboard_command(a: argparse.Namespace) -> tuple[list[str], dict[str, str]]
     argv += ["--open"] if a.open else []
     argv += ["--read-only"] if a.read_only else []
     argv += ["--no-start"] if a.no_start else []
+    for w in workspace:
+        argv += ["--workspace", str(w)]
+    argv += ["--workspace-depth", str(a.workspace_depth)] if a.workspace_depth is not None else []
+    argv += ["--no-workspace"] if a.no_workspace else []
+    argv += ["--no-actions"] if a.no_actions else []
     if a.token:
         env["AL_DASHBOARD_TOKEN"] = a.token   # not on argv, where `ps` would show it
     return argv, env
@@ -2220,20 +2247,26 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("name", nargs="?"); p.add_argument("--list", action="store_true", help="every template and where it resolves from")
     p.add_argument("--force", action="store_true", help="replace an existing layer copy with the kit's version")
     improve_parsers(sub)
-    p = sub.add_parser("dashboard", help="watch the runs of any layers live in a browser; writes model settings and "
-                       "starts work (off with --read-only / --no-start)")
+    p = sub.add_parser("dashboard", help="watch the runs of any layers live in a browser; writes model settings, "
+                       "starts work and runs al actions (off with --read-only / --no-start / --no-actions)")
     p.add_argument("dirs", nargs="*", type=Path, metavar="LAYER_OR_DIR",
                    help="a layer (has agentic-layer.json) or a directory to scan for layers; default: .")
     p.add_argument("--port", type=int, default=None, help="the port on this machine (default 8765)"); p.add_argument("--bind")
     p.add_argument("--token", help="access token (needed for a non-loopback --bind; also AL_DASHBOARD_TOKEN)")
     p.add_argument("--open", action="store_true", help="open the page in a browser")
     p.add_argument("--podman", action="store_true", help="run it in its own locked-down podman container")
-    p.add_argument("--read-only", action="store_true", help="the dashboard changes nothing: no model settings, no starts")
+    p.add_argument("--read-only", action="store_true", help="the dashboard changes nothing: no model settings, no starts, no actions")
     p.add_argument("--no-start", action="store_true", help="the dashboard never starts work (model settings still change)")
     p.add_argument("--remote", metavar="HOST", help="watch the dashboard of a layer deployed on HOST (`al deploy`) "
                    "through an ssh tunnel, loopback on both ends; HOST is whatever `ssh HOST` accepts")
     p.add_argument("--remote-port", type=int, metavar="N", help="with --remote: the dashboard's port on HOST "
                    "(default: the port the given layer declares, else 8765)")
+    p.add_argument("--workspace", action="append", type=Path, metavar="DIR",
+                   help="a folder of git repositories side by side to list and act on (repeatable; "
+                   "default: the folder holding each given layer's repository)")
+    p.add_argument("--workspace-depth", type=int, metavar="N", help="how deep below a workspace folder to look (default 1)")
+    p.add_argument("--no-workspace", action="store_true", help="list no repositories, only layers")
+    p.add_argument("--no-actions", action="store_true", help="the page runs no al command on a repository")
     p = sub.add_parser("run", help="start a workflow, or one command as a recorded run that never ships",
                        description="Start /NAME in LAYER through the layer's own start path (the dashboard's too): a "
                        "workflow the layer declares, or one command or hop (a single-command run: one step in the "
@@ -2275,6 +2308,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--only", nargs="+", choices=("rules", "prompts", "workflows"), metavar="rules|prompts|workflows",
                    help="adopt only these (default: all three); conflicts are always reported")
     p.add_argument("--force", action="store_true", help="overwrite files `al adopt` wrote even if they were edited by hand")
+    p.add_argument("--diff", action="store_true", help="with --dry-run: print the unified diff of every file it would write")
+    p = sub.add_parser("author", help="have the layer's agentic.rkt written from its LLM.txt by the agent CLI, then compile it")
+    p.add_argument("layer", type=Path)
+    p.add_argument("--agent", choices=("claude-code", "mock"), default="claude-code")
+    p.add_argument("--mock", type=Path, metavar="FILE", help="with --agent mock: a JSON file of the files to write")
+    p.add_argument("--preferences", metavar="TEXT", help="PITER choices in plain language, and where the codebase is")
     p = sub.add_parser("verify", help="run the layer's codebase cmds on a throwaway worktree",
                        description=VERIFY_DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("layer", type=Path)
@@ -2360,11 +2399,22 @@ def main(argv: list[str] | None = None) -> int:
             return improve_main(a)
         elif a.cmd == "adopt":
             module = adopt_module()
+            if a.diff and not a.dry_run:
+                raise AlError("--diff goes with --dry-run")
             try:
                 return module.adopt(sys.modules[__name__], a.layer, a.app, set(a.only or ("rules", "prompts", "workflows")),
-                                    a.dry_run, a.force)
+                                    a.dry_run, a.force, diff=a.diff)
             except module.AdoptError as exc:
                 raise AlError(f"adopt: {exc}") from exc
+        elif a.cmd == "author":
+            module = author_module()
+            if a.agent == "mock" and a.mock is None:
+                raise AlError("author: --agent mock needs --mock FILE")
+            try:
+                return module.author(sys.modules[__name__], a.layer, a.agent, a.mock, a.preferences,
+                                     say=lambda line: print(line, flush=True))
+            except module.AuthorError as exc:
+                raise AlError(f"author: {exc}") from exc
         elif a.cmd == "verify":
             say = (lambda line: print(line, file=sys.stderr, flush=True)) if a.json else (lambda line: print(line, flush=True))
             report, _ = verify_layer(a.layer.resolve(), a.names, a.timeout, say)

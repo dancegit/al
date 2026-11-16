@@ -5,7 +5,9 @@ model each tier uses, and starting work: a workflow or a single command): which 
 flight and what each agent is doing right now, the workflow of every run as a graph that colours
 in as steps finish, where the time went, what it cost, and every agent's transcript formatted for
 people. One Python file (standard library only) serves one page (HTML, CSS and vanilla JS, no
-CDN, no build step) and pushes updates over Server-Sent Events.
+CDN, no build step) and pushes updates over Server-Sent Events. Its **Repos** view also lists the git
+repositories beside the layers with their al state and runs allow-listed `al` commands on one of them,
+each confirmed first when it writes (see Safety, "Actions").
 
 ![Three runs started while the page is open; the third waits for a run slot](../../docs/demo/dashboard/live.gif)
 
@@ -46,10 +48,17 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | `--poll S` | seconds between file polls (default 0.75) |
 | `--no-podman` | never call podman |
 | `--podman-socket PATH` | opt-in: read container status from a podman API socket (for the container mode) |
-| `--in-container` | the host's processes and locks are not visible: infer slot use from run state; starting work is off |
-| `--read-only` | change nothing: no model settings, no starting work |
+| `--in-container` | the host's processes and locks are not visible: infer slot use from run state; starting work is off; no workspace and no actions |
+| `--read-only` | refuse every write: no model settings, no starting work, no actions |
 | `--no-start` | never start work from the page (the Models panel still writes) |
 | `--allow-start-in-container` | with `--in-container`: allow starting work, only for an operator-built image that has `uv`, the application checkout and a writable layer (the image of `run-in-podman.sh` has none of them) |
+| `--workspace DIR` | a folder of git repositories side by side: list them with their al state and act on them (repeatable). Default: the folder holding each `--layer`'s repository (its `codebase.root`'s parent); `--workspace` alone is enough to start |
+| `--workspace-depth N` | how deep below a workspace folder repositories are looked for (default 1) |
+| `--no-workspace` | list no repositories, only layers |
+| `--no-actions` | list the repositories but run no action |
+| `--jobs-dir DIR` | where actions are recorded (default `$XDG_STATE_HOME/al/dashboard-jobs`, else `~/.local/state/al/dashboard-jobs`) |
+| `--al PATH` | the al tool the actions run (default: `tools/al` of the checkout this kit belongs to, else `al` on `PATH`) |
+| `--author-agent claude-code\|mock`, `--author-mock FILE` | the agent `al author` uses in the create and adopt actions (`--author-mock` for tests: `--agent mock --mock FILE`) |
 
 ## What you see
 
@@ -61,6 +70,8 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | **Step** | the exact prompt (sections collapsible), the transcript as one row per event: what the agent said, tool calls summarised (file read / edit with a diff / write, shell command, search pattern), results collapsed with size, errors marked, thinking as a marker, the final cost / turns / time. Filters (kind, errors only, tool), search with highlight, follow mode, raw JSON of any event, download of the raw `.jsonl`. Checks: every attempt's log with ANSI colours, its exit code and the resolve agent that followed |
 | **Documents** | what the run has written for people to read, as soon as each file exists: the plan, the `.md` / `.txt` / `.json` / `.log` outputs its steps recorded (a review's `patch-<n>` plans among them), review patch plans, `PR.md` (the handoff or PR text) and other text files in `agents/<id>/`, each reviewer's verdict (`review-*/output.txt`) and text artefacts; with the step that produced each, its size and time. **View** renders Markdown in the page (with a raw toggle), pretty-prints JSON and shows text as text; **Download** saves the exact file, **Download all** a zip of them all. A step's panel links the documents it produced (the plan on `plan-feature`). A new document appears live |
 | **Artefacts** | screenshots as thumbnails (click for full size), videos playable in the page with their keyframes, logs with their tail, all with the step that collected them |
+| **Repos** (`4`) | the workspace: every git repository of the folder(s), searchable, with its state badge (`layer`: an `agentic.rkt` in it or in a sibling `NAME.al`; `setup`: rule files, prompts, workflow scripts or a hand-built suite, the same detection as `al scout`; `none`), branch, a mark for uncommitted changes and its last activity; **refresh** rescans. A selected repository (`#/repo/<key>`) shows al scout's "Existing agent setup" summary, its layer with a link to its workflows and runs, its jobs, and the **al** panel: one button per action with the exact command line(s) it runs, disabled with the reason when it does not apply (`needs the al tool; looked for …`, `--read-only`, `--no-actions`, the state). A writing action first shows what it runs and writes (for adopt the dry run's diff, line by line) and runs on **Confirm** |
+| **Job** | one action (`#/job/<id>`): repository, action, status, exit code, duration; its steps in order with status, exit code and time; the live output (ANSI colours, like a check log); the layer's files it added, changed or removed, and whether the repository changed; its documents (`LLM.txt` of scout, `preview.diff.txt` of an adopt preview, `verify.json`, `EXPLAIN.md`) |
 | **Layers** (`3`) | a **Start work** panel (below), then each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists |
 
 The **Start work** panel (on the Layers view; a layer chooser when several are watched) takes a
@@ -94,10 +105,11 @@ chat. Keys: `j`/`k` move through runs, nodes or transcript events, `Enter` opens
 
 ## What it reads, and how
 
-Everything comes from files the runtime already writes. The dashboard itself writes one file,
-agents/settings/models.json (the Models panel; off with `--read-only`); starting work is done by the
-layer's own `adws/dispatch.py --start`, which writes the run's files (off with `--read-only` or
-`--no-start`).
+Everything comes from files the runtime already writes. The dashboard itself writes
+agents/settings/models.json (the Models panel) and, for the actions, its jobs directory; starting
+work is done by the layer's own `adws/dispatch.py --start`, which writes the run's files; the
+actions run `al`, which writes what that command writes. `--read-only` turns all of it off, and
+`--no-start` and `--no-actions` each turn off their own.
 
 | File | Used for |
 |---|---|
@@ -119,6 +131,8 @@ layer's own `adws/dispatch.py --start`, which writes the run's files (off with `
 | `agents/starts.json` | written by the layer's launcher, not read by the page: the request keys of the last two days (`{key: {run_id, target, prompt_sha, at, issue}}`) behind the double-start guard; `agents/.starts.lock` serialises starts |
 | `agents/<id>/request.md`, `agents/<id>/launch.log` | a started run's prompt (mode 0600) and the output of its detached process until the run's own `run.log` takes over; both are documents of the run |
 | `state.json` `definition` | a single-command run's one-step workflow (`command:<name>`), which the compiled layer does not declare: the run's graph is drawn from it |
+| workspace repositories | the Repos view, read-only: directories below each workspace folder (depth `--workspace-depth`; symlinked entries, hidden and pruned directories and a sibling `NAME.al` skipped; at most 500) that hold `.git`. Per repository `git ls-files -z` (at most 20 000 paths; a path whose real path leaves the repository is dropped, so a symlinked rule file pointing elsewhere is never read), given to `al scout`'s detection (`tools/al_adopt.py`, `tools/al_suite.py`, which read files and run nothing), `symbolic-ref`, `status --porcelain`, `log -1`. git runs with `core.fsmonitor=false`, `core.untrackedCache=false`, `core.hooksPath=/dev/null`, `--no-optional-locks` (the index is never rewritten), no prompt, no inherited `GIT_*` variables, and its process group is killed after 5 s. A repository is reread only when its signature changes (stats of `.git/HEAD`, `.git/index`, `.git/logs/HEAD`, its directory, the sibling `NAME.al/agentic.rkt` and its layer's IR); rescanned every 60 s and on **refresh** (at most once per 5 s). A layer of a workspace repository that has `agentic-layer.json` is watched like any other |
+| `<jobs-dir>/<id>/job.json`, `output.log`, `docs/` | the Job view: an action's steps (argv, the command line as shown, exit code, times), its status and the runner's `pid` / `host` / `heartbeat` (as a run's `state.json`), changed files; its output; its documents. `<jobs-dir>/locks/` holds one lock file per repository. The second place the dashboard writes, outside every repository and layer. Two dashboards with different `--jobs-dir` do not see each other's locks |
 
 Transcripts (`raw.jsonl`) are read incrementally (only new bytes; a half-written last line waits
 for its newline; a truncated or replaced file restarts with a `reset`). Claude Code stream-json
@@ -143,13 +157,15 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
 
 ## Safety
 
-- **Two writes, guarded.** Only GET and HEAD, plus `POST /api/models` and `POST /api/start`; every
-  other method and path is 405 (GET on either of the two too), and no endpoint stops or changes a
-  run. Both writes pass one guard (`Handler._write_guard`): the token as for every request, but from
-  the `Authorization` header or the cookie only (a token in the query string is refused); a loopback
-  `Host` when there is no token; an `Origin` header equal to `http://<Host>` (a missing one is
-  refused); the `X-AL-Dashboard: 1` header, which a plain HTML form cannot send; `Content-Type:
-  application/json`; a body of at most 4 KiB (models) or 64 KiB (start); and no `--read-only`.
+- **Three writes, guarded.** Only GET and HEAD, plus `POST /api/models`, `POST /api/start` and
+  `POST /api/action`; every other method and path is 405 (GET on `/api/models` or `/api/start` is
+  405 too), and no endpoint stops or changes a run. All three writes pass one guard
+  (`Handler._write_guard`): the token as for every request, but from the `Authorization` header or
+  the cookie only (a token in the query string is refused); a loopback `Host` when there is no
+  token; an `Origin` header equal to `http://<Host>` (a missing one is refused); the
+  `X-AL-Dashboard: 1` header, which a plain HTML form cannot send; `Content-Type:
+  application/json`; a body of at most 4 KiB (models, actions) or 64 KiB (start); and no
+  `--read-only`.
 - **The model setting.** `POST /api/models` sets or resets one tier of a layer's local model setting
   (`agents/settings/models.json`). The tier and model id are validated like `al models` (a declared
   tier; a non-empty id without whitespace or control characters; an unknown id gets a note), and the
@@ -171,6 +187,38 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
   review and no ship step: it cannot ship. "Log as an issue, start now" opens the issue with a
   `<!-- al:claimed run=<id> -->` marker in its body, which the layer's poller and webhook skip;
   "let the trigger start it" opens it with the issue input's labels and starts nothing.
+- **Actions.** `POST /api/action {"repo": KEY, "action": NAME}` (and `"confirm": NONCE`) runs `al` on a
+  scanned repository, from this fixed allow-list only (AL = the found tool, APP = the repository's real
+  path, LAYER = its layer, else `<folder>/<name>.al`):
+
+  | Action | States | Writes | argv |
+  |---|---|---|---|
+  | `scout` | all | no | `AL scout APP` (stdout = document `LLM.txt`) |
+  | `create` | none, setup | yes | `AL init APP`; `AL author LAYER [--agent …]`; `AL gen LAYER`; `AL check LAYER` |
+  | `adopt` | setup | yes | preview: `AL adopt LAYER --app APP --dry-run --diff` (stdout = `preview.diff.txt`); then `AL init APP`; `AL author LAYER`; `AL adopt LAYER`; `AL gen LAYER`; `AL check LAYER` |
+  | `gen` | layer | yes | `AL gen LAYER` |
+  | `check` | layer | no | `AL check LAYER` |
+  | `verify` | layer | yes | `AL verify LAYER --json` (stdout = `verify.json`) |
+  | `explain` | layer | no | `AL explain LAYER --md <job>/docs/EXPLAIN.md` |
+
+  The request passes the same checks as `POST /api/models`, in the same order and with the same
+  messages; any other key, a non-string value or whitespace in a value is 400, an unknown action 400,
+  a repository that is not scanned 404. Then: the state must allow the action (409); the repository's
+  real path must still be a git repository inside a workspace folder (409, so one replaced by a symlink
+  after the scan is refused); `create` and `adopt` are refused when any `agentic.rkt` exists in LAYER or
+  in the repository, committed or not (409, "never overwritten" / "has uncommitted changes"); no other job
+  may be running on the repository (409). The argv lists are built from the scanned entry only, run
+  without a shell (`Popen(argv, shell=False)`), never with a flag from the request. A writing action
+  without `confirm` returns a preview (its command lines, the paths it writes, a nonce; for `adopt` a
+  read-only dry-run job whose document is the diff); the confirmation must echo the nonce, which is
+  single use, expires after 10 minutes and is bound to the repository's commit, branch, status and layer
+  definition: a change in between is 409 "changed since the preview". A job is run by its own detached
+  process (`dashboard.py --run-job DIR`, `start_new_session`), which holds the repository's `flock` for its
+  lifetime (a second runner on the same repository records `refused`), refreshes its heartbeat every 5 s,
+  kills a step's process group at its timeout, and stops at the first failing step. It survives a
+  dashboard restart; one whose runner is gone is rewritten as `interrupted`, never shown as running.
+  `--no-actions` (403 "actions are off") and `--read-only` turn actions off; without the al tool they are
+  409 and every button says where it looked. No action in `--in-container` or `al dashboard --podman`.
 - **Served files** are limited to a watched layer's `agents/`, `artefacts/`, `specs/`, its
   `agentic-layer.json` / `agentic.rkt` and `EXPLAIN.md`. Traversal (`..`, encoded or not), absolute
   paths, NUL bytes and anything whose real path leaves that tree (symlinked files or directories)
@@ -210,7 +258,8 @@ single file cannot be replaced atomically. Layers found by scanning a DIR get no
 their panel says "not writable here" with the `al models` command to use on the host instead.
 `--read-only` mounts nothing writable and turns the panel's write off. Starting work is always off
 in the container: it has no `uv`, no application checkout and no writable layer, so the Start work
-panel says so (`--no-start` is accepted and passed on).
+panel says so (`--no-start` is accepted and passed on). The container has no workspace and no
+actions either (`--in-container`): they need the host's git and al.
 
 What the container can and cannot show:
 
@@ -267,6 +316,23 @@ and in trigger mode (`tests/fake_forgejo.py`, an in-memory Forgejo). `tests/test
 confirmation; with `AL_DASHBOARD_SHOTS=DIR` it saves `start-form.png`, `start-confirm.png` and
 `start-run.png` to DIR.
 
+`tests/test_workspace.py` covers the workspace scan (states, sibling layers, al scout's summary, depth,
+symlinks out of the folder, the file and time bounds, git without fsmonitor or hooks, the cache and the
+refresh limit, the default workspace, the al lookup, escaping); `tests/test_actions.py` the actions (the
+allow-list and every refusal, the write checks shared with `/api/models`, `--read-only`, `--no-actions`,
+preview and nonce, the adopt dry run, the per-repository lock, a job surviving a restart, a dead runner
+shown as `interrupted`, the job's tail, changed files, document confinement, never overwriting a
+definition, a missing al tool), with `tests/workspace_fixtures.py`: four invented repositories (`pantry`,
+`quill`, `comet`, `fern`) and `fake_al`, a stand-in for al that records its argv.
+`tests/test_browser_workspace.py` (Chrome) checks the Repos view, the selection in the URL, the filter,
+the adopt preview's diff (an injected `<script>` stays text), Confirm and a job streaming to `passed`, and
+disabled actions without al; with `AL_DASHBOARD_SHOTS=DIR` it saves `workspace-repos.png`,
+`workspace-adopt-preview.png` and `workspace-job.png`. `tests/tools/test_dashboard_workspace.py` (at the
+repository root) runs the same flows end to end with the real al and the mock author agent.
+`tests/test_writes_together.py` runs both features in one server: `--read-only` refuses all three
+writes, `--no-start` and `--no-actions` each refuse only their own, each write has its body limit,
+and both features' GET routes and banner states are there.
+
 ## Demo scripts (`demo/`)
 
 | Script | Does |
@@ -296,4 +362,5 @@ when a dashboard is declared, and notes runs that died.
 
 `al dashboard [LAYER_OR_DIR …] [--port N] [--open] [--podman]` runs this kit's dashboard over any
 layers (a directory with `agentic-layer.json`) and directories (scanned), the current directory
-when none is given: one page for several codebases.
+when none is given: one page for several codebases. `--workspace DIR` (repeatable), `--workspace-depth N`,
+`--no-workspace` and `--no-actions` are passed through (not with `--podman`).

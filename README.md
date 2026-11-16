@@ -303,6 +303,12 @@ the network. More: [`kit/dashboard/README.md`](kit/dashboard/README.md).
 Work can be started from the page (any workflow, or one command such as `/plan-chore …` as a run that
 never ships) or with `al run LAYER /NAME …`; see [Start work](docs/GUIDE.md#start-work-from-the-dashboard-or-the-command-line).
 
+Its **Repos** view lists the git repositories beside the layer's (`al dashboard ~/code/myapp.al`, or
+`--workspace ~/code`, repeatable; `--workspace-depth N`; `--no-workspace`), each marked `layer`, `setup` or
+`none`, and runs the next al step on one from the page (scout, create a layer, adopt its agent setup, gen,
+check, verify, explain), showing the exact command line of each; `--no-actions` (or `--read-only`) turns
+that off ([guide](docs/GUIDE.md#work-with-several-repositories-from-the-dashboard)).
+
 ## al, used on itself
 
 This repository has its own agentic layer, checked in as [`agentic/`](agentic). It was not written by
@@ -425,6 +431,7 @@ Then give two prompts to an LLM agent (for example Claude Code), in this reposit
 1. [`meta/commands/scout-codebase.md`](meta/commands/scout-codebase.md) completes `LLM.txt` by reading your repository.
 2. [`meta/commands/author-layer.md`](meta/commands/author-layer.md) writes `agentic.rkt`. Tell it in plain words what you
    want, e.g. *"tasks from a text file, run in a container, a human reviews"*.
+   `tools/al author ~/code/myapp.al [--preferences "…"]` does this hand-off with the agent CLI and compiles the result.
 
 ```bash
 tools/al gen    ~/code/myapp.al       # compile and generate; errors say what to fix
