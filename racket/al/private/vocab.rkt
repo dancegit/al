@@ -478,10 +478,12 @@
   [collect (list-of (ref artefact)) () "Artefacts collected after the command."])
 
 (define-record step-script
-  "(script NAME #:cmd C …): run a declared codebase cmd as a workflow step, e.g. a workflow script the team already has. It runs in the run's environment (worktree, container), gets the run context in environment variables (ADW_ID, ADW_PROMPT, ADW_CLASS, ADW_PLAN, ADW_BRANCH, ADW_WORKTREE, ADW_LAYER_DIR), its output becomes the step's output ($out.NAME), and a non-zero exit fails the run. It is not a check: no resolve loop, and the gate does not count it as verification."
+  "(script NAME #:cmd C …): run a declared codebase cmd as a workflow step, e.g. a workflow script the team already has. It runs in the run's environment (worktree, container), gets the run context in environment variables (ADW_ID, ADW_PROMPT, ADW_CLASS, ADW_PLAN, ADW_BRANCH, ADW_WORKTREE, ADW_LAYER_DIR, ADW_RESUME), its output becomes the step's output ($out.NAME), and a non-zero exit fails the run, unless the exit code is one of its #:waiting-exit codes: then the run ends as `waiting`, and `--resume` runs the step again with ADW_RESUME=1 (empty otherwise). It is not a check: no resolve loop, and the gate does not count it as verification."
   [cmd (ref cmd) #:required "Codebase command to run."]
   [args (list-of string) () "Arguments appended to the command, each shell-quoted; $prompt, $plan, $adw_id, $class, $branch and $out.<step> are substituted."]
-  [timeout integer 0 "Seconds; 0 = the cmd's own #:timeout."])
+  [timeout integer 0 "Seconds; 0 = the cmd's own #:timeout."]
+  [waiting-exit (list-of integer) () "Exit codes that mean the script is waiting for something outside (e.g. 75): the run ends as `waiting` (not failed, not passed), keeps its worktree and prints how to resume; `--resume` runs this step again with ADW_RESUME=1."]
+  [journal string "" "A folder the script writes its own run journal to, relative to the run's worktree; {adw_id} is the run id. While the script runs, each line of its events.jsonl is mirrored into the run's events (script.event) and each inner step's prompt.md and output files become documents of the run. A missing folder is not an error."])
 
 (define-record step-review
   "(review [NAME] …): run the ADW's review option here."
@@ -539,6 +541,6 @@
     "Model tiers: an agent's tiers are `base` and `heavy` (from #:model-base / #:model-heavy, which have defaults) plus every (TIER \"MODEL\") in its #:models; a tier given both ways, or twice, is an error, and `inherit` is not a tier name. Every tier a workflow can use must be declared on the agent that runs it: run steps (their #:model-set, else their command's) on the step's #:agent or the ADW's agent; check #:resolve commands and review #:patch / #:implement commands on the ADW's agent; the review command on the review option's #:agent, else the ADW's agent. The mock agent accepts every tier. #:effort is only available for claude-code and codex (codex: not `max`)."
     "(budget limits …) is declared at most once; every limit given is greater than 0; #:limit-stop-percent is 0–100 (0 = off), #:on-limit wait needs a #:limit-stop-percent above 0, and #:limit-wait-minutes is at least 1."
     "(notify …): #:to-env, #:from-env and #:smtp-url-env of `email` take the NAME of an environment variable in capitals (A–Z, 0–9, _); a value that looks like an e-mail address, a URL or a host name is rejected, because the layer file is committed. #:events lists at least one event and #:timeout is 1–60. Two notifiers of the same kind need #:id."
-    "A (script …) step needs a `worktree` environment in the ADW's stack, like check and ship."
+    "A (script …) step needs a `worktree` environment in the ADW's stack, like check and ship. #:waiting-exit codes are 1–255; #:journal is a path relative to the worktree, without `..` or a leading `/`, whose only placeholder is `{adw_id}`."
     "(include \"FILE\") splices the clauses of FILE (plain s-expressions, no #lang line; a path relative to agentic.rkt) where it stands: at the top level of (agentic-layer …), or inside (codebase …) for cmd, paths and conditional-doc clauses. Errors point into FILE. An included file cannot include another. `al adopt` writes its declarations this way."
     "Kinds marked planned compile but are refused by the generator."))

@@ -112,7 +112,11 @@ def describe_step(step: dict, ir: dict | None = None) -> str:
         given = f" with {listing(['`' + a + '`' for a in step.get('args', [])])}" if step.get("args") else ""
         return (f"script `{step['name']}`: runs the codebase's own `{step['cmd']}` command"
                 + (f" (`{cmd['run']}`)" if cmd else "") + given
-                + "; if it fails, the run stops (it is not a check: nothing fixes it and it proves nothing to the gate)")
+                + "; if it fails, the run stops (it is not a check: nothing fixes it and it proves nothing to the gate)"
+                + (f"; exit {listing([str(c) for c in step['waitingExit']])} means waiting: the run stops as waiting "
+                   "and --resume runs it again" if step.get("waitingExit") else "")
+                + (f"; its own journal (`{step['journal']}`) is followed and shown with the run"
+                   if step.get("journal") else ""))
     if kind == "run":
         only = "" if step.get("when", "always") == "always" else f" (only for {step['when'].removeprefix('class-')} work)"
         tier = f", on the {step['modelSet']} model tier" if step.get("modelSet", "inherit") != "inherit" else ""

@@ -253,6 +253,22 @@
           who n (hash-ref f 'maxParallel)))
   f)
 
+(define (compile-script s adw-name named)
+  (define f (named 'step-script 'script #f))
+  (define who (format "(adw ~a) step (script ~a)" adw-name (hash-ref f 'name)))
+  (for ([code (in-list (hash-ref f 'waitingExit))])
+    (unless (<= 1 code 255)
+      (fail "~a: #:waiting-exit codes must be between 1 and 255 (got ~a)" who code)))
+  (define journal (hash-ref f 'journal))
+  (unless (string=? journal "")
+    (when (or (regexp-match? #rx"^/" journal) (member ".." (string-split journal "/")))
+      (fail "~a: #:journal must be a path relative to the run's worktree without `..` or a leading `/` (got ~s)"
+            who journal))
+    (for ([m (in-list (regexp-match* #rx"{[^}]*}" journal))])
+      (unless (string=? m "{adw_id}")
+        (fail "~a: #:journal: unknown placeholder ~a; the only one is {adw_id}" who m))))
+  f)
+
 (define (compile-step s adw-name)
   (unless (and (pair? s) (symbol? (car s)))
     (fail "(adw ~a): bad step ~s; steps are ~a" adw-name s step-kinds))
@@ -270,7 +286,7 @@
   (case (car s)
     [(run) (named 'step-run 'run #f)]
     [(check) (named 'step-check 'check #f)]
-    [(script) (named 'step-script 'script #f)]
+    [(script) (compile-script s adw-name named)]
     [(review) (named 'step-review 'review "review")]
     [(ship) (named 'step-ship 'ship "ship")]
     [(compose)

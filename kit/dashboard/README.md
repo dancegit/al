@@ -74,6 +74,20 @@ workflow that merges or deploys without a person, and the same request again wit
 open a confirmation dialog. Then the page opens the new run. When starting is off, the panel says why
 (`--read-only`, `--no-start`, the container, or a layer generated before this feature: "run `al gen`").
 
+A run whose `script` step exited with a code the step declares as waiting (`#:waiting-exit (75)`)
+ended **waiting**: it is neither failed nor passed, its worktree is kept, and nobody is notified.
+The run list, its status filter, the graph node and the timeline show it as `waiting` (⏸), and the
+run's header shows the step it waits at and the command that resumes it
+(`uv run adws/adw_<workflow>.py --resume --adw-id <id>`).
+
+A `script` step that follows the script's own run journal (`#:journal`) shows that journal's lines
+(mirrored as `script.event` events) as **inner steps** under the script step: time, kind, subject,
+and the tokens and cost when the line reports them (`usage.input_tokens` / `output_tokens` / cache
+fields or `tokens.in` / `out`, `cost_usd` / `cost`), with the step's totals. A `*.start` … `*.end`
+pair with the same subject is one bar on the timeline, under the script step; any other line is a
+point. Each inner step's `prompt.md` and `output*` files, copied into the run, are documents of
+kind `inner` (named `<inner>/<file>`) on the Documents tab and in the step panel.
+
 Every view is a URL (`#/run/flask/11bf99ac/step/build?q=static`), so a link can go into a PR or a
 chat. Keys: `j`/`k` move through runs, nodes or transcript events, `Enter` opens, `/` searches,
 `f` follows, `Esc` goes back, `?` lists them.

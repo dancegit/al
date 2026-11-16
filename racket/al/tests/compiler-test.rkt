@@ -517,7 +517,8 @@
 (test-case "script step: runs a declared cmd, needs a worktree, is not a check"
   (define ir (compile-layer-datum (layer plan '(adw a (steps (script legacy #:cmd lint #:args ("$prompt")))))))
   (check-equal? (car (hash-ref (car (hash-ref ir 'adws)) 'steps))
-                (hasheq 'kind "script" 'name "legacy" 'cmd "lint" 'args '("$prompt") 'timeout 0))
+                (hasheq 'kind "script" 'name "legacy" 'cmd "lint" 'args '("$prompt") 'timeout 0
+                        'waitingExit '() 'journal ""))
   (check-rejects (layer plan '(adw a (steps (script legacy #:cmd nothing)))) #rx"`nothing` is not a declared codebase cmd")
   (check-rejects (layer plan '(adw a (steps (script #:cmd lint)))) #rx"needs a step name")
   (check-rejects (layer plan '(environment host) '(adw a (steps (script legacy #:cmd lint))))
@@ -526,6 +527,24 @@
   (check-rejects (layer plan review-cmd '(environment worktree) '(environment podman) '(review auto #:require-checks (test))
                         '(adw a #:environment (worktree podman) (steps (run plan #:command plan) (script s #:cmd test) (review) (ship))))
                  #rx"needs a \\(check …\\) step before its \\(review\\) step"))
+
+(test-case "script step: waiting exit codes and a journal"
+  (define ir (compile-layer-datum
+              (layer plan '(adw a (steps (script watch #:cmd lint #:args ("--adw-id" "$adw_id")
+                                                 #:waiting-exit (75) #:journal ".work/adw/{adw_id}"))))))
+  (check-equal? (car (hash-ref (car (hash-ref ir 'adws)) 'steps))
+                (hasheq 'kind "script" 'name "watch" 'cmd "lint" 'args '("--adw-id" "$adw_id") 'timeout 0
+                        'waitingExit '(75) 'journal ".work/adw/{adw_id}"))
+  (define (script-with . kws) (layer plan `(adw a (steps (script watch #:cmd lint ,@kws)))))
+  (check-rejects (script-with '#:waiting-exit '(0))
+                 #rx"\\(adw a\\) step \\(script watch\\): #:waiting-exit codes must be between 1 and 255 \\(got 0\\)")
+  (check-rejects (script-with '#:waiting-exit '(75 256)) #rx"#:waiting-exit codes must be between 1 and 255 \\(got 256\\)")
+  (check-rejects (script-with '#:waiting-exit 75) #rx"#:waiting-exit: expected a parenthesised list")
+  (for ([bad '("/tmp/x" "../x" "a/../../b")])
+    (check-rejects (script-with '#:journal bad)
+                   #rx"#:journal must be a path relative to the run's worktree without `..` or a leading `/`"))
+  (check-rejects (script-with '#:journal ".work/{run}")
+                 #rx"#:journal: unknown placeholder {run}; the only one is {adw_id}"))
 
 ;; ---------------------------------------------------------------------------------------- include
 
@@ -575,5 +594,5 @@
   (check-equal? (hash-ref (hash-ref (hash-ref (cadr (hash-ref budget 'oneOf)) 'properties) 'runUsd) 'type) '("number" "null"))
   (define ref (reference-text))
   (for ([needle '("### `model-tier`" "### `step-script`" "(budget limits …)" "shorthand for the `heavy` entry of #:models"
-                  "(include \"FILE\")" "claude-fable-5-2")])
+                  "(include \"FILE\")" "claude-fable-5-2" "#:waiting-exit" "#:journal")])
     (check-true (string-contains? ref needle) needle)))

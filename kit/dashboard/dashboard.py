@@ -1659,6 +1659,7 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
     open_waits: dict[tuple[str, str], dict[str, Any]] = {}
     container: dict[str, Any] | None = None
     limits: list[dict[str, Any]] = []
+    inner: dict[str, list[dict[str, Any]]] = {}
     current = ""
     for event in events:
         kind, at = event["type"], event["_t"]
@@ -1727,6 +1728,10 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
                 wait = open_waits.pop(key)
                 wait["end"] = at
                 waits.append(wait)
+        elif kind == "script.event":
+            entry = inner_entry(event)
+            if entry is not None:
+                inner.setdefault(entry["step"], []).append(entry)
         elif kind == "env.container.start":
             container = {"name": str(event.get("name") or ""), "removed": False}
         elif kind == "env.container.stop":
@@ -1741,7 +1746,106 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
             if item.get("running") and (live is None or item["start"] > live["start"]):
                 live = {"check": step, "attempt": item["attempt"], "start": item["start"], "file": item["file"]}
     return {"agents": agents, "attempts": attempts, "gates": list(gates.values()), "waits": waits,
-            "container": container, "live_check": live, "limits": limits}
+            "container": container, "live_check": live, "limits": limits, "inner": inner}
+
+
+_TOKEN_KEYS = (("in", "input_tokens", "in"), ("out", "output_tokens", "out"),
+               ("cache_read", "cache_read_input_tokens", None), ("cache_write", "cache_creation_input_tokens", None))
+
+
+def foreign_usage(obj: Any) -> dict[str, Any] | None:
+    """Tokens and cost a hand-built suite's journal line reports: `usage.{input_tokens, output_tokens,
+    cache_read_input_tokens, cache_creation_input_tokens}` or `tokens.{in, out}`, and `cost_usd` / `cost`
+    when it is a number. None when the line reports neither."""
+    if not isinstance(obj, dict):
+        return None
+
+    def count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    usage, tokens = obj.get("usage"), obj.get("tokens")
+    found = False
+    out: dict[str, Any] = {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0}
+    for key, usage_key, tokens_key in _TOKEN_KEYS:
+        if isinstance(usage, dict) and usage_key in usage:
+            out[key], found = count(usage.get(usage_key)), True
+        elif isinstance(tokens, dict) and tokens_key and tokens_key in tokens:
+            out[key], found = count(tokens.get(tokens_key)), True
+    cost = next((obj[k] for k in ("cost_usd", "cost") if isinstance(obj.get(k), (int, float))
+                 and not isinstance(obj.get(k), bool)), None)
+    if not found and cost is None:
+        return None
+    out["cost"] = cost
+    return out
+
+
+def _foreign_field(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return clip(value, 300)
+    try:
+        return clip(json.dumps(value, ensure_ascii=False), 300)
+    except (TypeError, ValueError):
+        return clip(str(value), 300)
+
+
+def inner_entry(event: dict[str, Any]) -> dict[str, Any] | None:
+    """One `script.event` (a line of a hand-built suite's own journal, mirrored by the runtime) → an
+    inner step of its script step, or None when it names no step or carries no object."""
+    step, foreign = str(event.get("step") or ""), event.get("foreign")
+    if not step or not isinstance(foreign, dict):
+        return None
+    line = event.get("line") if isinstance(event.get("line"), int) else 0
+    kind = str(foreign.get("kind") or foreign.get("type") or "")
+    subject_key = "subject" if foreign.get("subject") else ("step" if foreign.get("step") else "")
+    used = {"time", "ts", "kind", "type", "prev", "hash"} | ({subject_key} if subject_key else set())
+    at = parse_time(foreign.get("time")) or parse_time(foreign.get("ts")) or event["_t"]
+    return {"step": step, "line": line, "at": at, "kind": clip(kind, 120),
+            "subject": clip(str(foreign.get(subject_key) or ""), 200) if subject_key else "",
+            "fields": {clip(str(k), 80): _foreign_field(v) for k, v in list(foreign.items())[:40] if k not in used},
+            "usage": foreign_usage(foreign)}
+
+
+def inner_usage(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The totals of the inner steps' usage, or None when none reported any."""
+    reported = [e["usage"] for e in entries if e.get("usage")]
+    if not reported:
+        return None
+    total: dict[str, Any] = {key: sum(u[key] for u in reported) for key, _, _ in _TOKEN_KEYS}
+    costs = [u["cost"] for u in reported if u.get("cost") is not None]
+    total["cost"] = round(sum(costs), 6) if costs else None
+    return total
+
+
+def inner_bars(step: str, entries: list[dict[str, Any]], cutoff: float | None) -> list[dict[str, Any]]:
+    """Timeline bars (level 1) of a script step's inner steps: a `*.start` … `*.end` pair with the same
+    subject is one bar, any other line a point."""
+    bars: list[dict[str, Any]] = []
+    open_: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in entries:
+        kind, subject = entry["kind"], entry["subject"]
+        label = " ".join(x for x in (kind, subject) if x) or f"line {entry['line']}"
+        if kind.endswith(".start"):
+            bar = {"id": f"inner:{step}:{entry['line']}", "step": step, "level": 1, "kind": "inner", "role": "inner",
+                   "label": " ".join(x for x in (kind[:-len(".start")], subject) if x), "start": entry["at"],
+                   "end": None, "status": "running", "cost": None, "ref": str(entry["line"])}
+            open_[(kind[:-len(".start")], subject)] = bar
+            bars.append(bar)
+            continue
+        if kind.endswith(".end") and (kind[:-len(".end")], subject) in open_:
+            bar = open_.pop((kind[:-len(".end")], subject))
+            failed = str(entry["fields"].get("status") or "") == "failed"
+            bar.update(end=entry["at"], status="failed" if failed else "done",
+                       cost=(entry["usage"] or {}).get("cost"))
+            continue
+        bars.append({"id": f"inner:{step}:{entry['line']}", "step": step, "level": 1, "kind": "inner", "role": "inner",
+                     "label": label, "start": entry["at"], "end": entry["at"], "status": "done",
+                     "cost": (entry["usage"] or {}).get("cost"), "ref": str(entry["line"])})
+    for bar in open_.values():
+        if cutoff is not None:
+            bar.update(end=max(cutoff, bar["start"] or cutoff), status="done")
+    return bars
 
 
 class RunModel:
@@ -2081,8 +2185,19 @@ class RunModel:
             "timing": "events" if spans is not None else "files",
             "last_seen": data["last_seen"],
             "mtime": max([mtime(self.files.dir / "state.json") or 0, mtime(self.files.dir / "run.log") or 0]),
+            **self._waiting(data),
             **extras,
         }
+
+    def _waiting(self, data: dict[str, Any]) -> dict[str, Any]:
+        """A run that ended `waiting` (a script step exited with a declared waiting code): the step it
+        waits at and the command that resumes it."""
+        if data["status"] != "waiting":
+            return {}
+        record = next((r for r in reversed(list(data["records"].values())) if r.get("status") == "waiting"), None)
+        return {"waiting_step": {k: v for k, v in record.items() if isinstance(v, (str, int, float, bool)) or v is None}
+                if record else None,
+                "resume": f"uv run adws/adw_{data['adw'].get('name')}.py --resume --adw-id {self.id}"}
 
     # ------------------------------------------------------------------ detail
     def _declared_check_cmds(self, adw: dict[str, Any]) -> dict[str, str]:
@@ -2164,6 +2279,10 @@ class RunModel:
                          "start": activity.start if activity.start is not None else activity.end,
                          "end": activity.end, "status": activity.status, "cost": activity.extra.get("cost"),
                          "ref": activity.key, "check": activity.extra.get("check"), "exit": activity.extra.get("exit")})
+        # the inner steps of a script step that follows its own journal (script.event)
+        inner = (data["spans"] or {}).get("inner") or {}
+        for name, entries in inner.items():
+            bars.extend(inner_bars(name, entries, None if data["running"] else data["run_end"]))
         # waiting for a `runs` slot: from the run's start until its first step started (run.log says it waited)
         wait_time = 0.0
         if data["spans"] is not None:
@@ -2271,7 +2390,15 @@ class RunModel:
                                 "candidates": [{k: (short(v) if isinstance(v, str) else v) for k, v in c.items()}
                                                for c in record.get("candidates") or [] if isinstance(c, dict)]}
         gate = ship.get("gate") if isinstance(ship.get("gate"), dict) else None
-        runlog_tail = read_text(self.files.dir / "run.log", cap=2_000_000).splitlines()[-400:]
+        scripts = {name: {k: (short(v) if isinstance(v, str) else v) for k, v in rec.items()}
+                   for name, rec in (state.get("scripts") or {}).items() if isinstance(rec, dict)}
+        for name, entries in inner.items():
+            script = scripts.setdefault(name, {})
+            script["inner"] = [{**e, "subject": short(e["subject"]),
+                                "fields": {k: (short(v) if isinstance(v, str) else v) for k, v in e["fields"].items()}}
+                               for e in entries]
+            script["usage"] = inner_usage(entries)
+        runlog_tail =read_text(self.files.dir / "run.log", cap=2_000_000).splitlines()[-400:]
         return {
             "summary": summary, "graph": graph, "timeline": timeline,
             "agents": [{**a, "label": a["dir"]} for a in agents],
@@ -2290,8 +2417,7 @@ class RunModel:
             "documents": run_documents(self.layer, self.id, state),
             "budget": budget_view(state),
             "usage": usage_view(state),
-            "scripts": {name: {k: (short(v) if isinstance(v, str) else v) for k, v in rec.items()}
-                        for name, rec in (state.get("scripts") or {}).items() if isinstance(rec, dict)},
+            "scripts": scripts,
             "runlog": [short(line) for line in runlog_tail],
             "steps_detail": {name: {"detail": short(str(r.get("detail", ""))), "attempts": r.get("attempts"),
                                     "status": r.get("status"), "started": parse_time(r.get("started")),
@@ -3001,6 +3127,12 @@ def run_documents(layer: Layer, run_id: str, state: dict[str, Any] | None) -> li
     for item in state.get("artefacts") or []:
         if isinstance(item, dict) and isinstance(item.get("path"), str) and item["path"].endswith(DOC_SUFFIXES):
             candidates.append((item["path"], str(item.get("step") or ""), "artefact", "", ""))
+    scripts = state.get("scripts") if isinstance(state.get("scripts"), dict) else {}
+    for step, record in scripts.items():   # inner steps' prompts and outputs copied from a script's own journal
+        for item in (record.get("documents") if isinstance(record, dict) else None) or []:
+            if isinstance(item, dict) and isinstance(item.get("path"), str):
+                name = "/".join(str(item.get(k) or "") for k in ("inner", "file") if item.get(k))
+                candidates.append((item["path"], str(step), "inner", name, name.replace("/", "-")))
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for recorded, step, kind, name, filename in candidates:

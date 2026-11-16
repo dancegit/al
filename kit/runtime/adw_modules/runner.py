@@ -14,7 +14,9 @@ from typing import Any, TextIO
 from . import budget, envs, events, ir, models, notify, state as state_module, steps
 from . import slots
 from .agents import CLASSES
-from .errors import LayerError, StepFailed
+from .errors import LayerError, StepFailed, StepWaiting
+
+EXIT_WAITING = 75  # a (script …) step is waiting for something outside: run again with --resume
 
 
 class UsageError(Exception):
@@ -92,7 +94,8 @@ which model a tier means (first match wins):
 notifications: a --dry-run sends none of the layer's (notify …) messages unless --notify is given.
 
 exit codes: 0 passed, 1 failed (handed to a person where the workflow ships),
-            2 usage error, 3 refused: the layer's day limit (#:day-usd) or its subscription usage threshold (#:limit-stop-percent) is reached
+            2 usage error, 3 refused: the layer's day limit (#:day-usd) or its subscription usage threshold (#:limit-stop-percent) is reached,
+            75 waiting: a script step is waiting for something outside; run again with --resume
 """
 
 
@@ -205,8 +208,14 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"ship:      {ship}",
         *([handoff] if handoff else []),
         f"artefacts: {len(state.artefacts)}",
+        *([f"resume:    {resume_command(state)}"] if state.status == "waiting" else []),
         f"state:     {state_module.run_dir(layer.layer_dir, state.adw_id) / 'state.json'}",
     ]
+
+
+def resume_command(state: state_module.ADWState) -> str:
+    """How a person (or a timer) continues a waiting run."""
+    return f"uv run adws/adw_{state.adw}.py --resume --adw-id {state.adw_id}"
 
 
 def _tiers_line(state: state_module.ADWState) -> str:
@@ -312,6 +321,11 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
                     print(f"[adw {state.adw_id}] gc: removed stale worktree {removed}")
             _execute(layer, state, adw, stack)
         state.status, exit_code = "passed", 0
+    except StepWaiting as exc:  # neither failed nor passed: no hand-off, the worktree stays for the resume
+        state.status, exit_code = "waiting", EXIT_WAITING
+        stack.keep_worktree = True
+        state.error = f"waiting at step {exc.step} (exit {exc.code}); resume: {resume_command(state)}"
+        print(f"[adw {state.adw_id}] run {state.error}")
     except (StepFailed, LayerError) as exc:
         state.status = "failed"
         print(f"[adw {state.adw_id}] run failed: {exc}")

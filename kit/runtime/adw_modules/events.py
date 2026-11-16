@@ -32,7 +32,7 @@ TYPES = (
     "step.start", "step.end",
     "agent.start", "agent.end",
     "check.start", "check.end",
-    "script.start", "script.end",
+    "script.start", "script.end", "script.event",
     "budget.stop",
     "limit.status", "limit.stop", "limit.wait",
     "review.round", "gate.decision", "ship.result", "handoff",

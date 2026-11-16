@@ -39,6 +39,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import al_suite
+
 ADOPTED = "adopted"
 CODEBASE_FILE = f"{ADOPTED}/codebase.rkt"
 LAYER_FILE = f"{ADOPTED}/layer.rkt"
@@ -428,6 +430,75 @@ def option_id(ir: dict, family: str, kind: str) -> str | None:
     return next((o["id"] for o in ir.get(family) or [] if o.get("kind") == kind), None)
 
 
+SUITE_RESUME = '${ADW_RESUME:+--resume "$ADW_ID"}'
+
+
+def _suite_args(positionals: list[dict[str, Any]], options: dict[str, Any]) -> tuple[list[str], bool]:
+    """(step args, whether the script is told the run id) from a usage line's arguments: a
+    positional named ADW_ID or ID gets $adw_id, the first other one $prompt; --adw-id gets $adw_id."""
+    args, prompt_used, gets_id = [], False, False
+    for p in positionals:
+        if re.fullmatch(r"(?:ADW_)?ID", p["name"]):
+            args.append("$adw_id")
+            gets_id = True
+        elif not prompt_used:
+            args.append("$prompt")
+            prompt_used = True
+        else:
+            break  # a second request-like argument: nothing of the run fills it
+    if options.get("adw_id"):
+        args += ["--adw-id", "$adw_id"]
+        gets_id = True
+    return args, gets_id
+
+
+def suite_proposals(suite: dict[str, Any], ir: dict, taken: set[str]) -> list[dict[str, Any]]:
+    """One runnable workflow per subcommand of the suite's entry script, and one per script not
+    reached through a subcommand: how to call it, which exit means waiting, which journal to follow."""
+    scripts = {s["path"]: s for s in suite["scripts"]}
+    journal_root = (suite.get("journal") or {}).get("root", "")
+    proposals: list[dict[str, Any]] = []
+
+    def add(base: str, run: str, source: str, script: dict[str, Any] | None, positionals: list, options: dict,
+            codes: list[dict[str, Any]], uses_runtime: bool) -> None:
+        name = base
+        while name in taken:
+            name += "-x"
+        taken.add(name)
+        args, gets_id = _suite_args(positionals, options)
+        if options.get("resume") == "with-id":
+            run += " " + SUITE_RESUME
+        steps = (script or {}).get("steps") or []
+        proposals.append({
+            "name": name, "run": run, "source": source, "script": (script or {}).get("path", ""), "args": args,
+            "waiting": [c["code"] for c in codes if c["code"] == al_suite.WAITING],
+            "journal": f"{journal_root}/{{adw_id}}" if journal_root and gets_id and uses_runtime else "",
+            "positionals": positionals, "options": options, "steps_known": bool(steps),
+            "llm_steps": [st for st in steps if st["kind"] != "code"]})
+
+    reached = set()
+    entry = suite.get("entry")
+    if entry:
+        reached.add(entry["path"])
+        entry_script = scripts[entry["path"]]
+        launcher = {"uv": "uv run", "python3": "python3"}.get(entry_script["runner"], "bash")
+        for sub in entry["subcommands"]:
+            target = scripts.get(sub["script"]) if sub["script"] else None
+            if target:
+                reached.add(target["path"])
+            codes = (target or entry_script)["exit_codes"]
+            add(f"legacy-{slug(entry['stem'])}-{slug(sub['name'])}", f"{launcher} {entry['path']} {sub['name']}",
+                f"{entry['path']} {sub['name']}", target, sub["positionals"], sub["options"], codes,
+                entry_script["imports_runtime"] or bool(target and target["imports_runtime"]))
+    for path, script in sorted(scripts.items()):
+        if path in reached:
+            continue
+        runner = "bash" if script["language"] == "shell" else script["runner"]
+        add(f"legacy-{slug(Path(path).stem)}", legacy_cmd({"path": path, "runner": runner}), path, script,
+            script["positionals"], script["options"], script["exit_codes"], script["imports_runtime"])
+    return proposals
+
+
 # ------------------------------------------------------------------------------------------ s-expressions
 
 def form_spans(text: str) -> dict[str, tuple[int, int]]:
@@ -535,12 +606,16 @@ def plan(al: Any, layer: Path, app: Path, only: set[str]) -> dict[str, Any]:
     except ValueError:
         pass
     items = [it for it in items if not (layer_rel and it["path"].startswith(layer_rel + "/"))]   # an in-repo layer itself
+    suite = al_suite.detect_suite(app, [f for f in files if not (layer_rel and f.startswith(layer_rel + "/"))])
+    suite_scripts = {s["path"] for s in suite["scripts"]} if suite else set()
+    suite_prompts = {p["file"] for s in suite["scripts"] for p in s["prompts"]} if suite else set()
+    previous = load_record(layer).get("files") or {}
     kit_names = set(al.kit_template_names())
     taken = {c["name"] for c in ir.get("commands", []) + ir.get("hops", [])}
     cmd_names = {c["name"] for c in (ir.get("codebase") or {}).get("commands", [])}
     adw_names = {a["name"] for a in ir.get("adws", [])}
     report: dict[str, Any] = {"rules": [], "prompts": [], "workflows": [], "not_adopted": [], "conflicts": [],
-                              "review_rules": [], "notes": []}
+                              "review_rules": [], "notes": [], "suite": None, "prompts_left": []}
     codebase_lines, layer_lines, extra_files = [], [], {}
 
     rules = [it for it in items if it["category"] == "rules"]
@@ -574,6 +649,13 @@ def plan(al: Any, layer: Path, app: Path, only: set[str]) -> dict[str, Any]:
         if "prompts" not in only:
             continue
         adopted = adopt_prompt(it, app, taken | set(templates), kit_names)
+        if it["path"] in suite_prompts:
+            if adopted["file"] not in previous:
+                report["prompts_left"].append({"path": it["path"], "why": "used only by the suite's own runtime; "
+                                               "copying it would create a second copy"})
+                continue
+            adopted["notes"].append("kept: adopted before (the hand-built suite also runs it from "
+                                    f"{it['path']}; the two copies can drift)")
         taken.add(adopted["name"])
         templates[adopted["file"]] = adopted["text"]
         layer_lines.append(f"(command {adopted['name']} #:template custom #:file {rkt(adopted['file'])}\n"
@@ -584,9 +666,21 @@ def plan(al: Any, layer: Path, app: Path, only: set[str]) -> dict[str, Any]:
     human = option_id(ir, "reviews", "human") if ir else "human"
     worktree = option_id(ir, "environments", "worktree") if ir else "worktree"
     declared = []
+
+    def declare_options() -> None:
+        if not manual and "manual" not in declared:
+            declared.append("manual")
+            layer_lines.append("(trigger manual #:id adopted-manual)")
+        if not human and "human" not in declared:
+            declared.append("human")
+            layer_lines.append("(review human #:id adopted-human)")
+        if not worktree and "worktree" not in declared:
+            declared.append("worktree")
+            layer_lines.append("(environment worktree #:id adopted-worktree)")
+
     for it in [i for i in items if i["category"] == "workflows"]:
         if it["kind"] == "workflow-script":
-            if "workflows" not in only:
+            if "workflows" not in only or it["path"] in suite_scripts:
                 continue
             base = slug(Path(it["path"]).stem)
             name = f"legacy-{base}"
@@ -594,15 +688,7 @@ def plan(al: Any, layer: Path, app: Path, only: set[str]) -> dict[str, Any]:
                 name += "-x"
             cmd_names.add(name)
             adw_names.add(name)
-            if not manual and "manual" not in declared:
-                declared.append("manual")
-                layer_lines.append("(trigger manual #:id adopted-manual)")
-            if not human and "human" not in declared:
-                declared.append("human")
-                layer_lines.append("(review human #:id adopted-human)")
-            if not worktree and "worktree" not in declared:
-                declared.append("worktree")
-                layer_lines.append("(environment worktree #:id adopted-worktree)")
+            declare_options()
             run = legacy_cmd(it)
             codebase_lines.append(f"(cmd {name} {rkt(run)} #:timeout 3600\n     #:description "
                                   f"{rkt('the team workflow script ' + it['path'] + ' (adopted; not verified by al)')})")
@@ -629,6 +715,27 @@ def plan(al: Any, layer: Path, app: Path, only: set[str]) -> dict[str, Any]:
                 it["description"] + ": not adopted; the layer runs Claude Code with --safe-mode, which loads no hooks, "
                 "MCP servers or permissions from project settings. A hook that enforces a rule belongs in a (check …) "
                 "step or a #:focus line")})
+    if suite and "workflows" in only:
+        proposals = suite_proposals(suite, ir, cmd_names | adw_names | taken)
+        for p in proposals:
+            cmd_names.add(p["name"])
+            adw_names.add(p["name"])
+            declare_options()
+            codebase_lines.append(f"(cmd {p['name']} {rkt(p['run'])} #:timeout 3600\n     #:description "
+                                  f"{rkt('the hand-built suite: ' + p['source'] + ' (adopted; not verified by al)')})")
+            fields = (f" #:args ({' '.join(rkt(a) for a in p['args'])})" if p["args"] else "") \
+                + (f" #:waiting-exit ({' '.join(map(str, p['waiting']))})" if p["waiting"] else "") \
+                + (f"\n                   #:journal {rkt(p['journal'])}" if p["journal"] else "")
+            layer_lines.append(
+                f";; PROPOSAL by `al adopt`: run {p['source']} of the team's hand-built suite as a workflow, with a person\n"
+                f";; reviewing the result. How to run it: adopted/REPORT.md, \"Run an existing workflow\".\n"
+                f"(adw {p['name']} #:description {rkt('PROPOSAL (al adopt): runs ' + p['source'] + ' of the hand-built suite; a person reviews the result')}\n"
+                f"     #:trigger ({manual or 'adopted-manual'}) #:review {human or 'adopted-human'} "
+                f"#:environment ({worktree or 'adopted-worktree'})\n"
+                f"  (steps (script run #:cmd {p['name']}{fields}) (review) (ship)))")
+        report["suite"] = {"root": suite["root"], "proposals": proposals, "guards": suite["runtime_package"]["guards"],
+                           "units": [u["path"] for u in suite["units"]], "journal": suite.get("journal"),
+                           "routing": suite.get("routing"), "layer_tiers": layer_tiers(ir)}
     for it in items:
         if it["category"] == "layers":
             report["conflicts"].append({"kind": "al-layer", "source": it["path"], "rule": it["description"],
@@ -659,12 +766,16 @@ def render_report(report: dict[str, Any], items: list[dict[str, Any]]) -> str:
                    + (f"; arguments {', '.join(p['arguments'])}" if p["arguments"] else ""))
         out += [f"  - {note}" for note in p["notes"]]
     out += (["- none"] if not report["prompts"] else []) + [""]
+    if report.get("prompts_left"):
+        out += [f"- `{p['path']}`: left in place: {p['why']}" for p in report["prompts_left"]] + [""]
     out += ["## Workflow scripts: PROPOSALS", "",
             "These cannot be converted automatically, and are not pretended to be. Each is declared as a codebase",
             "cmd and wrapped in a one-step ADW that a person reviews. An LLM-proposed native equivalent needs a",
             "person's review: ask for one with `al improve LAYER \"replace legacy-… with a native workflow\"`.", ""]
     out += [f"- PROPOSAL `{w['path']}` → `(cmd {w['cmd']} \"{w['run']}\")` and `(adw {w['adw']} … (steps (script run …) (review) (ship)))`; "
             f"{w['note']}" for w in report["workflows"]] or ["- none"]
+    if report.get("suite"):
+        out += render_suite_parts(report["suite"])
     out += ["", "## For a person to decide", ""]
     for c in report["conflicts"]:
         if c["kind"] == "rule-vs-kit":
@@ -680,6 +791,82 @@ def render_report(report: dict[str, Any], items: list[dict[str, Any]]) -> str:
     out += ["", "## Not adopted", ""] + ([f"- `{n['path']}`: {n['why']}" for n in report["not_adopted"]]
                                         + [f"- {note}" for note in report["notes"]] or ["- nothing"])
     return "\n".join(out).rstrip() + "\n"
+
+
+def layer_tiers(ir: dict) -> list[dict[str, str]]:
+    """[{agent, tier, model}] of every agent the compiled layer declares."""
+    return [{"agent": str(a.get("id")), "tier": str(m.get("tier")), "model": str(m.get("model") or "")}
+            for a in ir.get("agents") or [] for m in a.get("models") or []]
+
+
+def render_suite_parts(suite: dict[str, Any]) -> list[str]:
+    """The report parts "Run an existing workflow" and "Model routing" for a hand-built suite."""
+    out = ["", "## Run an existing workflow", "",
+           f"The hand-built suite in `{suite['root']}` is proposed as one layer workflow per subcommand or script. Each",
+           "runs it as one `(script run …)` step in the run's worktree, so the suite works as it always did; al's run id",
+           "is passed as the suite's run id where the script takes one, so the suite's journal and al's run belong together.",
+           "Run one from the layer directory:", ""]
+    for p in suite["proposals"]:
+        shown = p["run"].replace(" " + SUITE_RESUME, "") + "".join(
+            " " + ("<id>" if a == "$adw_id" else "<request>" if a == "$prompt" else a) for a in p["args"])
+        out += [f"### `{p['name']}`: {p['source']}", "",
+                f"- run: `uv run adws/adw_{p['name']}.py \"<request>\"`; it runs `{shown}`",
+                f"- resume: `uv run adws/adw_{p['name']}.py --resume --adw-id <id>`"
+                + (" (al sets ADW_RESUME=1, so the suite gets `--resume <id>`)" if SUITE_RESUME in p["run"] else
+                   " (runs the step again)")]
+        needs = [f"{x['name']}{' (optional)' if x['optional'] else ''} (passed as "
+                 f"{'$adw_id' if re.fullmatch(r'(?:ADW_)?ID', x['name']) else '$prompt'})" for x in p["positionals"]]
+        out.append(f"- needs arguments: {', '.join(needs) or 'none'}")
+        if p["options"].get("wait"):
+            unattended = f"yes (it has {', '.join(p['options']['wait'])})"
+        elif p["steps_known"] and not p["llm_steps"]:
+            unattended = "yes (no LLM steps)"
+        elif p["llm_steps"]:
+            unattended = "unknown: it runs LLM steps; check that none of them asks a person"
+        else:
+            unattended = "unknown: its steps are not documented"
+        out.append(f"- unattended: {unattended}")
+        out.append("- it may wait: exit 75 ends the run `waiting` (worktree kept, no hand-off); resume it once what it "
+                   "waits for is there" if p["waiting"] else "- it may wait: no exit code of it is known to mean waiting")
+        if p["journal"]:
+            out.append(f"- journal: `{p['journal']}` is followed while it runs and shown with the run")
+        out.append("")
+    out += ["What the suite has that is not managed by al (al neither runs nor changes it; decide what happens to it):", ""]
+    out += [f"- the suite's guards: {', '.join(f'`{g}`' for g in suite['guards'])}"] if suite["guards"] else []
+    if suite["units"]:
+        out.append(f"- systemd units and timers: {', '.join(f'`{u}`' for u in suite['units'])}; they keep running the "
+                   "suite outside al, beside any run al starts")
+    if suite.get("journal"):
+        out.append(f"- the journal root `{suite['journal']['root']}`" + (" (outside git)" if suite["journal"].get("outside_git") else "")
+                   + ": al reads it, never cleans it up")
+    if suite.get("routing"):
+        out.append(f"- the model routing `{suite['routing']['path']}` (see “Model routing”)")
+    route = suite.get("routing")
+    if route:
+        out += ["", "## Model routing", "",
+                f"The suite chooses its models itself, through `{route['path']}`; the layer's agents have tiers of their own.", "",
+                "| side | tier | model | used for |", "|---|---|---|---|"]
+        for tier, model in route["tiers"].items():
+            used = [step for step, t in route["steps"].items() if t == tier] + (["default"] if route["default"] == tier else [])
+            out.append(f"| suite | `{tier}` | `{model}` | {', '.join(f'`{u}`' if u != 'default' else u for u in used) or '—'} |")
+        for t in suite["layer_tiers"]:
+            out.append(f"| layer | `{t['tier']}` | `{t['model'] or '?'}` | agent `{t['agent']}` |")
+        out.append("")
+        layer_models = {}
+        for t in suite["layer_tiers"]:
+            layer_models.setdefault(t["model"], []).append(t["tier"])
+        for tier, model in route["tiers"].items():
+            if not suite["layer_tiers"]:
+                out.append(f"- the suite's tier `{tier}` uses `{model}`; the layer declares no agent yet")
+            elif model in layer_models:
+                out.append(f"- the suite's tier `{tier}` uses `{model}`, as the layer's "
+                           f"{', '.join(f'`{x}`' for x in sorted(set(layer_models[model])))} do")
+            else:
+                out.append(f"- the suite's tier `{tier}` uses `{model}`, which no tier of the layer uses")
+        out += [f"- problem: {problem}" for problem in route["problems"]]
+        out += ["", "al does not change it: a proposed workflow runs the suite, which keeps choosing its models through "
+                f"`{route['path']}`. Change that file in the application to change them."]
+    return out
 
 
 def adopt(al: Any, layer: Path, app: Path | None, only: set[str], dry_run: bool, force: bool = False,
@@ -764,6 +951,9 @@ def report_text(result: dict[str, Any], changed: list[str], stale: list[str], ad
         for note in p["notes"]:
             lines.append(f"             {p['name']}: {note}")
     lines.append(f"  workflows: {len(rep['workflows'])} script(s) → PROPOSED (cmd legacy-…) + one-step ADW with human review")
+    if rep.get("suite"):
+        lines.append(f"  suite:     {len(rep['suite']['proposals'])} workflow(s) of the hand-built suite in {rep['suite']['root']} "
+                     f"→ PROPOSED, runnable; {len(rep['prompts_left'])} prompt(s) left in place")
     if rep["conflicts"] or rep["review_rules"]:
         lines.append(f"  decide:    {len(rep['conflicts'])} conflict(s), {len(rep['review_rules'])} prohibiting rule(s) to review "
                      "(adopted/REPORT.md, \"For a person to decide\")")

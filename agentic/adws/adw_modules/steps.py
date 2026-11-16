@@ -12,11 +12,12 @@ from typing import Any
 
 from . import artefacts
 from . import events
+from . import journal as journal_module
 from . import models
 from . import slots
 from .agents import run_agent
 from .budget import BudgetExceeded
-from .errors import LayerError, StepFailed
+from .errors import LayerError, StepFailed, StepWaiting
 from .templates import render_step_arg
 from .usage import LimitReached
 
@@ -216,15 +217,18 @@ SCRIPT_TAIL = 4000  # characters of a script's output kept as the step's output 
 def run_script(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> None:
     """(script NAME #:cmd C #:args (…)): run a declared codebase cmd with substituted, shell-quoted
     arguments in the run's environment, with the run context in ADW_* variables. Its output is the
-    step's output; a non-zero exit fails the run. Not a check: no resolve loop, not gate evidence."""
+    step's output; a non-zero exit fails the run, unless it is one of the step's #:waiting-exit
+    codes (StepWaiting: the run ends `waiting`). With #:journal the script's own run journal is
+    followed while it runs (see journal.Follower). Not a check: no resolve loop, not gate evidence."""
     name = str(step["name"])
     if env_stack.read_only:
         raise StepFailed(name, "script refused in read-only host environment")
     command = layer.cmd(step["cmd"])
     args = [render_step_arg(str(value), step_variables(state), state.outputs) for value in step.get("args", [])]
+    resuming = bool((state.scripts.get(name) or {}).get("waiting"))
     context = {"ADW_ID": state.adw_id, "ADW_PROMPT": state.prompt, "ADW_CLASS": state.klass,
                "ADW_PLAN": state.plan, "ADW_BRANCH": state.branch, "ADW_WORKTREE": str(env_stack.cwd),
-               "ADW_LAYER_DIR": str(layer.layer_dir), "ADW_STEP": name}
+               "ADW_LAYER_DIR": str(layer.layer_dir), "ADW_STEP": name, "ADW_RESUME": "1" if resuming else ""}
     # exported in the shell line itself, so they reach the command in a container too
     exports = " ".join(f"{key}={shlex.quote(str(value))}" for key, value in context.items())
     line = f"export {exports}; {command['run']}" + "".join(f" {shlex.quote(arg)}" for arg in args)
@@ -232,16 +236,35 @@ def run_script(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> 
     log_path = log_dir / f"{name}.{_log_number(log_dir, name) if log_dir.is_dir() else 1}.log"
     relative = log_path.relative_to(layer.layer_dir).as_posix()
     timeout = int(step.get("timeout") or 0) or int(command.get("timeout", 900))
+    waiting = [int(code) for code in step.get("waitingExit") or []]
     span = {"step": name, "owner": running_step(state), "cmd": str(step["cmd"]), "log": relative}
+    follower = None
+    if step.get("journal"):
+        follower = journal_module.Follower(
+            layer.layer_dir, worktree=env_stack.cwd, relative=str(step["journal"]).replace("{adw_id}", state.adw_id),
+            step=name, dest=log_dir / name / "journal")
     with slots.slot(layer, "checks", f"adw {state.adw_id} script {name}"):
         argv = env_stack.wrap(line)
         events.emit("script.start", **span)
         started = time.monotonic()
-        code, output = run_command(argv, env_stack.cwd, env_stack.process_env(), timeout, log_path=log_path)
+        if follower is not None:
+            follower.start()
+        try:
+            code, output = run_command(argv, env_stack.cwd, env_stack.process_env(), timeout, log_path=log_path)
+        finally:
+            summary = follower.stop() if follower is not None else None
         events.emit("script.end", **span, exit=code, seconds=round(time.monotonic() - started, 3))
-    state.scripts[name] = {"cmd": str(command["run"]), "args": args, "exit": code, "log": relative}
+    record: dict[str, Any] = {"cmd": str(command["run"]), "args": args, "exit": code, "log": relative}
+    if waiting:
+        record["waiting"] = code in waiting
+    if summary is not None:
+        record["journal"] = {key: value for key, value in summary.items() if key != "documents"}
+        record["documents"] = summary["documents"]
+    state.scripts[name] = record
     state.outputs[name] = output[-SCRIPT_TAIL:]
     state.save(layer.layer_dir)
+    if code in waiting:
+        raise StepWaiting(name, code, f"script {step['cmd']} exited {code} (declared as waiting); log {relative}")
     if code != 0:
         tail = "\n".join(output.rstrip().splitlines()[-5:])
         raise StepFailed(name, f"script {step['cmd']} exited {code}; log {relative}" + (f"\n{tail}" if tail else ""))
@@ -302,6 +325,9 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
 
     try:
         _execute_step(layer, state, adw, step, env_stack)
+    except StepWaiting as exc:
+        ended("waiting", str(exc), f"[adw {state.adw_id}] step {name} ({kind}) waiting: {exc.reason}")
+        raise
     except (StepFailed, LayerError) as exc:
         ended("failed", str(exc), f"[adw {state.adw_id}] step {name} ({kind}) failed: {exc}")
         if isinstance(exc, StepFailed):

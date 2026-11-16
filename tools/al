@@ -234,7 +234,8 @@ def scout(app: Path) -> dict:
                 summary = re.sub(r"\s+", " ", text)[:400]
                 break
     license_file = next((p for p in ("LICENSE", "LICENSE.txt", "LICENSE.md", "COPYING", "LICENSE-MIT") if has(p)), "")
-    existing = adopt_module().detect(app, git(app, "ls-files").splitlines())
+    tracked = git(app, "ls-files").splitlines()
+    existing = adopt_module().detect(app, tracked)
     nix = list(dict.fromkeys(pkg for l in langs for pkg in NIX_BY_LANG.get(l, [])))
     if has("bun.lock") or has("bun.lockb"):
         nix.append("bun")
@@ -247,6 +248,7 @@ def scout(app: Path) -> dict:
         "protected": protected, "nix": nix + ["git"], "package_manager": pm,
         "contributing": next((p for p in ("CONTRIBUTING.md", "CONTRIBUTING.rst", "docs/contributing.rst", "HACKING.md") if has(p)), ""),
         "existing_agent_setup": existing,
+        "existing_adw_suite": suite_module().detect_suite(app, tracked),
     }
 
 
@@ -283,6 +285,14 @@ def adopt_module():
         sys.path.insert(0, str(ROOT / "tools"))
     import al_adopt
     return al_adopt
+
+
+def suite_module():
+    """tools/al_suite.py: read-only detection of a hand-built ADW suite (`al scout`, `al adopt`)."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_suite
+    return al_suite
 
 
 def deploy_module():
@@ -370,7 +380,7 @@ def render_llm_txt(s: dict) -> str:
 
 ## Existing agent setup
 
-{adopt_module().render_section(s.get('existing_agent_setup') or [])}
+{adopt_module().render_section(s.get('existing_agent_setup') or [])}{chr(10) * 2 + suite_module().render_suite(s['existing_adw_suite']) if s.get('existing_adw_suite') else ''}
 
 ## Evidence
 
