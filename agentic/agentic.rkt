@@ -67,20 +67,22 @@
   ;; The sandbox of the zero-touch workflow: the agent and every check run inside this container, which
   ;; sees only the run's worktree. It carries what this repository's suites need: Racket, uv and git.
   (environment podman #:id sandbox #:base-image "docker.io/library/python:3.12-slim"
-               #:packages ("git" "curl" "ca-certificates" "libatomic1" "racket" "chromium" "fonts-liberation")
+               #:packages ("git" "curl" "ca-certificates" "libatomic1" "racket" "chromium" "fonts-liberation" "fonts-dejavu-core" "ffmpeg")
                #:setup ("pip install --no-cache-dir uv"
                         "HOME=/opt/claude bash -c 'curl -fsSL https://claude.ai/install.sh | bash' && chmod -R a+rX /opt/claude && ln -s /opt/claude/.local/bin/claude /usr/local/bin/claude")
                #:memory "8g" #:cpus "4" #:caches ("uv") #:agent-inside #t #:credentials (claude))
 
   (artefact log)
   (artefact image #:id screenshots #:glob "kit/dashboard/shots/*.png")
+  (artefact image #:id showcase-stills #:glob "docs/showcase/*.png")
+  (artefact video #:id showcase-clips #:glob "docs/showcase/*.mp4")
 
   (review human)
   (review auto #:id two-reviewers #:artefacts (log) #:reviewers 2 #:max-retries 2 #:ship pr
           #:require-checks (test-compiler test-runtime) #:allowed-classes (chore bug feature))
   ;; Zero-touch: two reviewer agents and every suite must pass, then the change is merged without a person.
   ;; A change under a protected path, or a very large one, still goes to a person.
-  (review auto #:id zero-touch #:artefacts (log screenshots) #:reviewers 2 #:max-retries 2 #:ship merge
+  (review auto #:id zero-touch #:artefacts (log screenshots showcase-stills showcase-clips) #:reviewers 2 #:max-retries 2 #:ship merge
           #:require-checks (test-compiler test-runtime test-tools test-dashboard-proof test-integration)
           #:allowed-classes (chore bug feature) #:max-diff-lines 4000)
   (dashboard local #:port 8770)   ; 8765 is often taken by other tools
@@ -178,7 +180,7 @@
       (check test-compiler #:cmd test-compiler #:resolve resolve-test #:collect (log))
       (check test-runtime #:cmd test-runtime #:resolve resolve-test #:collect (log))
       (check test-tools #:cmd test-tools #:resolve resolve-test #:collect (log))
-      (check test-dashboard #:cmd test-dashboard-proof #:resolve resolve-test #:collect (log screenshots))
+      (check test-dashboard #:cmd test-dashboard-proof #:resolve resolve-test #:collect (log screenshots showcase-stills showcase-clips))
       (check test-integration #:cmd test-integration #:resolve resolve-test #:collect (log))
       (run document #:command document #:args ("$plan"))
       (run commit #:command commit)

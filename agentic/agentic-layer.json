@@ -519,7 +519,9 @@
           "cmd": "test-dashboard-proof",
           "collect": [
             "log",
-            "screenshots"
+            "screenshots",
+            "showcase-stills",
+            "showcase-clips"
           ],
           "kind": "check",
           "name": "test-dashboard",
@@ -619,6 +621,20 @@
       "id": "screenshots",
       "kind": "image",
       "maxFiles": 12,
+      "status": "stable"
+    },
+    {
+      "glob": "docs/showcase/*.png",
+      "id": "showcase-stills",
+      "kind": "image",
+      "maxFiles": 12,
+      "status": "stable"
+    },
+    {
+      "glob": "docs/showcase/*.mp4",
+      "id": "showcase-clips",
+      "keyframes": 6,
+      "kind": "video",
       "status": "stable"
     }
   ],
@@ -983,7 +999,9 @@
         "libatomic1",
         "racket",
         "chromium",
-        "fonts-liberation"
+        "fonts-liberation",
+        "fonts-dejavu-core",
+        "ffmpeg"
       ],
       "pidsLimit": 2048,
       "publish": [],
@@ -1134,7 +1152,9 @@
       ],
       "artefacts": [
         "log",
-        "screenshots"
+        "screenshots",
+        "showcase-stills",
+        "showcase-clips"
       ],
       "blockProtectedPaths": true,
       "bodyCmd": "",
