@@ -518,6 +518,7 @@
     }
     if (current && current.destroy) current.destroy();
     const main = clear(document.getElementById("main"));
+    delete main.dataset.rendered;
     const crumbs = clear(document.getElementById("crumbs"));
     const make = { now: NowView, runs: RunsView, run: RunView, layers: LayersView, layer: LayerView, repos: ReposView, repo: ReposView,
       job: JobView }[route.view] || NowView;
@@ -1289,6 +1290,9 @@
   function RunView(main, crumbs, route) {
     let [, layerKey, runId] = route.parts;
     let detail = null;
+    let shown = "";            // the JSON text of the detail last rendered
+    let loads = 0;             // completed loads, published as main.dataset.rendered
+    let gone = false;          // set by destroy(); a late load() then touches nothing
     let sub = null;            // the open step panel / log viewer
     let state = { tab: "overview", step: "", params: {} };
     let timelineDraw = null;
@@ -1304,19 +1308,29 @@
     function link(extra, params) { return routeHash(["run", layerKey, runId, ...extra], params); }
 
     async function load() {
+      let fresh;
       try {
-        detail = await api(`/api/run?layer=${enc(layerKey)}&run=${enc(runId)}`);
+        fresh = await api(`/api/run?layer=${enc(layerKey)}&run=${enc(runId)}`);
       } catch (error) {
+        if (gone) return;
         replace(body, h("div", { class: "empty", text: `This run is not (or no longer) available: ${error.message}` }));
+        main.dataset.rendered = String(++loads);
         return;
       }
-      renderHead();
-      renderTabs();
-      renderGraph_();
-      if (state.tab === "overview" && !state.step) renderOverview();
-      else if (state.tab === "step") refreshStepHead();
-      else if (state.tab === "artefacts") renderArtefacts();
-      else if (state.tab === "documents") renderDocuments();
+      if (gone) return;
+      const text = JSON.stringify(fresh);
+      if (text !== shown) {        // an unchanged detail keeps its nodes (hover, focus, selection)
+        detail = fresh;
+        shown = text;
+        renderHead();
+        renderTabs();
+        renderGraph_();
+        if (state.tab === "overview" && !state.step) renderOverview();
+        else if (state.tab === "step") refreshStepHead();
+        else if (state.tab === "artefacts") renderArtefacts();
+        else if (state.tab === "documents") renderDocuments();
+      }
+      main.dataset.rendered = String(++loads);
     }
 
     const reload = debounce(load, 350);
@@ -1842,7 +1856,7 @@
     }, 4000);
 
     apply(route);
-    load().then(() => apply(parseRoute()) || null).then(() => {
+    load().then(() => {
       if (state.tab === "step") { state.sourceSig = sourcesFor(state.step).sources.map((src) => `${src.key}:${src.status}`).join("|"); openStep(); }
       else if (state.tab === "log" && !sub) renderLog();
     });
@@ -1850,7 +1864,7 @@
     return {
       accepts: (r) => r.parts[1] === layerKey && r.parts[2] === runId,
       route: (r) => apply(r),
-      destroy() { off(); clearInterval(timer); window.removeEventListener("resize", onResize); if (sub) sub.destroy(); },
+      destroy() { gone = true; off(); clearInterval(timer); window.removeEventListener("resize", onResize); if (sub) sub.destroy(); },
       get searchInput() { return sub && sub.search; },
       move(delta) {
         if (sub && sub.move) return sub.move(delta);
