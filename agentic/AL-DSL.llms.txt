@@ -87,22 +87,22 @@ Declare any number. Default when omitted: `(agent claude-code)`.
   - `#:permission-mode` (acceptEdits | bypassPermissions | plan | default; default acceptEdits) — Headless permission mode. bypassPermissions only inside a podman environment.
   - `#:safe-mode` (boolean; default #t) — Run with --safe-mode so user CLAUDE.md, hooks, plugins and skills are not loaded.
   - `#:allowed-tools` (list of string; default ("Read" "Glob" "Grep" "Edit" "Write" "Bash")) — Tools the headless agent may use without asking (passed as --allowedTools). Narrow it for read-only workflows.
-  - `#:max-turns` (integer; default 60) — Turn cap per step.
-  - `#:timeout` (integer; default 1800) — Wall-clock seconds per step.
+  - `#:max-turns` (integer; default 600) — Turn cap per step (about two and a half hours of work at a usual pace).
+  - `#:timeout` (integer; default 9000) — Wall-clock seconds per step.
 
 - **`(agent codex …)`** — OpenAI Codex CLI (`codex exec`). It reports no cost, so spending limits count its calls as $0.
   - `#:models` (list of (TIER MODEL [#:field value …]), see record `model-tier`; default ()) — Named model tiers (see claude-code).
   - `#:model-base` (string; shorthand for the `base` entry of #:models; default "gpt-5.4-mini") — Model of the `base` tier.
   - `#:model-heavy` (string; shorthand for the `heavy` entry of #:models; default "gpt-5.4") — Model of the `heavy` tier.
   - `#:sandbox` (read-only | workspace-write | danger-full-access; default workspace-write) — Codex sandbox mode.
-  - `#:timeout` (integer; default 1800) — Wall-clock seconds per step.
+  - `#:timeout` (integer; default 9000) — Wall-clock seconds per step.
 
 - **`(agent custom …)`** — Any CLI agent. The command receives the rendered prompt on stdin. It reports no cost, so spending limits count its calls as $0.
   - `#:command` (string; default REQUIRED) — Shell command; {model} and {cwd} are substituted.
   - `#:models` (list of (TIER MODEL [#:field value …]), see record `model-tier`; default ()) — Named model tiers (see claude-code); #:effort is not available.
   - `#:model-base` (string; shorthand for the `base` entry of #:models; default "") — Model of the `base` tier.
   - `#:model-heavy` (string; shorthand for the `heavy` entry of #:models; default "") — Model of the `heavy` tier.
-  - `#:timeout` (integer; default 1800) — Wall-clock seconds per step.
+  - `#:timeout` (integer; default 9000) — Wall-clock seconds per step.
 
 - **`(agent mock …)`** — Deterministic stand-in used by tests and dry runs: no LLM, replays scripted responses. It accepts every tier name.
   - `#:script-dir` (string; default "mock") — Directory (in the layer) holding <step>.json scripted responses and optional <step>.patch files.
