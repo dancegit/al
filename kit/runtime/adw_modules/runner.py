@@ -209,6 +209,7 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         *([f"models:    {_models_line(state)}"] if state.agent_calls else []),
         f"ship:      {ship}",
         *([f"delivery:  {_delivery_line(state)}"] if state.delivery else []),
+        *([f"promotion: {_promotion_line(state)}"] if state.promotion else []),
         *([handoff] if handoff else []),
         f"artefacts: {len(state.artefacts)}",
         *([f"resume:    {resume_command(state)}"] if state.status == "waiting" else []),
@@ -253,10 +254,32 @@ def handover_reasons(layer: Any, state: state_module.ADWState, adw: dict[str, An
     if auto_refused or state.ship.get("fallback"):
         reasons += [str(reason) for reason in state.ship.get("reasons") or [] if str(reason) not in reasons]
     return reasons
+def _promotion_line(state: state_module.ADWState) -> str:
+    """What a promotion run did, e.g. `sprint/2026-s47 -> main (merge; 3 changes, 1 refused; tag v0.2.0;
+    waiting at approval)`."""
+    p = state.promotion
+    changes = list(p.get("changes") or [])
+    refused = sum(1 for change in changes if change.get("status") == "refused")
+    parts = [str(p.get("method") or "merge"),
+             f"{len(changes)} change{'' if len(changes) == 1 else 's'}" + (f", {refused} refused" if refused else "")]
+    if p.get("tag"):
+        parts.append(f"tag {p['tag']}")
+    if state.status == "waiting":
+        waiting = next((str(r.get("name")) for r in state.steps if r.get("status") == "waiting"), "")
+        parts.append(f"waiting at {waiting or 'a step'}")
+    elif p.get("result"):
+        parts.append(f"at {str(p['result'])[:7]}")
+    notes = [str(note) for note in p.get("notes") or []]
+    line = f"{p.get('from_branch') or p.get('from')} -> {p.get('to_branch') or p.get('to')} ({'; '.join(parts)})"
+    return line + "".join(f"\n           note: {note}" for note in notes)
 
 
 def resume_command(state: state_module.ADWState) -> str:
     """How a person (or a timer) continues a waiting run."""
+    promotion = (state.definition or {}).get("promotion")
+    if isinstance(promotion, dict) and promotion.get("from"):
+        return (f"uv run adws/promote.py run {promotion['from']} {promotion.get('to', '')} "
+                f"--resume --adw-id {state.adw_id}")
     return f"uv run adws/adw_{state.adw}.py --resume --adw-id {state.adw_id}"
 
 

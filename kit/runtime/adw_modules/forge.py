@@ -137,6 +137,11 @@ class ForgeClient:
         {"protected": False} when it has no protection, {} when the forge cannot tell."""
         return {}
 
+    def pr_approvals(self, number: int) -> list[dict]:
+        """The approving reviews of pull request `number`: [{"by": login, "state": "APPROVED", "at": time}].
+        [] when the forge cannot tell (see promotion.py, which counts them as approvals)."""
+        return []
+
     can_attach = False  # True when attach() really uploads (see ship.post_proof)
 
     def attach(self, n: int, path: Path, name: str | None = None, comment_id: Any = None) -> str:
@@ -200,6 +205,9 @@ class NoneForge(ForgeClient):
 
     def merge_pr(self, number, method=None):
         return None
+
+    def pr_approvals(self, number):
+        return []
 
 
 # --------------------------------------------------------------------------- github
@@ -291,6 +299,13 @@ class GitHubForge(ForgeClient):
         if method not in ("squash", "merge", "rebase"):
             raise ForgeError(f"unknown merge method {method!r}")
         self.gh("pr", "merge", str(number), f"--{method}")
+
+    def pr_approvals(self, number):
+        data = json.loads(self.gh("pr", "view", str(number), "--json", "reviews") or "{}")
+        return [{"by": str((r.get("author") or {}).get("login") or ""), "state": "APPROVED",
+                 "at": str(r.get("submittedAt") or "")}
+                for r in (data.get("reviews") if isinstance(data, dict) else None) or []
+                if isinstance(r, dict) and str(r.get("state") or "").upper() == "APPROVED"]
 
     def branch_protection(self, branch):
         argv = ["gh", "api", f"repos/{self.repo}/branches/{urllib.parse.quote(branch, safe='')}/protection"]
@@ -412,6 +427,12 @@ class ForgejoForge(ForgeClient):
         if method not in ("squash", "merge", "rebase"):
             raise ForgeError(f"unknown merge method {method!r}")
         self.request("POST", f"/pulls/{int(number)}/merge", {"Do": method})
+
+    def pr_approvals(self, number):
+        data = self.request("GET", f"/pulls/{int(number)}/reviews") or []
+        return [{"by": str((r.get("user") or {}).get("login") or ""), "state": "APPROVED",
+                 "at": str(r.get("submitted_at") or "")}
+                for r in data if isinstance(r, dict) and str(r.get("state") or "").upper() == "APPROVED"]
 
     def branch_protection(self, branch):
         try:

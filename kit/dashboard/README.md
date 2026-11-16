@@ -138,7 +138,10 @@ actions run `al`, which writes what that command writes. `--read-only` turns all
 | `adws/dispatch.py`, `adws/adw_modules/launch.py` | starting work: their presence enables the Start work panel; `dispatch.py --start --json` is run (see Safety) |
 | `agents/starts.json` | written by the layer's launcher, not read by the page: the request keys of the last two days (`{key: {run_id, target, prompt_sha, at, issue}}`) behind the double-start guard; `agents/.starts.lock` serialises starts |
 | `agents/<id>/request.md`, `agents/<id>/launch.log` | a started run's prompt (mode 0600) and the output of its detached process until the run's own `run.log` takes over; both are documents of the run |
-| `state.json` `definition` | a single-command run's one-step workflow (`command:<name>`), which the compiled layer does not declare: the run's graph is drawn from it |
+| `state.json` `definition` | a single-command run's one-step workflow (`command:<name>`), which the compiled layer does not declare: the run's graph is drawn from it; likewise a promotion run's workflow (`promote-<from>-<to>`, steps of kind `promote`) |
+| `state.json` `promotion`, `promotions/<id>/acceptance.jsonl` | the **promotion card** of a promotion run (below); the decisions are read through the same safe-path rule as every served file |
+| `agents/promotions/<from>-<to>.json` | the open promotions: the layer page's Promote / Continue buttons, and whether a card still takes decisions |
+| `adws/promote.py` | promoting from the page: its presence enables the buttons; it is run for every promotion write (see Safety) |
 | workspace repositories | the Repos view, read-only: directories below each workspace folder (depth `--workspace-depth`; symlinked entries, hidden and pruned directories and a sibling `NAME.al` skipped; at most 500) that hold `.git`. Per repository `git ls-files -z` (at most 20 000 paths; a path whose real path leaves the repository is dropped, so a symlinked rule file pointing elsewhere is never read), given to `al scout`'s detection (`tools/al_adopt.py`, `tools/al_suite.py`, which read files and run nothing), `symbolic-ref`, `status --porcelain`, `log -1`. git runs with `core.fsmonitor=false`, `core.untrackedCache=false`, `core.hooksPath=/dev/null`, `--no-optional-locks` (the index is never rewritten), no prompt, no inherited `GIT_*` variables, and its process group is killed after 5 s. A repository is reread only when its signature changes (stats of `.git/HEAD`, `.git/index`, `.git/logs/HEAD`, its directory, the sibling `NAME.al/agentic.rkt` and its layer's IR); rescanned every 60 s and on **refresh** (at most once per 5 s). A layer of a workspace repository that has `agentic-layer.json` is watched like any other |
 | `<jobs-dir>/<id>/job.json`, `output.log`, `docs/` | the Job view: an action's steps (argv, the command line as shown, exit code, times, `reason` of a failed step), its status and `reason`, the runner's `pid` / `host` / `heartbeat` (as a run's `state.json`), `path` (the folders of the tools found by tools/al_tools.py, then the dashboard's `PATH`: the steps' `PATH`), `preflight` (the `al doctor LAYER --for …` argv run before the first pending step), `retries` (`{"from", "at"}` per retry), changed files; its output; its documents. `<jobs-dir>/locks/` holds one lock file per repository. The second place the dashboard writes, outside every repository and layer. Two dashboards with different `--jobs-dir` do not see each other's locks |
 
@@ -162,6 +165,28 @@ events become rows:
 Cost and tokens come from each agent's `result` event; while a step runs, tokens are summed from
 its messages and the cost shows as "so far" for the finished steps. Paths in agent output are
 shown relative to the run's worktree (`layer:` for the layer, `~` for the home directory).
+
+## Promotions
+
+A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al promote`; see "Promote a stage" in
+`docs/GUIDE.md`). On the dashboard:
+
+- **The layer page** lists each promotion (`sprint → main`, who approves, method, tag) with a **Promote
+  FROM → TO** button (**Continue** when one is open) and a **Dry run** button. Both start the layer's own
+  `adws/promote.py run FROM TO --detach` and land on the promotion run.
+- **A promotion run's page** draws its steps (`open`, `checks`, `pack`, `request`, `approval`, …, `close`;
+  node type `promote`) and shows the **promotion card**: each change with its request, its acceptance
+  criteria and the proof that covers each (checks with exit codes, pictures and recordings as links, the
+  reviewer verdict; a criterion with no passing check and no picture is marked "no proof"), the decisions
+  recorded so far, links to the presentation pack (`artefacts/<id>/pack/index.html`), `sign-off.md` and
+  `approval.md`. With your name and a comment you can **Accept** or **Refuse** (revert, or revert and start a
+  patch run) the selected changes, **Approve all**, and **Continue** the run. A decision is a line in
+  `promotions/<id>/acceptance.jsonl`, written by `adws/promote.py decide`; the card shows it at once, the run
+  acts on it when it continues.
+- The run card and the runs list carry a badge: `promote sprint → main · 3 changes · waiting for approval`.
+- The pack page is served inline as `text/html` under `Content-Security-Policy: sandbox allow-same-origin;
+  default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'`: it may show its own
+  pictures and recordings and its inline style, and can run no script at all.
 
 ## Safety
 
@@ -261,6 +286,18 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
 - **Network.** Loopback by default, with a Host-header check against DNS rebinding. A non-loopback
   `--bind` needs `--token`; then every request needs it.
 
+### `POST /api/promotion`
+
+`{layer, action: decide|start|continue, from, to, decision, changes, by, comment, then, dry_run}` passes the
+same guard as every write (loopback Host or token, the token never from the URL, Origin naming the Host,
+`X-AL-Dashboard: 1`, `application/json`, a body of at most 8 KiB, not `--read-only`); `start` and
+`continue` are also refused with `--no-start` and in a container without `--allow-start-in-container`.
+Only those keys are accepted; `action` and `decision` come from fixed lists, change ids are 8 hexadecimal
+characters, `by` is 1–80 printable characters on one line, a comment at most 2000 characters, `then` is
+`revert` or `patch`, the stage names are plain names. The layer's own `adws/promote.py` (argv list, no
+shell, the dashboard's token not passed on, a 60 s limit) does the rest; a layer without it (no stages, or
+generated before promotions) answers 409 "run `al gen`".
+
 ## Its own podman container
 
 ```bash
@@ -341,7 +378,10 @@ outlives the dashboard, every refusal, and the issue race against the layer's po
 and in trigger mode (`tests/fake_forgejo.py`, an in-memory Forgejo). `tests/test_browser_start.py`
 (Chrome) types `/plan-c`, picks the completion, starts and lands on the run, and opens the ship
 confirmation; with `AL_DASHBOARD_SHOTS=DIR` it saves `start-form.png`, `start-confirm.png` and
-`start-run.png` to DIR.
+`start-run.png` to DIR. `tests/test_browser_promotion.py` (Chrome) checks the promotion card, the pack
+page and the layer page's Promotions section; with `AL_DASHBOARD_SHOTS=DIR` it saves
+`promotion-card.png`, `promotion-refused.png`, `promotion-pack.png` and `promotion-layer.png` (the
+layer page's Promotions section with its buttons) to DIR.
 
 `tests/test_workspace.py` covers the workspace scan (states, sibling layers, al scout's summary, depth,
 symlinks out of the folder, the file and time bounds, git without fsmonitor or hooks, the cache and the

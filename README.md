@@ -38,7 +38,9 @@ The LLM writes two small files. Everything after that is deterministic: the same
 
 A layer can also say where work goes: one line such as `(delivery sprint)` or `(delivery gitflow)` declares the
 branches work collects in and which of them only people may change, so agents branch from and deliver into the
-right one ([How work is delivered](docs/GUIDE.md#how-work-is-delivered)).
+right one ([How work is delivered](docs/GUIDE.md#how-work-is-delivered)). A stage is then promoted into the next with
+`al promote`: a presentation pack for the people who accept it, their recorded acceptance, then version, tag,
+deploy and back-merge ([Promote a stage](docs/GUIDE.md#promote-a-stage)).
 
 ## A concrete example: flask
 

@@ -55,6 +55,8 @@
   (delivery sprint #:length-days 14)   ; every change collects in sprint/{cycle}; a person accepts the sprint into main
   ;; urgent bugs go to their own branch, cut from main; only a person merges it back into main
   (stage hotfix #:branch "hotfix/{date}" #:from main #:into main #:accepts (bug) #:agents-may-merge #f #:environment-name "production")
+  (promotion sprint -> main #:approval human #:approvers 1 #:version (bump minor) #:tag "v{version}")   ; a person accepts the sprint; main gets a version, a tag and a changelog entry
+  (promotion hotfix -> main #:approval human #:approvers 2)   ; an urgent fix needs two people and is merged back into the sprint
 
   (command prime #:template prime)
   (command classify #:template classify #:model-set fast #:output json)

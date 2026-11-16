@@ -56,6 +56,7 @@
   (p "    (steps (run NAME …) (check NAME …) (script NAME …) (fan-out NAME …) (review) (ship) (compose ADW) …)) …")
   (p "  (stage NAME #:branch \"…\" #:from STAGE #:into STAGE …) …   ; where work is delivered, see record `stage`")
   (p "  (delivery PRESET #:param value …)          ; at most one; stands for stage and cycle clauses, see Delivery presets")
+  (p "  (promotion FROM -> TO #:approval human …)   ; how a stage moves into the next (al promote)")
   (p "  (include \"FILE\") …)                       ; more clauses from FILE, e.g. what `al adopt` wrote")
   (p "```")
   (p)

@@ -97,7 +97,11 @@
                                      (list "[#:field value …]")) " "))
   (unless (list? v) (fail "~a: expected (~a), got ~s" who shape v))
   (define-values (pos kws) (split-kwargs v who))
-  (unless (= (length pos) (length pos-names))
+  ;; trailing positional fields that have a default may be left out, e.g. (keep) for (how level)
+  (define needed
+    (length (filter (lambda (p) (field-required? (findf (lambda (f) (eq? (field-name f) p)) (record-fields r))))
+                    pos-names)))
+  (unless (<= needed (length pos) (length pos-names))
     (fail "~a: expected (~a), got ~s" who shape v))
   (define iwho (format "~a (~a …)" who (car v)))
   (compile-fields (record-fields r)
@@ -419,6 +423,46 @@
   (define into (hash-ref s 'into))
   (if (string=? into "") (hash-ref s 'from) into))
 
+;; --- frozen periods and promotions --------------------------------------------------------
+
+(define (leap-year? y) (and (zero? (modulo y 4)) (or (not (zero? (modulo y 100))) (zero? (modulo y 400)))))
+(define (days-in-month y m)
+  (case m [(2) (if (leap-year? y) 29 28)] [(4 6 9 11) 30] [else 31]))
+;; "YYYY-MM-DD" → (list y m d) when it is a real date, else #f
+(define (real-date s)
+  (define m (regexp-match #px"^([0-9]{4})-([0-9]{2})-([0-9]{2})$" s))
+  (and m
+       (let ([y (string->number (cadr m))] [mo (string->number (caddr m))] [d (string->number (cadddr m))])
+         (and (<= 1 mo 12) (<= 1 d (days-in-month y mo)) (list y mo d)))))
+(define (date<=? a b)
+  (or (< (car a) (car b))
+      (and (= (car a) (car b)) (or (< (cadr a) (cadr b)) (and (= (cadr a) (cadr b)) (<= (caddr a) (caddr b)))))))
+
+(define (check-frozen name periods)
+  (for ([period (in-list periods)])
+    (define ok
+      (and (regexp-match? #px"^[0-9]{4}-[0-9]{2}-[0-9]{2}[.][.][0-9]{4}-[0-9]{2}-[0-9]{2}$" period)
+           (let* ([parts (string-split period "..")]
+                  [a (real-date (car parts))]
+                  [b (real-date (cadr parts))])
+             (and a b (date<=? a b)))))
+    (unless ok
+      (fail "(stage ~a): #:frozen ~s: expected \"YYYY-MM-DD..YYYY-MM-DD\" with the first day not after the second"
+            name period))))
+
+;; (promotion FROM -> TO #:k v …) → the promotion record (from, to and the declared fields)
+(define (compile-promotion d)
+  (unless (and (>= (length d) 4) (symbol? (cadr d)) (eq? (caddr d) '->) (symbol? (cadddr d)))
+    (fail "(promotion …): expected (promotion FROM -> TO #:approval human …)"))
+  (define who (format "(promotion ~a -> ~a)" (cadr d) (cadddr d)))
+  (define-values (pos kws) (split-kwargs (cddddr d) who))
+  (unless (null? pos) (fail "~a: unexpected ~s; fields are given as #:keyword value" who (car pos)))
+  (for ([k '(#:from #:to)])
+    (when (assq k kws) (fail "~a: ~a is given by the form itself: (promotion FROM -> TO …)" who k)))
+  (compile-fields (rec-fields 'promotion)
+                  (list* (cons '#:from (cadr d)) (cons '#:to (cadddr d)) kws)
+                  who))
+
 ;; --- whole layer ------------------------------------------------------------------------
 
 ;; --- dashboard ----------------------------------------------------------------------------
@@ -469,8 +513,9 @@
     (define adw-clauses '())
     (define layer-clause #f)
     (define stages '())
+    (define promotions '())
     (define clause-heads
-      (append (map family-name (all-families)) '(codebase command hop expert adw stage delivery include)))
+      (append (map family-name (all-families)) '(codebase command hop expert adw stage delivery promotion include)))
 
     (for ([c (in-list clauses)])
       (parameterize ([current-clause (car c)])
@@ -516,6 +561,12 @@
              (fail "(stage ~a): declared twice" (hash-ref st 'name)))
            (hash-set! clause-of (cons 'stage (hash-ref st 'name)) (car c))
            (set! stages (cons st stages))]
+          [(eq? (car d) 'promotion)
+           (define pr (compile-promotion d))
+           (when (findf (lambda (x) (equal? (hash-ref x 'from) (hash-ref pr 'from))) promotions)
+             (fail "(promotion ~a -> …): declared twice; a stage has one promotion" (hash-ref pr 'from)))
+           (hash-set! clause-of (cons 'promotion (hash-ref pr 'from)) (car c))
+           (set! promotions (cons pr promotions))]
           [(eq? (car d) 'adw) (set! adw-clauses (cons c adw-clauses))]
           [(eq? (car d) 'include) (fail include-unexpanded)]
           [else (fail "unknown clause (~a …); clauses are: ~a" (car d) (names clause-heads))])))
@@ -785,7 +836,8 @@
                       (fail "~a: branch ~s is used by two stages, ~a and ~a; a stage is one branch" who b (hash-ref twin 'name) name))
                     (when (and (equal? (hash-ref st 'entry) "fast-forward") (not (equal? (hash-ref forge 'kind) "none")))
                       (fail "~a: #:entry fast-forward is not possible with (forge ~a …): a pull request is merged by merge, squash or rebase; use one of those"
-                            who (hash-ref forge 'kind)))))))
+                            who (hash-ref forge 'kind)))
+                    (check-frozen name (hash-ref st 'frozen))))))
     (define all-four '("chore" "bug" "feature" "patch"))
     ;; (class . stage) for every class the ADW can produce
     (define (stage-routes a)
@@ -794,6 +846,99 @@
         (cons k (if (string=? to "")
                     (or (findf (lambda (st) (member k (hash-ref st 'accepts))) stage-list) final-stage)
                     (stage-by-name to)))))
+
+    ;; ---- promotions: one per non-final stage, declared or with the defaults ---------------------
+    (define (promotion-adw from-stage declared)
+      (cond [(not (string=? declared "")) declared]
+            [(for/first ([a (in-list adws)]
+                         #:when (and (pair? (steps-of-kind a "ship"))
+                                     (ormap (lambda (r) (eq? (cdr r) from-stage)) (stage-routes a))))
+               (hash-ref a 'name))]
+            [else (hash-ref (car adws) 'name)]))
+    ;; FROM is cut from the final stage TO, goes straight back into it, and no other stage feeds it
+    (define (hotfix-stage? from-stage to-stage)
+      (and (eq? to-stage final-stage)
+           (equal? (hash-ref from-stage 'from) (hash-ref to-stage 'name))
+           (equal? (hash-ref from-stage 'into) (hash-ref to-stage 'name))
+           (not (ormap (lambda (st) (and (not (eq? st from-stage)) (equal? (stage-next st) (hash-ref from-stage 'name))))
+                       stage-list))))
+    (define (default-back-merge from-stage to-stage)
+      (for/list ([st (in-list stage-list)]
+                 #:unless (or (eq? st from-stage) (eq? st to-stage) (null? (hash-ref st 'accepts))))
+        (hash-ref st 'name)))
+    (define (check-promotion pr)
+      (define from (hash-ref pr 'from))
+      (define to (hash-ref pr 'to))
+      (define who (format "(promotion ~a -> ~a)" from to))
+      (define from-stage (stage-by-name from))
+      (define to-stage (stage-by-name to))
+      (define next (stage-next from-stage))
+      (when (string=? next "")
+        (fail "~a: stage ~a is the final stage; it is not promoted into another stage" who from))
+      (unless (equal? next to)
+        (fail "~a: stage ~a goes into ~a (its #:into, default #:from); promote it into ~a" who from next next))
+      (define hotfix? (hotfix-stage? from-stage to-stage))
+      (define approval (hash-ref pr 'approval))
+      (when (and hotfix? (equal? approval "auto"))
+        (fail "~a: a hotfix promotion goes into the final stage under its own gate; #:approval auto is not allowed" who))
+      (when (and (member approval '("agent" "auto")) (not (hash-ref to-stage 'agentsMayMerge)))
+        (fail "~a: #:approval ~a ~a, but agents may not merge into stage ~a (#:agents-may-merge #f); use #:approval human"
+              who approval (if (equal? approval "agent") "lets agents approve" "merges without anyone approving") to))
+      (unless (<= 1 (hash-ref pr 'approvers) 9)
+        (fail "~a: #:approvers must be 1–9 (got ~a)" who (hash-ref pr 'approvers)))
+      (define tag (hash-ref pr 'tag))
+      (unless (string=? tag "")
+        (for ([ph (in-list (placeholders-in tag))])
+          (unless (member ph promotion-placeholders)
+            (fail "~a: #:tag ~s: unknown placeholder ~a; placeholders are ~a" who tag ph (string-join promotion-placeholders " "))))
+        (unless (valid-branch-pattern? tag)
+          (fail "~a: #:tag ~s is not a valid tag name (no spaces, `..`, `//`, ~~ ^ : ? * [ \\, leading or trailing / or ., `.lock` at the end, or a component starting with .)" who tag))
+        (when (and (regexp-match? #rx"{version}" tag) (eq? (hash-ref pr 'version) 'null))
+          (fail "~a: #:tag ~s needs #:version (bump …) or (keep)" who tag))
+        (when (and (regexp-match? #rx"{cycle}" tag) (not (equal? from cycle-stage)))
+          (fail "~a: #:tag ~s: {cycle} is filled by the open cycle, so FROM must be the (cycle …) #:stage~a"
+                who tag (if cycle-stage (format " (that is `~a`)" cycle-stage) ""))))
+      (define after (hash-ref pr 'after))
+      (unless (null? after)
+        (define shown (format "(~a)" (string-join after " ")))
+        (unless (and (equal? (car after) "deploy") (<= (length after) 2))
+          (fail "~a: #:after ~a: expected (deploy) or (deploy ENV)" who shown))
+        (when (string=? (hash-ref to-stage 'deployCmd) "")
+          (fail "~a: #:after ~a needs #:deploy-cmd on stage ~a" who shown to))
+        (when (and (= (length after) 2) (not (equal? (cadr after) (hash-ref to-stage 'environmentName))))
+          (fail "~a: #:after ~a: stage ~a deploys to ~a (its #:environment-name)" who shown to
+                (if (string=? (hash-ref to-stage 'environmentName) "") "an unnamed environment" (hash-ref to-stage 'environmentName)))))
+      (for ([b (in-list (hash-ref pr 'backMerge))])
+        (when (member b (list from to))
+          (fail "~a: #:back-merge names stage ~a, which is FROM or TO; name the other stages the result goes back into" who b)))
+      (hash-set* pr
+                 'adw (promotion-adw from-stage (hash-ref pr 'adw))
+                 'hotfix hotfix?
+                 'backMerge (if (and hotfix? (null? (hash-ref pr 'backMerge)))
+                                (default-back-merge from-stage to-stage)
+                                (hash-ref pr 'backMerge))))
+    (when (and (pair? promotions) (null? stage-list))
+      (parameterize ([current-clause (hash-ref clause-of (cons 'promotion (hash-ref (last promotions) 'from)) #f)])
+        (fail "(promotion …) needs declared stages: add (stage …) clauses or a (delivery PRESET …) clause")))
+    (define promotion-list
+      (for/list ([st (in-list stage-list)] #:unless (string=? (stage-next st) ""))
+        (define name (hash-ref st 'name))
+        (define declared (findf (lambda (pr) (equal? (hash-ref pr 'from) name)) promotions))
+        (if declared
+            (parameterize ([current-clause (hash-ref clause-of (cons 'promotion name) #f)])
+              (hash-set (check-promotion declared) 'origin "declared"))
+            (in-stage name
+                      (lambda ()
+                        (define defaults (compile-fields (rec-fields 'promotion)
+                                                         (list (cons '#:from name) (cons '#:to (stage-next st)))
+                                                         (format "(promotion ~a -> ~a)" name (stage-next st))))
+                        (hash-set (check-promotion defaults) 'origin "default"))))))
+    ;; a declared promotion out of the final stage is not in the list above: report it
+    (for ([pr (in-list promotions)])
+      (define st (stage-by-name (hash-ref pr 'from)))
+      (when (string=? (stage-next st) "")
+        (parameterize ([current-clause (hash-ref clause-of (cons 'promotion (hash-ref pr 'from)) #f)])
+          (check-promotion pr))))
 
     (for ([a (in-list adws)])
       (parameterize ([current-clause (hash-ref clause-of (hash-ref a 'name))])
@@ -933,4 +1078,5 @@
         (hash-set* ir-out
                    'stages stage-list
                    'cycle (single 'cycle)
-                   'delivery (or delivery 'null)))))
+                   'delivery (or delivery 'null)
+                   'promotions promotion-list))))

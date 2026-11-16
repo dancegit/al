@@ -2284,6 +2284,151 @@
       },
       "type": "array"
     },
+    "promotions": {
+      "items": {
+        "additionalProperties": false,
+        "description": "(promotion FROM -> TO …): how a stage's work moves into the next stage — evidence for the people who accept it, a recorded decision, then merge, version, tag, deploy and back-merge. Run with `al promote LAYER FROM TO`; every non-final stage without one gets one with these defaults.",
+        "properties": {
+          "adw": {
+            "description": "Workflow whose environment, agent, review command and #:patch/#:implement commands the promotion's agent rounds use; \"\" = the first workflow that delivers into FROM, else the first workflow.",
+            "type": "string"
+          },
+          "after": {
+            "description": "(deploy) or (deploy ENV): after merging, run TO's #:deploy-cmd; ENV must equal TO's #:environment-name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "approval": {
+            "description": "human: people approve (al decide, the dashboard, or an approving review / `/approve` on the pull request); agent: independent reviewer agents review the whole stage diff and the pack; auto: no approval. agent and auto only into a stage with #:agents-may-merge #t.",
+            "enum": [
+              "human",
+              "agent",
+              "auto"
+            ],
+            "type": "string"
+          },
+          "approvers": {
+            "description": "human: distinct people who must approve; agent: reviewer agents that must all pass. 1–9.",
+            "type": "integer"
+          },
+          "backMerge": {
+            "description": "Stages the promoted result is merged back into (an agent round resolves a conflict). A hotfix promotion (FROM is cut from TO) defaults to every other stage that accepts a class.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "from": {
+            "description": "The stage whose branch is promoted.",
+            "type": "string"
+          },
+          "hotfix": {
+            "description": "FROM is cut from the final stage TO and goes straight back into it (a hotfix): its own gate, merged back into the working stages.",
+            "type": "boolean"
+          },
+          "method": {
+            "description": "How the stage enters TO.",
+            "enum": [
+              "merge",
+              "squash",
+              "fast-forward",
+              "cherry-pick"
+            ],
+            "type": "string"
+          },
+          "origin": {
+            "description": "\"declared\" (a (promotion …) clause) or \"default\" (a non-final stage without one).",
+            "type": "string"
+          },
+          "present": {
+            "description": "Sections of the presentation pack: summary, per-change details with acceptance criteria, proof (pictures, recordings), demo (one page to open and show), checks on the stage head, release notes and changelog entry, what is not included.",
+            "items": {
+              "enum": [
+                "summary",
+                "changes",
+                "proof",
+                "demo",
+                "checks",
+                "notes",
+                "excluded"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "requires": {
+            "description": "checks: the #:checks of FROM and TO pass on the stage head; acceptance: every change is accepted or refused (or the whole promotion approved) before it merges.",
+            "items": {
+              "enum": [
+                "checks",
+                "acceptance"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tag": {
+            "description": "Tag on the promoted commit; placeholders {version} {cycle} {date}; \"\" = no tag.",
+            "type": "string"
+          },
+          "to": {
+            "description": "The stage it goes into: FROM's #:into (default #:from).",
+            "type": "string"
+          },
+          "version": {
+            "additionalProperties": false,
+            "description": "The version change, e.g. (bump minor); none = the version is not touched.",
+            "properties": {
+              "how": {
+                "description": "bump: raise the version where the repository keeps it (VERSION, pyproject.toml, package.json, Cargo.toml; else the latest vX.Y.Z tag); keep: use the version it has.",
+                "enum": [
+                  "bump",
+                  "keep"
+                ],
+                "type": "string"
+              },
+              "level": {
+                "description": "Which part a bump raises.",
+                "enum": [
+                  "major",
+                  "minor",
+                  "patch"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "how",
+              "level"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "adw",
+          "after",
+          "approval",
+          "approvers",
+          "backMerge",
+          "from",
+          "hotfix",
+          "method",
+          "origin",
+          "present",
+          "requires",
+          "tag",
+          "to",
+          "version"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
     "promptInputs": {
       "description": "PITER · Prompt input: where the high-level prompt for a run comes from.",
       "items": {
@@ -2908,6 +3053,17 @@
             "description": "Stage this one is cut from; \"\" = none (the final stage).",
             "type": "string"
           },
+          "frozen": {
+            "description": "Periods closed to new deliveries, each \"YYYY-MM-DD..YYYY-MM-DD\" (UTC, both days included): a run that would deliver then ends `waiting` at its deliver step and says until when.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "frozenWhilePromoting": {
+            "description": "Closed to new deliveries while a promotion out of this stage is open.",
+            "type": "boolean"
+          },
           "into": {
             "description": "Stage it is delivered into when accepted; \"\" = #:from.",
             "type": "string"
@@ -2929,6 +3085,8 @@
           "entry",
           "environmentName",
           "from",
+          "frozen",
+          "frozenWhilePromoting",
           "into",
           "name",
           "origin"

@@ -6,7 +6,7 @@
 
 (require racket/list "meta.rkt")
 (provide kit-command-templates kit-hop-templates artefact-types singleton-families semantic-rules
-         delivery-placeholders)
+         delivery-placeholders promotion-placeholders)
 
 ;; ---------------------------------------------------------------------------------------
 ;; Singletons
@@ -479,7 +479,29 @@
   [entry (enum merge squash rebase fast-forward) merge "How a change enters it."]
   [checks (list-of (ref cmd)) () "Codebase cmds that must hold on it: added to the review's #:require-checks for runs delivering here."]
   [deploy-cmd (optional-ref cmd) "" "Codebase cmd that deploys this stage; used by a review with #:ship deploy that has no #:deploy-cmd of its own."]
-  [environment-name string "" "Where the deploy lands, in words (e.g. staging, production); shown in the run summary and by al explain."])
+  [environment-name string "" "Where the deploy lands, in words (e.g. staging, production); shown in the run summary and by al explain."]
+  [frozen (list-of string) () "Periods closed to new deliveries, each \"YYYY-MM-DD..YYYY-MM-DD\" (UTC, both days included): a run that would deliver then ends `waiting` at its deliver step and says until when."]
+  [frozen-while-promoting boolean #f "Closed to new deliveries while a promotion out of this stage is open."])
+
+(define-record version-change #:positional (how level)
+  "How a promotion changes the repository's version: (bump major|minor|patch) or (keep)."
+  [how (enum bump keep) #:required "bump: raise the version where the repository keeps it (VERSION, pyproject.toml, package.json, Cargo.toml; else the latest vX.Y.Z tag); keep: use the version it has."]
+  [level (enum major minor patch) patch "Which part a bump raises."])
+
+(define-record promotion #:positional (from to)
+  "(promotion FROM -> TO …): how a stage's work moves into the next stage — evidence for the people who accept it, a recorded decision, then merge, version, tag, deploy and back-merge. Run with `al promote LAYER FROM TO`; every non-final stage without one gets one with these defaults."
+  [from (ref stage) #:required "The stage whose branch is promoted."]
+  [to (ref stage) #:required "The stage it goes into: FROM's #:into (default #:from)."]
+  [approval (enum human agent auto) human "human: people approve (al decide, the dashboard, or an approving review / `/approve` on the pull request); agent: independent reviewer agents review the whole stage diff and the pack; auto: no approval. agent and auto only into a stage with #:agents-may-merge #t."]
+  [approvers integer 1 "human: distinct people who must approve; agent: reviewer agents that must all pass. 1–9."]
+  [requires (list-of (enum checks acceptance)) (checks acceptance) "checks: the #:checks of FROM and TO pass on the stage head; acceptance: every change is accepted or refused (or the whole promotion approved) before it merges."]
+  [method (enum merge squash fast-forward cherry-pick) merge "How the stage enters TO."]
+  [version (record version-change) #:none "The version change, e.g. (bump minor); none = the version is not touched."]
+  [tag string "" "Tag on the promoted commit; placeholders {version} {cycle} {date}; \"\" = no tag."]
+  [present (list-of (enum summary changes proof demo checks notes excluded)) (summary changes proof demo checks notes excluded) "Sections of the presentation pack: summary, per-change details with acceptance criteria, proof (pictures, recordings), demo (one page to open and show), checks on the stage head, release notes and changelog entry, what is not included."]
+  [after (list-of symbol) () "(deploy) or (deploy ENV): after merging, run TO's #:deploy-cmd; ENV must equal TO's #:environment-name."]
+  [back-merge (list-of (ref stage)) () "Stages the promoted result is merged back into (an agent round resolves a conflict). A hotfix promotion (FROM is cut from TO) defaults to every other stage that accepts a class."]
+  [adw (optional-ref adw) "" "Workflow whose environment, agent, review command and #:patch/#:implement commands the promotion's agent rounds use; \"\" = the first workflow that delivers into FROM, else the first workflow."])
 
 (define-record model-tier #:positional (tier model)
   "One model tier of an agent, written (TIER \"MODEL-ID\" [#:effort LEVEL]) inside #:models."
@@ -548,6 +570,9 @@
 
 ;; Placeholders a stage #:branch may contain.
 (define delivery-placeholders '("{cycle}" "{version}" "{date}"))
+
+;; Placeholders a promotion #:tag may contain.
+(define promotion-placeholders '("{version}" "{cycle}" "{date}"))
 
 ;; ---------------------------------------------------------------------------------------
 ;; Delivery presets: (delivery PRESET #:param value …) stands for (stage …) and (cycle …) clauses
@@ -645,4 +670,11 @@
     "A zero-touch ADW (review auto with #:ship merge or deploy) may only deliver to stages with #:agents-may-merge #t."
     "#:entry fast-forward is rejected with every forge (github, forgejo): a pull request is merged by merge, squash or rebase."
     "(delivery PRESET #:param value …) is declared at most once and expands to (stage …) and (cycle …) clauses (see Delivery presets); a (stage NAME …) with the name of a preset's stage replaces it, another name adds a stage; a (cycle …) next to a preset that declares one is an error."
+    "(promotion FROM -> TO …) needs declared stages; FROM and TO are declared stages, TO is FROM's #:into (default #:from), and each stage has at most one promotion. Every non-final stage without a declared promotion gets one with the defaults (origin \"default\")."
+    "#:approval agent or auto is rejected for a promotion into a stage with #:agents-may-merge #f; #:approvers is 1–9."
+    "A hotfix promotion (FROM's #:from and #:into are TO, TO is the final stage, and no other stage goes into FROM) may not use #:approval auto; without #:back-merge it is merged back into every other stage that accepts a class."
+    "#:tag uses only {version} {cycle} {date} and is a valid tag name once filled; {version} needs #:version; {cycle} needs FROM to be the (cycle …) #:stage."
+    "#:after items are (deploy) or (deploy ENV): TO needs a #:deploy-cmd, and ENV equals TO's #:environment-name."
+    "#:back-merge names declared stages other than FROM and TO."
+    "A stage #:frozen period is \"YYYY-MM-DD..YYYY-MM-DD\" with valid dates, the first not after the second."
     "Kinds marked planned compile but are refused by the generator."))

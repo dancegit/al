@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from . import events, gitsafe, slots
-from .errors import LayerError, StepFailed
+from .errors import LayerError, StepFailed, StepWaiting
 
 CYCLE_FILE = "agents/cycle.json"
 CYCLE_LOCK = "agents/cycle.lock"
@@ -42,6 +42,8 @@ FORGE_METHODS = ("merge", "squash", "rebase")
 GIT_TIMEOUT = 300
 IDENTITY = ["-c", "user.name=adw", "-c", "user.email=adw@localhost"]
 CONFLICT_MARKER = "<<<<<<<"
+OPEN_PROMOTIONS = "agents/promotions"   # one <from>-<to>.json per open promotion (see promotion.py)
+FROZEN_EXIT = 75                         # a delivery into a frozen stage waits, like a waiting script step
 
 
 class DeliveryError(LayerError):
@@ -68,6 +70,8 @@ class Stage:
     deploy_cmd: str = ""
     environment_name: str = ""
     origin: str = "declared"
+    frozen: tuple[str, ...] = ()
+    frozen_while_promoting: bool = False
 
     @classmethod
     def from_ir(cls, data: Mapping[str, Any]) -> "Stage":
@@ -76,7 +80,8 @@ class Stage:
                    agents_may_merge=bool(data.get("agentsMayMerge", True)), entry=str(data.get("entry") or "merge"),
                    checks=tuple(data.get("checks", ())), deploy_cmd=str(data.get("deployCmd") or ""),
                    environment_name=str(data.get("environmentName") or ""),
-                   origin=str(data.get("origin") or "declared"))
+                   origin=str(data.get("origin") or "declared"), frozen=tuple(data.get("frozen") or ()),
+                   frozen_while_promoting=bool(data.get("frozenWhilePromoting", False)))
 
     @property
     def next(self) -> str:
@@ -165,15 +170,19 @@ def _git(cwd: Path, args: list[str], check: bool = False) -> subprocess.Complete
     return result
 
 
-def _tree_git(state: Any, env_stack: Any, args: list[str], check: bool = False) -> subprocess.CompletedProcess[str]:
-    """git in the run's worktree; sandboxed: only through gitsafe."""
+def tree_git(state: Any, env_stack: Any, args: list[str], check: bool = False,
+             step: str = "deliver") -> subprocess.CompletedProcess[str]:
+    """git in the run's worktree; sandboxed: only through gitsafe. promotion.py uses it too."""
     sandbox = getattr(env_stack, "sandbox", None)
     if sandbox is not None:
-        return gitsafe.run(sandbox, args, "deliver", check=check, timeout=GIT_TIMEOUT)
+        return gitsafe.run(sandbox, args, step, check=check, timeout=GIT_TIMEOUT)
     result = _git(Path(state.worktree), args)
     if check and result.returncode != 0:
-        raise StepFailed("deliver", f"git {' '.join(args)} failed: {(result.stderr or result.stdout).strip()}")
+        raise StepFailed(step, f"git {' '.join(args)} failed: {(result.stderr or result.stdout).strip()}")
     return result
+
+
+_tree_git = tree_git  # the name this module used before promotion.py needed it
 
 
 def _branch_exists(app: Path, branch: str) -> bool:
@@ -218,15 +227,19 @@ def for_run(layer: Any, adw: Mapping[str, Any], state: Any, env: Mapping[str, st
         return _target_from_record(layer, adw, recorded)
     stage: Stage | None = None
     branch = ""
+    promotion = adw.get("promotion") if isinstance(adw.get("promotion"), dict) else None
     try:
-        if env.get("ADW_FANOUT_PARENT") and env.get("ADW_DELIVERY_STAGE"):
+        if promotion is not None:  # a promotion run starts at the head of the stage it promotes
+            stage = stage_named(layer, str(promotion["from"]))
+            branch = str(promotion.get("fromBranch") or "") or expand_branch(stage, load_cycle(layer), now)
+        elif env.get("ADW_FANOUT_PARENT") and env.get("ADW_DELIVERY_STAGE"):
             stage = stage_named(layer, env["ADW_DELIVERY_STAGE"])
             branch = env.get("ADW_DELIVERY_BRANCH") or expand_branch(stage, load_cycle(layer), now)
         else:
             stage = route(layer, adw, _first_class(adw, state))
             assert stage is not None
             branch = expand_branch(stage, load_cycle(layer), now)
-        if _ships_untouched(layer, adw) and not stage.agents_may_merge:
+        if promotion is None and _ships_untouched(layer, adw) and not stage.agents_may_merge:
             raise DeliveryError("forbidden-target", f"workflow {adw['name']} ships without a person, but stage "
                                 f"{stage.name} (branch {branch}) only changes by people; deliver to a stage with "
                                 "#:agents-may-merge #t or use a human or agent review")
@@ -297,6 +310,46 @@ def entry_supported(layer: Any, target: Target | Mapping[str, Any]) -> bool:
     from . import ship
 
     return entry in tuple(getattr(ship, "ENTRY_METHODS", ()))
+
+
+# ---------------------------------------------------------------- freezes
+
+def _day(now: datetime | None) -> str:
+    return _utc(now).strftime("%Y-%m-%d")
+
+
+def open_promotion_out_of(layer: Any, stage_name: str) -> dict[str, Any] | None:
+    """The open promotion out of `stage_name` (its agents/promotions/<from>-<to>.json), or None."""
+    directory = Path(layer.layer_dir) / OPEN_PROMOTIONS
+    if not directory.is_dir():
+        return None
+    for path in sorted(directory.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("from") == stage_name:
+            return data
+    return None
+
+
+def frozen_reason(layer: Any, stage: Stage, now: datetime | None = None, resume: str = "") -> str:
+    """Why `stage` takes no delivery now ("" when it does): a #:frozen period covering today (UTC, both
+    days included), or, with #:frozen-while-promoting, an open promotion out of it. `resume` (how the
+    waiting run continues) ends the sentence."""
+    today = _day(now)
+    tail = f": {resume}" if resume else ""
+    for period in stage.frozen:
+        first, _, last = str(period).partition("..")
+        if first <= today <= last:
+            return (f"stage {stage.name} is frozen from {first} to {last} (UTC); the run waits — resume it after "
+                    f"the freeze{tail}")
+    if stage.frozen_while_promoting:
+        open_one = open_promotion_out_of(layer, stage.name)
+        if open_one:
+            return (f"stage {stage.name} is closed to deliveries while promotion {open_one.get('id', '?')} into "
+                    f"{open_one.get('to', '?')} is open; it continues when the promotion closes{tail}")
+    return ""
 
 
 # ---------------------------------------------------------------- before and after ship
@@ -435,6 +488,15 @@ def before_ship(layer: Any, state: Any, adw: Mapping[str, Any], step: Mapping[st
     del step
     target = layer.delivery
     stage, branch = str(target["stage"]), str(target["branch"])
+    from . import runner  # the resume command a waiting run prints
+
+    why = frozen_reason(layer, stage_named(layer, stage), resume=runner.resume_command(state))
+    if why:
+        events.emit("delivery.frozen", stage=stage, branch=branch, reason=why)
+        state.delivery["frozen"] = why
+        state.save(layer.layer_dir)
+        raise StepWaiting("deliver", FROZEN_EXIT, why)
+    state.delivery.pop("frozen", None)
     definition = layer.adw(state.adw)
     if not definition.get("deliverTo"):
         routed = route(layer, definition, state.klass)
@@ -465,6 +527,7 @@ def before_ship(layer: Any, state: Any, adw: Mapping[str, Any], step: Mapping[st
     with gitsafe.session(sandbox) if sandbox is not None else _nothing():
         ship.commit_pending(Path(state.worktree), state, _never_commit(layer, state), sandbox)
     head = _stage_head(layer, state, env_stack)
+    state.delivery["base"] = head  # the stage head this run's change is based on (a change = base..head)
     behind = _stale(state, env_stack, head)
     if behind > 0:
         events.say(f"[adw {state.adw_id}] delivery: {branch} moved {behind} commit(s) since the run started",
@@ -476,9 +539,24 @@ def before_ship(layer: Any, state: Any, adw: Mapping[str, Any], step: Mapping[st
     state.save(layer.layer_dir)
 
 
+def _delivered_head(layer: Any, branch: str) -> str:
+    """The stage branch's head right after a delivery: the local branch, or the remote's (ls-remote)."""
+    remote = _remote(layer)
+    if remote:
+        out = _git(Path(layer.app_root), ["ls-remote", remote, f"refs/heads/{branch}"]).stdout.split()
+        return out[0] if out else ""
+    result = _git(Path(layer.app_root), ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"])
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def after_ship(layer: Any, state: Any) -> None:
     state.delivery["delivered"] = bool(state.ship.get("shipped"))
     state.delivery["target"] = str(state.ship.get("target") or "")
+    if state.delivery["delivered"]:
+        try:
+            state.delivery["head"] = _delivered_head(layer, str(state.delivery.get("branch") or ""))
+        except LayerError as exc:
+            print(f"[adw {state.adw_id}] delivery: head of {state.delivery.get('branch')} unknown: {exc}")
     state.save(layer.layer_dir)
     events.emit("delivery.result", stage=state.delivery.get("stage"), branch=state.delivery.get("branch"),
                 delivered=state.delivery["delivered"], target=state.delivery["target"])

@@ -183,6 +183,47 @@ merged by merge, squash or rebase.
   command)`. `delivery._conflict_round` would then call `review.patch_round(…, prefix="deliver-")` and drop
   its own `_model_set` and `_checks_that_ran`.
 
+## Promotion between stages
+
+`(promotion FROM -> TO …)` declares how a stage moves into the next: who approves (`human`, `agent`, `auto`
+and how many), what must hold (`checks`, `acceptance`), the method (`merge`, `squash`, `fast-forward`,
+`cherry-pick`), the version change and tag, the pack's sections, `(deploy ENV)` afterwards and the stages
+it is merged back into. The compiler emits `promotions` (one per non-final stage, declared or with the
+defaults, `origin` saying which, `hotfix` and the resolved base `adw`) only for a layer with stages, so every
+other IR is unchanged.
+
+`al promote LAYER FROM TO` (the layer's `adws/promote.py run`, `adw_modules/promotion.py`) starts a
+**promotion run**: an ordinary run of a synthetic ADW (`promote-<from>-<to>`, recorded in
+`state.definition` like a single-command run) with the environment, agent and review option of its base
+ADW and steps of kind `promote`: `open` (pin the stage head; the changes are the runs delivered into FROM —
+`delivery.base`/`head` recorded by every delivery — or whose pull request into it a person merged, and not
+yet in TO), `checks`, `pack` (the presentation pack under `artefacts/<id>/pack/`, every file an artefact of
+the run), `request` (a pull request, or `promotions/<id>/approval.md`), `approval`, `version`, `merge`,
+`tag`, `deploy`, `back-merge`, `close`. So the run has the run log, events, heartbeat, slots, summary and
+dashboard page of every run. The `approval` step raises `StepWaiting` until the declared approval exists:
+the run ends `waiting` (exit 75) and `al promote` again (or the dashboard's Continue) resumes it; one
+promotion per FROM → TO is open (`agents/promotions/<from>-<to>.json`).
+
+**Decisions are files of the layer**: `promotions/<id>/acceptance.jsonl`, one JSON object per decision
+(`at`, `by`, `kind` human|agent|forge, `scope`, `decision`, `then`, `comment`, `source`), append-only and
+rendered as `sign-off.md`; `promotion.json` records the closed promotion. `promotions/` is committed. Per
+person and scope the latest decision counts; a refusal wins over an acceptance. A refused change is
+reverted out of the stage in the run's worktree (`git apply --3way -R` of its diff; an agent round of the
+base ADW's `#:patch`/`#:implement` when that does not apply), published to FROM by compare-and-swap, and
+optionally sent back for a patch run (`launch.start`). Merges, reverts, version commits and back-merges are
+plain git in the run's worktree; application refs move only by `update-ref` with the old value (or a push);
+a checked-out target gets `al/promote/<branch>`. Agent approvers run `review.run_review` on a run-scoped copy
+of the IR whose review option is `agent` with N reviewers.
+
+**Freezes** are stage properties: `#:frozen` periods (UTC days) and `#:frozen-while-promoting`.
+`delivery.before_ship` raises `StepWaiting("deliver", 75, why)` and emits `delivery.frozen`.
+
+**Follow-ups for a person (protected modules).** `ship.py` could offer a public `merge_into(layer, state,
+worktree, branch, commit, sandbox=None) -> (bool, str)` (today's `_merge_locally` for any branch, checked-out
+→ a staging ref and a note); `promotion._publish` already calls it when it exists, and carries its own copy
+of the rule (`al/promote/`) until then. `review.py` could offer `run_reviewers(layer, state, option, round,
+env_stack)`, so agent approvers need no run-scoped IR copy (next to the `patch_round` follow-up above).
+
 ## Separation from the application
 
 The layer is its own directory (default `<app>.al`, its own git repo). The app is referenced by
@@ -264,10 +305,10 @@ of the output format.
 racket/al/         #lang al: meta.rkt (meta-DSL), vocab.rkt, compiler.rkt, schema.rkt, reference.rkt, tests/
 schemas/           agentic-layer-v1.schema.json      (generated)
 docs/              AL-DSL.llms.txt (generated), DESIGN.md
-tools/al           init | scout | adopt | compile | gen | check | explain | eject | improve | dashboard | verify | cycle
+tools/al           init | scout | adopt | compile | gen | check | explain | eject | improve | dashboard | verify | cycle | promote | decide
 tools/al_delivery.py  read-only detection of the branching style in use (`al scout`'s `## Delivery`)
 kit/templates/     command, HOP and expert templates   kit/schemas/  JSON output contracts
-kit/runtime/       adw_modules (generic IR interpreter), triggers, voice, dispatch
+kit/runtime/       adw_modules (generic IR interpreter; promotion.py behind a layer's adws/promote.py), triggers, voice, dispatch
 meta/              LLM.txt template + the meta commands
 tests/             acceptance script over the testbeds
 testbeds/ layers/  cloned public repos and their generated layers (git-ignored)
@@ -582,6 +623,15 @@ to its check, a re-check and the reviewers to the review step).
 | `notify.sent` | `notifier` (the option id), `kind` (email / command), `event` (needs-human / failed / passed / shipped), `seconds`; never a recipient, a server or a variable's value |
 | `notify.failed` | as `notify.sent`, plus `reason` (one of a fixed list, e.g. `variable AL_NOTIFY_TO is not set`, `timed out after 10 s`, `login refused (SMTP 535)`, `exit 3`) |
 | `fanout.candidate` | `step`, `id`, `index`, `status` (running / passed / failed / stopped), and when finished `exit`, `seconds`, `reason` |
+| `delivery.frozen` | `stage`, `branch`, `reason` (the period or the open promotion, and how to resume) |
+| `promotion.opened` | `id`, `from`, `to`, `from_branch`, `to_branch`, `pinned`, `changes` (ids), `dry_run` |
+| `promotion.decision` | `by`, `kind` (human / agent / forge), `scope`, `decision`, `then`, `comment`, `source`; also appended by `al decide` while the run waits |
+| `promotion.excluded` | `change`, `by`, `comment`, `then`, `revert` (the revert commit), `patch_run` |
+| `promotion.waiting` / `promotion.approved` | `why`, `needed`, `have`, `undecided` / `approved_by`, `refused` |
+| `promotion.merged` | `method`, `result`, `to_branch`, `staged` |
+| `promotion.tagged` / `promotion.deployed` | `tag`, `commit` / `environment`, `exit` |
+| `promotion.back-merge` | `stage`, `branch`, `conflict`, `resolved`, `published` |
+| `promotion.closed` | `id`, `result`, `tag`, `changes` (id → status) |
 
 Two more things make a run observable from outside. A check's log file grows while the check runs
 (its output goes straight to the file; when it ends the content is normalised exactly as before).
