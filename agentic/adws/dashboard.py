@@ -3,7 +3,8 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Work dashboard of the `al` layer: a live, read-only view of what its agents are doing.
+"""Work dashboard of the `al` layer: a live view of what its agents are doing, from which work can
+be started too (off with --no-start; --read-only changes nothing at all).
 
   uv run agentic/adws/dashboard.py [flags]       then open http://127.0.0.1:8770/
 

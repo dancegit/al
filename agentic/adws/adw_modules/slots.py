@@ -63,6 +63,34 @@ def slot(layer: Any, pool: str, who: str = "", poll: float = 0.5) -> Iterator[in
         time.sleep(poll)
 
 
+def free_slots(layer: Any, pool: str) -> int:
+    """How many slots of `pool` nobody holds right now: each slot file is probed with a
+    non-blocking flock that is released at once. Informational only (a start says it will wait);
+    the run's real wait for a slot stays in slot()."""
+    limit = max(1, limits(layer)[pool])
+    directory = Path(layer.layer_dir) / "agents" / ".slots"
+    free = 0
+    for index in range(limit):
+        path = directory / f"{pool}.{index}.lock"
+        if not path.exists():
+            free += 1
+            continue
+        try:
+            handle = os.open(path, os.O_RDWR)
+        except OSError:
+            continue
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            continue
+        else:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            free += 1
+        finally:
+            os.close(handle)
+    return free
+
+
 @contextmanager
 def file_lock(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)

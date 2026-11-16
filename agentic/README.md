@@ -47,7 +47,7 @@ Spending limits: none declared (add `(budget limits #:run-usd … #:day-usd …)
 
 ## Watch the work
 
-A live, read-only dashboard of every run of this layer:
+A live dashboard of every run of this layer; work can be started from its Layers view, or with `al run <this directory> /NAME …`:
 
 ```bash
 uv run agentic/adws/dashboard.py                 # then open http://127.0.0.1:8770/
