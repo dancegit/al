@@ -1708,7 +1708,9 @@ def local_day(stamp: float | None) -> str:
 def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Exact spans from a run's events (see docs/DESIGN.md, "Run events"): agent calls, check
     attempts (with re-checks), gate / deploy commands, slot waits, the container, the check that is
-    running now, and what was recorded about subscription usage (limit.status / limit.stop / limit.wait). Later events of the same agent directory or log file win (a resumed run)."""
+    running now, what was recorded about subscription usage (limit.status / limit.stop / limit.wait)
+    and the run's setup: sandbox image builds and the preflight (env.build.* / env.preflight). Later
+    events of the same agent directory or log file win (a resumed run)."""
     agents: dict[str, dict[str, Any]] = {}
     attempts: dict[str, list[dict[str, Any]]] = {}
     gates: dict[str, dict[str, Any]] = {}
@@ -1717,6 +1719,7 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
     container: dict[str, Any] | None = None
     limits: list[dict[str, Any]] = []
     inner: dict[str, list[dict[str, Any]]] = {}
+    setup: list[dict[str, Any]] = []
     current = ""
     for event in events:
         kind, at = event["type"], event["_t"]
@@ -1789,6 +1792,27 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
             entry = inner_entry(event)
             if entry is not None:
                 inner.setdefault(entry["step"], []).append(entry)
+        elif kind == "env.build.start":
+            setup.append({"kind": "build", "start": at, "end": None, "status": "running",
+                          "image": str(event.get("image") or ""), "recipe": str(event.get("recipe") or ""),
+                          "seconds": None, "size": None})
+        elif kind == "env.build.end":
+            build = next((s for s in reversed(setup) if s["kind"] == "build" and s["end"] is None
+                          and s["image"] == str(event.get("image") or "")), None)
+            if build is None:
+                seconds = event.get("seconds") if isinstance(event.get("seconds"), (int, float)) else 0.0
+                build = {"kind": "build", "start": at - seconds, "image": str(event.get("image") or ""),
+                         "recipe": str(event.get("recipe") or "")}
+                setup.append(build)
+            build.update(end=at, status="failed" if event.get("status") == "failed" else "passed",
+                         seconds=event.get("seconds") if isinstance(event.get("seconds"), (int, float)) else None,
+                         size=event.get("size") if isinstance(event.get("size"), (int, float)) else None)
+        elif kind == "env.preflight":
+            seconds = event.get("seconds") if isinstance(event.get("seconds"), (int, float)) else 0.0
+            checks = [c for c in event.get("checks") or [] if isinstance(c, dict)]
+            setup.append({"kind": "preflight", "start": at - seconds, "end": at,
+                          "status": "failed" if event.get("status") == "failed" else "passed",
+                          "missed": [str(c.get("name") or "") for c in checks if c.get("status") == "miss"]})
         elif kind == "env.container.start":
             container = {"name": str(event.get("name") or ""), "removed": False}
         elif kind == "env.container.stop":
@@ -1803,7 +1827,7 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
             if item.get("running") and (live is None or item["start"] > live["start"]):
                 live = {"check": step, "attempt": item["attempt"], "start": item["start"], "file": item["file"]}
     return {"agents": agents, "attempts": attempts, "gates": list(gates.values()), "waits": waits,
-            "container": container, "live_check": live, "limits": limits, "inner": inner}
+            "container": container, "live_check": live, "limits": limits, "inner": inner, "setup": setup}
 
 
 _TOKEN_KEYS = (("in", "input_tokens", "in"), ("out", "output_tokens", "out"),
@@ -2193,7 +2217,10 @@ class RunModel:
             current = {"step": name, "kind": kind, "action": action or "working",
                        "since": parse_time(record.get("started"))}
         elif data["running"]:
-            current = {"step": "", "kind": "", "action": "setting up", "since": start}
+            building = next((s for s in (data["spans"] or {}).get("setup") or []
+                             if s["kind"] == "build" and s["end"] is None), None)
+            current = {"step": "", "kind": "", "action": "building the sandbox image" if building else "setting up",
+                       "since": building["start"] if building else start}
         spans = data["spans"]
         waiting = facts["waiting"] if data["running"] else ""
         if spans is not None:
@@ -2377,6 +2404,21 @@ class RunModel:
                     label = f"{name} limit: {entry['status']}"
                 bars.append({"id": f"limit:{index}", "step": entry["step"], "level": 1, "kind": "limit", "label": label,
                              "start": at, "end": end, "status": status, "ref": entry["call"]})
+            # the run's setup before its first step: sandbox image builds and the preflight
+            for index, entry in enumerate(data["spans"].get("setup") or []):
+                if entry["kind"] == "build":
+                    size = f" ({entry['size'] / 1e6:.0f} MB)" if entry.get("size") else ""
+                    label = f"building sandbox image {entry['recipe']}{size}"
+                elif entry["missed"]:
+                    label = f"preflight: missing {', '.join(entry['missed'])}"
+                else:
+                    label = "preflight: all checks passed"
+                open_ = entry["end"] is None
+                end = entry["end"] if not open_ else (None if data["running"] else data["run_end"])
+                bars.append({"id": f"setup:{entry['kind']}:{index}", "step": "", "level": 0, "kind": "setup",
+                             "label": label, "start": entry["start"], "end": end,
+                             "status": "running" if open_ and data["running"] else
+                             ("failed" if entry["status"] in ("failed", "running") else "done")})
         elif "runs" in (data["facts"].get("waited") or []) and data["run_start"]:
             first = min((b["start"] for b in bars if b["level"] == 0 and b["start"]), default=None)
             wait_end = first if first else (None if data["running"] else data["run_end"])

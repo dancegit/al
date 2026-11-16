@@ -75,6 +75,8 @@ class ADWState:
     # where the run delivers when the layer declares stages (delivery.record + delivered/target, or
     # {stage, branch, refused}); empty, and then left out of state.json, for a layer without stages
     delivery: dict[str, Any] = field(default_factory=dict)
+    # the sandbox image this run uses (al-<layer>:<recipe hash>), recorded by the preflight; "" without podman
+    image: str = ""
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):

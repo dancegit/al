@@ -1057,14 +1057,21 @@
       "network": "slirp",
       "packages": [
         "git",
-        "curl"
+        "curl",
+        "nodejs",
+        "npm",
+        "python3",
+        "ffmpeg"
       ],
       "pidsLimit": 2048,
       "publish": [],
       "readOnlyRoot": false,
       "scope": "run",
       "services": [],
-      "setup": [],
+      "setup": [
+        "npm install -g bun",
+        "curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh"
+      ],
       "status": "stable"
     }
   ],

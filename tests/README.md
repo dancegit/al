@@ -148,18 +148,24 @@ put them on a disk when `/tmp` is a small tmpfs (pytest empties that directory f
 tools/al verify LAYER                       # every codebase cmd except deploy / start / install
 tools/al verify LAYER --cmd typecheck --cmd test --timeout 1200
 tools/al verify LAYER --json                # report on stdout, progress on stderr
+tools/al verify LAYER --workflow zte        # only in the environment stack of ADW zte
 ```
 
-The compiler proves a layer is coherent; `verify` proves its `(cmd …)` lines are true. It creates
-one detached worktree of the application at the default branch under `<layer>/trees/verify-<random>`,
-runs the selected cmds there in declaration order inside the environment stack of the first ADW
-that has a `check` step (through the layer's own `adws/adw_modules`, so nix / podman behave exactly
-as in a run), and removes the worktree. Cmds share that worktree, as the checks of one run do.
-Per cmd it prints name, exit code and seconds (plus the last 15 output lines on failure), writes
-`<layer>/agents/verify/<name>.log`, and records `[{name, cmd, exit, seconds, log, at}]` in
-`<layer>/agents/verify/report.json`. The report keeps the latest result of every cmd: a cmd verified
-now replaces its earlier row, the others keep theirs (`at` says when each ran; `--json` prints only
-this invocation's rows). Exit status is 0 only when every verified cmd exited 0.
+The compiler proves a layer is coherent; `verify` proves its `(cmd …)` lines are true. It verifies
+every distinct environment stack of the layer's ADWs once (the first ADW with that stack names it),
+or only the stack of `--workflow NAME` (an unknown name is an error listing the ADWs). Per stack it
+creates one detached worktree of the application at the default branch under
+`<layer>/trees/verify-<random>` (the stack's worktree dir), runs the selected cmds there in
+declaration order inside that stack (through the layer's own `adws/adw_modules`, so nix / podman
+behave exactly as in a run), and removes the worktree. Cmds share that worktree, as the checks of one
+run do. Per cmd it prints name, exit code and seconds (plus the last 15 output lines on failure),
+with ` [stack]` at the end of the line when more than one stack ran, writes
+`<layer>/agents/verify/<name>.log` (`<name>.<stack>.log` with several stacks), and records
+`[{name, cmd, exit, seconds, log, at, workflow, stack}]` in `<layer>/agents/verify/report.json`. The
+report keeps the latest result of every cmd in every stack: a cmd verified now replaces its earlier
+row of the same stack, the others keep theirs (`at` says when each ran; a row of an older report
+without `stack` is kept as stack `""`; `--json` prints only this invocation's rows). Exit status is 0
+only when every verified cmd exited 0 in every stack; the summary counts one row per cmd and stack.
 `deploy`, `start` and `install` are skipped unless named with `--cmd`. The application's `HEAD`,
 current branch and index are compared before and after; a difference is an error. Files edited in
 the checkout meanwhile are reported as a note, not an error: verify runs every cmd in its own

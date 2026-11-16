@@ -208,3 +208,27 @@ def test_paths_the_runtime_recorded_are_shown_relative_not_absolute(tmp_path: Pa
     plan = model.run_detail("shop", "b1000001")["state"]["plan"]
     assert str(tmp_path) not in plan
     assert plan == ("agentic/specs/plan-b1000001.md" if in_repo else "layer:specs/plan-b1000001.md")
+
+
+# ---------------------------------------------------------------- the run's setup: image build and preflight
+
+def test_image_build_and_preflight_are_setup_bars(ev):
+    fixtures_events.add_setup_runs(ev["layer"])
+    data = detail(model_for(ev["layer"]), "e1000005")
+    setup = [b for b in data["timeline"]["bars"] if b["kind"] == "setup"]
+    assert [(b["id"], b["level"], b["step"], b["label"], b["start"], b["end"], b["status"]) for b in setup] == [
+        ("setup:build:0", 0, "", f"building sandbox image {fixtures_events.SETUP_RECIPE} (312 MB)", T0 + 1, T0 + 40, "done"),
+        ("setup:preflight:1", 0, "", "preflight: missing command:test", T0 + 40, T0 + 43, "failed")]
+    assert data["timeline"]["bars"][:2] == setup                                 # at the top: before any step
+
+
+def test_an_open_image_build_is_the_current_action(ev):
+    now = time.time()
+    fixtures_events.add_setup_runs(ev["layer"], now)
+    model = model_for(ev["layer"])
+    summary = model.summaries["events-shop/e1000006"]
+    assert summary["status"] == "running"
+    assert summary["current"]["action"] == "building the sandbox image"
+    assert summary["current"]["since"] == pytest.approx(now - 28, abs=1)
+    building = bar(detail(model, "e1000006"), "setup:build:0")
+    assert building["status"] == "running" and building["end"] is None

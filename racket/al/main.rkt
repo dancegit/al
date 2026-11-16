@@ -8,6 +8,7 @@
 ;; the compiler raises about an included clause points into FILE, at that clause.
 
 (require "private/json-pretty.rkt"
+         "private/warnings.rkt"
          (for-syntax racket/base
                      racket/list
                      racket/path
@@ -102,6 +103,8 @@
         (define layer-spec '#,spec)
         (provide layer-spec)
         (module+ main
+          (for ([w (in-list (layer-warnings layer-spec))])
+            (eprintf "warning: ~a\n" w))
           (display (json-pretty layer-spec))
           (newline)))]
     [(_)

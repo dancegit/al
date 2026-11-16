@@ -60,3 +60,58 @@ def test_the_report_keeps_the_latest_result_of_every_cmd(app) -> None:
     help_text = al("verify", "--help").stdout
     assert "report.json" in help_text and "latest result of every cmd" in help_text
     assert os.path.isfile(layer / "agents" / "verify" / "report.json")
+
+
+STACKS = ('  (environment worktree #:id a)\n'
+          '  (environment worktree #:id b #:dir "trees-b")\n')
+
+
+def _stacked_layer(app):
+    """Three workflows on two environment stacks: `change` and `third` on `a`, `other` on `b`."""
+    al("init", app, "--in-repo")
+    layer = app / "agentic"
+    source = LAYER_TEMPLATE.format(root="..", placement='(layer in-repo #:dir "agentic")')
+    source = source.replace('(cmd test "./test.sh"', '(cmd ok "true")\n    (cmd test "./test.sh"')
+    source = source.replace("  (command plan ", STACKS + "  (command plan ", 1)
+    source = source.replace('(adw change #:description "Plan, build, test; a person reviews"',
+                            '(adw other #:environment (b) (steps (check test #:cmd test)))\n'
+                            '  (adw third #:environment (a) (steps (check test #:cmd test)))\n'
+                            '  (adw change #:description "Plan, build, test; a person reviews" #:environment (a)')
+    (layer / "agentic.rkt").write_text(source)
+    al("gen", layer)
+    (layer / ".gitignore").write_text((layer / ".gitignore").read_text() + "trees-b/\n")
+    commit(app, "the agentic layer", "agentic")
+    assert status(app) == ""
+    return layer
+
+
+def test_verify_runs_every_distinct_stack_once_and_names_it(app) -> None:
+    layer = _stacked_layer(app)
+    old = [{"name": "ok", "cmd": "true", "exit": 0, "seconds": 0.0, "log": "agents/verify/ok.log",
+            "at": "2026-01-01T00:00:00Z"}]                                        # a report from before stacks
+    (layer / "agents" / "verify").mkdir(parents=True, exist_ok=True)
+    (layer / "agents" / "verify" / "report.json").write_text(json.dumps(old))
+    cp = _verify(layer, app, "ok", "test")
+    lines = cp.stdout.splitlines()
+    headers = [line for line in lines if line.startswith("verify: 2 cmd(s)")]
+    assert len(headers) == 2, cp.stdout                                            # `third` shares `a`: not again
+    assert "ADW `other` (b)" in headers[0] and "ADW `third` (a)" in headers[1]
+    results = [line.strip() for line in lines if line.strip().startswith(("ok  ", "FAIL"))]
+    assert [line.split()[1] + " " + line.split()[-1] for line in results] == [
+        "ok [b]", "test [b]", "ok [a]", "test [a]"], cp.stdout
+    assert lines[-1].startswith("verify: 4/4 ok")
+    rows = json.loads((layer / "agents" / "verify" / "report.json").read_text())
+    assert [(r["name"], r.get("stack", ""), r.get("workflow")) for r in rows] == [
+        ("ok", "", None), ("ok", "a", "third"), ("ok", "b", "other"), ("test", "a", "third"), ("test", "b", "other")]
+    assert all((layer / r["log"]).is_file() for r in rows[1:])
+    assert rows[1]["log"] != rows[2]["log"]                                        # one log per cmd and stack
+
+
+def test_verify_workflow_runs_only_that_stack(app) -> None:
+    layer = _stacked_layer(app)
+    cp = al("verify", layer, "--cmd", "ok", "--workflow", "other", "--json", env={"NOTES_APP": str(app)})
+    rows = json.loads(cp.stdout)
+    assert [(r["name"], r["stack"], r["workflow"]) for r in rows] == [("ok", "b", "other")]
+    assert "ADW `other` (b)" in cp.stderr and "[b]" not in cp.stderr               # one stack: no labels needed
+    cp = al("verify", layer, "--workflow", "nope", ok=False)
+    assert cp.returncode == 1 and "no workflow `nope`; workflows: other, third, change" in cp.stderr, cp.stderr

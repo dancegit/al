@@ -210,6 +210,8 @@ def test_end_to_end_sandboxed_mock_run(make_layer, app_repo, sandbox_image, monk
                       {"name": "test", "kind": "check", "cmd": "test"},
                       {"name": "review", "kind": "review"}, {"name": "ship", "kind": "ship"}]}],
     })
+    (layer / "env").mkdir()
+    (layer / "env" / "Containerfile").write_text(f"FROM {sandbox_image}\n")   # the preflight builds it: nothing pulled
     script = layer / "mock" / "demo" / "build.json"
     script.parent.mkdir(parents=True)
     script.write_text(json.dumps({"files": {"feature.py": "FEATURE = True\n"}}), encoding="utf-8")

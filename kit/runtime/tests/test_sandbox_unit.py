@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from adw_modules import envs, gitsafe
+from adw_modules import envs, gitsafe, sandbox
 from adw_modules.errors import LayerError, StepFailed
 from adw_modules.ir import load
 from adw_modules.runner import main
@@ -47,6 +47,7 @@ def _fake_podman(monkeypatch) -> list[list[str]]:
         calls.append(list(argv))
         return SimpleNamespace(returncode=0, stderr="", stdout="")
     monkeypatch.setattr(envs.subprocess, "run", fake_run)
+    monkeypatch.setattr(sandbox, "doctor", lambda *a, **k: [])  # the preflight finds everything it needs
     return calls
 
 
@@ -141,7 +142,7 @@ def test_publish_refuses_foreign_branch_names(make_layer, monkeypatch) -> None:
 
 
 def _sandbox_layer(make_layer, app_repo, *, keep="never", ship="merge") -> Path:
-    return make_layer({
+    layer = make_layer({
         "agents": [{"id": "mock", "kind": "mock", "scriptDir": "mock", "status": "stable", "timeout": 20}],
         "commands": [{"name": "plan", "template": "plan", "modelSet": "base", "output": "path"},
                      {"name": "build", "template": "build", "modelSet": "base", "output": "text"},
@@ -158,6 +159,9 @@ def _sandbox_layer(make_layer, app_repo, *, keep="never", ship="merge") -> Path:
                       {"name": "build", "kind": "run", "command": "build"},
                       {"name": "review", "kind": "review"}, {"name": "ship", "kind": "ship"}]}],
     })
+    (layer / "env").mkdir()
+    (layer / "env" / "Containerfile").write_text("FROM debian\n")   # what `al gen` writes; the preflight hashes it
+    return layer
 
 
 def _script(layer: Path, name: str, data: dict) -> None:

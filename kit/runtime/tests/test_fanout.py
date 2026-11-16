@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from adw_modules import envs, fanout
+from adw_modules import envs, fanout, sandbox
 from adw_modules.runner import main
 
 RUNTIME = Path(__file__).resolve().parents[1]
@@ -96,6 +96,9 @@ def _layer(make_layer, tmp_path: Path, configs: dict[int, str], *, count=None, p
     mock = layer / "mock" / "candidate"
     mock.mkdir(parents=True, exist_ok=True)
     (mock / "commit.json").write_text(json.dumps({"commit": True}), encoding="utf-8")
+    if extra_envs:
+        (layer / "env").mkdir(exist_ok=True)
+        (layer / "env" / "Containerfile").write_text("FROM debian\n")   # what `al gen` writes; the preflight hashes it
     return layer
 
 
@@ -294,6 +297,7 @@ def test_sandboxed_parent_merges_through_gitsafe(make_layer, app_repo, tmp_path,
     real_run = envs.subprocess.run
     monkeypatch.setattr(envs.subprocess, "run", lambda argv, **kw: SimpleNamespace(returncode=0, stderr="", stdout="")
                         if argv[0] == "podman" else real_run(argv, **kw))
+    monkeypatch.setattr(sandbox, "doctor", lambda *a, **k: [])  # the preflight finds everything it needs
     head = _git(app_repo, "rev-parse", "HEAD")
     box = {"id": "box", "kind": "podman", "agentInside": False, "baseImage": "debian", "cpus": "2", "memory": "4g",
            "network": "none", "packages": [], "setup": [], "status": "stable", "scope": "run", "caches": [],

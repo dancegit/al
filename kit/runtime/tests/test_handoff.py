@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import adw_modules
-from adw_modules import envs, gitsafe, inputs, steps
+from adw_modules import envs, gitsafe, inputs, sandbox, steps
 from adw_modules.errors import StepFailed
 from adw_modules.runner import main
 
@@ -91,6 +91,9 @@ def _layer(make_layer, *, forge=None, ship_step=True, sandboxed=False, failing="
     (mock / "test-resolve-1.json").write_text(json.dumps({"output": RESOLVE}))
     if failing == "agent":   # an agent step that fails: an invalid mock script raises StepFailed
         (mock / "polish.json").write_text(json.dumps({"bogus": True}))
+    if sandboxed:
+        (layer / "env").mkdir(exist_ok=True)
+        (layer / "env" / "Containerfile").write_text("FROM debian\n")   # what `al gen` writes; the preflight hashes it
     return layer
 
 
@@ -375,6 +378,7 @@ def test_sandboxed_handoff_publishes_through_the_host(make_layer, app_repo, monk
     real_run = envs.subprocess.run
     monkeypatch.setattr(envs.subprocess, "run", lambda argv, **kw: (podman.append(argv), SimpleNamespace(
         returncode=0, stdout="", stderr=""))[1] if argv[0] == "podman" else real_run(argv, **kw))
+    monkeypatch.setattr(sandbox, "doctor", lambda *a, **k: [])  # the preflight finds everything it needs
     sessions: list = []
     real_session = gitsafe.session
 
@@ -403,6 +407,7 @@ def test_sandboxed_tampered_worktree_is_not_handed_over(make_layer, app_repo, mo
     real_run = envs.subprocess.run
     monkeypatch.setattr(envs.subprocess, "run", lambda argv, **kw: SimpleNamespace(returncode=0, stdout="", stderr="")
                         if argv[0] == "podman" else real_run(argv, **kw))
+    monkeypatch.setattr(sandbox, "doctor", lambda *a, **k: [])  # the preflight finds everything it needs
     real = steps.run_agent
 
     def tamper(layer_, state, name, *args, **kwargs):

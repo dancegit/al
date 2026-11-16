@@ -441,6 +441,8 @@ Then give two prompts to an LLM agent (for example Claude Code), in this reposit
 tools/al gen    ~/code/myapp.al       # compile and generate; errors say what to fix
 tools/al verify ~/code/myapp.al       # run every declared command for real: is the description true?
 tools/al doctor ~/code/myapp.al       # where al finds racket, uv, git and the agent CLI (exit 4 when one is missing)
+tools/al verify ~/code/myapp.al --workflow sdlc   # … only in that workflow's environment stack
+tools/al sandbox ~/code/myapp.al doctor   # podman: check the container a run gets (also status|build|shell|prune)
 tools/al explain ~/code/myapp.al      # read the layer back in plain language
 tools/al check  ~/code/myapp.al       # the layer is complete and nothing leaked into your repository
 
