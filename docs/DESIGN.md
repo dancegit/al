@@ -456,13 +456,13 @@ to its check, a re-check and the reviewers to the review step).
 | `type` | Fields |
 |---|---|
 | `run.start` | `adw`, `adw_id`, `klass`, `dry_run`, `resumed`, `pid`, `host`, `fanout_parent` (`{run, step, index}` or null), `overrides` (`{tier, models, max_cost, from}` or null), `limits` (`{run, step, day, run_from, limit_percent, on_limit, wait_minutes}` or null) |
-| `run.end` | `status` (passed / failed / waiting), `exit` (75 for waiting) |
+| `run.end` | `status` (passed / handed-over / failed / waiting), `exit` (0 for passed and handed-over, 75 for waiting) |
 | `slot.wait` | `pool` (runs / agents / checks), `limit`, `who` |
 | `slot.acquire` | `pool`, `slot`, `waited` (seconds), `who` |
 | `slot.release` | `pool`, `slot`, `held` (seconds), `who` |
 | `env.container.start` / `env.container.stop` | `name` |
 | `step.start` | `step`, `kind`, `attempt` |
-| `step.end` | `step`, `kind`, `status` (passed / failed / skipped / waiting), `detail`, `seconds` |
+| `step.end` | `step`, `kind`, `status` (passed / rejected / failed / skipped / waiting; `rejected` only for a review step whose final verdict failed), `detail`, `seconds` |
 | `agent.start` | `step` (the agent's directory: `build`, `test-resolve-1`, `review-2-1`, `patch-1`, …), `owner`, `agent` (option id), `agent_kind` (claude-code / codex / custom / mock), `model`, `model_set` (= `tier`), `tier`, `tier_from` (override / request / step / command), `model_from` (agent / override), `effort`; emitted before the call waits for an `agents` slot (a `slot.wait` / `slot.acquire` with `who` = `adw <id> step <dir>` follows) |
 | `agent.end` | as `agent.start`, plus `status` (passed / failed), `seconds`, and when the transcript says so `cost` (USD), `turns`, `duration_ms`; `billing` (subscription / api-key, when the transcript's init event says so; else empty); `error` on failure |
 | `check.start` | `step` (check step, or `gate` / `deploy`), `owner`, `phase` (check / recheck / gate / deploy), `cmd` (codebase cmd name), `attempt`, `log` (layer-relative) |

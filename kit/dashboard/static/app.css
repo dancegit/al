@@ -414,6 +414,15 @@ video { width: 100%; max-width: 860px; max-height: 460px; background: #000; bord
 .g-node.st-waiting text.icon { fill: var(--waiting); }
 .tl-bar.st-waiting { fill: var(--waiting); opacity: .8; }
 .badge.waiting { color: var(--waiting); border-color: rgba(201, 163, 255, .45); background: rgba(201, 163, 255, .08); }
+/* a review whose final verdict failed (rejected) and its run, finished and handed to a person: not passed */
+:root { --rejected: #e3b341; }
+.s-rejected, .s-handed-over { color: var(--rejected); }
+.progress i.s-rejected, .progress i.s-handed-over { background: var(--rejected); opacity: 1; }
+.g-node.st-rejected rect.box { stroke: var(--rejected); fill: rgba(227, 179, 65, .08); }
+.g-node.st-rejected text.icon { fill: var(--rejected); }
+.tl-bar.st-rejected { fill: var(--rejected); }
+.badge.handed-over { color: var(--rejected); border-color: rgba(227, 179, 65, .45); background: rgba(227, 179, 65, .08); }
+.step-rounds { margin: 6px 0 10px; }
 /* a script step's inner steps, mirrored from its own journal */
 table.inner { border-collapse: collapse; font-size: 12px; width: 100%; }
 table.inner td { padding: 2px 8px 2px 0; vertical-align: top; }

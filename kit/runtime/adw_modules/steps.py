@@ -21,6 +21,8 @@ from .errors import LayerError, StepFailed, StepWaiting
 from .templates import render_step_arg
 from .usage import LimitReached
 
+REJECTED = "rejected"
+
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -301,7 +303,8 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
 def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_stack: Any) -> None:
     name, kind = str(step.get("name", "")), str(step.get("kind", ""))
     record = state.step_record(name, kind)
-    if record.get("status") == "passed":
+    # a rejected review is finished: re-running it on --resume would repeat its agent calls and commits
+    if record.get("status") in ("passed", REJECTED):
         return
     when = str(step.get("when", "always"))
     if when.startswith("class-") and state.klass != when.removeprefix("class-"):
@@ -337,12 +340,35 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
         detail = f"{type(exc).__name__}: {exc}"
         ended("failed", detail, f"[adw {state.adw_id}] step {name} ({kind}) failed: {detail}")
         raise StepFailed(name, detail) from exc
+    if kind == "review":
+        success, detail = review_outcome(state)
+        if success is False:
+            # the review returned so a later ship step can route the work to a person: not a pass
+            ended(REJECTED, detail, f"[adw {state.adw_id}] step {name} ({kind}) rejected: {detail}")
+            return
     detail = _pass_detail(state, step)
     ended("passed", detail, f"[adw {state.adw_id}] step {name} ({kind}) passed: {detail}")
 
 
+def review_outcome(state: Any) -> tuple[bool | None, str]:
+    """(success, detail) of the agent or auto review recorded in `state.review`; success is None
+    for a human review or when no review ran."""
+    review = getattr(state, "review", None) or {}
+    rounds = review.get("rounds") or []
+    if not rounds:
+        return None, ""
+    verdict = review.get("verdict") or {}
+    success = bool(verdict.get("success"))
+    summary = str(verdict.get("summary", ""))
+    return success, f"{'pass' if success else 'fail'} after {len(rounds)} round(s): {summary[:200]}"
+
+
 def _pass_detail(state: Any, step: dict[str, Any]) -> str:
     name = str(step.get("name"))
+    if step.get("kind") == "review":
+        success, detail = review_outcome(state)
+        if success is not None:
+            return detail
     if step.get("kind") == "check" and name in state.checks:
         return f"exit {state.checks[name]['exit']}, log {state.checks[name]['log']}"
     if step.get("kind") == "script" and name in state.scripts:

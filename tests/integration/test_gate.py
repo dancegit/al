@@ -59,7 +59,7 @@ def _nothing_shipped(lay):
 def _falls_back_to_pr(lay, run, state, reason: str):
     assert run.returncode == 0, alit.describe(run)
     ship = state["ship"]
-    assert state["status"] == "passed" and ship["action"] == "pr" and ship["shipped"] is False, ship
+    assert state["status"] == "handed-over" and ship["action"] == "pr" and ship["shipped"] is False, ship
     assert any(r.startswith(reason) for r in ship["reasons"]), ship["reasons"]
     assert ship["gate"]["action"] == "pr" and ship["gate"]["reasons"] == ship["reasons"]
     assert (lay.dir / ship["target"]).is_file(), "without a forge the PR description is written under the layer"

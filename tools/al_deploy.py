@@ -771,7 +771,7 @@ def run_lines(states: list[dict], al: Any, now: float | None = None) -> list[str
     if not running:
         lines.append("  nothing")
     lines.append("last finished:")
-    finished = sorted((s for s in states if s.get("status") in ("passed", "failed") and s.get("ended")),
+    finished = sorted((s for s in states if s.get("status") in ("passed", "handed-over", "failed") and s.get("ended")),
                       key=lambda s: _timestamp(s.get("ended")) or 0, reverse=True)[:5]
     for s in finished:
         action = (s.get("ship") or {}).get("action") if isinstance(s.get("ship"), dict) else ""

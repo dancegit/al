@@ -102,7 +102,8 @@ def _state(layer: Path) -> dict:
 def _assert_fell_back(layer: Path, app: Path, deploy_marker: Path, decided: str) -> dict:
     state = _state(layer)
     log = (layer / f"agents/{ADW_ID}/run.log").read_text()
-    assert state["status"] == "passed", log
+    assert state["status"] == "handed-over", log
+    assert "ship-failed:" in ", ".join(state["ship"]["handed_over"]), state["ship"]
     assert state["ship"]["action"] == "pr" and state["ship"]["shipped"] is False
     assert any(reason.startswith("ship-failed:") for reason in state["ship"]["reasons"]), state["ship"]["reasons"]
     assert state["ship"]["fallback"]["decided"] == decided

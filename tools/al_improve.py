@@ -439,7 +439,7 @@ def check_dry_runs(al, worktree, target, a, out) -> None:
         state = target / "agents" / adw_id / "state.json"
         status = json.loads(state.read_text()).get("status") if state.is_file() else "did not start"
         line = f"{adw['name']}: {status} (exit {cp.returncode})"
-        if cp.returncode != 0 or status != "passed":
+        if cp.returncode != 0 or status not in ("passed", "handed-over"):
             failed.append(adw["name"])
             tail = (cp.stdout + cp.stderr).strip().splitlines()[-15:]
             out(f"FAIL {line}\n      " + "\n      ".join(tail))

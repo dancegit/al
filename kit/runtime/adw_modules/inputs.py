@@ -276,7 +276,7 @@ def _resolve_tasklist(lay, option, ref, env, base) -> Request:
 
     def finish(state):
         adw_id = holder.get("id") or _attr(state, "adw_id")
-        if _attr(state, "status") == "passed":
+        if _attr(state, "status") in ("passed", "handed-over"):
             ship = _attr(state, "ship") or {}
             tl.complete(path, adw_id, (ship or {}).get("commit"), option)
         else:
