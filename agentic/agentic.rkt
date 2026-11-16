@@ -24,10 +24,8 @@
     (cmd test-dashboard-browser "(cd kit/dashboard && uv run --with pytest --with playwright pytest -q tests)"
          #:description "The dashboard tests plus the real-browser tests of the page in the host's Chrome")
     ;; The zero-touch workflow's dashboard check: the same tests with the browser tests, in the sandbox's
-    ;; Chromium, saving the screenshots the tests take as proof for the reviewers. Two layout tests are
-    ;; left out: they fail in the sandbox's newer Chromium for a reason not yet understood (they pass in
-    ;; the Chrome of a developer machine); `test-dashboard-browser` still runs them.
-    (cmd test-dashboard-proof "(cd kit/dashboard && rm -rf shots && AL_DASHBOARD_SHOTS=shots uv run --with pytest --with playwright pytest -q tests --deselect tests/test_browser_layout.py::test_a_fourteen_step_workflow_fits_a_1280_pixel_window --deselect tests/test_browser_layout.py::test_the_cost_tables_totals_row_lines_up_with_its_columns)"
+    ;; Chromium, saving the screenshots the tests take as proof for the reviewers.
+    (cmd test-dashboard-proof "(cd kit/dashboard && rm -rf shots && AL_DASHBOARD_SHOTS=shots uv run --with pytest --with playwright pytest -q tests)"
          #:timeout 2400
          #:description "The dashboard's unit, HTTP and real-browser tests, with screenshots of the page written to kit/dashboard/shots")
     (cmd test-integration "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q"
