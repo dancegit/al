@@ -102,6 +102,8 @@ def decide(ir: Mapping[str, Any], trigger: Mapping[str, Any], headers: Mapping[s
         issue = data.get("issue") or {}
         if issue.get("pull_request") is not None or data.get("is_pull"):  # GitHub / Gitea+Forgejo
             return Decision(200, "comment on a pull request")
+        if inputs.is_claimed(issue):  # opened together with its run (dashboard / `al run`): never a second one
+            return Decision(200, "started by its creator")
         issue_inputs = [o for o in ir.get("promptInputs") or [] if o.get("kind") == "issue"
                         and any(o["id"] in a.get("input", []) for a in adws)]
         if not issue_inputs:

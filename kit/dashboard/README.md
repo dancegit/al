@@ -1,7 +1,7 @@
 # al work dashboard
 
-A live view of what the agents of one or more layers are doing (read-only except one guarded
-switch: which model each tier uses): which runs are in
+A live view of what the agents of one or more layers are doing (with two guarded writes: which
+model each tier uses, and starting work: a workflow or a single command): which runs are in
 flight and what each agent is doing right now, the workflow of every run as a graph that colours
 in as steps finish, where the time went, what it cost, and every agent's transcript formatted for
 people. One Python file (standard library only) serves one page (HTML, CSS and vanilla JS, no
@@ -46,7 +46,10 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | `--poll S` | seconds between file polls (default 0.75) |
 | `--no-podman` | never call podman |
 | `--podman-socket PATH` | opt-in: read container status from a podman API socket (for the container mode) |
-| `--in-container` | the host's processes and locks are not visible: infer slot use from run state |
+| `--in-container` | the host's processes and locks are not visible: infer slot use from run state; starting work is off |
+| `--read-only` | change nothing: no model settings, no starting work |
+| `--no-start` | never start work from the page (the Models panel still writes) |
+| `--allow-start-in-container` | with `--in-container`: allow starting work, only for an operator-built image that has `uv`, the application checkout and a writable layer (the image of `run-in-podman.sh` has none of them) |
 
 ## What you see
 
@@ -58,7 +61,18 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | **Step** | the exact prompt (sections collapsible), the transcript as one row per event: what the agent said, tool calls summarised (file read / edit with a diff / write, shell command, search pattern), results collapsed with size, errors marked, thinking as a marker, the final cost / turns / time. Filters (kind, errors only, tool), search with highlight, follow mode, raw JSON of any event, download of the raw `.jsonl`. Checks: every attempt's log with ANSI colours, its exit code and the resolve agent that followed |
 | **Documents** | what the run has written for people to read, as soon as each file exists: the plan, the `.md` / `.txt` / `.json` / `.log` outputs its steps recorded (a review's `patch-<n>` plans among them), review patch plans, `PR.md` (the handoff or PR text) and other text files in `agents/<id>/`, each reviewer's verdict (`review-*/output.txt`) and text artefacts; with the step that produced each, its size and time. **View** renders Markdown in the page (with a raw toggle), pretty-prints JSON and shows text as text; **Download** saves the exact file, **Download all** a zip of them all. A step's panel links the documents it produced (the plan on `plan-feature`). A new document appears live |
 | **Artefacts** | screenshots as thumbnails (click for full size), videos playable in the page with their keyframes, logs with their tail, all with the step that collected them |
-| **Layers** (`3`) | each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists |
+| **Layers** (`3`) | a **Start work** panel (below), then each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists |
+
+The **Start work** panel (on the Layers view; a layer chooser when several are watched) takes a
+request, any workflow of the layer (adopted ones included) or a single command or hop (one recorded
+step in the layer's normal environment that never ships), picked from a list or typed as `/NAME …`
+with completion (arrow keys, Enter, Esc; `/command:NAME` when a workflow has the same name). It says
+in one line what the choice does and whether anything ships without a person, takes an optional
+class, tier and model ids, and, when the layer has a forge, can log the request as an issue ("start
+now", or "let the trigger start it" for a workflow a cron or webhook trigger starts from issues). A
+workflow that merges or deploys without a person, and the same request again within five minutes,
+open a confirmation dialog. Then the page opens the new run. When starting is off, the panel says why
+(`--read-only`, `--no-start`, the container, or a layer generated before this feature: "run `al gen`").
 
 Every view is a URL (`#/run/flask/11bf99ac/step/build?q=static`), so a link can go into a PR or a
 chat. Keys: `j`/`k` move through runs, nodes or transcript events, `Enter` opens, `/` searches,
@@ -66,8 +80,10 @@ chat. Keys: `j`/`k` move through runs, nodes or transcript events, `Enter` opens
 
 ## What it reads, and how
 
-Everything comes from files the runtime already writes; the only file the dashboard writes is
-agents/settings/models.json (the Models panel; off with `--read-only`).
+Everything comes from files the runtime already writes. The dashboard itself writes one file,
+agents/settings/models.json (the Models panel; off with `--read-only`); starting work is done by the
+layer's own `adws/dispatch.py --start`, which writes the run's files (off with `--read-only` or
+`--no-start`).
 
 | File | Used for |
 |---|---|
@@ -84,6 +100,11 @@ agents/settings/models.json (the Models panel; off with `--read-only`).
 | `state.json` `plan`, `outputs`, `review.rounds[].patch.patch_plan`, `artefacts` | the run's **Documents**: recorded paths (absolute on the host or in a container, or layer-relative) mapped to the layer's `specs/`, `agents/<id>/`, `artefacts/<id>/`; with `PR.md`, other text files in `agents/<id>/` and `review-*/output.txt` |
 | `agents/.slots/<pool>.<n>.lock`, `agents/.ports.json` | which slots are held (from `/proc/locks`, read-only) and by which run; leased ports and whether their owner is alive |
 | `artefacts/<id>/manifest.json` | artefacts when `state.json` has none |
+| `commands/<name>.md`, `hops/<name>.md` | the `argument-hint` of their front matter, shown next to `/name` in the Start work panel (regular files inside those directories only) |
+| `adws/dispatch.py`, `adws/adw_modules/launch.py` | starting work: their presence enables the Start work panel; `dispatch.py --start --json` is run (see Safety) |
+| `agents/starts.json` | written by the layer's launcher, not read by the page: the request keys of the last two days (`{key: {run_id, target, prompt_sha, at, issue}}`) behind the double-start guard; `agents/.starts.lock` serialises starts |
+| `agents/<id>/request.md`, `agents/<id>/launch.log` | a started run's prompt (mode 0600) and the output of its detached process until the run's own `run.log` takes over; both are documents of the run |
+| `state.json` `definition` | a single-command run's one-step workflow (`command:<name>`), which the compiled layer does not declare: the run's graph is drawn from it |
 
 Transcripts (`raw.jsonl`) are read incrementally (only new bytes; a half-written last line waits
 for its newline; a truncated or replaced file restarts with a `reset`). Claude Code stream-json
@@ -108,16 +129,34 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
 
 ## Safety
 
-- **One write, guarded.** Only GET and HEAD, plus `POST /api/models`, which sets or resets one
-  tier of a layer's local model setting (`agents/settings/models.json`); every other method and
-  path is 405, and no endpoint starts, stops or changes a run. The write needs: the token as for
-  every request, but from the `Authorization` header or the cookie only (a token in the query
-  string is refused); an `Origin` header equal to `http://<Host>` (a missing one is refused); the
-  `X-AL-Dashboard: 1` header, which a plain HTML form cannot send; `Content-Type:
-  application/json`; a body of at most 4 KiB. The tier and model id are validated like `al models`
-  (a declared tier; a non-empty id without whitespace or control characters; an unknown id gets a
-  note), and the file is replaced atomically (temporary file, `fsync`, rename). `--read-only`
+- **Two writes, guarded.** Only GET and HEAD, plus `POST /api/models` and `POST /api/start`; every
+  other method and path is 405 (GET on either of the two too), and no endpoint stops or changes a
+  run. Both writes pass one guard (`Handler._write_guard`): the token as for every request, but from
+  the `Authorization` header or the cookie only (a token in the query string is refused); a loopback
+  `Host` when there is no token; an `Origin` header equal to `http://<Host>` (a missing one is
+  refused); the `X-AL-Dashboard: 1` header, which a plain HTML form cannot send; `Content-Type:
+  application/json`; a body of at most 4 KiB (models) or 64 KiB (start); and no `--read-only`.
+- **The model setting.** `POST /api/models` sets or resets one tier of a layer's local model setting
+  (`agents/settings/models.json`). The tier and model id are validated like `al models` (a declared
+  tier; a non-empty id without whitespace or control characters; an unknown id gets a note), and the
+  file is replaced atomically (temporary file, `fsync`, rename). `--read-only`
   (`al dashboard --read-only`) turns the write off; the panel then says so.
+- **Starting work.** `POST /api/start` is also refused with `--no-start`, and in a container
+  (`--in-container`) unless `--allow-start-in-container` (403, naming the flag); for a layer without
+  `adws/adw_modules/launch.py` (409, "run `al gen`"). The request may only name what `GET
+  /api/startable` lists for that layer: a workflow of its compiled IR or one of its commands or hops
+  (400 otherwise), with a request key, a declared class and tier, valid model ids and an issue mode
+  the layer supports. The dashboard then runs the layer's own `adws/dispatch.py --start --json` as a
+  short subprocess: an argv list, never a shell, the prompt on stdin. The launcher (the layer's
+  `launch.start`, the same code as `al run`) checks it all again against the compiled layer, returns
+  the run of a request key it has seen (a double click or a retry starts one run), asks for a
+  confirmation (409) for a workflow that merges or deploys without a person and for the same request
+  within five minutes, refuses at the layer's day limit or usage threshold (429), writes the prompt to
+  `agents/<id>/request.md` (it never reaches a command line), and starts the run detached in its own
+  session, so stopping or restarting the dashboard does not stop the run. A single-command run has no
+  review and no ship step: it cannot ship. "Log as an issue, start now" opens the issue with a
+  `<!-- al:claimed run=<id> -->` marker in its body, which the layer's poller and webhook skip;
+  "let the trigger start it" opens it with the issue input's labels and starts nothing.
 - **Served files** are limited to a watched layer's `agents/`, `artefacts/`, `specs/`, its
   `agentic-layer.json` / `agentic.rkt` and `EXPLAIN.md`. Traversal (`..`, encoded or not), absolute
   paths, NUL bytes and anything whose real path leaves that tree (symlinked files or directories)
@@ -140,7 +179,7 @@ shown relative to the run's worktree (`layer:` for the layer, `~` for the home d
 ## Its own podman container
 
 ```bash
-kit/dashboard/run-in-podman.sh [--port 8765] [--podman-socket] [--read-only] DIR [DIR …]
+kit/dashboard/run-in-podman.sh [--port 8765] [--podman-socket] [--read-only] [--no-start] DIR [DIR …]
 ```
 
 It builds a small image (`python:3.12-slim` plus the script and its static files) and runs it
@@ -155,7 +194,9 @@ The one writable mount: for each DIR that is a layer (has `agentic-layer.json`),
 switch that layer's models. A directory is mounted rather than the file because a bind-mounted
 single file cannot be replaced atomically. Layers found by scanning a DIR get no writable mount, and
 their panel says "not writable here" with the `al models` command to use on the host instead.
-`--read-only` mounts nothing writable and turns the panel's write off.
+`--read-only` mounts nothing writable and turns the panel's write off. Starting work is always off
+in the container: it has no `uv`, no application checkout and no writable layer, so the Start work
+panel says so (`--no-start` is accepted and passed on).
 
 What the container can and cannot show:
 
@@ -202,6 +243,15 @@ path mapping, view, download, zip, refusals (all 404), the token and a new docum
 event stream. `tests/test_browser_documents.py` (Chrome) checks the Documents tab, the rendered and raw
 view, the download, an inert `<script>` in a plan, live appearance and the step panel's link; with
 `AL_DASHBOARD_SHOTS=DIR` it saves `run-documents.png` and `run-documents-step-link.png` to DIR.
+`tests/test_start.py` starts work through the real server and the layer's own launcher
+(`tests/start_layer.py` builds a git app and runnable layers the way `al gen` lays them out, with the
+mock agent): the catalog, a workflow and a `/plan-chore` single-command run with its plan as a
+document, one run per request key (also from two threads at once), both confirmations, a run that
+outlives the dashboard, every refusal, and the issue race against the layer's poller in both orders
+and in trigger mode (`tests/fake_forgejo.py`, an in-memory Forgejo). `tests/test_browser_start.py`
+(Chrome) types `/plan-c`, picks the completion, starts and lands on the run, and opens the ship
+confirmation; with `AL_DASHBOARD_SHOTS=DIR` it saves `start-form.png`, `start-confirm.png` and
+`start-run.png` to DIR.
 
 ## Demo scripts (`demo/`)
 

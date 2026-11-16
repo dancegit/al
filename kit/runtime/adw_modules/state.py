@@ -67,6 +67,9 @@ class ADWState:
     usage: dict[str, Any] = field(default_factory=dict)
     # notifications already attempted by this run: {notifier id: [event, …]}; at most one attempt per notifier and event, also over --resume
     notified: dict[str, list[str]] = field(default_factory=dict)
+    # the synthetic ADW of a single-command run (launch.single_command_adw), so a reader can draw it
+    # without the compiled layer knowing it; empty for every run of a declared workflow
+    definition: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):

@@ -233,9 +233,10 @@ uv run adws/dashboard.py --open            # http://127.0.0.1:8765/
 It shows what is running now, each workflow as a graph that colours in as steps finish, where the time
 and the money went, and every agent step's transcript in readable form, with filters and search. A
 check's log can be read while the check is still running. A run whose process was killed is shown as
-"died", which is different from "failed". The page cannot start, stop or change a run. Its one write is
-the Models panel (see [Choose models and limit spending](#choose-models-and-limit-spending)), which
-changes the layer's local model setting; start it with `--read-only` to turn that off too.
+"died", which is different from "failed". The page cannot stop or change a run. It makes two changes,
+both guarded: the Models panel (see [Choose models and limit spending](#choose-models-and-limit-spending))
+changes the layer's local model setting, and the Layers view starts work (see the next section). Start
+it with `--read-only` to turn both off, or `--no-start` to turn off starting only.
 
 A run's **Documents** tab lists the plan, `PR.md`, review reports and patch plans and other text the run
 wrote, as soon as each exists, with the step that produced it. **View** shows it in the page (Markdown
@@ -247,6 +248,74 @@ To watch several codebases at once: `al dashboard ~/code` (finds every layer und
 `al dashboard ~/code --read-only` for a page that changes nothing). To run it in its own locked-down
 container, declare `(dashboard podman)` in `agentic.rkt`; to turn it off, `(dashboard none)`. It listens
 on your own machine only; exposing it elsewhere requires naming a token variable with `#:token-env`.
+
+## Start work from the dashboard or the command line
+
+The dashboard's **Layers** view has a **Start work** panel. Type what you want done, pick what runs it,
+and press **Start** (or Ctrl+Enter); the page then opens the new run. What runs it is either:
+
+- **a workflow** of the layer: any `adw` in `agentic.rkt`, adopted ones included; or
+- **a single command**: one command or hop of the layer (`plan-chore`, `implement`, an adopted prompt),
+  run as one step in the layer's normal environment (that of its first workflow). It is recorded like any
+  run (state, events, transcript, documents, cost) and **never ships**: no review, no merge, no pull
+  request. Use it to get only a plan, or to implement one plan you already have.
+
+Pick it from the list, or type `/` at the start of the text: `/plan-c` completes to `/plan-chore`, and
+`/plan-chore tidy the readme` starts that command with "tidy the readme" as its prompt. When a workflow
+and a command share a name, `/NAME` is the workflow and `/command:NAME` the command. The panel says in one
+line what the choice does (e.g. "plans, builds, checks test, two reviewers, merges without a person"). You
+may fix the class (workflows only), put every step on one tier, and give a model id per tier for this run.
+
+A workflow that ships without a person (an `auto` review with `#:ship merge` or `deploy`) asks for a
+confirmation first. So does the same request (same workflow or command, same text) started again within
+five minutes. Each form carries a request key: a double click or a retried request starts one run, not
+two.
+
+When the layer has a forge, the request can also be **logged as an issue**:
+
+- **log it as an issue and start now**: the issue is created with a hidden marker
+  (`<!-- al:claimed run=<id> -->`) and the run starts at once. The layer's poller and webhook ignore an
+  issue with that marker, so it is never started a second time, whichever comes first.
+- **create the issue and let the trigger start it** (offered for a workflow a cron or webhook trigger
+  starts from issues): the issue gets the issue input's labels and an `adw: <workflow>` line, and nothing
+  starts now; the layer's own trigger starts it once.
+
+A start can be refused: when the layer's day limit or subscription usage threshold is reached (as for
+any run), or when the dashboard runs with `--read-only` or `--no-start` (the panel says which). A
+start when every run slot is taken is accepted and says it waits for a slot. A layer generated before
+this feature shows "run `al gen`" instead of the panel. In the podman dashboard starting is off.
+
+The same from a terminal, through the same code (the layer's `adws/adw_modules/launch.py`):
+
+```bash
+$ al run myapp.al /tidy remove the unused import --dry-run      # a single command, attached
+run 93f3f743 started (layer: myapp, command tidy)
+[adw 93f3f743] command:tidy start: class=chore dry_run=True …
+…
+=== ADW summary ===
+adw:       command:tidy 93f3f743
+status:    passed
+…
+plan:      myapp.al/specs/plan-93f3f743-tidy.md
+…
+ship:      none
+…
+
+$ al run myapp.al /change add a search command --detach         # a workflow, in the background
+run 66ce8c25 started (layer: myapp, workflow change)
+
+$ al run myapp.al /nope x
+al run: no workflow or command named nope; known: /change, /plan, /tidy, /commit, /implement, /new-adw
+
+$ al run myapp.al /tidy remove the unused import --dry-run      # again, within five minutes
+al run: the same request to command tidy started run 93f3f743 6 s ago; pass --yes to start it anyway
+```
+
+The prompt is the rest of the line (or stdin with `-`). `--class`, `--model-set`, `--model TIER=ID` and
+`--dry-run` work as for a workflow script; `--yes` confirms a shipping workflow or a repeated request;
+`--request-key K` makes a retry safe. Exit codes: the run's own (0 with `--detach`), 2 for an unknown
+name, 3 refused by a limit, 4 needs `--yes`. The prompt is written to `agents/<run id>/request.md` and
+never put on a command line.
 
 ## Step 9 — The first real run
 

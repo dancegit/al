@@ -1,0 +1,141 @@
+"""A git application and a runnable layer for the start tests, built the way `al gen` lays one out
+(without Racket): the kit's runtime copied to adws/adw_modules, adws/dispatch.py, and one
+adws/adw_<name>.py per workflow with exactly the text tools/al `Generator.adws()` writes. The agent is
+the mock: with no script for a plan step it writes specs/plan-<run id>-<step>.md itself and answers
+with that path (a mock script cannot name a file after the run id); `build` writes NOTES.md.
+
+  workflows  plan-build (plan, build; a person reviews, never ships; started by the cron trigger
+             from issues too) and ship-it (plan, auto review, ship: merges without a person)
+  commands   classify, plan-chore, plan-bug, plan-feature; hop implement
+  forge      forgejo at `forge_url` (tests/fake_forgejo.py), or none
+"""
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+KIT = Path(__file__).resolve().parents[2]
+RUNTIME = KIT / "runtime"
+HEADER = '#!/usr/bin/env -S uv run --quiet --script\n# /// script\n# requires-python = ">=3.11"\n# dependencies = []\n# ///\n'
+TEXT = {"description": "", "file": "", "focus": [], "fabric": [], "relevant": [], "validation": []}
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                   check=True, capture_output=True, timeout=30)
+
+
+def ir(name: str, app: Path, forge_url: str | None, port_base: int) -> dict:
+    forge = ({"id": "forgejo", "kind": "forgejo", "host": forge_url, "repo": "acme/notes", "status": "stable",
+              "botMarker": "[ADW-BOT]", "tokenEnv": "FORGEJO_TOKEN"} if forge_url
+             else {"id": "none", "kind": "none", "status": "stable", "remote": ""})
+    return {
+        "schemaVersion": "agentic-layer-v1", "name": name, "description": "starting work from the dashboard",
+        "codebase": {"root": str(app), "defaultBranch": "main", "paths": {"protected": []},
+                     "commands": [{"name": "test", "run": "true", "timeout": 30}]},
+        "agents": [{"id": "mock", "kind": "mock", "scriptDir": "mock", "status": "stable", "timeout": 20}],
+        "environments": [{"id": "wt", "kind": "worktree", "dir": "trees", "copyFiles": [], "portBase": port_base,
+                          "portsPerRun": 0, "keep": "never", "status": "stable"}],
+        "reviews": [{"id": "human", "kind": "human", "status": "stable", "reviewers": [], "draft": False, "bodyCmd": ""},
+                    {"id": "gate", "kind": "auto", "status": "stable", "command": "review", "reviewers": 2,
+                     "maxRetries": 0, "artefacts": [], "allowedClasses": ["chore"], "blockProtectedPaths": True,
+                     "maxDiffLines": 100, "requireChecks": [], "ship": "merge", "deployCmd": ""}],
+        "forge": forge,
+        "storage": {"id": "local", "kind": "local", "status": "stable", "dir": "artefacts"},
+        "promptInputs": [{"id": "cli", "kind": "cli", "status": "stable", "allowStdin": False},
+                         {"id": "issue", "kind": "issue", "status": "stable", "labels": ["adw"], "keyword": "adw",
+                          "classify": True}],
+        "triggers": [{"id": "cron", "kind": "cron", "status": "stable", "intervalSeconds": 15, "maxConcurrent": 3}],
+        "concurrency": {"maxRuns": 4, "maxAgents": 2, "maxChecks": 2, "waitSeconds": 120},
+        "budget": {"id": "limits", "kind": "limits", "status": "stable", "runUsd": None, "stepUsd": None,
+                   "dayUsd": None, "limitStopPercent": 0, "onLimit": "stop", "limitWaitMinutes": 300},
+        "commands": [{"name": "classify", "template": "classify", "modelSet": "base", "output": "json", **TEXT},
+                     {"name": "plan-chore", "template": "plan-chore", "modelSet": "heavy", "output": "path", **TEXT},
+                     {"name": "plan-bug", "template": "plan-bug", "modelSet": "heavy", "output": "path", **TEXT},
+                     {"name": "plan-feature", "template": "plan-feature", "modelSet": "heavy", "output": "path", **TEXT},
+                     {"name": "review", "template": "review", "modelSet": "base", "output": "json", **TEXT}],
+        "hops": [{"name": "implement", "template": "run-plan", "modelSet": "heavy", "takes": "plan",
+                  "produces": "changes", "description": ""}],
+        "artefacts": [], "voice": None,
+        "adws": [{"name": "plan-build", "description": "Plan and build; a person reviews", "agent": "mock",
+                  "review": "human", "environment": ["wt"], "input": ["cli", "issue"], "trigger": ["cron"],
+                  "classes": [], "changes": "codebase",
+                  "steps": [{"name": "plan", "kind": "run", "command": "plan-chore", "args": ["$prompt"],
+                             "modelSet": "inherit", "agent": "", "retries": 0, "when": "always"},
+                            {"name": "build", "kind": "run", "command": "implement", "args": ["$plan"],
+                             "modelSet": "inherit", "agent": "", "retries": 0, "when": "always"}]},
+                 {"name": "ship-it", "description": "Plans, two reviewers, merges itself", "agent": "mock",
+                  "review": "gate", "environment": ["wt"], "input": ["cli"], "trigger": [], "classes": ["chore"],
+                  "changes": "codebase",
+                  "steps": [{"name": "plan", "kind": "run", "command": "plan-chore", "args": ["$prompt"],
+                             "modelSet": "inherit", "agent": "", "retries": 0, "when": "always"},
+                            {"name": "test", "kind": "check", "cmd": "test", "retries": 0, "collect": []},
+                            {"name": "review", "kind": "review"}, {"name": "ship", "kind": "ship"}]}],
+    }
+
+
+def adw_script(adw: dict) -> str:
+    """What tools/al Generator.adws() writes for one workflow."""
+    steps = " → ".join(s["name"] for s in adw["steps"])
+    return HEADER + f'''"""ADW `{adw['name']}` — {adw['description'] or 'generated by al'}
+
+Steps: {steps}
+PITER: input={adw['input']} trigger={adw['trigger']} environment={adw['environment']} review={adw['review']}
+Generated from agentic.rkt — edit that file and run `al gen`, not this one.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from adw_modules.runner import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main(adw="{adw['name']}", layer_dir=Path(__file__).resolve().parent.parent))
+'''
+
+
+def build_app(root: Path) -> Path:
+    app = root / "app"
+    app.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(app)], check=True, timeout=30)
+    (app / "README.md").write_text("# notes\n")
+    _git(app, "add", ".")
+    _git(app, "commit", "-qm", "init")
+    return app
+
+
+def build_layer(root: Path, name: str, app: Path, forge_url: str | None, *, with_launch: bool = True,
+                port_base: int = 28600) -> Path:
+    layer = root / f"{name}.al"
+    data = ir(name, app, forge_url, port_base)
+    (layer / "commands").mkdir(parents=True)
+    (layer / "hops").mkdir()
+    for command in data["commands"]:
+        (layer / "commands" / f"{command['name']}.md").write_text(
+            f"---\ndescription: {command['name']}\nargument-hint: [prompt]\n---\n\n# {command['name']}\n\n$ARGUMENTS\n")
+    (layer / "hops" / "implement.md").write_text(
+        "---\ndescription: implement\nargument-hint: [plan-or-prompt-path]\n---\n\n# implement\n\n$ARGUMENTS\n")
+    (layer / "agentic-layer.json").write_text(json.dumps(data, indent=1))
+    adws = layer / "adws"
+    shutil.copytree(RUNTIME / "adw_modules", adws / "adw_modules", ignore=shutil.ignore_patterns("__pycache__"))
+    if not with_launch:
+        (adws / "adw_modules" / "launch.py").unlink()
+    (adws / "dispatch.py").write_text(HEADER + (RUNTIME / "dispatch.py").read_text())
+    for adw in data["adws"]:
+        (adws / f"adw_{adw['name']}.py").write_text(adw_script(adw))
+        (adws / f"adw_{adw['name']}.py").chmod(0o755)
+    mock = layer / "mock"
+    mock.mkdir()
+    (mock / "build.json").write_text(json.dumps({"files": {"NOTES.md": "built\n"}, "output": "built"}))
+    return layer
+
+
+def build_site(root: Path, forge_url: str | None) -> dict[str, Path]:
+    """root/app plus three layers on it: notes (forgejo at forge_url), bare (forge none) and old
+    (generated before starting from the dashboard: no adw_modules/launch.py)."""
+    app = build_app(root)
+    return {"app": app, "notes": build_layer(root, "notes", app, forge_url, port_base=28600),
+            "bare": build_layer(root, "bare", app, None, port_base=28650),
+            "old": build_layer(root, "old", app, None, with_launch=False, port_base=28700)}

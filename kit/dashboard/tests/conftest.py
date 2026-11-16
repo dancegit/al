@@ -18,6 +18,8 @@ sys.path.insert(0, str(HERE))
 
 import dashboard  # noqa: E402
 import fixtures  # noqa: E402
+import start_layer  # noqa: E402
+from fake_forgejo import FakeForgejo  # noqa: E402
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -92,6 +94,26 @@ def server(fx: dict[str, Path]) -> Iterator[Running]:
         yield running
     finally:
         stop_server(running)
+
+
+@pytest.fixture(scope="session")
+def fake_forgejo() -> Iterator[FakeForgejo]:
+    forge = FakeForgejo().start()
+    try:
+        yield forge
+    finally:
+        forge.stop()
+
+
+@pytest.fixture()
+def start_site(tmp_path: Path, fake_forgejo: FakeForgejo, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+    """A git app and runnable layers on it (tests/start_layer.py): notes (forgejo, the fake one,
+    emptied), bare (forge none) and old (no launch.py). Runs started from here see none of the
+    caller's AL_* overrides."""
+    for name in ("AL_APP_ROOT", "AL_MODEL_SET", "AL_MODELS", "AL_MAX_COST", "AL_DASHBOARD_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    fake_forgejo.reset()
+    return start_layer.build_site(tmp_path / "site", fake_forgejo.url)
 
 
 class SSEReader:

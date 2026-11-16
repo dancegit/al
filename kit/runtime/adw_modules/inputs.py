@@ -43,6 +43,34 @@ DEFAULTS = {
 }
 
 
+# An issue opened together with its run ("start now" on the dashboard, `al run`) carries this marker
+# in its body from the moment it exists, so neither the poller nor the webhook starts it a second time.
+CLAIM_MARK_RE = re.compile(r"<!--\s*al:claimed\s+run=([0-9a-fA-F]{8})\s*-->")
+
+
+def claim_marker(run_id: str) -> str:
+    return f"<!-- al:claimed run={run_id} -->"
+
+
+def is_claimed(issue: Mapping[str, Any] | None) -> bool:
+    """True when the issue body carries a claim marker (its run was started by whoever opened it)."""
+    return bool(CLAIM_MARK_RE.search(str((issue or {}).get("body") or "")))
+
+
+def strip_claim(text: str) -> str:
+    return CLAIM_MARK_RE.sub("", text or "").strip()
+
+
+def issue_input_for(layer_ir: Mapping[str, Any], adw_name: str) -> dict | None:
+    """The issue prompt-input the ADW `adw_name` accepts (with its defaults), or None."""
+    adw = next((a for a in layer_ir.get("adws") or [] if a.get("name") == adw_name), None)
+    for input_id in (adw or {}).get("input") or []:
+        option = option_by_id(layer_ir, input_id)
+        if option and option.get("kind") == "issue":
+            return option
+    return None
+
+
 class InputError(RuntimeError):
     """The prompt input could not be resolved."""
 
@@ -281,7 +309,7 @@ def _resolve_issue(lay, option, ref, env, base, forge) -> Request:
     def finish(state):
         client.comment(n, summarise(state, lay))
 
-    prompt = f"{issue.get('title', '')}\n\n{issue.get('body', '')}".strip()
+    prompt = f"{issue.get('title', '')}\n\n{strip_claim(issue.get('body', ''))}".strip()
     return Request(prompt=prompt, klass=klass, model_set=model_set, workflow=workflow,
                    start_hook=start, finish_hook=finish, **base)
 
@@ -430,6 +458,8 @@ def _poll_issues(lay, adws, option, forge, env) -> list[Candidate]:
     client = forge or forge_mod.get_client(lay, env)
     out = []
     for issue in client.list_issues(option.get("labels") or []):
+        if is_claimed(issue):
+            continue  # opened together with its run: that run is the one
         comments = client.list_comments(issue["number"])
         if any(client.is_bot(c.get("body")) for c in comments):
             continue

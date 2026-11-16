@@ -20,9 +20,13 @@
   al adopt   LAYER [--app APP] [--dry-run] [--only rules|prompts|workflows …]
                                    bring a codebase's existing agent setup (rule files, prompts, workflow
                                    scripts) into the layer, deterministically; reports what a person must decide
-  al dashboard [LAYER_OR_DIR …] [--port N] [--open] [--podman] [--read-only]
-                                   watch the runs of any layers (or every layer below a directory) live; its one
-                                   write is the Models panel (a local model setting), off with --read-only
+  al dashboard [LAYER_OR_DIR …] [--port N] [--open] [--podman] [--read-only] [--no-start]
+                                   watch the runs of any layers (or every layer below a directory) live; it writes
+                                   model settings (the Models panel) and starts work (the Layers view), off with
+                                   --read-only (both) or --no-start (starting only)
+  al run     LAYER /NAME [ARGS …] [--class C] [--model-set T] [--model T=ID …] [--detach] [--dry-run] [--yes]
+                                   start one of the layer's workflows, or one command or hop as a recorded run
+                                   that never ships, exactly as the dashboard does; ARGS (or stdin) are the prompt
   al models  LAYER [--set TIER=ID …] [--reset [TIER]]
                                    show or change which model each tier uses on this machine (a local setting,
                                    agents/settings/models.json, never committed); applies to runs started afterwards
@@ -462,7 +466,8 @@ DASHBOARD_PODMAN_FILES = ("Containerfile", "run-in-podman.sh")
 # committed with an in-repo layer. {placeholders} are filled by Generator.dashboard().
 # (its uv script header is prepended by Generator.dashboard(): a `# /// script` line here would
 # be taken by uv as a second metadata block of tools/al itself)
-DASHBOARD_LAUNCHER = '''"""Work dashboard of the `{name}` layer: a live, read-only view of what its agents are doing.
+DASHBOARD_LAUNCHER = '''"""Work dashboard of the `{name}` layer: a live view of what its agents are doing, from which work can
+be started too (off with --no-start; --read-only changes nothing at all).
 
   uv run {run_prefix}adws/dashboard.py [flags]       then open {url}
 
@@ -1096,9 +1101,12 @@ jobs:
             return ("## Watch the work\n\nNo dashboard: `(dashboard none)` in `agentic.rkt`. `al dashboard <this directory>` "
                     "still shows the runs on demand.\n")
         cmd = f"uv run {self.run_prefix()}adws/dashboard.py"
-        lines = [f"## Watch the work\n\nA live, read-only dashboard of every run of this layer"
+        lines = [f"## Watch the work\n\nA live dashboard of every run of this layer"
                  + (f" and of {', '.join('`' + x + '`' for x in d['also'])}" if d["also"] else "")
-                 + (", in its own locked-down podman container" if d["kind"] == "podman" else "") + ":\n",
+                 + (", in its own locked-down podman container" if d["kind"] == "podman" else "")
+                 + (" (it only watches there: starting work is off in the container)" if d["kind"] == "podman"
+                    else "; work can be started from its Layers view, or with `al run <this directory> /NAME …`")
+                 + ":\n",
                  "```bash", f"{cmd}                 # then open {self.dashboard_url()}",
                  f"{cmd} --port 9000 --open   # flags override the declared ones", "```", ""]
         if d["kind"] == "podman":
@@ -1989,6 +1997,77 @@ def layer_models_module(layer: Path):
     return models, ir_module, errors
 
 
+def layer_launch_module(layer: Path):
+    """The layer's own start path (adw_modules/launch.py), so `al run` and the dashboard start work
+    with the same code and the layer's runtime version."""
+    if not (layer / "agentic-layer.json").is_file() or not (layer / "adws/adw_modules/launch.py").is_file():
+        if (layer / "agentic-layer.json").is_file() and (layer / "adws/adw_modules").is_dir():
+            raise AlError(f"{layer} was generated before `al run`: run `al gen {layer}`")
+        raise AlError(f"{layer} is not a generated layer: run `al gen {layer}` first")
+    for name in [n for n in sys.modules if n == "adw_modules" or n.startswith("adw_modules.")]:
+        del sys.modules[name]   # another layer's runtime may have been imported before
+    sys.path.insert(0, str(layer / "adws"))
+    try:
+        from adw_modules import errors, ir as ir_module, launch
+    except ImportError as exc:
+        raise AlError(f"cannot import the layer runtime from {layer / 'adws'}: {exc}") from exc
+    return launch, ir_module, errors
+
+
+def run_cli(a: argparse.Namespace) -> int:
+    """al run LAYER /NAME [ARGS …]: one start through the layer's launch.start, attached by default."""
+    layer = a.layer.resolve()
+    launch, ir_module, errors = layer_launch_module(layer)
+    try:
+        loaded = ir_module.load(layer)
+    except errors.LayerError as exc:
+        raise AlError(str(exc)) from exc
+    try:
+        target = launch.resolve_target(loaded, a.target)
+    except errors.LayerError as exc:
+        print(f"al run: {exc}", file=sys.stderr)
+        return 2
+    words = list(a.args or [])
+    if target.prompt:   # `al run L "/plan-chore tidy the readme"` (one quoted argument)
+        words.insert(0, target.prompt)
+    if words in ([], ["-"]) and (words == ["-"] or not sys.stdin.isatty()):
+        prompt = sys.stdin.read()
+    else:
+        prompt = " ".join(words)
+    shown = f"(layer: {loaded.name}, {target.kind} {target.name})"
+
+    def spawn(argv: list[str], **popen):
+        run_id = argv[argv.index("--adw-id") + 1]
+        print(f"run {run_id} started {shown}", flush=True)
+        return subprocess.Popen(argv, **popen)
+
+    try:
+        result = launch.start(loaded, target, prompt, request_key=a.request_key or secrets.token_hex(16),
+                              klass=a.klass, model_set=a.model_set, models=a.model, confirm_duplicate=a.yes,
+                              confirm_ships=a.yes, dry_run=a.dry_run, detach=a.detach, spawn=spawn)
+    except KeyboardInterrupt:
+        return 130
+    status = result["status"]
+    if status == "started":
+        if result.get("existing"):
+            print(f"run {result['run_id']} was already started for this request key {shown}")
+            return 0
+        if result.get("queued"):
+            print(f"note: {result['queued']}", flush=True)
+        return int(result.get("exit", 0)) if not a.detach else 0
+    if status in ("confirm-duplicate", "confirm-ships"):
+        print(f"al run: {result['message']}; pass --yes to start it anyway", file=sys.stderr)
+        return 4
+    if status == "refused":
+        print(f"al run: refused: {result['message']}", file=sys.stderr)
+        return 3
+    if status == "invalid":
+        print(f"al run: {result['error']}", file=sys.stderr)
+        return 2
+    print(f"al run: {result.get('error') or status}", file=sys.stderr)
+    return 1
+
+
 def models_cli(a: argparse.Namespace) -> int:
     layer = a.layer.resolve()
     models, ir_module, errors = layer_models_module(layer)
@@ -2062,13 +2141,15 @@ def dashboard_command(a: argparse.Namespace) -> tuple[list[str], dict[str, str]]
         if a.bind or a.token or a.open:
             raise AlError("--podman publishes on 127.0.0.1 with its own token; --bind, --token and --open do not apply")
         return [str(DASHBOARD_KIT / "run-in-podman.sh"), "--port", str(a.port or 8765),
-                *(["--read-only"] if a.read_only else []), *map(str, dirs)], env
+                *(["--read-only"] if a.read_only else []), *(["--no-start"] if a.no_start else []),
+                *map(str, dirs)], env
     argv = [sys.executable, str(DASHBOARD_KIT / "dashboard.py"), "--port", str(a.port or 8765)]
     for d in dirs:
         argv += ["--layer" if (d / "agentic-layer.json").is_file() else "--scan", str(d)]
     argv += ["--bind", a.bind] if a.bind else []
     argv += ["--open"] if a.open else []
     argv += ["--read-only"] if a.read_only else []
+    argv += ["--no-start"] if a.no_start else []
     if a.token:
         env["AL_DASHBOARD_TOKEN"] = a.token   # not on argv, where `ps` would show it
     return argv, env
@@ -2129,18 +2210,37 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("name", nargs="?"); p.add_argument("--list", action="store_true", help="every template and where it resolves from")
     p.add_argument("--force", action="store_true", help="replace an existing layer copy with the kit's version")
     improve_parsers(sub)
-    p = sub.add_parser("dashboard", help="watch the runs of any layers live in a browser (read-only except the Models panel)")
+    p = sub.add_parser("dashboard", help="watch the runs of any layers live in a browser; writes model settings and "
+                       "starts work (off with --read-only / --no-start)")
     p.add_argument("dirs", nargs="*", type=Path, metavar="LAYER_OR_DIR",
                    help="a layer (has agentic-layer.json) or a directory to scan for layers; default: .")
     p.add_argument("--port", type=int, default=None, help="the port on this machine (default 8765)"); p.add_argument("--bind")
     p.add_argument("--token", help="access token (needed for a non-loopback --bind; also AL_DASHBOARD_TOKEN)")
     p.add_argument("--open", action="store_true", help="open the page in a browser")
     p.add_argument("--podman", action="store_true", help="run it in its own locked-down podman container")
-    p.add_argument("--read-only", action="store_true", help="the dashboard changes nothing, not even model settings")
+    p.add_argument("--read-only", action="store_true", help="the dashboard changes nothing: no model settings, no starts")
+    p.add_argument("--no-start", action="store_true", help="the dashboard never starts work (model settings still change)")
     p.add_argument("--remote", metavar="HOST", help="watch the dashboard of a layer deployed on HOST (`al deploy`) "
                    "through an ssh tunnel, loopback on both ends; HOST is whatever `ssh HOST` accepts")
     p.add_argument("--remote-port", type=int, metavar="N", help="with --remote: the dashboard's port on HOST "
                    "(default: the port the given layer declares, else 8765)")
+    p = sub.add_parser("run", help="start a workflow, or one command as a recorded run that never ships",
+                       description="Start /NAME in LAYER through the layer's own start path (the dashboard's too): a "
+                       "workflow the layer declares, or one command or hop (a single-command run: one step in the "
+                       "layer's normal environment, recorded like any run, never ships). /command:NAME is always the "
+                       "command. Exit: the run's own exit code (0 with --detach), 2 unknown name or bad use, "
+                       "3 refused (day limit or usage threshold), 4 needs --yes.")
+    p.add_argument("layer", type=Path)
+    p.add_argument("target", metavar="/NAME", help="a workflow, command or hop of the layer")
+    p.add_argument("args", nargs="*", metavar="ARGS", help="the prompt (joined with spaces); - or none: read stdin")
+    p.add_argument("--class", dest="klass", choices=("chore", "bug", "feature", "patch"), help="fix the work class")
+    p.add_argument("--model-set", metavar="TIER", help="every agent step of the run uses TIER")
+    p.add_argument("--model", action="append", default=[], metavar="TIER=MODEL_ID", help="repeatable")
+    p.add_argument("--detach", action="store_true", help="print the run id and return; the run goes on")
+    p.add_argument("--dry-run", action="store_true", help="use the mock agent regardless of the layer's agent")
+    p.add_argument("--request-key", help="the same key never starts a second run (default: a new one)")
+    p.add_argument("--yes", action="store_true",
+                   help="confirm a workflow that ships without a person, or the same request again within 5 minutes")
     p = sub.add_parser("models", help="show or change which model each tier of a layer uses (a local setting)")
     p.add_argument("layer", type=Path)
     group = p.add_mutually_exclusive_group()
@@ -2242,6 +2342,8 @@ def main(argv: list[str] | None = None) -> int:
             return dashboard_cli(a)
         elif a.cmd == "models":
             return models_cli(a)
+        elif a.cmd == "run":
+            return run_cli(a)
         elif a.cmd == "deploy":
             return deploy_module().main(a, sys.modules[__name__])
         elif a.cmd in IMPROVE_COMMANDS:

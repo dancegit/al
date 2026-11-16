@@ -287,13 +287,21 @@
     return response.json();
   }
 
-  /** The dashboard's one write (POST /api/models): JSON with the X-AL-Dashboard header; throws the server's error. */
+  /** The dashboard's writes (POST /api/models, POST /api/start): JSON with the X-AL-Dashboard header;
+   * throws the server's error, with its status and answer on the error. */
   api.post = async function post(path, body) {
     const response = await fetch(path, { method: "POST", credentials: "same-origin", cache: "no-store",
       headers: { "Content-Type": "application/json", "X-AL-Dashboard": "1" }, body: JSON.stringify(body) });
     let data = null;
     try { data = await response.json(); } catch (_err) { data = null; }
-    if (!response.ok) throw new Error((data && data.error) || `${response.status} ${path}`);
+    if (!response.ok) {
+      const error = new Error((data && data.error) || `${response.status} ${path}`);
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    data = data || {};
+    data.httpStatus = response.status;
     return data;
   };
 
@@ -1806,12 +1814,248 @@
     overlay.onclick = () => { overlay.hidden = true; clear(overlay); };
   }
 
+  // =========================================================================== components: start work
+  /** A request key: the same key never starts a second run (a double click, a retried request). */
+  function requestKey() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  /** Ask before something happens that a person should agree to; resolves true for "start anyway". */
+  function confirmDialog(title, message, action) {
+    return new Promise((resolve) => {
+      const overlay = document.getElementById("overlay");
+      let done = false;
+      let watch = null;
+      const finish = (answer) => {
+        if (done) return;
+        done = true;
+        if (watch) watch.disconnect();
+        overlay.hidden = true;
+        clear(overlay);
+        overlay.onclick = null;
+        resolve(answer);
+      };
+      const go = h("button", { class: "btn primary confirm-go", type: "button", text: action, onclick: () => finish(true) });
+      const cancel = h("button", { class: "btn confirm-cancel", type: "button", text: "Cancel", onclick: () => finish(false) });
+      replace(overlay, h("div", { class: "panel start-confirm", role: "dialog", "aria-modal": "true", "aria-label": title,
+        onclick: (e) => e.stopPropagation() },
+        h("h3", { text: title }), h("p", { class: "confirm-message", text: message }), h("div", { class: "confirm-buttons" }, cancel, go)));
+      overlay.hidden = false;
+      overlay.onclick = () => finish(false);
+      // Esc (the page's own key handler) or anything else that hides the overlay is a "Cancel"
+      watch = new MutationObserver(() => { if (overlay.hidden) finish(false); });
+      watch.observe(overlay, { attributes: true, attributeFilter: ["hidden"] });
+      go.focus();
+    });
+  }
+
+  /** The "Start work" panel of one layer: a prompt, any workflow or command of the layer (also as
+   * `/name` with completion), class and tiers, optionally an issue; then the new run. */
+  function startPanel(layer) {
+    const status = layer.start || { enabled: false, why: "" };
+    const el = h("div", { class: "start-panel card", dataset: { layer: layer.key } },
+      h("div", { class: "card-head" }, h("h3", { text: "Start work" }), h("span", { class: "dim", text: layer.name || layer.key })));
+    if (!status.enabled) {
+      el.appendChild(h("div", { class: "why start-off", text: status.why || "starting work is off" }));
+      return el;
+    }
+    const body = h("div", { class: "start-body" }, h("div", { class: "empty", text: "loading…" }));
+    el.appendChild(body);
+    let key = requestKey();
+    api(`/api/startable?layer=${enc(layer.key)}`).then((catalog) => build(catalog)).catch((err) => {
+      replace(body, h("div", { class: "why", text: `cannot load what this layer can start: ${err.message || err}` }));
+    });
+
+    function build(catalog) {
+      const entries = [
+        ...catalog.workflows.map((w) => ({ kind: "workflow", name: w.name, summary: w.summary, description: w.description, item: w })),
+        ...catalog.commands.map((c) => ({ kind: "command", name: c.name, summary: c.summary, description: c.description, item: c })),
+      ];
+      const valueOf = (e) => `${e.kind}:${e.name}`;
+      const byValue = new Map(entries.map((e) => [valueOf(e), e]));
+      const prompt = h("textarea", { class: "start-prompt", rows: 4, "aria-label": "what to do",
+        placeholder: "Describe the work. Type / to pick a workflow or a single command, e.g. /plan-chore tidy the readme" });
+      const select = h("select", { class: "start-target", "aria-label": "workflow or command" },
+        h("optgroup", { label: "Workflows" }, catalog.workflows.map((w) => h("option", { value: `workflow:${w.name}`, text: `/${w.name}` }))),
+        catalog.commands.length ? h("optgroup", { label: "Single command (one step, never ships)" },
+          catalog.commands.map((c) => h("option", { value: `command:${c.name}`,
+            text: `/${catalog.collisions.includes(c.name) ? "command:" : ""}${c.name} ${c.argument_hint || ""}`.trim() }))) : null);
+      const list = h("ul", { class: "start-complete", role: "listbox", hidden: true, "aria-label": "workflows and commands" });
+      const summary = h("div", { class: "start-summary" });
+      const klass = h("select", { class: "start-class", "aria-label": "class" },
+        h("option", { value: "", text: "let the workflow classify" }), (catalog.classes || ["chore", "bug", "feature"]).map((c) => h("option", { value: c, text: c })));
+      const tier = h("select", { class: "start-tier", "aria-label": "tier for every step" },
+        h("option", { value: "", text: "each step's own tier" }), (catalog.tiers || []).map((t) => h("option", { value: t, text: `every step on ${t}` })));
+      const modelInputs = (catalog.tiers || []).map((t) => h("input", { type: "text", class: "mono start-model", dataset: { tier: t },
+        placeholder: `${t}: model id (optional)`, "aria-label": `model id for tier ${t}` }));
+      const issue = h("select", { class: "start-issue", "aria-label": "log as an issue" });
+      const issueRow = h("label", { class: "start-row", hidden: !catalog.issue.available }, h("span", { text: "issue" }), issue);
+      const classRow = h("label", { class: "start-row" }, h("span", { text: "class" }), klass);
+      const unattended = h("div", { class: "start-unattended" });
+      const note = h("div", { class: "start-note faint" });
+      const go = h("button", { class: "btn primary start-go", type: "button", text: "Start" });
+      let active = -1;
+      let shown = [];
+
+      const chosen = () => byValue.get(select.value) || entries[0];
+      const typed = () => {
+        const m = /^\s*\/(\S*)/.exec(prompt.value);
+        return m ? m[1] : null;
+      };
+      function describe() {
+        const e = chosen();
+        if (!e) return;
+        summary.textContent = e.summary + (e.description ? ` — ${e.description}` : "");
+        classRow.hidden = e.kind !== "workflow";
+        const options = [["none", "do not log it as an issue"], ["start", "log it as an issue and start now"]];
+        if (e.kind === "workflow" && catalog.issue.trigger.includes(e.name)) options.push(["trigger", "create the issue and let the trigger start it"]);
+        const previous = issue.value;
+        replace(issue, options.map(([value, text]) => h("option", { value, text })));
+        if (options.some(([value]) => value === previous)) issue.value = previous;
+        const ships = e.kind === "workflow" ? e.item.ships_unattended : "";
+        unattended.className = `start-unattended${ships ? " warn" : ""}`;
+        unattended.textContent = e.kind === "command"
+          ? "One step in the layer's normal environment. It never merges, deploys or opens a pull request."
+          : ships ? `Without a person, this workflow ${ships === "merge" ? "merges into the main branch" : "deploys"} when every gate passes; you will be asked to confirm.`
+            : "Nothing is merged or deployed without a person: the work ends in a review for you.";
+      }
+      function closeList() { list.hidden = true; active = -1; shown = []; prompt.setAttribute("aria-expanded", "false"); }
+      function pick(e) {
+        const label = e.kind === "command" && catalog.collisions.includes(e.name) ? `command:${e.name}` : e.name;
+        prompt.value = prompt.value.replace(/^\s*\/\S*\s*/, `/${label} `);
+        select.value = valueOf(e);
+        closeList();
+        describe();
+        prompt.focus();
+        prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+      }
+      function complete() {
+        const word = typed();
+        const caret = prompt.selectionStart || 0;
+        if (word === null || caret > prompt.value.indexOf("/") + 1 + word.length) return closeList();
+        const forced = word.startsWith("command:");
+        const stem = forced ? word.slice(8) : word;
+        shown = entries.filter((e) => e.name.startsWith(stem) && (!forced || e.kind === "command")).slice(0, 12);
+        if (!shown.length) return closeList();
+        active = Math.min(Math.max(active, 0), shown.length - 1);
+        replace(list, shown.map((e, i) => h("li", { role: "option", class: i === active ? "active" : "", "aria-selected": i === active ? "true" : "false",
+          dataset: { value: valueOf(e) }, onmousedown: (ev) => { ev.preventDefault(); pick(e); } },
+          h("span", { class: "mono", text: `/${e.name}` }), h("span", { class: "dim", text: e.kind === "workflow" ? " workflow" : ` ${e.item.kind}` }),
+          h("span", { class: "faint", text: ` — ${e.summary}` }))));
+        list.hidden = false;
+        prompt.setAttribute("aria-expanded", "true");
+      }
+      function syncFromText() {
+        const word = typed();
+        if (word === null) return;
+        const forced = word.startsWith("command:");
+        const name = forced ? word.slice(8) : word;
+        const match = (!forced && byValue.get(`workflow:${name}`)) || byValue.get(`command:${name}`);
+        if (match && select.value !== valueOf(match)) { select.value = valueOf(match); describe(); }
+      }
+      prompt.addEventListener("input", () => { active = 0; complete(); syncFromText(); });
+      prompt.addEventListener("blur", () => setTimeout(closeList, 100));
+      prompt.addEventListener("keydown", (ev) => {
+        if (list.hidden) {
+          if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); submit(); }
+          return;
+        }
+        if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+          ev.preventDefault();
+          active = (active + (ev.key === "ArrowDown" ? 1 : -1) + shown.length) % shown.length;
+          complete();
+        } else if (ev.key === "Enter" || ev.key === "Tab") {
+          ev.preventDefault();
+          if (shown[active]) pick(shown[active]);
+        } else if (ev.key === "Escape") {
+          ev.preventDefault();
+          ev.stopPropagation();
+          closeList();
+        }
+      });
+      select.addEventListener("change", describe);
+
+      function request(extra) {
+        const e = chosen();
+        const models = {};
+        for (const input of modelInputs) if (input.value.trim()) models[input.dataset.tier] = input.value.trim();
+        const out = { layer: layer.key, request_key: key, issue: issue.value || "none", model_set: tier.value || null, models, ...extra };
+        if (e.kind === "workflow" && klass.value) out.class = klass.value;
+        if (typed() !== null) out.text = prompt.value;
+        else { out.target = { kind: e.kind, name: e.name }; out.prompt = prompt.value; }
+        return out;
+      }
+      async function submit(extra = {}) {
+        go.disabled = true;
+        note.textContent = "";
+        note.classList.remove("error");
+        try {
+          const answer = await api.post("/api/start", request(extra));
+          key = requestKey();   // a new request from now on; the same one never starts twice
+          if (answer.run_id) {
+            note.textContent = `run ${answer.run_id} started${answer.queued ? `; ${answer.queued}` : ""}`;
+            location.hash = answer.url;
+            return;
+          }
+          const issueUrl = answer.issue && answer.issue.url;
+          note.textContent = `${answer.message || "issue created"}${issueUrl ? `: ${issueUrl}` : ""}`;
+        } catch (err) {
+          const data = err.data || {};
+          if (err.status === 409 && data.confirm) {
+            const title = data.confirm === "ships" ? "This workflow ships without a person" : "Start the same request again?";
+            const yes = await confirmDialog(title, data.message || err.message, data.confirm === "ships" ? "Start anyway" : "Start again");
+            if (yes) return submit({ ...extra, [`confirm_${data.confirm}`]: true });
+            note.textContent = "not started";
+          } else {
+            note.textContent = String(err.message || err);
+            note.classList.add("error");
+          }
+        } finally {
+          go.disabled = false;
+        }
+      }
+      go.addEventListener("click", () => submit());
+      replace(body,
+        h("div", { class: "start-input" }, prompt, list),
+        h("div", { class: "start-controls" },
+          h("label", { class: "start-row" }, h("span", { text: "run" }), select),
+          classRow,
+          h("label", { class: "start-row" }, h("span", { text: "tier" }), tier),
+          issueRow),
+        modelInputs.length ? h("div", { class: "start-models" }, modelInputs) : null,
+        summary, unattended,
+        h("div", { class: "start-actions" }, go, h("span", { class: "faint", text: "Ctrl+Enter" }), note));
+      describe();
+    }
+    return el;
+  }
+
   // =========================================================================== views: Layers
   function LayersView(main, crumbs) {
     crumbs.textContent = "watched layers";
+    const startHost = h("div", { class: "start-host" });
     const grid = h("div", { class: "layer-grid" });
-    main.append(grid);
+    main.append(startHost, grid);
+    let startShown = "";
+    let startChoice = "";
+    /** The panel is rebuilt only when its layer or whether it may start changes: typing is kept. */
+    function renderStart() {
+      if (!store.layers.length) { clear(startHost); startShown = ""; return; }
+      if (!store.layers.some((l) => l.key === startChoice)) startChoice = store.layers[0].key;
+      const layer = store.layer(startChoice);
+      const sig = JSON.stringify([store.layers.map((l) => l.key), startChoice, layer.start]);
+      if (sig === startShown) return;
+      startShown = sig;
+      const chooser = store.layers.length > 1 ? h("label", { class: "start-row start-layer" }, h("span", { text: "layer" }),
+        h("select", { "aria-label": "layer to start work in", onchange: (e) => { startChoice = e.target.value; renderStart(); } },
+          store.layers.map((l) => h("option", { value: l.key, text: l.name || l.key, selected: l.key === startChoice })))) : null;
+      replace(startHost, chooser, startPanel(layer));
+    }
     function render() {
+      renderStart();
       clear(grid);
       for (const layer of store.layers) {
         const runs = store.runList().filter((r) => r.layer === layer.key);

@@ -296,9 +296,12 @@ $0.68, the branch the classifier chose, and the build step's transcript filtered
 
 ![A real run: workflow graph, cost per step, and a searchable transcript](docs/demo/dashboard/step-transcript.png)
 
-It only reads. It cannot start, stop or change a run, agent output is displayed as text and never
-interpreted, and it listens on your own machine unless you give it a token. It can also run in its own
-container with no way out to the network. More: [`kit/dashboard/README.md`](kit/dashboard/README.md).
+It cannot stop or change a run, agent output is displayed as text and never interpreted, and it listens
+on your own machine unless you give it a token. It can also run in its own container with no way out to
+the network. More: [`kit/dashboard/README.md`](kit/dashboard/README.md).
+
+Work can be started from the page (any workflow, or one command such as `/plan-chore …` as a run that
+never ships) or with `al run LAYER /NAME …`; see [Start work](docs/GUIDE.md#start-work-from-the-dashboard-or-the-command-line).
 
 ## al, used on itself
 

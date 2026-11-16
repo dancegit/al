@@ -6,12 +6,14 @@
 """al work dashboard: a live view of what the agents of one or more layers are doing.
 
   dashboard.py --layer path/to/app.al [--layer …] [--scan DIR …] [--port 8765] [--bind 127.0.0.1]
-               [--token T] [--open] [--read-only]
+               [--token T] [--open] [--read-only] [--no-start]
 
 It watches each layer's `agents/` (run state, run.log, step transcripts, check logs, slot locks,
 port leases) and `artefacts/` by polling mtimes and sizes, and serves one page that updates over
-Server-Sent Events. Standard library only. It writes one thing: a layer's local model setting
-(agents/settings/models.json), from the Models panel; --read-only turns that off.
+Server-Sent Events. Standard library only. It changes two things, both guarded: a layer's local
+model setting (agents/settings/models.json), from the Models panel, and it starts work (a workflow
+or one command) through the layer's own `adws/dispatch.py --start`. --read-only turns both off,
+--no-start only starting.
 """
 from __future__ import annotations
 
@@ -80,8 +82,16 @@ BUILTIN_TIERS = {"claude-code": {"base": "claude-opus-5-5", "heavy": "claude-opu
                  "codex": {"base": "gpt-5.4-mini", "heavy": "gpt-5.4"}}
 TIER_RX = re.compile(r"^[a-z][a-z0-9-]*$")
 MODEL_ID_RX = re.compile(r"^[^\s\x00-\x1f\x7f]{1,200}$")   # non-empty, no whitespace, no control characters
-WRITE_HEADER = "X-AL-Dashboard"   # a plain HTML form cannot send it: POST /api/models requires it
+WRITE_HEADER = "X-AL-Dashboard"   # a plain HTML form cannot send it: every POST requires it
 MAX_WRITE_BODY = 4096
+MAX_START_BODY = 64 * 1024        # POST /api/start: the prompt travels in the body
+START_TIMEOUT = 60.0              # seconds the layer's launcher may take to reserve and detach a run
+START_CLASSES = ("chore", "bug", "feature", "patch")   # mirror of kit/runtime/adw_modules/agents.py
+START_ISSUE = ("none", "start", "trigger")
+START_KEY = re.compile(r"^[A-Za-z0-9_-]{8,64}$")     # mirror of launch.KEY_RE
+COMMAND_PREFIX = "command:"       # a single-command run's ADW name (launch.single_command_adw)
+LAUNCHER = "adws/dispatch.py"
+LAUNCH_MODULE = "adws/adw_modules/launch.py"
 WINDOW_LABELS = {"five_hour": "5-hour", "seven_day": "weekly"}
 WINDOW_ORDER = ("five_hour", "seven_day")
 API_KEY_SOURCES = ("ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key")
@@ -1234,6 +1244,224 @@ def settings_writable(layer: "Layer", read_only: bool) -> tuple[bool, str]:
     return False, why
 
 
+# ============================================================================ starting work
+
+_ARG_HINT = re.compile(r"^argument-hint:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+_COUNT_WORDS = ("no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+
+
+def argument_hint(layer: Layer, kind: str, name: str) -> str:
+    """The `argument-hint` of the generated commands/<name>.md or hops/<name>.md front matter
+    ("[prompt]" when there is none). Only a regular file inside that directory of the layer is read."""
+    directory = "hops" if kind == "hop" else "commands"
+    if not SAFE_NAME.match(name):
+        return "[prompt]"
+    root = Path(os.path.realpath(layer.path / directory))
+    target = Path(os.path.realpath(root / f"{name}.md"))
+    if target.parent != root or not target.is_file():
+        return "[prompt]"
+    text = read_text(target, cap=4096)
+    head = text.split("\n---", 1)[0] if text.startswith("---") else ""
+    match = _ARG_HINT.search(head)
+    return clip(match.group(1), 120) if match and match.group(1) else "[prompt]"
+
+
+def _count(n: int, noun: str) -> str:
+    word = _COUNT_WORDS[n] if 0 <= n < len(_COUNT_WORDS) else str(n)
+    return f"{word} {noun}{'' if n == 1 else 's'}"
+
+
+def _review(ir: dict[str, Any], review_id: Any) -> dict[str, Any]:
+    return next((r for r in ir.get("reviews") or [] if isinstance(r, dict) and r.get("id") == review_id), {})
+
+
+def ships_unattended(ir: dict[str, Any], adw: dict[str, Any]) -> str:
+    """mirror of kit/runtime/adw_modules/launch.py: "merge" / "deploy" when the workflow ships
+    without a person (an auto review and a ship step), else ""."""
+    if not any(isinstance(s, dict) and s.get("kind") == "ship" for s in adw.get("steps") or []):
+        return ""
+    review = _review(ir, adw.get("review"))
+    return str(review["ship"]) if review.get("kind") == "auto" and review.get("ship") in ("merge", "deploy") else ""
+
+
+def _command_entry(ir: dict[str, Any], name: str) -> tuple[str, dict[str, Any]]:
+    for key, kind in (("commands", "command"), ("hops", "hop")):
+        for entry in ir.get(key) or []:
+            if isinstance(entry, dict) and entry.get("name") == name:
+                return kind, entry
+    return "", {}
+
+
+_TEMPLATE_VERBS = {"classify": "classifies", "plan-chore": "plans", "plan-bug": "plans", "plan-feature": "plans",
+                   "plan-patch": "plans", "build": "builds", "run-plan": "builds", "commit": "commits",
+                   "review": "reviews", "document": "documents", "test": "tests", "resolve-test": "fixes tests",
+                   "prime": "reads the codebase"}
+
+
+def workflow_summary(ir: dict[str, Any], adw: dict[str, Any]) -> str:
+    """What a workflow does, from its steps: "plans, builds, checks test, one reviewer, merges without a person"."""
+    phrases: list[str] = []
+    review = _review(ir, adw.get("review"))
+    for step in adw.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        kind = step.get("kind")
+        if kind == "run":
+            _kind, entry = _command_entry(ir, str(step.get("command") or ""))
+            phrase = _TEMPLATE_VERBS.get(str(entry.get("template") or ""), f"runs {step.get('command')}")
+        elif kind == "check":
+            phrase = f"checks {step.get('cmd')}"
+        elif kind == "script":
+            phrase = f"runs the script {step.get('cmd')}"
+        elif kind == "review":
+            if review.get("kind") in ("auto", "agent"):
+                n = review.get("reviewers") if isinstance(review.get("reviewers"), int) else 1
+                phrase = _count(int(n), "reviewer")
+            else:
+                phrase = "a person reviews"
+        elif kind == "ship":
+            unattended = ships_unattended(ir, adw)
+            phrase = (f"{'merges' if unattended == 'merge' else 'deploys'} without a person" if unattended
+                      else "hands a pull request to a person")
+        elif kind == "fan-out":
+            phrase = f"races {_count(int(step.get('count') or 0), 'candidate')}"
+        elif kind == "compose":
+            phrase = f"runs {step.get('adw')}"
+        else:
+            phrase = str(kind)
+        if not phrases or phrases[-1] != phrase:
+            phrases.append(phrase)
+    return ", ".join(phrases) or "no steps"
+
+
+_OUTPUT_WORDS = {"path": "writes a plan", "json": "answers in JSON", "text": "answers in text"}
+_PRODUCES_WORDS = {"changes": "changes the code", "command": "writes a new command", "adw": "writes a new workflow",
+                   "expert": "writes a new expert"}
+
+
+def command_summary(kind: str, entry: dict[str, Any]) -> str:
+    name = str(entry.get("name"))
+    tier = str(entry.get("modelSet") or ("heavy" if kind == "hop" else "base"))
+    what = (_PRODUCES_WORDS.get(str(entry.get("produces") or ""), "makes changes") if kind == "hop"
+            else _OUTPUT_WORDS.get(str(entry.get("output") or ""), "answers"))
+    return f"one step: {name} ({tier} tier), {what}; never ships"
+
+
+def _trigger_starts(ir: dict[str, Any], adw: dict[str, Any]) -> bool:
+    kinds = {str(t.get("id")): str(t.get("kind")) for t in ir.get("triggers") or [] if isinstance(t, dict)}
+    return any(kinds.get(str(t)) in ("cron", "webhook") for t in adw.get("trigger") or [])
+
+
+def _issue_input(ir: dict[str, Any], adw: dict[str, Any]) -> str:
+    kinds = {str(o.get("id")): str(o.get("kind")) for o in ir.get("promptInputs") or [] if isinstance(o, dict)}
+    return next((str(i) for i in adw.get("input") or [] if kinds.get(str(i)) == "issue"), "")
+
+
+def startables(layer: Layer) -> dict[str, Any]:
+    """Everything a person may start in this layer, from the compiled IR (adopted workflows and
+    prompts included, nothing else is consulted): its workflows, and its commands and hops (each one
+    a single-command run that never ships)."""
+    ir = layer.ir
+    forge_kind = str((ir.get("forge") or {}).get("kind") or "none") if isinstance(ir.get("forge"), dict) else "none"
+    workflows = []
+    for adw in ir.get("adws") or []:
+        if not isinstance(adw, dict) or not isinstance(adw.get("name"), str):
+            continue
+        review = _review(ir, adw.get("review"))
+        by_trigger = forge_kind != "none" and bool(_issue_input(ir, adw)) and _trigger_starts(ir, adw)
+        workflows.append({
+            "name": adw["name"], "description": str(adw.get("description") or ""),
+            "classes": list(adw.get("classes") or []), "input": list(adw.get("input") or []),
+            "trigger": list(adw.get("trigger") or []), "environment": list(adw.get("environment") or []),
+            "review": {"id": str(review.get("id") or adw.get("review") or ""), "kind": str(review.get("kind") or ""),
+                       "ship": str(review.get("ship") or ""), "allowedClasses": list(review.get("allowedClasses") or []),
+                       "reviewers": review.get("reviewers") if isinstance(review.get("reviewers"), (int, list)) else None},
+            "steps": [str(s.get("name")) for s in adw.get("steps") or [] if isinstance(s, dict)],
+            "ships_unattended": ships_unattended(ir, adw), "issue_trigger": by_trigger,
+            "summary": workflow_summary(ir, adw)})
+    commands = []
+    seen: set[str] = set()
+    for key, kind in (("commands", "command"), ("hops", "hop")):
+        for entry in ir.get(key) or []:
+            if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or entry["name"] in seen:
+                continue
+            seen.add(entry["name"])
+            commands.append({"name": entry["name"], "kind": kind, "description": str(entry.get("description") or ""),
+                             "argument_hint": argument_hint(layer, kind, entry["name"]),
+                             "tier": str(entry.get("modelSet") or ("heavy" if kind == "hop" else "base")),
+                             "output": str(entry.get("output") or entry.get("produces") or ""),
+                             "summary": command_summary(kind, entry)})
+    names = {w["name"] for w in workflows}
+    return {"workflows": workflows, "commands": commands, "forge": forge_kind,
+            "issue": {"available": forge_kind != "none",
+                      "trigger": [w["name"] for w in workflows if w["issue_trigger"]]},
+            "tiers": declared_tiers(ir), "classes": list(START_CLASSES),
+            "collisions": sorted(c["name"] for c in commands if c["name"] in names)}
+
+
+def split_slash(text: str, catalog: dict[str, Any]) -> tuple[dict[str, str], str] | None:
+    """`/NAME rest…` → ({kind, name}, rest) by the same rule as launch.resolve_target: a workflow
+    wins over a command of the same name, `/command:NAME` is always the command. None when NAME is
+    neither."""
+    match = re.match(r"^\s*/(\S+)(?:\s+(.*))?$", text or "", re.DOTALL)
+    if not match:
+        return None
+    head, rest = match.group(1), (match.group(2) or "").strip()
+    forced = head.startswith(COMMAND_PREFIX)
+    if forced:
+        head = head[len(COMMAND_PREFIX):]
+    if not forced and any(w["name"] == head for w in catalog["workflows"]):
+        return {"kind": "workflow", "name": head}, rest
+    if any(c["name"] == head for c in catalog["commands"]):
+        return {"kind": "command", "name": head}, rest
+    return None
+
+
+def start_status(layer: Layer, model: "Model") -> dict[str, Any]:
+    """Can work be started in this layer from the page? → {enabled, why}."""
+    if model.read_only:
+        return {"enabled": False, "why": "the dashboard was started with --read-only"}
+    if model.no_start:
+        return {"enabled": False, "why": "the dashboard was started with --no-start"}
+    if model.in_container and not model.allow_start:
+        return {"enabled": False, "why": "the dashboard runs in a container, which cannot start runs "
+                                         "(--allow-start-in-container only for an image built for it)"}
+    if not (layer.path / LAUNCH_MODULE).is_file() or not (layer.path / LAUNCHER).is_file():
+        return {"enabled": False, "why": f"generated before starting from the dashboard: run `al gen {layer.name}`"}
+    return {"enabled": True, "why": ""}
+
+
+def start_via_layer(layer: Layer, request: dict[str, Any], timeout: float = START_TIMEOUT) -> tuple[int, dict[str, Any], str]:
+    """Run the layer's own launcher (`adws/dispatch.py --start --json`, the layer's runtime version):
+    argv list, prompt on stdin, no shell. It reserves the run and launches it detached in its own
+    session, so the run outlives this dashboard. → (exit code, its JSON result, stderr tail)."""
+    target = request["target"]
+    argv = [sys.executable, str(layer.path / LAUNCHER), "--start", "--json",
+            "--adw" if target["kind"] == "workflow" else "--command", target["name"],
+            "--request-key", request["request_key"], "--issue", request["issue"]]
+    argv += ["--class", request["class"]] if request.get("class") else []
+    argv += ["--model-set", request["model_set"]] if request.get("model_set") else []
+    for tier, model_id in sorted((request.get("models") or {}).items()):
+        argv += ["--model", f"{tier}={model_id}"]
+    argv += ["--confirm-duplicate"] if request.get("confirm_duplicate") else []
+    argv += ["--confirm-ships"] if request.get("confirm_ships") else []
+    env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
+    try:
+        done = subprocess.run(argv, input=request["prompt"].encode("utf-8"), capture_output=True, cwd=str(layer.path),
+                              env=env, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        return -1, {}, f"the layer's launcher took longer than {int(timeout)} s"
+    except OSError as exc:
+        return -1, {}, f"cannot run the layer's launcher: {exc}"
+    tail = done.stderr.decode("utf-8", "replace")[-2000:]
+    lines = [line for line in done.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    try:
+        result = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        result = {}
+    return done.returncode, result if isinstance(result, dict) else {}, tail
+
+
 # ============================================================================ runs
 
 def step_status(data: dict[str, Any], name: str) -> str:
@@ -1534,7 +1762,11 @@ class RunModel:
         events = load_events(self.files.dir / EVENTS_FILE)
         spans = event_spans(events) if any(e["type"] == "run.start" for e in events) else None
         adw_name = (state or {}).get("adw") or (facts["start"] or {}).get("adw") or "?"
-        adw = self.layer.adw(adw_name) or {"name": adw_name, "steps": []}
+        adw = self.layer.adw(adw_name)
+        if adw is None:   # a single-command run records its synthetic ADW; anything else shows its records only
+            recorded = (state or {}).get("definition")
+            adw = recorded if isinstance(recorded, dict) and recorded.get("name") == adw_name else None
+        adw = adw or {"name": adw_name, "steps": []}
         ir_steps = [s for s in adw.get("steps") or [] if isinstance(s, dict)]
         step_names = [str(s.get("name")) for s in ir_steps]
         kinds = {str(s.get("name")): str(s.get("kind")) for s in ir_steps}
@@ -2316,7 +2548,8 @@ def sse_frame(kind: str, payload: bytes | str, event_id: str | int | None = None
 
 class Model:
     def __init__(self, layer_dirs: list[Path], scan_dirs: list[Path], *, poll: float = 0.75, scan_depth: int = 4,
-                 probe: ContainerProbe | None = None, in_container: bool = False, read_only: bool = False) -> None:
+                 probe: ContainerProbe | None = None, in_container: bool = False, read_only: bool = False,
+                 no_start: bool = False, allow_start: bool = False) -> None:
         self.layer_dirs = [Path(p) for p in layer_dirs]
         self.scan_dirs = [Path(p) for p in scan_dirs]
         self.poll = poll
@@ -2341,6 +2574,8 @@ class Model:
         self.usage_sigs: dict[str, tuple | None] = {}
         self.settings_sigs: dict[str, tuple | None] = {}
         self.read_only = read_only
+        self.no_start = no_start
+        self.allow_start = allow_start
 
     # ---------------------------------------------------------------- discovery
     def discover(self) -> bool:
@@ -2403,7 +2638,8 @@ class Model:
                             "explain": layer.explain_file(), "limits": layer.limits(),
                             "budget": self.layer_budget(layer, runs),
                             "usage": self.layer_usage(layer, time.time()),
-                            "models": layer.models_view(self.read_only)})
+                            "models": layer.models_view(self.read_only),
+                            "start": start_status(layer, self)})
             return out
 
     @staticmethod
@@ -2817,10 +3053,12 @@ class DashboardServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, address: tuple[str, int], model: Model, token: str | None, static_dir: Path,
-                 read_only: bool = False) -> None:
+                 read_only: bool = False, no_start: bool = False, allow_start: bool = False) -> None:
         self.model = model
         self.token = token
         self.read_only = read_only
+        self.no_start = no_start
+        self.allow_start = allow_start
         self.static_dir = static_dir
         self.shutting_down = threading.Event()
         family = socket.AF_INET6 if ":" in address[0] else socket.AF_INET
@@ -2895,12 +3133,15 @@ class Handler(BaseHTTPRequestHandler):
         origin, host = self.headers.get("Origin"), (self.headers.get("Host") or "").strip()
         return bool(origin and host) and origin == f"http://{host}"
 
-    def do_POST(self) -> None:  # noqa: N802 — the one write is the local model setting
-        if urllib.parse.urlsplit(self.path).path == "/api/models":
-            try:
+    def do_POST(self) -> None:  # noqa: N802 — two writes: the local model setting, and starting work
+        path = urllib.parse.urlsplit(self.path).path
+        try:
+            if path == "/api/models":
                 return self._set_models()
-            except (BrokenPipeError, ConnectionResetError):
-                return None
+            if path == "/api/start":
+                return self._start()
+        except (BrokenPipeError, ConnectionResetError):
+            return None
         self._refuse()
 
     def _refuse(self) -> None:
@@ -2909,9 +3150,9 @@ class Handler(BaseHTTPRequestHandler):
 
     do_PUT = do_DELETE = do_PATCH = _refuse  # noqa: N815
 
-    def _drain(self) -> bytes | None:
-        """Read the request body (so the connection stays usable); None when it is over
-        MAX_WRITE_BODY, which closes the connection once anything large is left unread."""
+    def _drain(self, limit: int = MAX_WRITE_BODY) -> bytes | None:
+        """Read the request body (so the connection stays usable); None when it is over `limit`,
+        which closes the connection once anything large is left unread."""
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -2920,15 +3161,18 @@ class Handler(BaseHTTPRequestHandler):
         if length < 0:
             self.close_connection = True
             return None
-        if length > 64 * 1024:
+        if length > max(limit, 64 * 1024):
             self.close_connection = True
             return None
         data = self.rfile.read(length) if length else b""
-        return data if length <= MAX_WRITE_BODY else None
+        return data if length <= limit else None
 
-    def _set_models(self) -> None:
-        """POST /api/models {"layer", "tier", "model"} or {"layer", "tier"|null, "reset": true}."""
-        body = self._drain()
+    def _write_guard(self, max_body: int) -> bytes | None:
+        """Every check a write must pass, in one place: a loopback Host (or a token server), the
+        token from the header or cookie (never the URL), an Origin naming this Host, the
+        X-AL-Dashboard header a plain form cannot send, a JSON body of at most `max_body` bytes, and
+        no --read-only. Sends the refusal and returns None; else the body."""
+        body = self._drain(max_body)
         if not self._host_ok():
             return self._error(403, "bad host")
         if not self._authorised({})[0]:   # header or cookie: a token in the URL is not accepted for a write
@@ -2940,9 +3184,16 @@ class Handler(BaseHTTPRequestHandler):
         if not (self.headers.get("Content-Type") or "").startswith("application/json"):
             return self._error(415, "application/json only")
         if body is None:
-            return self._error(413, f"request body over {MAX_WRITE_BODY} bytes")
+            return self._error(413, f"request body over {max_body} bytes")
         if self.server.read_only:
             return self._error(403, "the dashboard was started with --read-only")
+        return body
+
+    def _set_models(self) -> None:
+        """POST /api/models {"layer", "tier", "model"} or {"layer", "tier"|null, "reset": true}."""
+        body = self._write_guard(MAX_WRITE_BODY)
+        if body is None:
+            return None
         try:
             request = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
@@ -2991,6 +3242,118 @@ class Handler(BaseHTTPRequestHandler):
         model_.hub.publish("layers", model_.layer_list())
         return self._json({"ok": True, "note": note, "models": view})
 
+    def _start(self) -> None:
+        """POST /api/start {layer, target: {kind, name} | text: "/NAME args", prompt, class, model_set,
+        models: {tier: id}, issue: none|start|trigger, request_key, confirm_duplicate, confirm_ships}:
+        checked here against what the page offers, then started by the layer's own launcher."""
+        body = self._write_guard(MAX_START_BODY)
+        if body is None:
+            return None
+        if self.server.no_start:
+            return self._error(403, "the dashboard was started with --no-start")
+        if self.server.model.in_container and not self.server.allow_start:
+            return self._error(403, "the dashboard runs in a container and cannot start runs "
+                                    "(--allow-start-in-container only for an image built for it)")
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        if not isinstance(data, dict) or not isinstance(data.get("layer"), str):
+            return self._error(400, "expected a JSON object with a layer")
+        model_ = self.server.model
+        with model_.lock:
+            layer = model_.layers.get(data["layer"])
+        if layer is None:
+            return self._error(404, "unknown layer")
+        status = start_status(layer, model_)
+        if not status["enabled"]:
+            return self._error(409, status["why"])
+        request, problem = self._start_request(layer, data)
+        if request is None:
+            return self._error(400, problem)
+        code, result, stderr = start_via_layer(layer, request)
+        outcome = result.get("status")
+        url = f"#/run/{layer.key}/{result.get('run_id')}" if result.get("run_id") else ""
+        if outcome == "started":
+            return self._json({"status": "started", "run_id": result["run_id"], "url": url,
+                               "queued": result.get("queued") or "", "existing": bool(result.get("existing")),
+                               "issue": result.get("issue")}, 202)
+        if outcome == "issue-created":
+            return self._json({"status": "issue-created", "run_id": "", "url": "", "issue": result.get("issue"),
+                               "existing": bool(result.get("existing")),
+                               "message": result.get("message") or "the layer's trigger will start it"}, 202)
+        if outcome in ("confirm-duplicate", "confirm-ships"):
+            return self._json({"error": result.get("message") or outcome, "confirm": outcome.split("-", 1)[1],
+                               "message": result.get("message") or "", "previous": result.get("previous") or ""}, 409)
+        if outcome == "refused":
+            return self._json({"error": result.get("message") or "refused", "refused": True}, 429)
+        if outcome == "invalid":
+            return self._error(400, str(result.get("error") or "invalid request"))
+        tail = "\n".join(stderr.strip().splitlines()[-12:])
+        return self._json({"error": str(result.get("error") or f"the layer's launcher failed (exit {code})"),
+                           "stderr": tail}, 502)
+
+    def _start_request(self, layer: Layer, data: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+        """The body of POST /api/start, checked against the layer's startables → (request, "") or (None, why)."""
+        catalog = startables(layer)
+        prompt = data.get("prompt", "")
+        if not isinstance(prompt, str):
+            return None, "prompt must be a string"
+        target = data.get("target")
+        if target is None and isinstance(data.get("text"), str):
+            split = split_slash(data["text"], catalog)
+            if split is None:
+                known = [w["name"] for w in catalog["workflows"]] + [c["name"] for c in catalog["commands"]]
+                word = (data["text"].split() or [""])[0]
+                return None, (f"no workflow or command named {clip(word, 80)!r}; known: "
+                              + ", ".join(f"/{n}" for n in dict.fromkeys(known)))
+            target, rest = split
+            prompt = "\n\n".join(part for part in (rest, prompt.strip()) if part)
+        if not isinstance(target, dict) or target.get("kind") not in ("workflow", "command") \
+                or not isinstance(target.get("name"), str):
+            return None, 'expected target {"kind": "workflow"|"command", "name"} or text "/NAME …"'
+        names = [w["name"] for w in catalog["workflows"]] if target["kind"] == "workflow" \
+            else [c["name"] for c in catalog["commands"]]
+        if target["name"] not in names:
+            return None, f"no {target['kind']} named {clip(target['name'], 80)!r}; known: {', '.join(names) or '(none)'}"
+        if target["kind"] == "workflow" and not prompt.strip():
+            return None, "a workflow needs a prompt"
+        key = data.get("request_key")
+        if not isinstance(key, str) or not START_KEY.fullmatch(key):
+            return None, "request_key: 8 to 64 letters, digits, - or _"
+        klass = data.get("class") or None
+        if klass is not None and klass not in START_CLASSES:
+            return None, f"class: one of {', '.join(START_CLASSES)}"
+        model_set = data.get("model_set") or None
+        if model_set is not None and (not isinstance(model_set, str) or model_set not in catalog["tiers"]):
+            return None, f"model_set: one of {', '.join(catalog['tiers'])}"
+        models = data.get("models") or {}
+        if not isinstance(models, dict):
+            return None, "models: {tier: model id}"
+        models = {k: v for k, v in models.items() if v not in ("", None)}
+        for tier, model_id in models.items():
+            try:
+                check_setting(tier, model_id, catalog["tiers"])
+            except ValueError as exc:
+                return None, str(exc)
+        issue = data.get("issue") or "none"
+        if issue not in START_ISSUE:
+            return None, f"issue: one of {', '.join(START_ISSUE)}"
+        if issue != "none" and not catalog["issue"]["available"]:
+            return None, "the layer has no forge (forge none): the request cannot be logged as an issue"
+        if issue == "trigger" and (target["kind"] != "workflow" or target["name"] not in catalog["issue"]["trigger"]):
+            return None, f"no cron or webhook trigger starts {target['name']} from an issue"
+        return {"target": {"kind": target["kind"], "name": target["name"]}, "prompt": prompt, "request_key": key,
+                "class": klass, "model_set": model_set, "models": models, "issue": issue,
+                "confirm_duplicate": data.get("confirm_duplicate") is True,
+                "confirm_ships": data.get("confirm_ships") is True}, ""
+
+    def _startable(self, query: dict[str, list[str]]) -> None:
+        layer = self.server.model.layers.get(self._q(query, "layer"))
+        if layer is None:
+            return self._error(404, "unknown layer")
+        return self._json({"layer": layer.key, **startables(layer), "start": start_status(layer, self.server.model)})
+
     def do_HEAD(self) -> None:  # noqa: N802
         self.do_GET()
 
@@ -3022,6 +3385,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._tail(query)
             if path == "/api/layer":
                 return self._layer(query)
+            if path == "/api/startable":
+                return self._startable(query)
+            if path in ("/api/start", "/api/models"):
+                return self._error(405, "POST only")
             if path == "/api/doc":
                 return self._doc(query)
             if path == "/api/doc/download":
@@ -3393,8 +3760,9 @@ class Handler(BaseHTTPRequestHandler):
 # ============================================================================ entry point
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="dashboard.py", description="Live work dashboard for al layers "
-                                     "(read-only except the Models panel).")
+    parser = argparse.ArgumentParser(prog="dashboard.py", description="Live work dashboard for al layers: "
+                                     "watches runs; writes model settings and starts work "
+                                     "(off with --read-only / --no-start).")
     parser.add_argument("--layer", action="append", default=[], type=Path, metavar="DIR",
                         help="a layer directory (contains agentic-layer.json); repeatable")
     parser.add_argument("--scan", action="append", default=[], type=Path, metavar="DIR",
@@ -3413,7 +3781,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--in-container", action="store_true",
                         help="running in a container: pids and locks of the host are not visible")
     parser.add_argument("--read-only", action="store_true",
-                        help="refuse every change, including the Models panel")
+                        help="refuse every change: no model settings, no starting work")
+    parser.add_argument("--no-start", action="store_true",
+                        help="never start work from the page (the Models panel still writes)")
+    parser.add_argument("--allow-start-in-container", action="store_true",
+                        help="with --in-container: allow starting work (only for an image that has uv, the "
+                             "checkout and a writable layer)")
     args = parser.parse_args(argv)
     if not args.layer and not args.scan:
         parser.error("give at least one --layer DIR or --scan DIR")
@@ -3422,14 +3795,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def start_banner(args: argparse.Namespace) -> str:
+    if args.read_only:
+        return "off (--read-only)"
+    if args.no_start:
+        return "off (--no-start)"
+    if args.in_container and not args.allow_start_in_container:
+        return "off (in a container)"
+    return "work can be started from the Layers view"
+
+
 def make_server(args: argparse.Namespace, static_dir: Path = STATIC_DIR) -> DashboardServer:
     probe = ContainerProbe(args.podman_socket, enabled=not args.no_podman)
     model = Model(args.layer, args.scan, poll=args.poll, scan_depth=args.scan_depth, probe=probe,
-                  in_container=args.in_container, read_only=args.read_only)
+                  in_container=args.in_container, read_only=args.read_only, no_start=args.no_start,
+                  allow_start=args.allow_start_in_container)
     model.discover()
     probe.poll(want_stats=True)   # so the first snapshot already knows the containers
     model.tick()
-    return DashboardServer((args.bind, args.port), model, args.token, static_dir, read_only=args.read_only)
+    return DashboardServer((args.bind, args.port), model, args.token, static_dir, read_only=args.read_only,
+                           no_start=args.no_start, allow_start=args.allow_start_in_container)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3457,6 +3842,7 @@ def main(argv: list[str] | None = None) -> int:
     where = f"listening inside the container on port {server.server_address[1]}" if args.in_container else f"on {url}"
     print(f"al dashboard {where}\n  watching: {layers}\n"
           f"  models: {'read-only' if args.read_only else 'switchable from the Now view'}\n"
+          f"  start: {start_banner(args)}\n"
           f"  containers: {server.model.probe.info()['note']}", flush=True)
     if args.open:
         webbrowser.open(url)

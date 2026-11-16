@@ -118,6 +118,11 @@ class ForgeClient:
     def comment(self, n: int, body: str) -> None:
         raise NotImplementedError
 
+    def create_issue(self, title: str, body: str, labels: Iterable[str] = ()) -> dict:
+        """Open an issue; return {"number", "url"}. The body is sent as given (no bot marker: a
+        person asked for this issue)."""
+        raise NotImplementedError
+
     def create_pr(self, branch: str, base: str, title: str, body: str, draft: bool = False,
                   reviewers: Iterable[str] = ()) -> dict:
         raise NotImplementedError
@@ -180,6 +185,9 @@ class NoneForge(ForgeClient):
         with log.open("a", encoding="utf-8") as fh:
             fh.write(f"{stamp} #{n} {self.mark(body)}\n")
 
+    def create_issue(self, title, body, labels=()):
+        self._unsupported("create_issue")
+
     def create_pr(self, branch, base, title, body, draft=False, reviewers=()):
         return {"number": 0, "url": ""}
 
@@ -208,11 +216,12 @@ class GitHubForge(ForgeClient):
             env["GH_HOST"] = self.host
         return env
 
-    def gh(self, *args: str) -> str:
+    def gh(self, *args: str, input: str | None = None) -> str:  # noqa: A002 — subprocess.run's own name
         argv = ["gh", *args, "--repo", self.repo]
         run = self._run or subprocess.run
+        extra = {} if input is None else {"input": input}
         try:
-            proc = run(argv, capture_output=True, text=True, env=self._env(), check=False)
+            proc = run(argv, capture_output=True, text=True, env=self._env(), check=False, **extra)
         except FileNotFoundError as exc:
             raise ForgeError("the `gh` CLI is not installed or not on PATH") from exc
         if proc.returncode != 0:
@@ -248,6 +257,16 @@ class GitHubForge(ForgeClient):
 
     def comment(self, n, body):
         self.gh("issue", "comment", str(n), "--body", self.mark(body))
+
+    def create_issue(self, title, body, labels=()):
+        """`gh issue create`; the body goes on stdin (--body-file -), never on the command line."""
+        args = ["issue", "create", "--title", title, "--body-file", "-"]
+        for lbl in labels:
+            args += ["--label", lbl]
+        out = self.gh(*args, input=body).strip()
+        url = out.splitlines()[-1].strip() if out else ""
+        m = re.search(r"/issues/(\d+)", url)
+        return {"number": int(m.group(1)) if m else 0, "url": url}
 
     def create_pr(self, branch, base, title, body, draft=False, reviewers=()):
         args = ["pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body]
@@ -337,6 +356,22 @@ class ForgejoForge(ForgeClient):
 
     def edit_comment(self, comment_id, body):
         self.request("PATCH", f"/issues/comments/{int(comment_id)}", {"body": self.mark(body)})
+
+    def create_issue(self, title, body, labels=()):
+        """POST /issues; Forgejo takes label ids, so the names are looked up in the repository's labels."""
+        wanted = [lbl for lbl in labels if lbl]
+        ids = []
+        if wanted:
+            known = {str(item.get("name")): item.get("id") for item in self.request("GET", "/labels") or []
+                     if isinstance(item, dict)}
+            missing = [lbl for lbl in wanted if lbl not in known]
+            if missing:
+                raise ForgeError(f"the repository {self.repo} has no label {', '.join(missing)}; create it first")
+            ids = [int(known[lbl]) for lbl in wanted]
+        data = self.request("POST", "/issues", {"title": title, "body": body, "labels": ids})
+        if not isinstance(data, dict) or not data.get("number"):
+            raise ForgeError(f"creating an issue returned no number: {str(data)[:200]}")
+        return {"number": int(data["number"]), "url": data.get("html_url") or data.get("url") or ""}
 
     def create_pr(self, branch, base, title, body, draft=False, reviewers=()):
         # The Forgejo API has no draft flag; a "WIP: " title prefix is the forge's draft convention.
