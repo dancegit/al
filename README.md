@@ -357,7 +357,8 @@ use on the test machine; they pass in a container because every run has its own 
 | **Command (template)** | A reusable prompt for one kind of job: "plan a bug fix", "review this change". Written once per codebase, with its real commands and rules filled in. |
 | **HOP** (higher-order prompt) | A prompt that takes another prompt or a plan as its input, e.g. "implement the plan in this file". |
 | **ADW** (AI developer workflow) | A chain of steps: agent steps (one prompt each) and check steps (run a real command). Plan → build → test → review → ship is one. |
-| **Check with a feedback loop** | Run a real command. If it fails, give the output to an agent, let it fix the code, run it again. |
+| **Check with a feedback loop** | Run a real command. If it fails, give the output to an agent, let it fix the code, run it again. A check counts the tests that were skipped and can fail on them (`#:max-skipped`, `#:forbid-skip-reason`). |
+| **Nested engine** | `#:nested-engine #t` on a podman environment: the run's container gets a container engine of its own for tests that build or start containers, isolated from the host's. |
 | **Zero-touch** | A workflow where no human is involved between the prompt and the shipped change. Allowed only when the checks, the reviewer and the hard rules all agree. |
 | **Worktree** | A private working copy of the repository for one run. Agents never work in your own checkout. |
 
@@ -376,6 +377,7 @@ Every workflow makes four choices, known as **PITER**. The language offers sever
 - **Every run is isolated.** It has its own copy of the code, its own container, its own network (so two runs can both use port 8000) and, if needed, its own database.
 - **The container cannot reach into your git repository.** It can read the history but cannot move branches or plant hooks; only the host does that, after checking nothing was tampered with.
 - **Shipping without a human needs everything to agree:** all checks green, the checks re-run on the final result, the reviewer finds no blocker, the task is a kind you allowed, the change is small, and no protected file was touched. Otherwise it becomes a pull request for a person.
+- **A check that needs a container engine gets one of its own inside the sandbox**, isolated from the host's; tests that were skipped are counted and can fail the check (`#:nested-engine`, `#:max-skipped`, `#:forbid-skip-reason`).
 - **The compiler enforces the dangerous combinations.** A workflow that ships by itself must run in a container. An agent with all permissions must itself be inside one.
 
 ## See it

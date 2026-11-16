@@ -125,7 +125,13 @@ def describe_step(step: dict, ir: dict | None = None) -> str:
         return f"agent step `{step['name']}` using the `{step['command']}` prompt{tier}{agent}{only}"
     if kind == "check":
         fix = (f"; on failure the `{step['resolve']}` prompt fixes it, up to {step['retries']} tries" if step.get("resolve") else "")
-        return f"check `{step['name']}`: run the `{step['cmd']}` command{fix}"
+        where = f" in `{step['in']}`" if step.get("in") else ""
+        rules = ""
+        if int(step.get("maxSkipped", -1)) >= 0:
+            rules += f"; fails when more than {step['maxSkipped']} tests are skipped"
+        if step.get("forbidSkipReason"):
+            rules += f"; fails when a test is skipped because of \"{step['forbidSkipReason']}\""
+        return f"check `{step['name']}`: run the `{step['cmd']}` command{where}{fix}{rules}"
     if kind == "fan-out":
         return f"fan-out `{step['name']}`: {step['count']} runs of `{step['adw']}` race, pick {step['pick']}"
     if kind == "review":
@@ -200,7 +206,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
                     extra.append("its own " + listing(o["services"]) + " per run")
                 if o["publish"]:
                     extra.append("port " + listing([str(p) for p in o["publish"]]) + " published to the host")
-                bullets.append(f"`podman`: image based on `{o['baseImage']}`; {inside}" + ("; " + "; ".join(extra) if extra else ""))
+                engine = ", with a container engine of its own (nested, isolated from the host's)" if o.get("nestedEngine") else ""
+                bullets.append(f"`podman`: image based on `{o['baseImage']}`; {inside}{engine}" + ("; " + "; ".join(extra) if extra else ""))
             elif k == "home-manager":
                 parts.append("a Home Manager module that installs the tools")
                 bullets.append("`home-manager`: provides " + listing(o["packages"]))

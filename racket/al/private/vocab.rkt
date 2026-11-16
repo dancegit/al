@@ -314,7 +314,8 @@
   [publish (list-of integer) () "Container ports published on 127.0.0.1 at the run's leased host ports, in order (first → ADW_PORT_0). Every run has its own network namespace, so the app inside always binds its usual ports and runs never collide; publish only what a host-side tool (browser, reviewer) must reach."]
   [services (list-of (ref service)) () "Sidecar services started with the run in the same pod (they share localhost with the run's container) and removed with it."]
   [pids-limit integer 2048 "Process limit inside the container."]
-  [read-only-root boolean #f "Mount the image's root filesystem read-only; the worktree, caches, /tmp and the home directory stay writable."])
+  [read-only-root boolean #f "Mount the image's root filesystem read-only; the worktree, caches, /tmp and the home directory stay writable."]
+  [nested-engine boolean #f "Give the run's container a rootless podman of its own for tests that build or start containers. It stores everything in a per-run volume, cannot see the host's containers, images or socket, and stays inside the run's network and limits. Adds /dev/fuse to the container and nothing else: every capability stays dropped. One uid inside, so inner images that switch users do not work. The preflight refuses the run where the host cannot provide it."])
 
 (define-family service #:key "services" #:letter "" #:default #f
   "Per-run sidecar services (database, cache, mock API). Each run gets its own instances, so parallel runs never share state.")
@@ -502,7 +503,10 @@
   [cmd (ref cmd) #:required "Codebase command."]
   [resolve (optional-ref command) "" "Command given the failing output; empty = fail the run immediately."]
   [retries integer 3 "Resolve attempts."]
-  [collect (list-of (ref artefact)) () "Artefacts collected after the command."])
+  [collect (list-of (ref artefact)) () "Artefacts collected after the command."]
+  [in (optional-ref environment) "" "Environment option the command runs in, together with the ADW's worktree: a podman option (its own container, e.g. one with #:nested-engine #t) or a nix-devshell option (on the host). \"\" = the ADW's own environment stack. The gate's re-run of the same cmd runs there too."]
+  [max-skipped integer -1 "The check fails when more tests than this were skipped (counted from the output of pytest, go test, cargo test, mocha or a collected JUnit report); -1 = no limit. With a limit set, output al cannot count fails the check."]
+  [forbid-skip-reason string "" "The check fails when a skipped test's reason contains this text (case-insensitive), e.g. \"no podman\"; \"\" = none. Skips without a visible reason then fail it too (pytest: -rs, go test: -v)."])
 
 (define-record step-script
   "(script NAME #:cmd C …): run a declared codebase cmd as a workflow step, e.g. a workflow script the team already has. It runs in the run's environment (worktree, container), gets the run context in environment variables (ADW_ID, ADW_PROMPT, ADW_CLASS, ADW_PLAN, ADW_BRANCH, ADW_WORKTREE, ADW_LAYER_DIR, ADW_RESUME), its output becomes the step's output ($out.NAME), and a non-zero exit fails the run, unless the exit code is one of its #:waiting-exit codes: then the run ends as `waiting`, and `--resume` runs the step again with ADW_RESUME=1 (empty otherwise). It is not a check: no resolve loop, and the gate does not count it as verification."
@@ -645,4 +649,6 @@
     "A zero-touch ADW (review auto with #:ship merge or deploy) may only deliver to stages with #:agents-may-merge #t."
     "#:entry fast-forward is rejected with every forge (github, forgejo): a pull request is merged by merge, squash or rebase."
     "(delivery PRESET #:param value …) is declared at most once and expands to (stage …) and (cycle …) clauses (see Delivery presets); a (stage NAME …) with the name of a preset's stage replaces it, another name adds a stage; a (cycle …) next to a preset that declares one is an error."
-    "Kinds marked planned compile but are refused by the generator."))
+    "Kinds marked planned compile but are refused by the generator."
+    "A (check …) #:in names a podman or nix-devshell environment option; the check runs in the run's worktree inside it instead of the ADW's stack. A zero-touch ADW whose check runs #:in a nix-devshell option gets a warning: that check runs outside the sandbox."
+    "(check …) #:max-skipped is -1 (no limit) or more."))

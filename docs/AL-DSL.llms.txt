@@ -61,6 +61,8 @@ pairs, e.g. `#:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:eff
 - #:entry fast-forward is rejected with every forge (github, forgejo): a pull request is merged by merge, squash or rebase.
 - (delivery PRESET #:param value …) is declared at most once and expands to (stage …) and (cycle …) clauses (see Delivery presets); a (stage NAME …) with the name of a preset's stage replaces it, another name adds a stage; a (cycle …) next to a preset that declares one is an error.
 - Kinds marked planned compile but are refused by the generator.
+- A (check …) #:in names a podman or nix-devshell environment option; the check runs in the run's worktree inside it instead of the ADW's stack. A zero-touch ADW whose check runs #:in a nix-devshell option gets a warning: that check runs outside the sandbox.
+- (check …) #:max-skipped is -1 (no limit) or more.
 
 ## Option families
 
@@ -376,6 +378,7 @@ Declare any number. Default when omitted: `(environment worktree)`.
   - `#:services` (list of name of a declared service; default ()) — Sidecar services started with the run in the same pod (they share localhost with the run's container) and removed with it.
   - `#:pids-limit` (integer; default 2048) — Process limit inside the container.
   - `#:read-only-root` (boolean; default #f) — Mount the image's root filesystem read-only; the worktree, caches, /tmp and the home directory stay writable.
+  - `#:nested-engine` (boolean; default #f) — Give the run's container a rootless podman of its own for tests that build or start containers. It stores everything in a per-run volume, cannot see the host's containers, images or socket, and stays inside the run's network and limits. Adds /dev/fuse to the container and nothing else: every capability stays dropped. One uid inside, so inner images that switch users do not work. The preflight refuses the run where the host cannot provide it.
 
 ### `service`
 
@@ -567,6 +570,9 @@ One model tier of an agent, written (TIER "MODEL-ID" [#:effort LEVEL]) inside #:
   - `#:resolve` (name of a declared command, or ""; default "") — Command given the failing output; empty = fail the run immediately.
   - `#:retries` (integer; default 3) — Resolve attempts.
   - `#:collect` (list of name of a declared artefact; default ()) — Artefacts collected after the command.
+  - `#:in` (name of a declared environment, or ""; default "") — Environment option the command runs in, together with the ADW's worktree: a podman option (its own container, e.g. one with #:nested-engine #t) or a nix-devshell option (on the host). "" = the ADW's own environment stack. The gate's re-run of the same cmd runs there too.
+  - `#:max-skipped` (integer; default -1) — The check fails when more tests than this were skipped (counted from the output of pytest, go test, cargo test, mocha or a collected JUnit report); -1 = no limit. With a limit set, output al cannot count fails the check.
+  - `#:forbid-skip-reason` (string; default "") — The check fails when a skipped test's reason contains this text (case-insensitive), e.g. "no podman"; "" = none. Skips without a visible reason then fail it too (pytest: -rs, go test: -v).
 
 ### `step-script`
 

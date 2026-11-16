@@ -1705,6 +1705,28 @@ def local_day(stamp: float | None) -> str:
     return datetime.fromtimestamp(stamp).date().isoformat() if stamp else ""
 
 
+def _skip_view(event: dict[str, Any]) -> dict[str, Any]:
+    """What a check.end says about skipped tests and where the check ran (#:in); events written
+    before skips were counted have none of it: skipped None, no reasons, no env."""
+    skipped = event.get("skipped")
+    reasons = []
+    raw = event.get("skip_reasons")
+    for pair in raw if isinstance(raw, list) else []:
+        if (isinstance(pair, list) and len(pair) == 2 and isinstance(pair[0], str)
+                and isinstance(pair[1], int) and not isinstance(pair[1], bool)):
+            reasons.append([pair[0][:200], pair[1]])
+    return {"skipped": skipped if isinstance(skipped, int) and not isinstance(skipped, bool) else None,
+            "skip_reasons": reasons[:5], "env": str(event.get("in") or "")}
+
+
+def _state_skipped(state: dict[str, Any] | None, name: str) -> int | None:
+    """Skipped tests of check `name` from state.json (its latest attempt), None when not counted."""
+    record = ((state or {}).get("checks") or {}).get(name)
+    skips = record.get("skips") if isinstance(record, dict) else None
+    value = skips.get("skipped") if isinstance(skips, dict) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Exact spans from a run's events (see docs/DESIGN.md, "Run events"): agent calls, check
     attempts (with re-checks), gate / deploy commands, slot waits, the container, the check that is
@@ -1778,7 +1800,7 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
                     item = {"file": file, "attempt": int(event.get("attempt") or len(items) + 1), "start": at,
                             "phase": owner if phase == "recheck" else "", "owner": owner or step}
                     items.append(item)
-                item.update(end=at, exit=exit_code, running=False)
+                item.update(end=at, exit=exit_code, running=False, **_skip_view(event))
         elif kind == "slot.wait":
             key = (str(event.get("pool") or ""), str(event.get("who") or ""))
             open_waits[key] = {"pool": key[0], "who": key[1], "start": at, "end": None, "step": current}
@@ -2058,13 +2080,16 @@ class RunModel:
                 end = item.get("end") if item.get("end") is not None else (None if state_ == "running" else cutoff)
                 entry = {"file": item["file"], "attempt": item["attempt"], "start": item["start"], "end": end,
                          "exit": item.get("exit"), "phase": item.get("phase", ""), "running": state_ == "running",
-                         "size": (stat_sig(self.files.dir / "checks" / item["file"]) or (0, 0))[1]}
+                         "size": (stat_sig(self.files.dir / "checks" / item["file"]) or (0, 0))[1],
+                         "skipped": item.get("skipped"), "skip_reasons": list(item.get("skip_reasons") or []),
+                         "env": str(item.get("env") or "")}
                 out.append(entry)
                 recheck = bool(entry["phase"])
                 activities.append(Activity(item["file"], "check", entry["phase"] or name, "recheck" if recheck else "attempt",
                                            f"{'re-check ' if recheck else ''}{name} #{item['attempt']}", item["start"], end,
                                            state_, {"check": name, "attempt": item["attempt"], "exit": item.get("exit"),
-                                                    "phase": entry["phase"]}))
+                                                    "phase": entry["phase"], "skipped": entry["skipped"],
+                                                    "skip_reasons": entry["skip_reasons"], "env": entry["env"]}))
             attempts[name] = out
         for gate in spans["gates"]:
             state_ = outcome(gate)
@@ -2325,6 +2350,7 @@ class RunModel:
             costs = [a["cost"] for a in group if a["cost"] is not None]
             node["cost"] = round(sum(costs), 4) if costs else None
             node["attempts"] = len(data["attempts"].get(step, [])) if node["type"] == "check" else None
+            node["skipped"] = _state_skipped(state, step) if node["type"] == "check" else None   # = steps_detail
             node["resolves"] = sum(1 for a in group if a["role"] == "resolve")
             node["agents"] = [a["dir"] for a in group]
             node["detail"] = short(str(record.get("detail", "")))[:300]
@@ -2526,7 +2552,8 @@ class RunModel:
             "runlog": [short(line) for line in runlog_tail],
             "steps_detail": {name: {"detail": short(str(r.get("detail", ""))), "attempts": r.get("attempts"),
                                     "status": step_status(data, name), "started": parse_time(r.get("started")),
-                                    "ended": parse_time(r.get("ended"))} for name, r in records.items()},
+                                    "ended": parse_time(r.get("ended")),
+                                    "skipped": _state_skipped(state, name)} for name, r in records.items()},
         }
 
 

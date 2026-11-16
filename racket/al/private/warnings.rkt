@@ -34,8 +34,17 @@
   (for*/or ([name (in-list names)] [line (in-list provided)])
     (string-contains? line name)))
 
+;; every non-empty #:in of a check step
+(define (check-ins adw)
+  (for/list ([st (in-list (field adw 'steps))]
+             #:when (equal? (field st 'kind "") "check")
+             #:unless (equal? (field st 'in "") ""))
+    st))
+
 (define (unused-environments ir)
-  (define used (append* (map (lambda (adw) (field adw 'environment)) (field ir 'adws))))
+  (define used (append* (map (lambda (adw) (append (field adw 'environment)
+                                                   (map (lambda (st) (field st 'in "")) (check-ins adw))))
+                             (field ir 'adws))))
   (for/list ([option (in-list (field ir 'environments))]
              #:unless (equal? (field option 'kind "") "home-manager")
              #:unless (member (field option 'id "") used))
@@ -80,5 +89,19 @@
             (string-join (cdr entry) ", ") (podman-decl podman) (field nix 'id "")
             (string-join missing ", "))))
 
+(define (check-outside-sandbox ir)
+  (define by-id (for/hash ([option (in-list (field ir 'environments))]) (values (field option 'id "") option)))
+  (define reviews (for/hash ([option (in-list (field ir 'reviews))]) (values (field option 'id "") option)))
+  (for*/list ([adw (in-list (field ir 'adws))]
+              [rv (in-value (hash-ref reviews (field adw 'review "") #f))]
+              #:when (and rv (equal? (field rv 'kind "") "auto")
+                          (member (field rv 'ship "") '("merge" "deploy")))
+              [st (in-list (check-ins adw))]
+              [option (in-value (hash-ref by-id (field st 'in "") #f))]
+              #:unless (and option (equal? (field option 'kind "") "podman")))
+    (format "workflow ~a ships without a person, but check ~a runs #:in ~a (a ~a environment), outside its podman sandbox"
+            (field adw 'name "") (field st 'name "") (field st 'in "") (field option 'kind ""))))
+
 (define (layer-warnings ir)
-  (append (unused-environments ir) (credentials-outside ir) (scope-command ir) (nix-not-in-container ir)))
+  (append (unused-environments ir) (credentials-outside ir) (scope-command ir) (nix-not-in-container ir)
+          (check-outside-sandbox ir)))

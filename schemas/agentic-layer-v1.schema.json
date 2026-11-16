@@ -139,8 +139,20 @@
                       },
                       "type": "array"
                     },
+                    "forbidSkipReason": {
+                      "description": "The check fails when a skipped test's reason contains this text (case-insensitive), e.g. \"no podman\"; \"\" = none. Skips without a visible reason then fail it too (pytest: -rs, go test: -v).",
+                      "type": "string"
+                    },
+                    "in": {
+                      "description": "Environment option the command runs in, together with the ADW's worktree: a podman option (its own container, e.g. one with #:nested-engine #t) or a nix-devshell option (on the host). \"\" = the ADW's own environment stack. The gate's re-run of the same cmd runs there too.",
+                      "type": "string"
+                    },
                     "kind": {
                       "const": "check"
+                    },
+                    "maxSkipped": {
+                      "description": "The check fails when more tests than this were skipped (counted from the output of pytest, go test, cargo test, mocha or a collected JUnit report); -1 = no limit. With a limit set, output al cannot count fails the check.",
+                      "type": "integer"
                     },
                     "name": {
                       "type": "string"
@@ -157,7 +169,10 @@
                   "required": [
                     "cmd",
                     "collect",
+                    "forbidSkipReason",
+                    "in",
                     "kind",
+                    "maxSkipped",
                     "name",
                     "resolve",
                     "retries"
@@ -1697,6 +1712,10 @@
                 "description": "Memory limit.",
                 "type": "string"
               },
+              "nestedEngine": {
+                "description": "Give the run's container a rootless podman of its own for tests that build or start containers. It stores everything in a per-run volume, cannot see the host's containers, images or socket, and stays inside the run's network and limits. Adds /dev/fuse to the container and nothing else: every capability stays dropped. One uid inside, so inner images that switch users do not work. The preflight refuses the run where the host cannot provide it.",
+                "type": "boolean"
+              },
               "network": {
                 "description": "Network mode: `slirp` = podman's default rootless user-mode network, `none` = fully offline checks, `host` = host network.",
                 "enum": [
@@ -1763,6 +1782,7 @@
               "id",
               "kind",
               "memory",
+              "nestedEngine",
               "network",
               "packages",
               "pidsLimit",

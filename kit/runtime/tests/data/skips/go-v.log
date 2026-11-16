@@ -1,0 +1,14 @@
+# hand-written: go is not installed here; `go test -v ./...` output in Go's documented format (t.Skip logs stream before the --- SKIP line) for app_test.go (TestAdds) and engine_test.go (two t.Skip("no podman"), one t.Skip("needs network"))
+=== RUN   TestAdds
+--- PASS: TestAdds (0.00s)
+=== RUN   TestBuildsAnImage
+    engine_test.go:8: no podman
+--- SKIP: TestBuildsAnImage (0.00s)
+=== RUN   TestStartsAContainer
+    engine_test.go:12: no podman
+--- SKIP: TestStartsAContainer (0.00s)
+=== RUN   TestPulls
+    engine_test.go:16: needs network
+--- SKIP: TestPulls (0.00s)
+PASS
+ok  	example.com/proj	0.002s

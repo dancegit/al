@@ -112,3 +112,31 @@ def test_setup_bars_show_on_the_run_page(epage, esite):
     assert epage.url.endswith("/run/events-shop/e1000005")
     from test_browser_documents import shot
     shot(epage, "run-setup-bars.png")
+
+
+def test_check_skips_show_next_to_passed(epage, esite):
+    _running, agents = esite
+    run = agents / "e1000001"
+    reasons = [["no podman", 2], ["needs network", 1]]
+    lines = []
+    for line in (run / "events.jsonl").read_text().splitlines():
+        event = json.loads(line)
+        if event["type"] == "check.end" and event.get("step") == "test":
+            event.update(skipped=3, skip_reasons=reasons, skip_source="pytest")
+        lines.append(json.dumps(event))
+    (run / "events.jsonl").write_text("\n".join(lines) + "\n")
+    state = json.loads((run / "state.json").read_text())
+    state["checks"]["test"]["skips"] = {"skipped": 3, "passed": 1, "failed": 0, "reasons": reasons,
+                                        "unexplained": 0, "source": "pytest"}
+    (run / "state.json").write_text(json.dumps(state))
+    open_(epage, "/run/events-shop/e1000001")
+    epage.wait_for_selector(".g-node[data-step='test']")
+    until(epage, "document.querySelector(\".g-node[data-step='test']\").textContent.includes('3 skipped')", timeout=15000)
+    open_(epage, "/run/events-shop/e1000001/step/test")
+    badge = epage.locator("[data-role='skips']")
+    badge.wait_for()
+    assert badge.inner_text() == "3 skipped" and "warn" in badge.get_attribute("class")
+    assert badge.get_attribute("title") == "no podman ×2\nneeds network ×1"
+    assert epage.locator(".badge", has_text="exit 0").count() >= 1   # next to the passed exit
+    from test_browser_documents import shot
+    shot(epage, "check-skips.png")

@@ -1,0 +1,8 @@
+# recorded: pytest without -rs on the same project; header lines removed
+============================= test session starts ==============================
+collected 4 items
+
+test_app.py .                                                            [ 25%]
+test_engine.py sss                                                       [100%]
+
+========================= 1 passed, 3 skipped in 0.01s =========================

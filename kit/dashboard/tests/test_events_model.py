@@ -232,3 +232,53 @@ def test_an_open_image_build_is_the_current_action(ev):
     assert summary["current"]["since"] == pytest.approx(now - 28, abs=1)
     building = bar(detail(model, "e1000006"), "setup:build:0")
     assert building["status"] == "running" and building["end"] is None
+
+
+# ---------------------------------------------------------------- skipped tests next to passed
+
+REASONS = [["no podman", 2], ["needs network", 1]]
+
+
+def _with_skips(layer: Path, run: str = "e1000001") -> None:
+    """The fixture run, as the runtime writes it once skips are counted: check.end of `test`
+    carries skipped / skip_reasons / skip_source / in, and state.json the check's skips record."""
+    events_file = layer / "agents" / run / "events.jsonl"
+    lines = []
+    for line in events_file.read_text().splitlines():
+        event = json.loads(line)
+        if event["type"] == "check.end" and event.get("step") == "test":
+            event.update(skipped=3, skip_reasons=REASONS + [["<b>x</b>", "not a count"]], skip_source="pytest",
+                         **{"in": "engine"})
+        lines.append(json.dumps(event))
+    events_file.write_text("\n".join(lines) + "\n")
+    state_file = layer / "agents" / run / "state.json"
+    state = json.loads(state_file.read_text())
+    state["checks"]["test"]["skips"] = {"skipped": 3, "passed": 1, "failed": 0, "reasons": REASONS,
+                                        "unexplained": 0, "source": "pytest"}
+    state_file.write_text(json.dumps(state))
+
+
+def test_check_attempt_carries_skip_counts_and_reasons(ev):
+    _with_skips(ev["layer"])
+    data = detail(model_for(ev["layer"]), "e1000001")
+    (attempt,) = data["checks"]["test"]
+    # only [text, count] pairs: the malformed one is dropped
+    assert attempt["skipped"] == 3 and attempt["skip_reasons"] == REASONS and attempt["env"] == "engine"
+    check_bar = bar(data, "check:test.1.log")
+    assert check_bar["exit"] == 0
+
+
+def test_check_attempt_without_skip_fields_is_unchanged(ev):
+    data = detail(model_for(ev["layer"]), "e1000001")
+    for attempts in data["checks"].values():
+        for attempt in attempts:
+            assert (attempt["skipped"], attempt["skip_reasons"], attempt["env"]) == (None, [], "")
+    assert data["checks"]["lint"][0]["exit"] == 1 and data["checks"]["lint"][1]["exit"] == 0
+    assert data["steps_detail"]["test"]["skipped"] is None
+
+
+def test_steps_detail_has_skipped_from_state(ev):
+    _with_skips(ev["layer"])
+    data = detail(model_for(ev["layer"]), "e1000001")
+    assert data["steps_detail"]["test"]["skipped"] == 3
+    assert data["steps_detail"]["lint"]["skipped"] is None

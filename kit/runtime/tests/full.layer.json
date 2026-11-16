@@ -162,7 +162,10 @@
         {
           "cmd": "lint",
           "collect": [],
+          "forbidSkipReason": "",
+          "in": "",
           "kind": "check",
+          "maxSkipped": -1,
           "name": "lint",
           "resolve": "resolve-test",
           "retries": 3
@@ -172,7 +175,10 @@
           "collect": [
             "junit"
           ],
+          "forbidSkipReason": "",
+          "in": "",
           "kind": "check",
+          "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
           "retries": 3
@@ -314,7 +320,10 @@
         {
           "cmd": "lint",
           "collect": [],
+          "forbidSkipReason": "",
+          "in": "",
           "kind": "check",
+          "maxSkipped": -1,
           "name": "lint",
           "resolve": "resolve-test",
           "retries": 3
@@ -324,7 +333,10 @@
           "collect": [
             "junit"
           ],
+          "forbidSkipReason": "",
+          "in": "",
           "kind": "check",
+          "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
           "retries": 3
@@ -335,7 +347,10 @@
             "screenshots",
             "recordings"
           ],
+          "forbidSkipReason": "",
+          "in": "",
           "kind": "check",
+          "maxSkipped": -1,
           "name": "e2e",
           "resolve": "resolve-test",
           "retries": 2
@@ -449,7 +464,10 @@
         {
           "cmd": "test",
           "collect": [],
+          "forbidSkipReason": "",
+          "in": "",
           "kind": "check",
+          "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
           "retries": 3
@@ -560,7 +578,10 @@
         {
           "cmd": "test",
           "collect": [],
+          "forbidSkipReason": "",
+          "in": "",
           "kind": "check",
+          "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
           "retries": 3
@@ -607,7 +628,10 @@
         {
           "cmd": "lint",
           "collect": [],
+          "forbidSkipReason": "",
+          "in": "",
           "kind": "check",
+          "maxSkipped": -1,
           "name": "lint",
           "resolve": "resolve-test",
           "retries": 3
@@ -617,7 +641,10 @@
           "collect": [
             "junit"
           ],
+          "forbidSkipReason": "",
+          "in": "",
           "kind": "check",
+          "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
           "retries": 3
@@ -1054,6 +1081,7 @@
       "id": "sandbox",
       "kind": "podman",
       "memory": "4g",
+      "nestedEngine": false,
       "network": "slirp",
       "packages": [
         "git",
