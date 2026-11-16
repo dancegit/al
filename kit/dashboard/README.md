@@ -91,6 +91,14 @@ The run list, its status filter, the graph node and the timeline show it as `wai
 run's header shows the step it waits at and the command that resumes it
 (`uv run adws/adw_<workflow>.py --resume --adw-id <id>`).
 
+A review whose final verdict failed is shown as **rejected** (⊗, amber), with each round's verdicts
+under the review step. Its run went on to the ship step, where the gate handed the work to a person,
+so the run is **handed-over** (↪, amber), with the reasons (`review-rejected`, the gate's fallback
+reasons) in the run's header. A run whose gate fell back is handed-over too. Records written before
+these statuses existed (review `passed` with a failed verdict, run `passed`) are read the same way
+when the files are read; the files are never rewritten. Pass rates count handed-over runs as
+finished, not passed.
+
 A `script` step that follows the script's own run journal (`#:journal`) shows that journal's lines
 (mirrored as `script.event` events) as **inner steps** under the script step: time, kind, subject,
 and the tokens and cost when the line reports them (`usage.input_tokens` / `output_tokens` / cache

@@ -2,7 +2,8 @@
 
 Events. A run reports exactly one event (`event_of`):
 - `needs-human`: the run failed and was handed over (state.ship["action"] == "handoff" without a
-  handoff_error), or a spending or usage limit stopped it;
+  handoff_error), or a spending or usage limit stopped it, or the run finished `handed-over` (a
+  rejected review or a gate that fell back, see state.ship["handed_over"]);
 - `failed`: the run failed otherwise;
 - `shipped`: the run passed and state.ship["shipped"] is true;
 - `passed`: the run passed otherwise (also when a pull request or PR.md waits for a review).
@@ -92,6 +93,8 @@ def event_of(state: Any) -> str:
     if state.status == "waiting":
         return ""
     ship = state.ship or {}
+    if state.status == "handed-over":
+        return "needs-human"
     if state.status != "passed":
         if ship.get("action") == "handoff" and not ship.get("handoff_error"):
             return "needs-human"
@@ -197,6 +200,9 @@ def _failed_step(state: Any) -> tuple[str, str]:
 
 def _sentences(layer: Any, state: Any, event: str, url: str) -> str:
     ship_record = state.ship or {}
+    if event == "needs-human" and state.status == "handed-over":
+        why = _reason(layer, state, ", ".join(str(r) for r in ship_record.get("handed_over") or []))
+        return f"The run finished and was handed to a person. Why: {why}"
     if event in ("needs-human", "failed"):
         step, detail = _failed_step(state)
         handed = ship_record.get("action") == "handoff" and not ship_record.get("handoff_error")
@@ -295,7 +301,9 @@ def _smtp_failure(exc: BaseException, seconds: int) -> NotifyError:
 
     if isinstance(exc, NotifyError):
         return exc
-    if isinstance(exc, TimeoutError):
+    if isinstance(exc, TimeoutError) or (isinstance(exc, smtplib.SMTPServerDisconnected)
+                                         and isinstance(exc.__context__, TimeoutError)):
+        # smtplib wraps a read that timed out in SMTPServerDisconnected (the TimeoutError is its context)
         return NotifyError(f"timed out after {seconds} s")
     if isinstance(exc, ssl.SSLError):
         return NotifyError(f"TLS failed ({type(exc).__name__})")

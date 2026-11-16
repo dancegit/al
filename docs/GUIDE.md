@@ -591,7 +591,16 @@ Only after a streak of runs you merged without changes. A workflow may ship with
 
 The workflow needs at least one check before its review, and a container in its environment. A change
 then ships only if both reviewers approve **and** every rule holds; anything else becomes a pull
-request for you, with the reasons listed. Before turning this on:
+request for you, with the reasons listed.
+
+A review whose reviewers refuse in every round ends `rejected`
+(`step review (review) rejected: fail after N round(s): …`), and the run still reaches its ship step,
+where the gate hands the work to you. Such a run, or any run whose gate fell back, ends
+`status: handed-over` with exit 0. Its summary prints the review line
+(`review:    rejected (auto) after 3 round(s), 2 blocker(s)`) and a `handoff:` line with the reasons.
+It sends `needs-human` notifications, and the dashboard shows it in amber, not as passed.
+
+Before turning this on:
 
 - [ ] `al verify` passes for every command in `#:require-checks`.
 - [ ] Protected paths cover CI, migrations, permissions code, lock files and anything you would never

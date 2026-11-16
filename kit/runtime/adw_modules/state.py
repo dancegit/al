@@ -16,6 +16,8 @@ from .errors import LayerError
 
 HEARTBEAT_SECONDS = 5.0   # state.json's heartbeat is refreshed this often while the run is alive
 _SAVE_LOCK = threading.RLock()  # the heartbeat thread and the run never interleave a save
+# steps a resume does not run again; a rejected review returned normally and its verdict stays in state.review
+FINISHED_STEP_STATUSES = ("passed", "rejected")
 
 
 def now() -> str:
@@ -89,8 +91,8 @@ class ADWState:
         return record
 
     @property
-    def passed_steps(self) -> set[str]:
-        return {str(step["name"]) for step in self.steps if step.get("status") == "passed"}
+    def finished_steps(self) -> set[str]:
+        return {str(step["name"]) for step in self.steps if step.get("status") in FINISHED_STEP_STATUSES}
 
     def mark_alive(self) -> None:
         self.pid, self.host, self.heartbeat = os.getpid(), socket.gethostname(), now()

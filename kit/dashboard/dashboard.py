@@ -1490,9 +1490,41 @@ def start_via_layer(layer: Layer, request: dict[str, Any], timeout: float = STAR
 # ============================================================================ runs
 
 def step_status(data: dict[str, Any], name: str) -> str:
-    """A step record's status; the step a died run was in is shown as died, not running."""
+    """A step record's status; the step a died run was in is shown as died, not running. A review
+    step an older run recorded as passed although its final verdict failed is shown as rejected."""
     status = str(data["records"].get(name, {}).get("status", "pending"))
+    if status == "passed" and data["kinds"].get(name) == "review" and data.get("review_rejected"):
+        return "rejected"
     return "died" if status == "running" and data["status"] == "died" else status
+
+
+def review_rejected(state: dict[str, Any] | None, events: list[dict[str, Any]]) -> bool:
+    """True when the run's agent or auto review ended with a failed verdict (state.review); without
+    a recorded review, when the last `review.round` event says it failed."""
+    review = (state or {}).get("review")
+    if isinstance(review, dict) and review:
+        verdict = review.get("verdict") if isinstance(review.get("verdict"), dict) else {}
+        return bool(review.get("rounds")) and verdict.get("success") is False
+    rounds = [e for e in events if e.get("type") == "review.round"]
+    return bool(rounds) and rounds[-1].get("success") is False
+
+
+def handover_reasons(layer_ir: dict[str, Any], state: dict[str, Any] | None, rejected: bool) -> list[str]:
+    """Why a run that reached its end was handed to a person (the runtime's runner.handover_reasons):
+    recorded in state.ship.handed_over, else worked out for older records."""
+    state = state or {}
+    ship = state.get("ship") if isinstance(state.get("ship"), dict) else {}
+    if isinstance(ship.get("handed_over"), list):
+        return [str(r) for r in ship["handed_over"]]
+    reasons = ["review-rejected"] if rejected else []
+    adw = next((a for a in layer_ir.get("adws") or [] if isinstance(a, dict) and a.get("name") == state.get("adw")), None)
+    if adw is None and isinstance(state.get("definition"), dict):
+        adw = state["definition"]
+    option = _review(layer_ir, (adw or {}).get("review")) if (adw or {}).get("review") else {}
+    gate = ship.get("gate") if isinstance(ship.get("gate"), dict) else {}
+    if (option.get("kind") == "auto" and gate.get("ship") is False) or ship.get("fallback"):
+        reasons += [str(r) for r in ship.get("reasons") or [] if str(r) not in reasons]
+    return reasons
 
 
 def agent_group(dirname: str, step_names: list[str], kinds: dict[str, str]) -> tuple[str, str]:
@@ -1911,6 +1943,10 @@ class RunModel:
         alive = liveness(state or {}, now, self.can_see_pids)
         if alive and alive["died"]:
             status = "died"
+        rejected = review_rejected(state, events)
+        handover = handover_reasons(self.layer.ir, state, rejected) if status in {"passed", "handed-over"} else []
+        if status == "passed" and handover:   # an older record: the runtime called this run passed
+            status = "handed-over"
         last_seen = alive["last_seen"] if alive else None
         short = self._short(state)
         running = status == "running"
@@ -1981,7 +2017,7 @@ class RunModel:
                 "records": records, "status": status, "running": running, "agents": agents,
                 "activities": activities, "attempts": attempts, "run_start": run_start, "run_end": run_end,
                 "current": current_record if running else None, "live_check": live_check, "now": now,
-                "spans": spans, "last_seen": last_seen}
+                "spans": spans, "last_seen": last_seen, "review_rejected": rejected, "handover": handover}
 
     def _event_checks(self, spans: dict[str, Any], activities: list[Activity], running: bool, unfinished: str,
                       cutoff: float) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any] | None]:
@@ -2194,7 +2230,9 @@ class RunModel:
             "outcome": {"ship": ship.get("action", ""), "shipped": ship.get("shipped"), "target": ship.get("target", ""),
                         "url": str(ship.get("url") or (ship.get("pr").get("url", "") if isinstance(ship.get("pr"), dict) else "")),
                         "review": verdict.get("success") if verdict else None, "rounds": len(review.get("rounds") or []),
-                        "stopped_at": ship.get("stopped_at", "")},
+                        "stopped_at": ship.get("stopped_at", ""), "handover": data["handover"],
+                        "blockers": sum(1 for i in verdict.get("issues") or []
+                                        if isinstance(i, dict) and i.get("severity") == "blocker")},
             "error": clip(str(failed.get("detail", "")), 300) if failed else "",
             "failed_step": failed.get("name") if failed else "",
             "fanout_children": [c for c in fanout_children if c],
@@ -2445,7 +2483,7 @@ class RunModel:
             "scripts": scripts,
             "runlog": [short(line) for line in runlog_tail],
             "steps_detail": {name: {"detail": short(str(r.get("detail", ""))), "attempts": r.get("attempts"),
-                                    "status": r.get("status"), "started": parse_time(r.get("started")),
+                                    "status": step_status(data, name), "started": parse_time(r.get("started")),
                                     "ended": parse_time(r.get("ended"))} for name, r in records.items()},
         }
 
@@ -3337,12 +3375,13 @@ class Model:
 
 def aggregate(runs: list[dict[str, Any]]) -> dict[str, Any]:
     """Count, pass rate, total / median / mean cost and duration over run summaries."""
-    finished = [r for r in runs if r.get("status") in {"passed", "failed"}]
-    passed = sum(1 for r in finished if r["status"] == "passed")
+    finished = [r for r in runs if r.get("status") in {"passed", "failed", "handed-over"}]
+    passed = sum(1 for r in finished if r["status"] == "passed")   # a handed-over run finished, but did not pass
     costs = [float(r["cost"]) for r in runs if isinstance(r.get("cost"), (int, float))]
     durations = [float(r["duration"]) for r in finished if isinstance(r.get("duration"), (int, float))]
     return {"count": len(runs), "finished": len(finished), "passed": passed,
             "failed": sum(1 for r in finished if r["status"] == "failed"),
+            "handed_over": sum(1 for r in finished if r["status"] == "handed-over"),
             "running": sum(1 for r in runs if r.get("status") == "running"),
             "pass_rate": (passed / len(finished)) if finished else None,
             "cost_total": round(sum(costs), 6) if costs else 0.0,

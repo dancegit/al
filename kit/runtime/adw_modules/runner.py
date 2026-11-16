@@ -17,6 +17,7 @@ from .agents import CLASSES
 from .errors import LayerError, StepFailed, StepWaiting
 
 EXIT_WAITING = 75  # a (script …) step is waiting for something outside: run again with --resume
+HANDED_OVER = "handed-over"  # the workflow ran to its end, but a person decides (rejected review, gate fallback)
 
 
 class UsageError(Exception):
@@ -93,7 +94,9 @@ which model a tier means (first match wins):
 
 notifications: a --dry-run sends none of the layer's (notify …) messages unless --notify is given.
 
-exit codes: 0 passed, 1 failed (handed to a person where the workflow ships),
+exit codes: 0 passed or handed-over (the workflow ran to its end; handed-over: a rejected review or a
+              gate that fell back, so a person decides; see the summary's handoff line),
+            1 failed (handed to a person where the workflow ships),
             2 usage error, 3 refused: the layer's day limit (#:day-usd) or its subscription usage threshold (#:limit-stop-percent) is reached,
             75 waiting: a script step is waiting for something outside; run again with --resume
 """
@@ -107,7 +110,7 @@ def _parser(adw: str) -> argparse.ArgumentParser:
     parser.add_argument("--source", help="KIND:REF prompt source, e.g. issue:42")
     parser.add_argument("--class", dest="klass", choices=CLASSES, help="fix the work class (skips classify routing)")
     parser.add_argument("--adw-id", help="8 hex chars; default random")
-    parser.add_argument("--resume", action="store_true", help="continue --adw-id, skipping passed steps")
+    parser.add_argument("--resume", action="store_true", help="continue --adw-id, skipping passed and rejected steps")
     parser.add_argument("--dry-run", action="store_true", help="use the mock agent regardless of the ADW agent")
     parser.add_argument("--keep-worktree", action="store_true", help="never remove the worktree")
     parser.add_argument("--model-set", metavar="TIER", help="every agent step of this run uses TIER (see below)")
@@ -188,8 +191,7 @@ def _resumed_state(layer: Any, adw_name: str, args: argparse.Namespace) -> state
 
 def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
     checks = ", ".join(f"{name}={data['exit']}" for name, data in state.checks.items()) or "none"
-    verdict = state.review.get("verdict")
-    review = "none" if not verdict else f"{'pass' if verdict.get('success') else 'fail'} ({verdict.get('mode')})"
+    review = _review_line(state)
     ship = state.ship.get("action", "none")
     if state.ship.get("action"):
         ship += f" -> {state.ship.get('target', '')} (shipped={state.ship.get('shipped')})"
@@ -222,6 +224,35 @@ def _delivery_line(state: state_module.ADWState) -> str:
     where = f" @ {d['environment_name']}" if d.get("environment_name") else ""
     return (f"{d.get('stage')} -> {d.get('branch')} ({d.get('entry', 'merge')}; "
             f"delivered={d.get('delivered')}){where}")
+
+
+def _review_line(state: state_module.ADWState) -> str:
+    """`pass (human)`, `pass (agent) after 2 round(s)` or `rejected (auto) after 3 round(s), 2 blocker(s)`."""
+    verdict = state.review.get("verdict")
+    if not verdict:
+        return "none"
+    rounds = state.review.get("rounds") or []
+    mode = verdict.get("mode") or state.review.get("mode")
+    if not rounds:
+        return f"{'pass' if verdict.get('success') else 'fail'} ({mode})"
+    if verdict.get("success"):
+        return f"pass ({mode}) after {len(rounds)} round(s)"
+    blockers = sum(1 for issue in verdict.get("issues", []) if issue.get("severity") == "blocker")
+    return f"rejected ({mode}) after {len(rounds)} round(s), {blockers} blocker(s)"
+
+
+def handover_reasons(layer: Any, state: state_module.ADWState, adw: dict[str, Any]) -> list[str]:
+    """Why a run that reached its end is handed to a person instead of having passed: a rejected
+    review, an auto gate that decided not to ship, or a ship fallback. Agent and human reviews
+    always open a PR by design, so they are never a fallback by themselves."""
+    reasons: list[str] = []
+    if steps.review_outcome(state)[0] is False:
+        reasons.append("review-rejected")
+    option = layer.option("reviews", adw["review"]) if adw.get("review") else {}
+    auto_refused = option.get("kind") == "auto" and state.ship.get("gate", {}).get("ship") is False
+    if auto_refused or state.ship.get("fallback"):
+        reasons += [str(reason) for reason in state.ship.get("reasons") or [] if str(reason) not in reasons]
+    return reasons
 
 
 def resume_command(state: state_module.ADWState) -> str:
@@ -298,6 +329,10 @@ def _tiers_text(tiers: dict[str, Any]) -> str:
 
 def _handoff_line(state: state_module.ADWState) -> str | None:
     ship = state.ship
+    if state.status == HANDED_OVER:
+        target = ship.get("target") or f"branch {state.branch or 'none'}"
+        return (f"handoff:   finished and handed to a person: {target} "
+                f"({', '.join(ship.get('handed_over') or [])})")
     if ship.get("handoff_error"):
         return (f"handoff:   FAILED ({ship['handoff_error'][:160]}); the work stays on branch "
                 f"{state.branch or 'none'}")
@@ -331,7 +366,15 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
                 for removed in envs.collect_garbage(layer, stack.worktree_option):
                     print(f"[adw {state.adw_id}] gc: removed stale worktree {removed}")
             _execute(layer, state, adw, stack)
-        state.status, exit_code = "passed", 0
+        reasons = handover_reasons(layer, state, adw)
+        if reasons:
+            state.ship["handed_over"] = reasons
+            state.status = HANDED_OVER
+            print(f"[adw {state.adw_id}] run handed over to a person: {', '.join(reasons)}")
+        else:
+            state.ship.pop("handed_over", None)
+            state.status = "passed"
+        exit_code = 0
     except StepWaiting as exc:  # neither failed nor passed: no hand-off, the worktree stays for the resume
         state.status, exit_code = "waiting", EXIT_WAITING
         stack.keep_worktree = True
@@ -352,7 +395,7 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
             state.save(layer.layer_dir)
     finally:
         try:
-            stack.teardown(state.status == "passed")
+            stack.teardown(state.status in ("passed", HANDED_OVER))
         except (StepFailed, LayerError, OSError) as exc:
             print(f"[adw {state.adw_id}] teardown failed: {exc}")
             state.status, exit_code = "failed", 1
@@ -372,7 +415,9 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
 
 
 def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: dict[str, Any] | None = None) -> int:
-    """Entry point of adws/adw_<name>.py. Returns 0 on success, 1 on a failed run, 2 on usage errors.
+    """Entry point of adws/adw_<name>.py. Returns 0 when the run passed or was handed over (it ran to
+    its end, but a rejected review or a gate fallback leaves the decision to a person), 1 on a failed
+    run, 2 on usage errors, 3 when refused by a limit and 75 when a step is waiting.
 
     `definition` is an ADW the compiled layer does not declare (a single-command run, see
     launch.single_command_adw): it is added to the loaded IR for this run only and recorded in
