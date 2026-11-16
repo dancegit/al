@@ -6,6 +6,8 @@ Events. A run reports exactly one event (`event_of`):
 - `failed`: the run failed otherwise;
 - `shipped`: the run passed and state.ship["shipped"] is true;
 - `passed`: the run passed otherwise (also when a pull request or PR.md waits for a review).
+A run the stand-in decider is resuming (state.decision["status"] == "resuming", see decide.py)
+reports nothing: the resumed run reports its own outcome.
 
 Values. A notifier names environment variables; their values come from the process environment,
 `<layer>/local.env` and `$XDG_CONFIG_HOME/al/<layer name>.env` (see localenv). File values stay in
@@ -20,6 +22,14 @@ Certificates are verified except for a loopback host. STARTTLS is never downgrad
 The message (`compose`) is short and safe: the subject `[al] <layer>: <event in words> — <title>`
 and a few lines (workflow, run id, one or two sentences, where to look). No prompt text beyond the
 title, no log tail, no environment, no machine path, no host name.
+
+The decision block. When the stand-in decider looked at the run (state.decision has an action),
+the message adds "Decision (stand-in for a person)": the mode, the action, the step it resumes
+from and the decider's one-line summary (as a reason: first line, no machine path, at most
+REASON_MAX characters). In `suggest` mode it also says how to answer (`go`, `alter: …`, `explain`,
+`reject`, or `al answer LAYER RUN go`) and the subject ends in `[decide RUN-CODE]`: a reply by
+e-mail or webhook must carry CODE. `send_decision` sends the decider's explanation (the answer
+`explain`) as one more message through the notifiers that report `needs-human`.
 
 Runtime (`report`): called by the runner right after a handover (sends only `needs-human`) and at
 the end of a run. state.notified is written before each attempt, so there is at most one attempt
@@ -91,6 +101,8 @@ def event_of(state: Any) -> str:
     """The one event a run reports ("" for a waiting run: it neither failed nor finished)."""
     if state.status == "waiting":
         return ""
+    if (getattr(state, "decision", None) or {}).get("status") == "resuming":
+        return ""  # the decider resumes the run: the resumed run reports its own outcome
     ship = state.ship or {}
     if state.status != "passed":
         if ship.get("action") == "handoff" and not ship.get("handoff_error"):
@@ -245,10 +257,51 @@ def compose(layer: Any, state: Any, event: str, values: dict[str, str]) -> Messa
     if dashboard:
         where.append(f"- dashboard: {dashboard}")
     lines = [f"Workflow: {state.adw}", f"Run: {state.adw_id}", "", _sentences(layer, state, event, url)]
+    lines += _decision_lines(layer, state) if event == "needs-human" else []
     if where:
         lines += ["", "Where to look:", *where]
-    subject, body = _clean(f"[al] {layer.name}: {WORDS[event]} — {ship._title(state, layer)}", lines)
+    subject = f"[al] {layer.name}: {WORDS[event]} — {ship._title(state, layer)}"
+    if event == "needs-human" and _answerable(state):
+        subject += f" {decision_token(state)}"
+    subject, body = _clean(subject, lines)
     return Message(event, subject, body)
+
+
+def _shown_decision(state: Any) -> dict[str, Any]:
+    """The decision a message shows: one with an action, not skipped, not the one that resumed."""
+    decision = getattr(state, "decision", None) or {}
+    if not decision.get("action") or decision.get("skipped") or decision.get("status") in ("resuming", "resumed", "failed"):
+        return {}
+    return decision
+
+
+def _answerable(state: Any) -> bool:
+    decision = _shown_decision(state)
+    return decision.get("mode") == "suggest" and decision.get("status") in ("suggested", "explained")
+
+
+def decision_token(state: Any) -> str:
+    """`[decide RUN-CODE]`: an answer by e-mail or webhook repeats it."""
+    return f"[decide {state.adw_id}-{state.decision.get('code', '')}]"
+
+
+def _decision_lines(layer: Any, state: Any) -> list[str]:
+    decision = _shown_decision(state)
+    if not decision:
+        return []
+    lines = ["", "Decision (stand-in for a person):", f"- mode: {decision.get('mode')}",
+             f"- action: {decision.get('action')}"]
+    if decision.get("action") in ("resume", "resume-with"):
+        lines.append(f"- from step: {decision.get('from_step') or '?'}")
+    lines.append(f"- summary: {_reason(layer, state, str(decision.get('summary') or ''))}")
+    return lines + (_answer_lines(state) if _answerable(state) else [])
+
+
+def _answer_lines(state: Any) -> list[str]:
+    return ["", "To answer, reply with one line (keep the subject), or run the command:",
+            "- go: apply the suggestion", "- alter: <your changes>: apply it with your changes",
+            "- explain: send the decider's full explanation", "- reject: leave the run with a person",
+            f"- on the layer's machine: al answer LAYER {state.adw_id} go"]
 
 
 def compose_test(layer: Any, event: str, values: dict[str, str]) -> Message:
@@ -459,6 +512,38 @@ def report(layer: Any, state: Any, force: bool = False, at: str = "end") -> bool
     except Exception as exc:  # noqa: BLE001 — a notification never fails or changes a run
         print(f"[adw {getattr(state, 'adw_id', '?')}] warning: notify failed: {type(exc).__name__}")
         return False
+
+
+def send_decision(layer: Any, state: Any, text: str) -> int:
+    """The answer `explain`: one message with the decider's explanation (`text`, already without
+    machine paths) through every notifier that reports `needs-human`. Each attempt is recorded in
+    state.decision["sent"]. Returns how many notifiers accepted it. Never raises."""
+    from . import ship
+
+    accepted = 0
+    try:
+        due = [item for item in notifiers(layer) if "needs-human" in (item.get("events") or [])]
+        values = localenv.load(layer)
+        lines = [f"Workflow: {state.adw}", f"Run: {state.adw_id}", "",
+                 "The stand-in decider explains its suggestion "
+                 f"({state.decision.get('action')} from step {state.decision.get('from_step') or '?'}):", "",
+                 *str(text).splitlines()]
+        lines += _answer_lines(state) if _answerable(state) else []
+        subject, body = _clean(f"[al] {layer.name}: the decider explains — {ship._title(state, layer)} "
+                               f"{decision_token(state)}", lines)
+        message = Message("needs-human", subject, body)
+        sent = state.decision.setdefault("sent", [])
+        for notifier in due:
+            nid, kind = str(notifier.get("id")), str(notifier.get("kind"))
+            result = deliver(layer, notifier, message, values)
+            sent.append({"notifier": nid, "kind": kind, "what": "explanation", "accepted": result["accepted"],
+                         "reason": result["reason"]})
+            accepted += int(bool(result["accepted"]))
+            print(f"[adw {state.adw_id}] notify: {nid} ({kind}) explanation: "
+                  + ("sent" if result["accepted"] else f"FAILED: {result['reason']}"))
+    except Exception as exc:  # noqa: BLE001 — an explanation never fails the answer that asked for it
+        print(f"[adw {getattr(state, 'adw_id', '?')}] warning: notify failed: {type(exc).__name__}")
+    return accepted
 
 
 def test(layer: Any, event: str) -> list[dict[str, Any]]:

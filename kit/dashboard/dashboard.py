@@ -2366,6 +2366,19 @@ class RunModel:
                        "reasons": [short(r) for r in ship.get("reasons") or []],
                        "target": short(ship.get("target", "")), "error": short(ship.get("handoff_error", "")),
                        "skipped": short(ship.get("handoff_skipped", ""))}
+        decision = None
+        recorded = state.get("decision")
+        if isinstance(recorded, dict) and recorded:
+            # what the stand-in decider did (decide.py); the answer code stays in state.json
+            answers = [a for a in recorded.get("answers") or [] if isinstance(a, dict)]
+            last = answers[-1] if answers else None
+            decision = {key: short(str(recorded.get(key) or "")) for key in
+                        ("mode", "action", "from_step", "stopped_at", "summary", "instructions", "status", "skipped",
+                         "reason")}
+            decision["rounds"] = recorded.get("rounds") if isinstance(recorded.get("rounds"), int) else 0
+            decision["answer"] = ({key: short(str(last.get(key) or "")) for key in ("kind", "via", "at", "text")}
+                                  if last else None)
+            decision["file"] = "decision.md" if (self.files.dir / "decision.md").is_file() else ""
         review = state.get("review") or {}
         rounds = []
         for item in review.get("rounds") or []:
@@ -2435,7 +2448,7 @@ class RunModel:
             "review": {"mode": review.get("mode", ""), "success": (review.get("verdict") or {}).get("success"),
                        "summary": short((review.get("verdict") or {}).get("summary", "")), "rounds": rounds},
             "ship": {k: (short(v) if isinstance(v, str) else v) for k, v in ship.items() if k != "gate"},
-            "gate": gate, "handoff": handoff, "fanout": fanout, "artefacts": artefacts,
+            "gate": gate, "handoff": handoff, "decision": decision, "fanout": fanout, "artefacts": artefacts,
             "documents": run_documents(self.layer, self.id, state),
             "budget": budget_view(state),
             "usage": usage_view(state),

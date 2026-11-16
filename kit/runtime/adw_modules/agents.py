@@ -283,6 +283,9 @@ def _synthesise(layer: Any, state: Any, step: str, command: dict[str, Any]) -> s
         return json.dumps({"class": "chore", "adw": "", "model_set": "base", "slug": "mock-task"})
     if output == "json" and template == "review":
         return json.dumps({"success": True, "summary": "mock review: no issues", "issues": []})
+    if output == "json" and template == "decide":
+        return json.dumps({"action": "ask-human", "summary": "mock decider: no decision", "explanation": "mock",
+                           "instructions": "", "from_step": ""})
     return f"mock: {step} ok"
 
 
@@ -399,6 +402,16 @@ def run_agent(layer: Any, state: Any, step_name: str, command_name: str, args: l
     the call (see budget.py), and so is what the CLI says about subscription usage (see usage.py)."""
     command = layer.command(command_name)
     prompt = _render_prompt(layer, state, command_name, command, args)
+    return run_prompt(layer, state, step_name, command, prompt, model_set, env_stack, agent_id, tier_from, args)
+
+
+def run_prompt(layer: Any, state: Any, step_name: str, command: dict[str, Any], prompt: str, model_set: str,
+               env_stack: Any, agent_id: str = "", tier_from: str = "command", args: list[str] | None = None) -> str:
+    """Run an already rendered `prompt` on the ADW's agent (mock when dry-run) and return the
+    processed output. `command` gives the output type and the template (a declared command, or one
+    the runtime holds itself, such as the decider's: see decide.py). Budget, usage, events and the
+    transcript are exactly those of run_agent."""
+    args = list(args or [])
     directory = step_dir(layer, state, step_name)
     (directory / "prompt.md").write_text(prompt, encoding="utf-8")
     raw_path = directory / "raw.jsonl"

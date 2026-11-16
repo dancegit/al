@@ -1,0 +1,3 @@
+{
+  "output": "I read the hand-off. The stop looks mechanical.\n\n```json\n{\n  \"action\": \"resume-with\",\n  \"summary\": \"The test check needs the ready marker; build again and make sure it exists.\",\n  \"explanation\": \"EXPLANATION-MARKER The check `test` failed because the ready marker was missing. Nothing in the plan needs a person: no protected path, no credential. Building again with one extra instruction should be enough.\",\n  \"instructions\": \"INSTRUCTIONS-MARKER Make sure the ready marker exists before the test check runs.\",\n  \"from_step\": \"build\"\n}\n```\n"
+}

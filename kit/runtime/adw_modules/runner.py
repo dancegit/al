@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import budget, delivery, envs, events, ir, models, notify, state as state_module, steps
+from . import budget, decide, delivery, envs, events, ir, models, notify, state as state_module, steps
 from . import slots
 from .agents import CLASSES
 from .errors import LayerError, StepFailed, StepWaiting
@@ -91,6 +91,14 @@ which model a tier means (first match wins):
   runs started afterwards. Runs in flight (and resumed runs) keep the models they started with.
   state.json (agent_calls) and the run's events record the tier, model and reason of every call.
 
+the stand-in decider (when a run stops and is handed to a person):
+  --decider MODE         off, suggest or auto for this run. Environment: AL_DECIDER=MODE; else the layer's
+                         local setting (`al decider LAYER --set MODE`, agents/settings/decider.json), else off.
+                         suggest: a strong model proposes resume, resume-with, abandon or ask-human in the
+                         needs-human message; a person answers with `al answer LAYER RUN go|alter|explain|reject`,
+                         a reply to the message, or the webhook. auto: a resume starts at once, at most twice
+                         per run. It never merges or deploys: a resumed run passes every check and the gate again.
+
 notifications: a --dry-run sends none of the layer's (notify …) messages unless --notify is given.
 
 exit codes: 0 passed, 1 failed (handed to a person where the workflow ships),
@@ -115,6 +123,7 @@ def _parser(adw: str) -> argparse.ArgumentParser:
                         help="use MODEL_ID for tier TIER in this run (repeatable)")
     parser.add_argument("--max-cost", metavar="USD", help="run spending limit in US dollars for this run")
     parser.add_argument("--notify", action="store_true", help="send the layer's notifications even in a --dry-run")
+    parser.add_argument("--decider", choices=decide.MODES, help="the stand-in decider for this run (see below)")
     return parser
 
 
@@ -183,6 +192,8 @@ def _resumed_state(layer: Any, adw_name: str, args: argparse.Namespace) -> state
         state.klass, state.class_fixed = args.klass, True
     state.budget.pop("stopped", None)  # the resumed run is judged afresh against its limits
     state.usage.pop("stopped", None)
+    if state.decision.get("status") == "resuming":  # the decider (or a person's answer) started this resume
+        state.decision["status"] = "resumed"
     return state
 
 
@@ -208,6 +219,7 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"ship:      {ship}",
         *([f"delivery:  {_delivery_line(state)}"] if state.delivery else []),
         *([handoff] if handoff else []),
+        *([f"decision:  {_decision_line(state)}"] if state.decision else []),
         f"artefacts: {len(state.artefacts)}",
         *([f"resume:    {resume_command(state)}"] if state.status == "waiting" else []),
         f"state:     {state_module.run_dir(layer.layer_dir, state.adw_id) / 'state.json'}",
@@ -281,6 +293,18 @@ def _hand_off(layer: Any, state: state_module.ADWState, adw: dict[str, Any], sta
     state.save(layer.layer_dir)
 
 
+def _decision_line(state: state_module.ADWState) -> str:
+    """What the stand-in decider did, e.g. `auto resume-with from build (resuming)`."""
+    d = state.decision
+    if d.get("skipped"):
+        return f"not used ({d['skipped']})"
+    if d.get("status") == "failed":
+        return f"{d.get('mode', '?')} failed ({str(d.get('reason', ''))[:160]}); the run stays with a person"
+    answered = (d.get("answers") or [{}])[-1].get("kind") if d.get("answers") else ""
+    return (f"{d.get('mode', '?')} {d.get('action', '?')} from {d.get('from_step') or '?'} ({d.get('status', '?')})"
+            + (f"; answered {answered}" if answered else ""))
+
+
 def _overrides_text(over: dict[str, Any]) -> str:
     parts = []
     if over.get("tier"):
@@ -341,6 +365,9 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
         state.status = "failed"
         print(f"[adw {state.adw_id}] run failed: {exc}")
         _hand_off(layer, state, adw, stack, exc)
+        decide.consider(layer, state, adw, stack, args)
+        if decide.keeps_worktree(state):  # the resume (now, or after a person's `go`) continues in it
+            stack.keep_worktree = True
         if notify.report(layer, state, force=bool(getattr(args, "notify", False)), at="handover"):
             state.save(layer.layer_dir)
     except Exception as exc:  # last-resort boundary: record the crash in state instead of leaving it "running"
@@ -348,6 +375,9 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
         print(f"[adw {state.adw_id}] run crashed: {type(exc).__name__}: {exc}")
         traceback.print_exc()
         _hand_off(layer, state, adw, stack, exc)
+        decide.consider(layer, state, adw, stack, args)
+        if decide.keeps_worktree(state):  # the resume (now, or after a person's `go`) continues in it
+            stack.keep_worktree = True
         if notify.report(layer, state, force=bool(getattr(args, "notify", False)), at="handover"):
             state.save(layer.layer_dir)
     finally:
@@ -450,5 +480,6 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
                 print("\n".join(lines))
         finally:
             tee.close()
+    decide.after_run(layer, state)  # a resume the decider chose starts once this run has ended
     _speak(layer, f"ADW {adw} {state.adw_id} {state.status}. Ship: {state.ship.get('action', 'none')}.")
     return exit_code

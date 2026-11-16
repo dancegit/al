@@ -73,6 +73,10 @@ class ADWState:
     # where the run delivers when the layer declares stages (delivery.record + delivered/target, or
     # {stage, branch, refused}); empty, and then left out of state.json, for a layer without stages
     delivery: dict[str, Any] = field(default_factory=dict)
+    # the stand-in decider's last decision (decide.py): {mode, action, from_step, summary, explanation,
+    # instructions, code, status, rounds, answers: [{kind, text, via, at}]}; empty, and then left out of
+    # state.json, for a run the decider never looked at
+    decision: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -102,6 +106,8 @@ class ADWState:
             data = asdict(self)
             if not data.get("delivery"):
                 data.pop("delivery", None)  # a layer without stages writes the state.json of before
+            if not data.get("decision"):
+                data.pop("decision", None)  # so does a run the decider never looked at
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")

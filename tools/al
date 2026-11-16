@@ -42,6 +42,14 @@
   al models  LAYER [--set TIER=ID …] [--reset [TIER]]
                                    show or change which model each tier uses on this machine (a local setting,
                                    agents/settings/models.json, never committed); applies to runs started afterwards
+  al decider LAYER [--set off|suggest|auto | --reset]
+                                   show or change the stand-in decider of a stopped run on this machine (a local
+                                   setting, agents/settings/decider.json, never committed): suggest proposes what to
+                                   do in the needs-human message, auto resumes by itself (at most twice per run)
+  al answer  LAYER RUN go|alter|explain|reject [TEXT …]  |  al answer LAYER --mail
+                                   answer the decider's suggestion for RUN (go resumes it; alter TEXT resumes it with
+                                   your changes; explain sends the full explanation; reject leaves it with you), or
+                                   apply the replies to suggestions waiting in the mailbox of AL_DECIDE_IMAP_URL
   al dashboard --remote HOST [--port N] [--remote-port N] [--open]
                                    watch a deployed layer through an ssh tunnel (loopback on both ends)
   al deploy  LAYER --to HOST [--path DIR] [--dry-run] [--no-enable] | --status
@@ -1563,21 +1571,27 @@ def check_layer(layer: Path) -> list[str]:
     return problems
 
 
+LOCAL_SETTINGS = ("agents/settings/models.json", "agents/settings/decider.json")
+
+
 def tracked_settings(layer: Path, ir: dict, app: Path) -> list[str]:
-    """The layer's local model setting is machine-local: committing it is a problem."""
-    rel = "agents/settings/models.json"
+    """The layer's local settings (models, the stand-in decider's mode) are machine-local:
+    committing one is a problem."""
     if (ir.get("layer") or {}).get("kind") == "in-repo":
         try:
-            repo, path = app, f"{layer.resolve().relative_to(app.resolve()).as_posix()}/{rel}"
+            repo, prefix = app, f"{layer.resolve().relative_to(app.resolve()).as_posix()}/"
         except ValueError:
             return []
     elif (layer / ".git").exists():
-        repo, path = layer, rel
+        repo, prefix = layer, ""
     else:
         return []
-    cp = run(["git", "-C", str(repo), "ls-files", "--", path], check=False)
-    return [f"{rel} is a local setting and must not be committed: git rm --cached {line}"
-            for line in cp.stdout.splitlines() if line.strip()]
+    problems = []
+    for rel in LOCAL_SETTINGS:
+        cp = run(["git", "-C", str(repo), "ls-files", "--", prefix + rel], check=False)
+        problems += [f"{rel} is a local setting and must not be committed: git rm --cached {line}"
+                     for line in cp.stdout.splitlines() if line.strip()]
+    return problems
 
 
 DIED_AFTER = 60          # seconds without a heartbeat before a run whose process is gone counts as dead
@@ -2040,6 +2054,93 @@ def layer_models_module(layer: Path):
     return models, ir_module, errors
 
 
+def layer_decide_module(layer: Path):
+    """The layer's own decider module (adw_modules/decide.py), so `al decider`, `al answer` and the
+    layer's runs read the mode and apply answers with the same code."""
+    if not (layer / "agentic-layer.json").is_file() or not (layer / "adws/adw_modules/decide.py").is_file():
+        if (layer / "agentic-layer.json").is_file() and (layer / "adws/adw_modules").is_dir():
+            raise AlError(f"{layer} was generated before the stand-in decider: run `al gen {layer}`")
+        raise AlError(f"{layer} is not a generated layer: run `al gen {layer}` first")
+    for name in [n for n in sys.modules if n == "adw_modules" or n.startswith("adw_modules.")]:
+        del sys.modules[name]   # another layer's runtime may have been imported before
+    sys.path.insert(0, str(layer / "adws"))
+    try:
+        from adw_modules import decide, errors, ir as ir_module
+    except ImportError as exc:
+        raise AlError(f"cannot import the layer runtime from {layer / 'adws'}: {exc}") from exc
+    return decide, ir_module, errors
+
+
+def decider_cli(a: argparse.Namespace) -> int:
+    """`al decider LAYER [--set MODE | --reset]`: the stand-in decider's mode on this machine."""
+    layer = a.layer.resolve()
+    decide, ir_module, errors = layer_decide_module(layer)
+    try:
+        loaded = ir_module.load(layer)
+    except errors.LayerError as exc:
+        raise AlError(str(exc)) from exc
+    if a.set:
+        decide.write_mode(layer, a.set)
+    elif a.reset:
+        decide.write_mode(layer, "")
+    try:
+        mode, source = decide.mode_for(loaded, None)
+        local = decide.read_mode(layer)
+    except errors.LayerError as exc:
+        raise AlError(str(exc)) from exc
+    print(f"mode: {mode} ({source})")
+    if source == decide.ENV_MODE and local:
+        print(f"note: {decide.ENV_MODE} in this environment wins over the local setting ({local})")
+    print("modes: off (a person reads every hand-off), suggest (the decider proposes, a person answers with "
+          f"`al answer`), auto (the decider resumes by itself, at most {decide.MAX_AUTO_ROUNDS} times per run)")
+    print(f"settings: {layer / decide.SETTINGS_FILE} (local to this machine, never committed); "
+          "applies to runs that stop from now on; one run: --decider MODE")
+    return 0
+
+
+def answer_cli(a: argparse.Namespace) -> int:
+    """`al answer LAYER RUN go|alter|explain|reject [TEXT …]` or `al answer LAYER --mail`:
+    0 applied, 1 refused (unknown run, nothing waiting), 2 bad use."""
+    layer = a.layer.resolve()
+    if a.mail:
+        if a.run or a.answer:
+            print("al answer: --mail takes no RUN or answer", file=sys.stderr)
+            return 2
+    elif not a.run or not a.answer:
+        print("al answer: usage: al answer LAYER RUN go|alter|explain|reject [TEXT …]   or   al answer LAYER --mail",
+              file=sys.stderr)
+        return 2
+    decide, ir_module, errors = layer_decide_module(layer)
+    try:
+        loaded = ir_module.load(layer)
+    except errors.LayerError as exc:
+        raise AlError(str(exc)) from exc
+    if a.mail:
+        sys.path.insert(0, str(layer / "adws"))
+        from adw_modules import localenv
+        if not localenv.lookup(decide.ENV_IMAP, localenv.load(loaded)).strip():
+            print(f"al answer: {decide.ENV_IMAP} is not set (put imaps://USER:PASSWORD@HOST/INBOX in "
+                  f"{layer / 'local.env'} or the environment)", file=sys.stderr)
+            return 1
+        applied = decide.poll_mail(loaded, out=lambda line: print(line, flush=True))
+        print(f"answer: {applied} repl{'y' if applied == 1 else 'ies'} applied")
+        return 0
+    if a.answer not in decide.ANSWERS:
+        print(f"al answer: unknown answer {a.answer!r}; use one of {', '.join(decide.ANSWERS)}", file=sys.stderr)
+        return 2
+    text = " ".join(a.text or []).strip()
+    if a.answer == "alter" and not text:
+        print(f'al answer: alter needs the changes as text, e.g. al answer LAYER {a.run} alter "use the v2 API"',
+              file=sys.stderr)
+        return 2
+    result = decide.answer(loaded, a.run, a.answer, text, via="cli")
+    if result["status"] == "refused":
+        print(f"al answer: {result['message']}", file=sys.stderr)
+        return 2 if result["reason"] == "bad-answer" else 1
+    print(f"run {a.run}: {a.answer}: {result['message']}")
+    return 0
+
+
 def layer_delivery_module(layer: Path):
     """The layer's own delivery module (adw_modules/delivery.py), so `al cycle` and the layer's runs
     read and write the cycle state with the same code."""
@@ -2374,6 +2475,23 @@ def main(argv: list[str] | None = None) -> int:
                        help="use MODEL_ID for tier TIER in runs of this layer on this machine (repeatable)")
     group.add_argument("--reset", nargs="?", const="*", metavar="TIER",
                        help="drop the local setting of TIER, or of every tier without TIER")
+    p = sub.add_parser("decider", help="show or change the stand-in decider of stopped runs (a local setting)")
+    p.add_argument("layer", type=Path)
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--set", choices=("off", "suggest", "auto"),
+                       help="off: a person reads every hand-off; suggest: the decider proposes, a person answers; "
+                       "auto: the decider resumes by itself (at most twice per run)")
+    group.add_argument("--reset", action="store_true", help="drop the local setting (the mode is off again)")
+    p = sub.add_parser("answer", help="answer the stand-in decider's suggestion for a stopped run",
+                       description="Answer the suggestion of the stand-in decider for RUN: go (resume as suggested), "
+                       "alter TEXT (resume, with your changes added), explain (send the decider's full explanation "
+                       "through the layer's notifiers), reject (the run stays with you). --mail applies the replies "
+                       "waiting in the mailbox of AL_DECIDE_IMAP_URL instead. Exit: 0 applied, 1 refused, 2 bad use.")
+    p.add_argument("layer", type=Path)
+    p.add_argument("run", nargs="?", metavar="RUN", help="the run id (8 hexadecimal characters)")
+    p.add_argument("answer", nargs="?", metavar="go|alter|explain|reject")
+    p.add_argument("text", nargs="*", metavar="TEXT", help="with alter: your changes")
+    p.add_argument("--mail", action="store_true", help="apply the e-mail replies waiting in the mailbox")
     p = sub.add_parser("deploy", help="put an in-repo layer on another machine over ssh and keep it running there",
                        description="Put an in-repo layer and its repository on HOST over ssh (your own ssh configuration; "
                        "al stores no host name, key or password), check that HOST can run it, and keep its poller, webhook "
@@ -2476,6 +2594,10 @@ def main(argv: list[str] | None = None) -> int:
             return models_cli(a)
         elif a.cmd == "cycle":
             return cycle_cli(a)
+        elif a.cmd == "decider":
+            return decider_cli(a)
+        elif a.cmd == "answer":
+            return answer_cli(a)
         elif a.cmd == "run":
             return run_cli(a)
         elif a.cmd == "deploy":

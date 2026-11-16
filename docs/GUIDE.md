@@ -420,7 +420,8 @@ you are happy. If the workflow has a `document` step, what it wrote appears in t
 
 **If the run stops** (a check will not go green, or the agent says something needs a person), it does
 not just fail: it opens a pull request marked `[needs human]` (or writes `PR.md`) saying why it stopped
-and what it asks you to do.
+and what it asks you to do. A strong model can stand in for you at that moment and propose (or take)
+the next step: see [Let a stand-in decide when a run stops](#let-a-stand-in-decide-when-a-run-stops).
 
 *Where does the agent itself run?* By default on your machine, in the private copy, with permission to
 edit files and run commands there. To put the agent inside the container as well, the image must
@@ -873,6 +874,101 @@ One rule comes with this. An ordinary workflow that changes anything under `agen
 handed to a person, whatever its review setting: agents do not get to rewrite their own instructions
 on the way past. Layer changes go through `al improve`.
 
+## Let a stand-in decide when a run stops
+
+Many stops need only a small decision: run a flaky check again, build again with one more
+instruction, or give up. The **stand-in decider** makes that decision for you, or proposes it. When a
+run stops and is handed to you, it makes one more agent call, on the heavy tier of the workflow's
+agent (so `al models --set heavy=…` applies). That call reads why the run stopped and what the agents
+asked for, and chooses one of four actions:
+
+- `resume`: run again from the step that stopped, unchanged;
+- `resume-with`: run again from a step it names, with instructions added to the run's request;
+- `abandon`: stop here; the hand-off stays as it is;
+- `ask-human`: it cannot decide.
+
+It has two modes. With **suggest**, nothing happens until you answer: the decision goes into
+`agents/<run id>/decision.md` and into the run's `needs-human` message (e-mail or command notifier),
+whose subject ends in `[decide <run id>-<code>]`. With **auto**, a resume starts at once, at most twice
+per run. After that, and whenever the decider says `abandon` or `ask-human`, the run comes to you as
+before. A round that resumes sends no `needs-human` message, because the resumed run reports its own
+outcome. The default is **off**, which changes nothing.
+
+The mode is a setting of this machine, like `al models`. It lives in `agents/settings/decider.json`
+and is never committed (`al check` fails if it is):
+
+```console
+$ al decider ~/code/myapp.al --set suggest
+mode: suggest (local setting)
+modes: off (a person reads every hand-off), suggest (the decider proposes, a person answers with `al answer`), auto (the decider resumes by itself, at most 2 times per run)
+settings: ~/code/myapp.al/agents/settings/decider.json (local to this machine, never committed); applies to runs that stop from now on; one run: --decider MODE
+```
+
+`al decider LAYER` alone shows the mode and where it comes from, and `--reset` turns it off again.
+`AL_DECIDER=auto` in the environment wins over the setting, and `--decider MODE` on one run wins over
+both (`uv run adws/adw_change.py "…" --decider auto`).
+
+A suggestion, as `decision.md` records it:
+
+```text
+# Decision for run dec1de0a
+
+- mode: suggest
+- action: resume
+- from step: test
+- stopped at: test
+- status: suggested
+- round: 0
+
+## Summary
+
+The test check looks flaky: the build is fine, run it again.
+```
+
+**Answer it** with one word. `go` applies the suggestion, `alter TEXT` applies it with your changes
+added (a suggestion to abandon or ask a human then becomes a resume from the step that stopped,
+with your text as the instructions), `explain` sends the decider's full explanation through the
+same notifiers, and `reject` leaves the run with you:
+
+```console
+$ al answer ~/code/myapp.al dec1de0a go
+run dec1de0a: go: resuming (from step test)
+$ al answer ~/code/myapp.al dec1de0a go
+al answer: run dec1de0a has no suggestion waiting for an answer (decision status: resuming)
+```
+
+The resumed run starts in the background, in the same worktree and on the same branch. Its request
+now ends with a `## Decision` section holding the instructions, so every later step sees them.
+
+**Answer by e-mail.** Reply to the `needs-human` message with one line (`go`, `yes`, `alter: use the
+v2 API`, `yes but keep the old column`, `explain more`, `reject`, `no`) and keep the subject, because it
+carries the code. To have replies read, give the layer a mailbox in `local.env`:
+
+```text
+AL_DECIDE_IMAP_URL=imaps://USER:PASSWORD@imap.example.org/INBOX
+```
+
+The cron trigger reads unseen replies on every poll, and `al answer LAYER --mail` reads them once. A
+reply counts only if it carries the code and comes from an address in the e-mail notifier's `#:to-env`
+variable. Messages without a `[decide …]` token are left unread. Plain `imap://` is accepted only
+to this machine.
+
+**Answer by webhook.** A layer with a webhook trigger that enables `payload` events accepts:
+
+```json
+{"decision": {"run": "dec1de0a", "code": "<the code from the subject>", "answer": "go"}}
+```
+
+It is signed like every other payload. The reply is 200 when the answer was applied, 409 when it was
+refused (wrong code, or nothing waiting), and 400 for a bad payload.
+
+**What the decider never does.** It never merges, deploys, approves a pull request or gets around the
+gate: a resumed run passes every check, the review and the shipping gate again. It is never used for
+a workflow with `#:changes layer` (a person always approves those), for a run that a spending or
+usage limit stopped (money is your decision), for a waiting run or for a fan-out candidate. If its
+own call fails or answers something invalid, the run and its hand-off stay exactly as they were. The
+dashboard shows the decision on the run page as a **Decision** block. It does not take answers.
+
 ## When something goes wrong
 
 | What you see | What it means | What to do |
@@ -880,6 +976,7 @@ on the way past. Layer changes go through `al improve`.
 | `al gen` says a template uses an unknown placeholder | a hand-written template has a typo in `{{…}}` | fix the name; use only the placeholder names that appear in the kit's templates (`kit/templates/`) |
 | a run waits with `waiting for a free runs slot` | the concurrency limit is reached | wait, or raise `#:max-runs` |
 | `status: failed` and a `[needs human]` pull request | the run stopped and handed over | read "Why this stopped" in it |
+| `decision:  suggest … (suggested)` in the run summary | the stand-in decider proposes a next step | `al answer LAYER RUN go`, `alter TEXT`, `explain` or `reject` |
 | `git-integrity` failure | something in the container altered git metadata it should not | inspect `trees/<run id>`; nothing was shipped |
 | `al gen` stops with "edited by hand" | a generated file was changed directly | see step 14: eject the template, or `--discard-edits` |
 | the agent cannot edit files or run commands | permission mode or allowed tools too narrow | adjust `#:permission-mode` / `#:allowed-tools` on the agent |

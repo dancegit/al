@@ -1,0 +1,3 @@
+{
+  "output": "Resume from a step of my own.\n\n```json\n{\n  \"action\": \"resume-with\",\n  \"summary\": \"Deploy first.\",\n  \"explanation\": \"A step that does not exist.\",\n  \"instructions\": \"Deploy to the moon.\",\n  \"from_step\": \"deploy-to-moon\"\n}\n```\n"
+}

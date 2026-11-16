@@ -376,6 +376,7 @@ Every workflow makes four choices, known as **PITER**. The language offers sever
 - **Every run is isolated.** It has its own copy of the code, its own container, its own network (so two runs can both use port 8000) and, if needed, its own database.
 - **The container cannot reach into your git repository.** It can read the history but cannot move branches or plant hooks; only the host does that, after checking nothing was tampered with.
 - **Shipping without a human needs everything to agree:** all checks green, the checks re-run on the final result, the reviewer finds no blocker, the task is a kind you allowed, the change is small, and no protected file was touched. Otherwise it becomes a pull request for a person.
+- **A stand-in decider can only send work round again, never ship it.** When a run stops, a strong model may propose (or, if you allow it, take) the next step, but its only power is to resume the run, and a resumed run passes every check, the review and the gate again.
 - **The compiler enforces the dangerous combinations.** A workflow that ships by itself must run in a container. An agent with all permissions must itself be inside one.
 
 ## See it
