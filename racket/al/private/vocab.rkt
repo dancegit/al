@@ -576,12 +576,12 @@
   [accepts (list-of (enum chore bug feature patch)) (feature bug chore patch) "Work classes that go into the sprint."])
 
 (define-preset delivery gitflow
-  "Gitflow: work collects in develop; a release branch per version is cut from develop and merged into main by a person; hotfix branches are cut from main. Agents only merge into develop."
+  "Gitflow: work collects in develop; a release branch per version is cut from develop and merged into main by a person; hotfix branches are cut from main and take the bugs a workflow delivers there (#:deliver-to hotfix). Agents only merge into develop."
   #:expand (lambda (p)
              (list `(cycle release #:stage release #:name "{version}")
                    `(stage develop #:branch ,(hash-ref p 'develop) #:from main #:accepts ,all-classes #:entry merge)
                    `(stage release #:branch "release/{version}" #:from develop #:into main #:accepts () #:agents-may-merge #f)
-                   `(stage hotfix #:branch "hotfix/{date}" #:from main #:into main #:accepts () #:agents-may-merge #f)
+                   `(stage hotfix #:branch "hotfix/{date}" #:from main #:into main #:accepts (bug) #:agents-may-merge #f)
                    (final-stage p)))
   [main string "main" "The main branch; equals (codebase #:default-branch …)."]
   [develop string "develop" "The integration branch work is delivered into."])
@@ -643,6 +643,6 @@
     "(cycle sprint|release …) needs declared stages; its #:stage is a declared stage that is not the final one and whose #:branch contains {cycle} (release: {cycle} or {version}); sprint #:length-days is 1–366; #:name uses only {year} {week} {n} {date} {version}, and a release #:name contains {version}."
     "#:deliver-to names a declared stage and needs stages. Every class an ADW with a (ship) step can produce (#:classes, or all four) routes to a stage: its #:deliver-to, which must accept each of those classes, else the first declared stage that accepts the class, else the final stage. Without any stage, runs use (codebase #:default-branch …) exactly as before, and the IR has no stages, cycle or delivery key."
     "A zero-touch ADW (review auto with #:ship merge or deploy) may only deliver to stages with #:agents-may-merge #t."
-    "#:entry fast-forward is rejected with (forge github …): GitHub cannot merge a pull request by fast-forward."
+    "#:entry fast-forward is rejected with every forge (github, forgejo): a pull request is merged by merge, squash or rebase."
     "(delivery PRESET #:param value …) is declared at most once and expands to (stage …) and (cycle …) clauses (see Delivery presets); a (stage NAME …) with the name of a preset's stage replaces it, another name adds a stage; a (cycle …) next to a preset that declares one is an error."
     "Kinds marked planned compile but are refused by the generator."))

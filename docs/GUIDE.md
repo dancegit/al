@@ -640,9 +640,11 @@ step. A run started while no sprint is open is refused before it does anything
 (cycle release #:stage release #:name "{version}")
 (stage develop #:branch "develop" #:from main #:accepts (feature bug chore patch) #:entry merge)
 (stage release #:branch "release/{version}" #:from develop #:into main #:accepts () #:agents-may-merge #f)
-(stage hotfix #:branch "hotfix/{date}" #:from main #:into main #:accepts () #:agents-may-merge #f)
+(stage hotfix #:branch "hotfix/{date}" #:from main #:into main #:accepts (bug) #:agents-may-merge #f)
 (stage main #:branch "main" #:accepts () #:agents-may-merge #f)
 ```
+
+Bugs still go to `develop` (declared first) unless a workflow says `#:deliver-to hotfix`.
 
 A release branch is opened with `al cycle LAYER start --version 1.4`.
 
@@ -683,7 +685,8 @@ urgent route for bugs, which a person merges:
 ```
 
 A workflow delivers to its `#:deliver-to` stage, else to the first stage that takes its class, else to the
-final stage. A run whose class changes on the way (the classify step says `bug`, which goes elsewhere) is
+final stage. With `(delivery gitflow)` the hotfix stage already takes bugs, so only the
+`(adw hotfix … #:deliver-to hotfix)` is needed. A run whose class changes on the way (the classify step says `bug`, which goes elsewhere) is
 handed to you instead of delivered to the wrong branch.
 
 ### What the compiler refuses
@@ -693,7 +696,8 @@ handed to you instead of delivered to the wrong branch.
   `(adw zte): review `zero-touch` ships without a human, but class feature is delivered to stage `main` (branch main), where agents may not merge; deliver to a stage with #:agents-may-merge #t (e.g. #:deliver-to sprint) or use a human or agent review`.
 - Stages that do not lead to one final stage, two final stages, a final stage whose branch is not
   `#:default-branch`, two stages on one branch, an invalid branch name or an unknown placeholder.
-- `#:entry fast-forward` with `(forge github …)`, which cannot merge a pull request that way.
+- `#:entry fast-forward` with any forge (`github`, `forgejo`): a pull request is merged by merge, squash or
+  rebase.
 - `#:deliver-to` without any stage, or to a stage that does not take the workflow's classes.
 
 ### When the stage moved meanwhile

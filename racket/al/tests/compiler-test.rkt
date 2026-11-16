@@ -723,8 +723,25 @@
 
 (test-case "entry methods the forge forbids"
   (check-rejects (layer plan simple-adw '(forge github #:repo "o/r") '(stage main #:branch "main" #:entry fast-forward))
-                 #rx"GitHub cannot merge a pull request by fast-forward")
+                 #rx"\\(stage main\\): #:entry fast-forward is not possible with \\(forge github")
+  (define forgejo '(forge forgejo #:host "https://forgejo.example.org" #:repo "o/r"))
+  (check-rejects (layer plan simple-adw forgejo '(stage main #:branch "main" #:entry fast-forward))
+                 #rx"\\(stage main\\): #:entry fast-forward is not possible with \\(forge forgejo")
+  (check-rejects (layer plan simple-adw forgejo '(stage main #:branch "main")
+                        '(stage fast #:branch "fast" #:from main #:entry fast-forward))
+                 #rx"\\(stage fast\\): #:entry fast-forward is not possible with \\(forge forgejo")
+  (for ([method '(merge squash rebase)])
+    (check-not-exn (lambda () (compile-layer-datum (layer plan simple-adw forgejo `(stage main #:branch "main" #:entry ,method))))
+                   (format "~a" method)))
   (check-not-exn (lambda () (compile-layer-datum (layer plan simple-adw '(stage main #:branch "main" #:entry fast-forward))))))
+
+(test-case "gitflow: the hotfix stage takes bugs"
+  (define ir (compile-layer-datum
+              (layer plan review-cmd '(delivery gitflow)
+                     '(adw h #:review human #:classes (bug) #:deliver-to hotfix
+                           (steps (run plan #:command plan) (check t #:cmd test) (review) (ship))))))
+  (check-equal? (hash-ref (stage-named ir "hotfix") 'accepts) '("bug"))
+  (check-equal? (hash-ref (car (hash-ref ir 'adws)) 'deliverTo) "hotfix"))
 
 (test-case "deploy command from the stage"
   (define (deploy-layer main-stage)

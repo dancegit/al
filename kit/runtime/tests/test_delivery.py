@@ -320,3 +320,18 @@ def test_conflict_detection_uses_the_fetched_remote_head(make_layer, app_repo, t
     monkeypatch.setattr(delivery, "_merge_tree", lambda *a: SimpleNamespace(returncode=129, stdout="", stderr="unknown option"))
     assert delivery._conflicts(state, env_stack, head) == ["app.py"]
     assert _git(worktree, "status", "--porcelain") == ""
+
+
+def test_delivery_refers_to_no_private_name_of_review():
+    import ast
+
+    tree = ast.parse(Path(delivery.__file__).read_text(encoding="utf-8"))
+    attributes = sorted({node.attr for node in ast.walk(tree)
+                         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                         and node.value.id == "review" and node.attr.startswith("_")})
+    imported = sorted({alias.name for node in ast.walk(tree)
+                       if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[-1] == "review"
+                       for alias in node.names if alias.name.startswith("_")})
+    assert not attributes and not imported, (
+        f"delivery.py refers to private names of review: {attributes + imported}; "
+        "review.py is protected; use delivery's own helpers")
