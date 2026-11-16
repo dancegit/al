@@ -309,6 +309,31 @@ def test_layer_without_stages_runs_exactly_as_before(make_layer, app_repo):
     assert "delivery:" not in (layer / "agents/1234abcd/run.log").read_text()
 
 
+def test_class_conditional_ship_skipped_records_no_deliver_step(make_layer, app_repo, monkeypatch):
+    adw = _adw()
+    adw["steps"][-1] = {"name": "ship", "kind": "ship", "when": "class-bug"}
+    layer = _sprint_layer(make_layer, app_repo, adws=[adw])
+    _open_cycle(layer, app_repo)
+    _script(layer, "demo", "build", {"files": {"feature.py": "FEATURE = True\n"}})
+    head = _git(app_repo, "rev-parse", f"refs/heads/{SPRINT}")
+    calls: list[str] = []
+    original = delivery.before_ship
+
+    def counting(*args, **kwargs):
+        calls.append("before_ship")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(delivery, "before_ship", counting)
+    assert main("demo", layer, ["Add a feature", "--class", "feature", "--adw-id", "1234abcd"]) == 0
+    assert calls == []
+    steps = _state(layer, "1234abcd")["steps"]
+    assert not [step for step in steps if step["name"] == "deliver"]
+    assert [step["status"] for step in steps if step["name"] == "ship"] == ["skipped"]
+    types = {event["type"] for event in _events(layer, "1234abcd")}
+    assert not types & {"delivery.stale", "delivery.conflict", "delivery.result"}
+    assert _git(app_repo, "rev-parse", f"refs/heads/{SPRINT}") == head
+
+
 @pytest.mark.podman
 def test_sandboxed_delivery_into_the_sprint(make_layer, app_repo, monkeypatch):
     if shutil.which("podman") is None or subprocess.run(["podman", "info"], capture_output=True).returncode != 0:
