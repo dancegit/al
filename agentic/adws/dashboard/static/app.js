@@ -494,7 +494,7 @@
   }
 
   // =========================================================================== components: workflow graph
-  const GLYPH = { passed: "✓", failed: "✗", running: "●", pending: "○", skipped: "–", done: "•", unknown: "?", died: "⊘" };
+  const GLYPH = { passed: "✓", failed: "✗", running: "●", pending: "○", skipped: "–", done: "•", unknown: "?", died: "⊘", waiting: "⏸" };
 
   /** "claude-opus-5-5" → "opus-5-5": the part of a model name that tells models apart on a small node. */
   function shortModel(agent) {
@@ -513,7 +513,7 @@
     svg.style.maxWidth = `${graph.width}px`;
     svg.appendChild(s("defs", {}, s("marker", { id: marker, viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" },
       s("path", { d: "M0,0 L8,4 L0,8 z", class: "g-arrow" }))));
-    const live = (st) => ["passed", "failed", "running", "done", "died"].includes(st);
+    const live = (st) => ["passed", "failed", "running", "done", "died", "waiting"].includes(st);
     const edgesLayer = s("g", {});
     const labelsLayer = s("g", {});
     for (const edge of graph.edges) {
@@ -1165,7 +1165,7 @@
       const runs = store.runList();
       const uniq = (key) => [...new Set(runs.map((r) => r[key]).filter(Boolean))].sort();
       replace(filters, select("layer", "layers", store.layers.map((l) => l.key)), select("adw", "workflows", uniq("adw")),
-        select("status", "statuses", ["running", "passed", "failed", "died", "unknown"]), select("klass", "classes", uniq("klass")),
+        select("status", "statuses", ["running", "passed", "failed", "died", "waiting", "unknown"]), select("klass", "classes", uniq("klass")),
         h("label", {}, "from", from), h("label", {}, "to", to), search);
     }
 
@@ -1297,6 +1297,8 @@
             sm.status === "died" ? h("span", { class: "badge died", title: "state.json still says running, but its heartbeat stopped and its process is gone",
               text: `process died · last seen ${fmt.ago(sm.last_seen)} (${fmt.time(sm.last_seen)})` }) : null,
             sm.waiting ? h("span", { class: "badge warn", text: `waiting for a ${sm.waiting} slot` }) : null,
+            sm.status === "waiting" ? h("span", { class: "badge waiting", title: "a script step exited with a code it declares as waiting; the worktree is kept",
+              text: `⏸ waiting${sm.waiting_step ? ` at ${sm.waiting_step.name}` : ""} · resume: ${sm.resume || ""}` }) : null,
             sm.current ? h("span", { class: "badge info", text: `▶ ${sm.current.step}: ${sm.current.action}` }) : null,
             h("button", { class: "toggle", type: "button", text: "copy link", title: "copy a deep link to this view", onclick: (e) => copyLink(e.target) })),
           prompt,
@@ -1492,7 +1494,9 @@
       }
       const script = type === "script" && detail.scripts ? detail.scripts[step] : null;
       if (script) {
-        sources.push({ key: script.log, kind: "script", label: `${step} (exit ${script.exit})`, status: script.exit === 0 ? "passed" : "failed",
+        const waits = !!script.waiting;
+        sources.push({ key: script.log, kind: "script", label: `${step} (exit ${script.exit}${waits ? ", waiting" : ""})`,
+          status: script.exit === 0 ? "passed" : (waits ? "waiting" : "failed"),
           start: (detail.steps_detail[step] || {}).started, script });
       }
       if (type === "ship") {
@@ -1512,6 +1516,22 @@
       const previous = sub;
       sub = null;
       try { renderStep(previous); } finally { if (previous && previous !== sub) previous.destroy(); }
+    }
+
+    // the inner steps of a script step that follows its own journal (script.event lines), with their documents and usage
+    function innerSteps(step, sc) {
+      const docs = (detail.documents || []).filter((d) => d.kind === "inner" && d.step === step);
+      const usage = (u) => (u ? `${fmt.tokens(u.in)} in · ${fmt.tokens(u.out)} out${u.cost !== null && u.cost !== undefined ? ` · ${fmt.cost(u.cost)}` : ""}` : "");
+      const subjectDocs = (subject) => docs.filter((d) => subject && d.name.split("/")[0] === subject);
+      return h("details", { class: "section inner-steps", open: "" },
+        h("summary", { text: `inner steps (${sc.inner.length})${sc.usage ? ` · ${usage(sc.usage)}` : ""}` }),
+        h("table", { class: "inner" }, h("tbody", {}, sc.inner.map((e) => h("tr", {},
+          h("td", { class: "num dim", text: fmt.clock(e.at) }), h("td", { class: "mono", text: e.kind || "—" }),
+          h("td", { text: e.subject || "" }), h("td", { class: "num", text: usage(e.usage) }),
+          h("td", {}, subjectDocs(e.fields && e.fields.step ? e.fields.step : e.subject).map((d) =>
+            h("a", { class: "toggle", href: link(["documents"], { path: d.path }), text: d.name }))))))),
+        docs.length ? h("div", { class: "inner-docs" }, h("span", { class: "dim", text: "documents: " }),
+          docs.map((d) => h("a", { class: "toggle", href: link(["documents"], { path: d.path }), text: d.name }))) : null);
     }
 
     function renderStep(previous) {
@@ -1576,7 +1596,11 @@
         content.appendChild(h("div", { class: "dim" }, "a script step: it runs the codebase's own command; nothing fixes it when it fails, and the gate does not count it as a check"));
         content.appendChild(h("dl", { class: "kv" }, [h("dt", { text: "command" }), h("dd", { class: "mono", text: sc.cmd || "" }),
           h("dt", { text: "arguments" }), h("dd", { class: "mono", text: (sc.args || []).join(" ") || "(none)" }),
-          h("dt", { text: "exit" }), h("dd", { class: "num", text: String(sc.exit) })]));
+          h("dt", { text: "exit" }), h("dd", { class: "num", text: String(sc.exit) + (sc.waiting ? " (waiting: --resume runs it again)" : "") }),
+          sc.journal && sc.journal.path ? h("dt", { text: "journal" }) : null,
+          sc.journal && sc.journal.path ? h("dd", { class: "mono", text: `${sc.journal.path} · ${sc.journal.found ? `${sc.journal.lines} line(s)` : "not found"}`
+            + `${sc.journal.malformed ? ` · ${sc.journal.malformed} malformed` : ""}${sc.journal.refused ? ` · refused: ${sc.journal.refused}` : ""}` }) : null]));
+        if ((sc.inner || []).length) content.appendChild(innerSteps(step, sc));
         const block = h("div", { class: "textblock script-log" }, h("pre", { text: "loading…" }));
         content.appendChild(block);
         fetch(`/files/${enc(layerKey)}/${sc.log.split("/").map(enc).join("/")}`, { credentials: "same-origin" })
