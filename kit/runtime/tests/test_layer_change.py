@@ -293,6 +293,9 @@ def test_in_repo_sandboxed_run_with_real_podman(in_repo, app_repo, monkeypatch) 
     data["codebase"]["commands"] = [{"name": "test", "run": probe, "timeout": 120}]
     data["adws"][0]["environment"] = ["wt", "box"]
     (layer / "agentic-layer.json").write_text(json.dumps(data))
+    (layer / "env").mkdir(exist_ok=True)
+    (layer / "env" / "Containerfile").write_text(f"FROM {image}\n")   # the preflight builds it: nothing pulled
+    _git(app_repo, "add", "-A")
     _git(app_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "sandboxed layer")
     _script(layer, "build", {"files": {"feature.py": "FEATURE = 1\n"}})
     before = _git(app_repo, "rev-parse", "refs/heads/main")

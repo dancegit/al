@@ -891,6 +891,11 @@ def preflight(layer: Any, state: Any, adw: dict[str, Any], stack: Any) -> list[C
     on = set(option.get("preflight", list(DEFAULT_PREFLIGHT)))
     checks = doctor(layer, stack, adw, fast=True, cmds=cmds, agent=agent,
                     browser=needs_browser(layer, adw) and "browser" in on, services="services" in on)
+    if not agent_inside:
+        # git inside the container is the agent's tool; commands that need it fail their own check
+        for check in checks:
+            if check.name == "git" and check.status == "miss":
+                check.status, check.detail = "skip", "not in the image; only an agent inside the container needs it"
     missed = [check for check in checks if check.status == "miss"]
     events.say(f"[adw {state.adw_id}] preflight: {len(checks)} checks, {len(missed)} missed", "env.preflight",
                status="failed" if missed else "passed", seconds=round(time.monotonic() - started, 3),

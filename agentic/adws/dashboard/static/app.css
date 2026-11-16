@@ -250,7 +250,7 @@ svg text { font-family: var(--sans); }
 .tl-bar.k-review { fill: var(--review); } .tl-bar.k-ship { fill: var(--ship); } .tl-bar.k-fan-out { fill: var(--fan); }
 .tl-bar.k-script { fill: var(--script); }
 .tl-bar.l0 { opacity: .28; }
-.tl-bar.k-wait { fill: var(--waiting); opacity: .55; }
+.tl-bar.k-wait, .tl-bar.k-setup { fill: var(--waiting); opacity: .55; }
 .tl-bar.k-limit { fill: var(--budget); }
 .tl-bar.st-failed { fill: var(--failed); }
 .tl-bar.st-running { animation: pulse 1.4s infinite; }
@@ -414,6 +414,15 @@ video { width: 100%; max-width: 860px; max-height: 460px; background: #000; bord
 .g-node.st-waiting text.icon { fill: var(--waiting); }
 .tl-bar.st-waiting { fill: var(--waiting); opacity: .8; }
 .badge.waiting { color: var(--waiting); border-color: rgba(201, 163, 255, .45); background: rgba(201, 163, 255, .08); }
+/* a review whose final verdict failed (rejected) and its run, finished and handed to a person: not passed */
+:root { --rejected: #e3b341; }
+.s-rejected, .s-handed-over { color: var(--rejected); }
+.progress i.s-rejected, .progress i.s-handed-over { background: var(--rejected); opacity: 1; }
+.g-node.st-rejected rect.box { stroke: var(--rejected); fill: rgba(227, 179, 65, .08); }
+.g-node.st-rejected text.icon { fill: var(--rejected); }
+.tl-bar.st-rejected { fill: var(--rejected); }
+.badge.handed-over { color: var(--rejected); border-color: rgba(227, 179, 65, .45); background: rgba(227, 179, 65, .08); }
+.step-rounds { margin: 6px 0 10px; }
 /* a script step's inner steps, mirrored from its own journal */
 table.inner { border-collapse: collapse; font-size: 12px; width: 100%; }
 table.inner td { padding: 2px 8px 2px 0; vertical-align: top; }
@@ -496,6 +505,14 @@ code.cmd { font: 12px/1.5 var(--mono); color: var(--text-2); background: #0b0e13
 .job-step { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-top: 1px solid var(--border); }
 .job-step .spacer { flex: 1; }
 .job-step .num { min-width: 64px; text-align: right; }
+.job-step { flex-wrap: wrap; }
+.job-step .why { flex-basis: 100%; margin: 2px 0 4px; color: var(--text-2); overflow-wrap: anywhere; }
+.job-retry { padding-top: 8px; display: flex; align-items: center; gap: 10px; }
+table.tools { width: 100%; border-collapse: collapse; margin: 6px 0 4px; font-size: 12px; }
+table.tools th { text-align: left; color: var(--dim); font-weight: normal; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--border); }
+table.tools td { padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+table.tools tr.missing td:first-child { color: var(--failed); }
+table.tools .why { padding: 4px 8px; }
 .job-changed .changed { margin: 0; padding-left: 0; list-style: none; }
 .badge.change-added { color: var(--passed); } .badge.change-removed { color: var(--failed); } .badge.change-modified { color: var(--waiting); }
 .s-interrupted, .s-refused { color: var(--failed); }

@@ -352,6 +352,8 @@ def test_sandboxed_delivery_into_the_sprint(make_layer, app_repo, monkeypatch):
     data = json.loads((layer / "agentic-layer.json").read_text())
     data["environments"].append(sandbox)
     (layer / "agentic-layer.json").write_text(json.dumps(data))
+    (layer / "env").mkdir(exist_ok=True)
+    (layer / "env" / "Containerfile").write_text(f"FROM {image}\n")   # the preflight builds it: nothing pulled
     _open_cycle(layer, app_repo)
     _script(layer, "demo", "build", {"files": {"feature.py": "FEATURE = True\n"}})
     assert main("demo", layer, ["Add a feature", "--class", "feature", "--adw-id", "1234abcd"]) == 0

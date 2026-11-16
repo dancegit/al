@@ -273,6 +273,9 @@
     const o = run.outcome || {};
     if (run.usage && run.usage.stopped) return limitBadge(run);
     if (run.budget && run.budget.stopped) return budgetBadge(run);
+    if (run.status === "handed-over") {
+      return h("span", { class: "badge handed-over", title: (o.handover || []).join(", "), text: "handed to a person" });
+    }
     if (o.ship === "merge" && o.shipped) return h("span", { class: "badge good", text: "merged" });
     if (o.ship === "deploy" && o.shipped) return h("span", { class: "badge good", text: "deployed" });
     if (o.ship === "handoff") return h("span", { class: "badge warn", text: "needs human" });
@@ -525,7 +528,7 @@
   }
 
   // =========================================================================== components: workflow graph
-  const GLYPH = { passed: "✓", failed: "✗", running: "●", pending: "○", skipped: "–", done: "•", unknown: "?", died: "⊘", waiting: "⏸" };
+  const GLYPH = { passed: "✓", failed: "✗", running: "●", pending: "○", skipped: "–", done: "•", unknown: "?", died: "⊘", waiting: "⏸", rejected: "⊗", "handed-over": "↪" };
 
   /** "claude-opus-5-5" → "opus-5-5": the part of a model name that tells models apart on a small node. */
   function shortModel(agent) {
@@ -544,7 +547,7 @@
     svg.style.maxWidth = `${graph.width}px`;
     svg.appendChild(s("defs", {}, s("marker", { id: marker, viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" },
       s("path", { d: "M0,0 L8,4 L0,8 z", class: "g-arrow" }))));
-    const live = (st) => ["passed", "failed", "running", "done", "died", "waiting"].includes(st);
+    const live = (st) => ["passed", "failed", "running", "done", "died", "waiting", "rejected", "handed-over"].includes(st);
     const edgesLayer = s("g", {});
     const labelsLayer = s("g", {});
     for (const edge of graph.edges) {
@@ -1065,11 +1068,13 @@
       const runs = store.runList();
       const running = runs.filter((r) => r.status === "running").sort((a, b) => (a.started || 0) - (b.started || 0));
       const day = runs.filter((r) => r.started && r.started > now() - 86400);
-      const finishedDay = day.filter((r) => r.status === "passed" || r.status === "failed");
+      const finishedDay = day.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over");
+      const handedDay = finishedDay.filter((r) => r.status === "handed-over").length;
       const costDay = day.reduce((sum, r) => sum + (r.cost || 0), 0);
       replace(strip,
         stat("running", running.length, running.filter((r) => r.waiting).length ? `${running.filter((r) => r.waiting).length} waiting` : ""),
-        stat("runs, 24 h", day.length, finishedDay.length ? `${fmt.pct(finishedDay.filter((r) => r.status === "passed").length / finishedDay.length)} passed` : ""),
+        stat("runs, 24 h", day.length, finishedDay.length ? `${fmt.pct(finishedDay.filter((r) => r.status === "passed").length / finishedDay.length)} passed`
+          + (handedDay ? ` · ${handedDay} handed over` : "") : ""),
         stat("cost, 24 h", fmt.cost(costDay), day.some((r) => costLabel(r)) ? "API-equivalent" : ""),
         ...store.layers.filter((l) => l.budget).map((l) => budgetStat(l)),
         stat("layers watched", store.layers.length),
@@ -1197,7 +1202,7 @@
       const runs = store.runList();
       const uniq = (key) => [...new Set(runs.map((r) => r[key]).filter(Boolean))].sort();
       replace(filters, select("layer", "layers", store.layers.map((l) => l.key)), select("adw", "workflows", uniq("adw")),
-        select("status", "statuses", ["running", "passed", "failed", "died", "waiting", "unknown"]), select("klass", "classes", uniq("klass")),
+        select("status", "statuses", ["running", "passed", "handed-over", "failed", "died", "waiting", "unknown"]), select("klass", "classes", uniq("klass")),
         h("label", {}, "from", from), h("label", {}, "to", to), search);
     }
 
@@ -1228,12 +1233,14 @@
 
     function render() {
       const runs = filtered();
-      const finished = runs.filter((r) => r.status === "passed" || r.status === "failed");
+      const finished = runs.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over");
       const passed = finished.filter((r) => r.status === "passed").length;
+      const handedOver = finished.filter((r) => r.status === "handed-over").length;
       const costs = runs.map((r) => r.cost).filter((c) => c !== null && c !== undefined);
       const durations = finished.map((r) => r.duration).filter((d) => d !== null && d !== undefined);
       const stat = (label, value, small) => h("div", { class: "stat" }, h("div", { class: "label", text: label }), h("div", { class: "value" }, value, small ? h("small", { text: ` ${small}` }) : null));
       replace(totals, stat("runs", runs.length, `${finished.length} finished`), stat("pass rate", fmt.pct(finished.length ? passed / finished.length : null), `${passed}/${finished.length}`),
+        stat("handed over", handedOver),
         stat("total cost", fmt.cost(costs.reduce((a, b) => a + b, 0))), stat("median cost", fmt.cost(median(costs))),
         stat("median time", fmt.dur(median(durations))), stat("total time", fmt.dur(durations.reduce((a, b) => a + b, 0))));
       const body = h("tbody");
@@ -1324,6 +1331,8 @@
           h("div", { class: "line1" }, pill(sm.status), h("h1", { text: `${sm.adw}` }), h("span", { class: "mono dim", text: sm.id }),
             h("span", { class: "badge", text: sm.layer }), sm.klass ? h("span", { class: "badge", text: `class ${sm.klass}` }) : null,
             sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, outcomeBadge(sm),
+            sm.status === "handed-over" && (sm.outcome.handover || []).length
+              ? h("span", { class: "badge handed-over", title: "why a person decides", text: `↪ ${sm.outcome.handover.join(", ")}` }) : null,
             sm.fanout_parent ? h("a", { class: "badge info", href: `#/run/${enc(layerKey)}/${enc(sm.fanout_parent)}`,
               text: sm.fanout && sm.fanout.index ? `candidate ${sm.fanout.index} of ${sm.fanout_parent}${sm.fanout.step ? ` (${sm.fanout.step})` : ""}` : `candidate of ${sm.fanout_parent}` }) : null,
             sm.status === "died" ? h("span", { class: "badge died", title: "state.json still says running, but its heartbeat stopped and its process is gone",
@@ -1371,7 +1380,7 @@
       const sw = (colour) => { const i = h("i"); i.style.background = colour; return i; };
       const wrap = h("div", { class: "tl-wrap" });
       const draw = () => replace(wrap, renderTimeline(detail.timeline, { width: wrap.clientWidth || 800, onBar: (bar) => {
-        if (bar.kind === "wait" || bar.kind === "limit") return;
+        if (bar.kind === "wait" || bar.kind === "limit" || bar.kind === "setup") return;
         if (bar.kind === "agent") go(link(["step", bar.step || bar.ref], { agent: bar.ref }));
         else if (bar.kind === "check" || bar.kind === "gate") go(link(["step", bar.step || bar.check], { attempt: bar.ref }));
         else go(link(["step", bar.step]));
@@ -1476,24 +1485,7 @@
           review.mode ? h("span", { class: "badge", text: review.mode }) : null,
           review.success === true ? h("span", { class: "badge good", text: "approved" }) : review.success === false ? h("span", { class: "badge bad", text: "rejected" }) : null));
         if (!review.rounds.length && review.summary) block.appendChild(h("div", { class: "dim", text: review.summary }));
-        for (const round of review.rounds) {
-          block.appendChild(h("div", { class: "dim", text: `round ${round.round}: ${round.success ? "approved" : "not approved"}` }));
-          for (const reviewer of round.reviewers) {
-            const issues = [...reviewer.issues].sort((a, b) => ["blocker", "tech_debt", "skippable"].indexOf(a.severity) - ["blocker", "tech_debt", "skippable"].indexOf(b.severity));
-            block.appendChild(h("div", { class: "reviewer" },
-              h("span", { class: reviewer.success ? "s-passed" : "s-failed", text: reviewer.success ? "✓" : "✗" }),
-              h("div", {}, h("a", { href: link(["step", "review"], { agent: reviewer.dir }), class: "mono", text: reviewer.dir }), " ", h("span", { text: reviewer.summary }),
-                issues.length ? h("ul", { class: "issues" }, issues.map((issue) => h("li", { class: `sev-${issue.severity}` },
-                  h("span", { class: `badge sev-${issue.severity}`, text: issue.severity }), " ", h("span", { class: "desc", text: issue.description }),
-                  issue.resolution ? h("div", { class: "res", text: `→ ${issue.resolution}` }) : null))) : null)));
-          }
-          if (round.patch) {
-            block.appendChild(h("div", { class: "reviewer" }, h("span", { class: "s-running", text: "↺" }),
-              h("div", {}, "patch: ", h("a", { href: link(["step", "review"], { agent: round.patch.dirs[0] }), class: "mono", text: round.patch.dirs[0] }), " → ",
-                h("a", { href: link(["step", "review"], { agent: round.patch.dirs[1] }), class: "mono", text: round.patch.dirs[1] }),
-                round.patch.rerun.length ? ` → re-checked ${round.patch.rerun.join(", ")}` : "")));
-          }
-        }
+        block.append(...reviewRounds(review));
         blocks.push(block);
       }
       if (Object.keys(detail.fanout || {}).length) {
@@ -1566,6 +1558,30 @@
           docs.map((d) => h("a", { class: "toggle", href: link(["documents"], { path: d.path }), text: d.name }))) : null);
     }
 
+    /** Each review round's verdicts, every reviewer's issues and the patch between rounds. */
+    function reviewRounds(review) {
+      const out = [];
+      for (const round of review.rounds) {
+        out.push(h("div", { class: "dim", text: `round ${round.round}: ${round.success ? "approved" : "not approved"}` }));
+        for (const reviewer of round.reviewers) {
+          const issues = [...reviewer.issues].sort((a, b) => ["blocker", "tech_debt", "skippable"].indexOf(a.severity) - ["blocker", "tech_debt", "skippable"].indexOf(b.severity));
+          out.push(h("div", { class: "reviewer" },
+            h("span", { class: reviewer.success ? "s-passed" : "s-failed", text: reviewer.success ? "✓" : "✗" }),
+            h("div", {}, h("a", { href: link(["step", "review"], { agent: reviewer.dir }), class: "mono", text: reviewer.dir }), " ", h("span", { text: reviewer.summary }),
+              issues.length ? h("ul", { class: "issues" }, issues.map((issue) => h("li", { class: `sev-${issue.severity}` },
+                h("span", { class: `badge sev-${issue.severity}`, text: issue.severity }), " ", h("span", { class: "desc", text: issue.description }),
+                issue.resolution ? h("div", { class: "res", text: `→ ${issue.resolution}` }) : null))) : null)));
+        }
+        if (round.patch) {
+          out.push(h("div", { class: "reviewer" }, h("span", { class: "s-running", text: "↺" }),
+            h("div", {}, "patch: ", h("a", { href: link(["step", "review"], { agent: round.patch.dirs[0] }), class: "mono", text: round.patch.dirs[0] }), " → ",
+              h("a", { href: link(["step", "review"], { agent: round.patch.dirs[1] }), class: "mono", text: round.patch.dirs[1] }),
+              round.patch.rerun.length ? ` → re-checked ${round.patch.rerun.join(", ")}` : "")));
+        }
+      }
+      return out;
+    }
+
     function renderStep(previous) {
       for (const child of [...body.children]) if (child !== graphCard) child.remove();
       const step = state.step;
@@ -1589,6 +1605,9 @@
         headEl.appendChild(h("a", { class: "toggle", href: link(["documents"], { path: doc.path }), text: `document: ${doc.name}` }));
       }
       panel.appendChild(headEl);
+      if (type === "review" && detail.review && detail.review.rounds.length) {
+        panel.appendChild(h("div", { class: "step-rounds" }, reviewRounds(detail.review)));
+      }
       panel.refreshHead = () => {};
       if (sources.length > 1 || type === "check" || type === "review") panel.appendChild(chips);
       if (type === "fan-out") {
@@ -2107,14 +2126,16 @@
       clear(grid);
       for (const layer of store.layers) {
         const runs = store.runList().filter((r) => r.layer === layer.key);
-        const finished = runs.filter((r) => r.status === "passed" || r.status === "failed");
+        const finished = runs.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over");
         const passed = finished.filter((r) => r.status === "passed").length;
+        const handedOver = finished.filter((r) => r.status === "handed-over").length;
         const cost = runs.reduce((sum, r) => sum + (r.cost || 0), 0);
         grid.appendChild(h("div", { class: "card layer-card", tabindex: 0, onclick: () => go(`#/layer/${enc(layer.key)}`) },
           h("div", { class: "card-head" }, h("h3", { text: layer.name }), layer.key !== layer.name ? h("span", { class: "dim mono", text: layer.key }) : null,
             h("span", { class: "spacer" }), layer.running ? h("span", { class: "badge info", text: `${layer.running} running` }) : null),
           h("div", { class: "dim mono", text: layer.dir }), layer.description ? h("div", { text: layer.description }) : null,
           h("div", { class: "adw-stats" }, h("span", {}, h("b", { text: runs.length }), " runs"), h("span", {}, h("b", { text: fmt.pct(finished.length ? passed / finished.length : null) }), " passed"),
+            handedOver ? h("span", {}, h("b", { text: handedOver }), " handed over") : null,
             h("span", {}, h("b", { text: fmt.cost(cost) }), " total"), h("span", {}, h("b", { text: layer.adws.length }), " workflows")),
           h("div", { class: "piter" }, layer.adws.map((name) => h("span", { class: "badge", text: name })))));
       }
@@ -2342,6 +2363,7 @@
         h("div", { class: "card al-panel" }, h("div", { class: "card-head" }, h("h3", { text: "al" }),
           h("span", { class: "dim", text: "each button runs exactly the command line shown under it" })),
           data.al.found ? null : h("div", { class: "why", text: `The al tool was not found; the actions need it. Looked for: ${data.al.looked.join(", ")}` }),
+          toolsTable(data.al.tools || []),
           actions),
         data.jobs.length ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", { text: "Jobs" })),
           h("div", { class: "job-list" }, data.jobs.map((job) => h("a", { class: "job-row", href: `#/job/${enc(job.id)}` },
@@ -2349,6 +2371,18 @@
             h("span", { class: "faint", text: fmt.ago(job.created) }))))) : null,
         data.summary ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", { text: "Existing agent setup" })),
           h("div", { class: "md" }, renderMarkdown(data.summary))) : null);
+    }
+
+    /** What al doctor sees on this machine: each tool, where it was found (or why not), its version. */
+    function toolsTable(tools) {
+      if (!tools.length) return null;
+      return h("table", { class: "tools" },
+        h("thead", {}, h("tr", {}, ["tool", "found where", "version"].map((text) => h("th", { text })))),
+        h("tbody", {}, tools.map((tool) => h("tr", { class: tool.found ? "" : "missing", dataset: { tool: tool.tool } },
+          h("td", { class: "mono", text: tool.tool }),
+          h("td", {}, tool.found ? [h("span", { class: "mono", text: tool.path }), " ", h("span", { class: "faint", text: `(${tool.source})` })]
+            : h("div", { class: "why", text: tool.sentence })),
+          h("td", { class: "dim", text: tool.version || "" })))));
     }
 
     filter.addEventListener("input", renderList);
@@ -2401,13 +2435,15 @@
         h("div", { class: "dim" }, h("span", { class: "mono", text: job.repo_dir }), job.layer ? [" · layer ", h("span", { class: "mono", text: job.layer })] : null,
           ` · started ${fmt.time(job.started || job.created)} · `,
           job.status === "running" && job.started ? h("span", { dataset: { since: job.started }, text: fmt.dur(duration) }) : fmt.dur(duration)),
-        job.reason ? h("div", { class: "why", text: job.reason }) : null)));
+        job.reason ? h("div", { class: "why", text: job.reason }) : null,
+        job.retry_from && store.actions.enabled ? h("div", { class: "job-retry" }, retryButton(job)) : null)));
       replace(steps, h("div", { class: "card-head" }, h("h3", { text: "Steps" }), h("span", { class: "dim", text: "run in order; the first that fails stops the job" })),
         job.steps.map((step) => h("div", { class: `job-step s-${step.status}`, dataset: { step: step.name } },
           pill(step.status), h("code", { class: "cmd", text: step.display }),
           h("span", { class: "spacer" }),
           h("span", { class: "num dim", text: step.exit !== null && step.exit !== undefined ? `exit ${step.exit}` : "" }),
-          h("span", { class: "num dim", text: step.started ? fmt.dur((step.ended || now()) - step.started) : "" }))));
+          h("span", { class: "num dim", text: step.started ? fmt.dur((step.ended || now()) - step.started) : "" }),
+          step.reason ? h("div", { class: "why", text: step.reason }) : null)));
       replace(changed, h("div", { class: "card-head" }, h("h3", { text: "Changed files" })),
         job.status === "running" ? h("div", { class: "faint", text: "listed when the job ends" })
           : [job.changed.length ? h("ul", { class: "changed" }, job.changed.map((c) => h("li", {}, h("span", { class: `badge change-${c.change}`, text: c.change }), " ",
@@ -2420,6 +2456,29 @@
           h("td", { class: "actions" }, h("button", { type: "button", class: "toggle", "data-role": "view", text: "View", onclick: () => showDoc(doc.name) }))))))
           : h("div", { class: "faint", text: "none" }));
       if (shownDoc) showDoc(shownDoc);
+    }
+
+    /** "Retry from STEP": the steps that did not pass run again (a retried author accepts the agentic.rkt
+     * the earlier attempt left, when it compiles); the passed ones and the output stay. */
+    function retryButton(job) {
+      const from = job.retry_from;
+      const names = job.steps.map((step) => step.name);
+      const again = names.slice(names.indexOf(from));
+      const note = h("span", { class: "dim" });
+      const button = h("button", { type: "button", class: "btn writes", text: `Retry from ${from}` });
+      button.addEventListener("click", async () => {
+        if (!window.confirm(`Run ${again.join(", ")} again for ${job.repo_name}? The steps that passed are kept.`)) return;
+        button.disabled = true;
+        try {
+          await api.post("/api/job/retry", { job: job.id, from });
+          await load();
+        } catch (error) {
+          note.className = "why error";
+          note.textContent = error.message;
+          button.disabled = false;
+        }
+      });
+      return [button, " ", note];
     }
 
     async function showDoc(name) {

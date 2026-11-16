@@ -1912,38 +1912,6 @@ def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print,
     made_branches: set[str] = set()
     problems: list[str] = []
     try:
-        try:
-            stack = envs.build(loaded, state, env_ids)
-            with contextlib.redirect_stdout(sys.stderr):  # runtime progress lines never mix into our stdout
-                stack.setup()
-        except (LayerError, StepFailed) as exc:
-            raise AlError(f"environment setup failed: {exc}") from exc
-        if Path(state.worktree).resolve() != worktree:
-            raise AlError(f"the runtime moved the run to {state.worktree}; refusing to continue")
-        stack.cwd = worktree  # also for host-only stacks: never the application's own working tree
-        say(f"verify: {len(selected)} cmd(s) of `{loaded.name}` in the environment of ADW `{adw['name']}` "
-            f"({' → '.join(env_ids) or 'host'}), worktree {worktree}")
-        for name in skipped:
-            say(f"  skip  {name}  (never run implicitly; name it with --cmd {name})")
-        for c in selected:
-            limit = int(timeout if timeout is not None else c.get("timeout", 1800))
-            started = time.monotonic()
-            try:
-                with contextlib.redirect_stdout(sys.stderr):
-                    argv = stack.wrap(str(c["run"]))  # may build an image / start the run's container
-                code, output = _run_group(argv, worktree, stack.process_env(), limit)
-            except (LayerError, StepFailed) as exc:  # e.g. the podman image does not build
-                code, output = 125, f"environment failed before the command ran: {exc}\n"
-            seconds = round(time.monotonic() - started, 1)
-            log = out_dir / f"{c['name']}.log"
-            log.write_text(output)
-            report.append({"name": c["name"], "cmd": c["run"], "exit": code, "seconds": seconds,
-                           "log": log.relative_to(layer).as_posix(),
-                           "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
-            say(f"  {'ok  ' if code == 0 else 'FAIL'}  {c['name']}  exit {code}  {seconds}s")
-            if code != 0:
-                for line in output.splitlines()[-VERIFY_TAIL:]:
-                    say(f"        {line}")
         for index, (env_ids, adw) in enumerate(stacks):
             rows, branch, trouble = _verify_stack(loaded, layer, app, adw, list(env_ids), selected, timeout, say,
                                                   out_dir, envs, (LayerError, StepFailed), several=len(stacks) > 1,
@@ -2016,7 +1984,7 @@ def _verify_stack(loaded, layer: Path, app: Path, adw: dict, env_ids: list[str],
         for name in skipped:
             say(f"  skip  {name}  (never run implicitly; name it with --cmd {name})")
         for c in selected:
-            limit = int(timeout if timeout is not None else c.get("timeout", 900))
+            limit = int(timeout if timeout is not None else c.get("timeout", 1800))
             started = time.monotonic()
             try:
                 with contextlib.redirect_stdout(sys.stderr):

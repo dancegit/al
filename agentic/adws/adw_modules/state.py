@@ -16,6 +16,8 @@ from .errors import LayerError
 
 HEARTBEAT_SECONDS = 5.0   # state.json's heartbeat is refreshed this often while the run is alive
 _SAVE_LOCK = threading.RLock()  # the heartbeat thread and the run never interleave a save
+# steps a resume does not run again; a rejected review returned normally and its verdict stays in state.review
+FINISHED_STEP_STATUSES = ("passed", "rejected")
 
 
 def now() -> str:
@@ -73,6 +75,8 @@ class ADWState:
     # where the run delivers when the layer declares stages (delivery.record + delivered/target, or
     # {stage, branch, refused}); empty, and then left out of state.json, for a layer without stages
     delivery: dict[str, Any] = field(default_factory=dict)
+    # the sandbox image this run uses (al-<layer>:<recipe hash>), recorded by the preflight; "" without podman
+    image: str = ""
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -89,8 +93,8 @@ class ADWState:
         return record
 
     @property
-    def passed_steps(self) -> set[str]:
-        return {str(step["name"]) for step in self.steps if step.get("status") == "passed"}
+    def finished_steps(self) -> set[str]:
+        return {str(step["name"]) for step in self.steps if step.get("status") in FINISHED_STEP_STATUSES}
 
     def mark_alive(self) -> None:
         self.pid, self.host, self.heartbeat = os.getpid(), socket.gethostname(), now()
