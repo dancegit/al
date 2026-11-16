@@ -11,7 +11,7 @@ import pytest
 
 import dashboard as d
 from conftest import start_server, stop_server
-from fixtures import iso, rec, state
+from fixtures import at, iso, rec, state
 
 NAME = "suite-shop"
 WAITING, PASSED = "5a170001", "5a170002"
@@ -30,6 +30,11 @@ IR = {
                         {"kind": "ship", "name": "ship", "message": ""}]}],
 }
 T0 = 1_000.0
+
+
+def epoch(seconds: float) -> float:
+    """The epoch time of fixture second `seconds` (fixtures.iso counts from a fixed date)."""
+    return at(seconds).timestamp()
 
 
 def _event(seq: int, at: float, type_: str, **fields) -> str:
@@ -117,14 +122,14 @@ def test_script_events_become_inner_steps_under_the_script_step(layer):
     assert [(i["kind"], i["subject"]) for i in inner] == [
         ("watch.check", "review-queue"), ("agent.start", "orbit-round-review"), ("agent.end", "orbit-round-review"),
         ("note", "done")]
-    assert inner[0]["at"] == pytest.approx(T0 + 3) and inner[0]["fields"]["ready"] is True
+    assert inner[0]["at"] == pytest.approx(epoch(T0 + 3)) and inner[0]["fields"]["ready"] is True
     assert "time" not in inner[0]["fields"] and "kind" not in inner[0]["fields"]
     bars = [b for b in detail["timeline"]["bars"] if b["kind"] == "inner"]
     assert all(b["step"] == "run" and b["level"] == 1 for b in bars)
     ids = [b["id"] for b in bars]
     assert "inner:run:2" in ids and "inner:run:3" not in ids          # agent.start … agent.end is one bar
     pair = next(b for b in bars if b["id"] == "inner:run:2")
-    assert pair["start"] == pytest.approx(T0 + 4) and pair["end"] == pytest.approx(T0 + 9)
+    assert pair["start"] == pytest.approx(epoch(T0 + 4)) and pair["end"] == pytest.approx(epoch(T0 + 9))
     point = next(b for b in bars if b["id"] == "inner:run:1")
     assert point["start"] == point["end"]
 
@@ -166,7 +171,7 @@ def test_unknown_foreign_fields_and_odd_lines_do_not_break_the_model(tmp_path):
     inner = detail["scripts"]["run"]["inner"]
     assert inner[0]["kind"] == "x" and inner[0]["at"] is not None and inner[0]["usage"] is None
     keyed = next(i for i in inner if i["line"] == 8)
-    assert keyed["at"] == pytest.approx(T0 + 21) and keyed["kind"] == "" and "what" in keyed["fields"]
+    assert keyed["at"] == pytest.approx(epoch(T0 + 21)) and keyed["kind"] == "" and "what" in keyed["fields"]
     assert all(i["line"] not in (7, 9) for i in inner)                    # not an object: skipped
     assert detail["summary"]["status"] == "waiting"
 

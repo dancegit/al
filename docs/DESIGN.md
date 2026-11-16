@@ -456,18 +456,19 @@ to its check, a re-check and the reviewers to the review step).
 | `type` | Fields |
 |---|---|
 | `run.start` | `adw`, `adw_id`, `klass`, `dry_run`, `resumed`, `pid`, `host`, `fanout_parent` (`{run, step, index}` or null), `overrides` (`{tier, models, max_cost, from}` or null), `limits` (`{run, step, day, run_from, limit_percent, on_limit, wait_minutes}` or null) |
-| `run.end` | `status` (passed / failed), `exit` |
+| `run.end` | `status` (passed / failed / waiting), `exit` (75 for waiting) |
 | `slot.wait` | `pool` (runs / agents / checks), `limit`, `who` |
 | `slot.acquire` | `pool`, `slot`, `waited` (seconds), `who` |
 | `slot.release` | `pool`, `slot`, `held` (seconds), `who` |
 | `env.container.start` / `env.container.stop` | `name` |
 | `step.start` | `step`, `kind`, `attempt` |
-| `step.end` | `step`, `kind`, `status` (passed / failed / skipped), `detail`, `seconds` |
+| `step.end` | `step`, `kind`, `status` (passed / failed / skipped / waiting), `detail`, `seconds` |
 | `agent.start` | `step` (the agent's directory: `build`, `test-resolve-1`, `review-2-1`, `patch-1`, …), `owner`, `agent` (option id), `agent_kind` (claude-code / codex / custom / mock), `model`, `model_set` (= `tier`), `tier`, `tier_from` (override / request / step / command), `model_from` (agent / override), `effort`; emitted before the call waits for an `agents` slot (a `slot.wait` / `slot.acquire` with `who` = `adw <id> step <dir>` follows) |
 | `agent.end` | as `agent.start`, plus `status` (passed / failed), `seconds`, and when the transcript says so `cost` (USD), `turns`, `duration_ms`; `billing` (subscription / api-key, when the transcript's init event says so; else empty); `error` on failure |
 | `check.start` | `step` (check step, or `gate` / `deploy`), `owner`, `phase` (check / recheck / gate / deploy), `cmd` (codebase cmd name), `attempt`, `log` (layer-relative) |
 | `check.end` | as `check.start`, plus `exit`, `seconds` |
 | `script.start` / `script.end` | `step`, `owner`, `cmd` (codebase cmd name), `log` (layer-relative); `script.end` adds `exit`, `seconds` |
+| `script.event` | `step`, `owner` (the script step), `line` (the line number in the script's own `events.jsonl`), `foreign` (that line's JSON object, unchanged) |
 | `budget.stop` | `step` (the agent call that crossed the limit, or the one refused), `limit` (run / step / day), `spent`, `of`, `reason` (`budget:<limit>: spent $X of $Y`) |
 | `limit.status` | `step` (the agent call's directory), `owner`, `window` (the CLI's name: `five_hour`, `seven_day`, …), `status` (allowed / allowed_warning / rejected), `used` (0–1, or null when the CLI gave no share), `resets_at` (ISO-8601 UTC or null), `at` (time of the nearest transcript line that has one, or null), `billing`, `raw` (the CLI's `rate_limit_info`, unchanged); one per window and call, more only when a value changed during the call |
 | `limit.stop` | `step`, `window`, `cause` (reached = the CLI refused or cut off the call / threshold), `status`, `used`, `percent` (the threshold, or null), `resets_at`, `reason` (`limit:<window>: …; resets …`) |
@@ -487,3 +488,15 @@ thread of the run, so a run whose heartbeat is old and whose process is gone has
 of memory, machine rebooted) rather than still working; the dashboard shows it as **died**, and `al
 check` lists such runs. A fan-out candidate's state names its parent (`fanout_parent`), and each step
 record names the agent (`agent`, `agent_kind`, `model`) that ran it.
+
+A `script` step can declare exit codes that mean "waiting for something outside" (`#:waiting-exit
+(75)`): the step and the run end `waiting` (exit 75), the worktree is kept, no hand-off is written
+and no failure is notified, and `--resume` runs the step again with `ADW_RESUME=1`. A script that
+keeps its own run journal (`#:journal ".work/adw/{adw_id}"`, relative to the worktree) is followed
+while it runs: a daemon thread (`adw_modules/journal.py`) reads the folder's `events.jsonl` from the
+last offset, only complete lines, and emits each JSON object as a `script.event` (anything else is
+counted as malformed); after the script it sweeps once more. Each sub-folder's `prompt.md` and
+`output*` files (regular files only, no symlinks, at most 1 MB) are copied to
+`agents/<id>/scripts/<step>/journal/<inner>/` and recorded in `state.scripts[<step>].documents`. A
+folder whose real path leaves the worktree is refused and nothing is read; a missing folder is not
+an error. The mirrored lines are data: the dashboard shows them as text.

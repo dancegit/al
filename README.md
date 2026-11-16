@@ -413,7 +413,9 @@ If the repository already has an agent setup (`CLAUDE.md`, `AGENTS.md`, `.claude
 folder), `al scout` lists it in `LLM.txt`, and `tools/al adopt ~/code/myapp.al --app ~/code/myapp` brings
 it into the layer: rule files become documents every agent must read, your prompts become commands, your
 workflow scripts become proposed workflows a person reviews. It never changes your repository; what needs
-your decision is in `adopted/REPORT.md`.
+your decision is in `adopted/REPORT.md`. A hand-built ADW suite (scripts in `adws/` sharing a runtime
+package) is recognised as a whole, and its workflows can be run through the layer and watched on the
+dashboard, including a `waiting` state ([guide](docs/GUIDE.md#run-a-script-you-already-have)).
 
 Then give two prompts to an LLM agent (for example Claude Code), in this repository:
 
