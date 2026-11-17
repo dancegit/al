@@ -168,6 +168,7 @@
   (unless (null? pos) (fail "~a: unexpected ~s; fields are given as #:keyword value" who (car pos)))
   (define id (cond [(assq '#:id kws) => (lambda (p) (name->string (cdr p) who))]
                    [else (symbol->string (kind-name k))]))
+  (when (eq? fname 'environment) (check-environment-source (kind-name k) kws who))
   (compile-fields (kind-fields k) kws who #:extra '(#:id)
                   #:init (hasheq 'id id 'kind (symbol->string (kind-name k))
                                  'status (symbol->string (kind-status k)))))
@@ -178,6 +179,34 @@
                   #:init (hasheq 'id (symbol->string (kind-name k))
                                  'kind (symbol->string (kind-name k))
                                  'status (symbol->string (kind-status k)))))
+
+;; Keyword-level checks of an environment option that reuses the repository's own setup
+;; (#:containerfile, #:devcontainer, #:flake): which keywords go together, and that every path
+;; stays inside the repository. Value-level rules (needs packages or flake, one source per layer)
+;; are checked with the whole layer in compile-layer-datum.
+(define (check-environment-source kind kws who)
+  (define (given? kw) (and (assq kw kws) #t))
+  (case kind
+    [(podman)
+     (when (> (length (filter given? '(#:base-image #:containerfile #:devcontainer))) 1)
+       (fail "~a: the image comes from at most one of #:base-image, #:containerfile, #:devcontainer; keep one" who))
+     (for ([kw '(#:target #:context)])
+       (when (and (given? kw) (not (given? '#:containerfile)))
+         (fail "~a: ~a needs #:containerfile (a dev container names its own build target and context)" who kw)))]
+    [(nix-devshell)
+     (when (and (given? '#:shell) (not (given? '#:flake)))
+       (fail "~a: #:shell needs #:flake (it names a dev shell of the repository's flake)" who))
+     (define shell (assq '#:shell kws))
+     (when (and shell (string? (cdr shell)) (not (regexp-match? #px"^[A-Za-z0-9_-]+$" (cdr shell))))
+       (fail "~a: #:shell must be the name of a dev shell: letters, digits, _ and - (got ~s)" who (cdr shell)))]
+    [else (void)])
+  (for ([kw '(#:containerfile #:context #:devcontainer #:flake)])
+    (define p (assq kw kws))
+    (when (and p (string? (cdr p)))
+      (define path (cdr p))
+      (when (or (string=? (string-trim path) "") (regexp-match? #rx"^/" path) (member ".." (components path)))
+        (fail "~a: ~a must be a path relative to the repository root without `..` or a leading `/` (got ~s)"
+              who kw path)))))
 
 ;; --- codebase ---------------------------------------------------------------------------
 
@@ -548,6 +577,7 @@
            (when (eq? (family-name fam) 'cycle) (hash-set! clause-of 'cycle-clause (car c)))
            (when (eq? (family-name fam) 'agent) (hash-set! clause-of (cons 'agent (hash-ref o 'id)) (car c)))
            (when (eq? (family-name fam) 'notify) (hash-set! clause-of (cons 'notify (hash-ref o 'id)) (car c)))
+           (when (eq? (family-name fam) 'environment) (hash-set! clause-of (cons 'environment (hash-ref o 'id)) (car c)))
            (hash-set! options (family-name fam) (cons o existing))]
           [(eq? (car d) 'codebase)
            (when codebase (fail "(codebase …) given twice"))
@@ -745,6 +775,22 @@
               [("codex") (when (equal? e "max")
                            (fail "~a #:models: tier `~a` has #:effort max, which codex does not offer; use low, medium, high or xhigh" who t))]
               [else (fail "~a #:models: tier `~a` has #:effort ~a, but a ~a agent has no way to pass it; remove #:effort" who t e (hash-ref ag 'kind))])))))
+    ;; environment sources: one image and one flake per layer, and a nix shell needs something to hold
+    (for ([kind '("podman" "nix-devshell")]
+          [keys '((containerfile devcontainer) (flake))]
+          [kws '(("#:containerfile" "#:devcontainer") ("#:flake"))])
+      (define of-kind (filter (lambda (o) (equal? (hash-ref o 'kind) kind)) (opts 'environment)))
+      (for ([o (in-list (if (pair? of-kind) (cdr of-kind) '()))])
+        (parameterize ([current-clause (hash-ref clause-of (cons 'environment (hash-ref o 'id)) #f)])
+          (for ([k (in-list keys)] [kw (in-list kws)])
+            (unless (string=? (hash-ref o k) "")
+              (fail "(environment ~a #:id ~a): only the first declared ~a option may use ~a: the layer builds one ~a"
+                    kind (hash-ref o 'id) kind kw (if (equal? kind "podman") "image (al-<layer>)" "flake (env/flake.nix)")))))))
+    (for ([o (in-list (opts 'environment))] #:when (equal? (hash-ref o 'kind) "nix-devshell"))
+      (parameterize ([current-clause (hash-ref clause-of (cons 'environment (hash-ref o 'id)) #f)])
+        (when (and (null? (hash-ref o 'packages)) (string=? (hash-ref o 'flake) ""))
+          (fail "(environment nix-devshell~a): needs #:packages (…) for a generated shell, or #:flake \"DIR\" to use the repository's own dev shell"
+                (if (equal? (hash-ref o 'id) "nix-devshell") "" (format " #:id ~a" (hash-ref o 'id)))))))
     (define forge (car (opts 'forge)))
     (define no-forge? (equal? (hash-ref forge 'kind) "none"))
     (define voice (let ([v (opts 'voice)]) (and (pair? v) (car v))))
@@ -1077,6 +1123,11 @@
         (when (null? env-kinds) (fail "~a: #:environment is empty" who))
         (define dup-env (check-duplicates env-kinds))
         (when dup-env (fail "~a: environment stack has two `~a` options" who dup-env))
+        (when (and (member "prepare" step-names)
+                   (for/or ([id (in-list (hash-ref a 'environment))])
+                     (define o (opt 'environment id))
+                     (and (equal? (hash-ref o 'kind) "worktree") (pair? (hash-ref o 'prepare)))))
+          (fail "~a: step name `prepare` is reserved for the environment's #:prepare setup step; rename the step" who))
         (when (and (member "host" env-kinds) (member "worktree" env-kinds))
           (fail "~a: `host` and `worktree` environments cannot be combined" who))
         (when (and (not (member "worktree" env-kinds))

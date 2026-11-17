@@ -127,6 +127,24 @@ Prompts that only the suite's own runtime reads stay where they are instead of b
 report gains "Run an existing workflow" (the exact command, the resume command and what a person must
 decide) and "Model routing" (the suite's tiers beside the layer's; al does not change them).
 
+**`## Environment`** says what your repository already declares about where it runs, read from tracked
+files and never executed: a flake's dev shells, `shell.nix` or devenv, a Containerfile's stages, a dev
+container, compose services, versions in `.tool-versions`, `mise.toml`, `.nvmrc`, `.python-version`,
+`rust-toolchain`, `pyproject.toml`, `package.json` and `go.mod`, lockfiles, browser test dependencies, the
+packages and services your CI installs, and the variables a run needs (names only). Where two files
+disagree it lists a conflict. It ends with a proposed declaration, every line citing its file:
+
+```racket
+(cmd prepare-deps "bun install --frozen-lockfile" #:description "dependencies resolve") ; from bun.lock
+
+(environment worktree #:prepare (prepare-deps)) ; from bun.lock
+(environment nix-devshell #:flake "." #:shell "default" #:browser #t) ; from flake.nix:14, package.json
+```
+
+The first line goes inside `(codebase …)`, the others at the top level. Check the conflicts: each
+`;; conflict:` line is a decision for you (which Node version does the run use?). `al scout --json` has
+the same data under `environment`.
+
 *If it goes wrong:* the agent invents a command. Delete the row. A command that is not written down in
 your repository does not belong in `LLM.txt`.
 
@@ -224,6 +242,38 @@ told agents to read), and a live dashboard under `adws/`.
 Open one prompt, for example `commands/plan-chore.md`, and read it as if you were the agent. It should
 mention your real commands and paths. If it reads as generic, your `LLM.txt` conventions were thin; add
 them and repeat steps 4 to 6.
+
+### Reuse the environment the repository already describes
+
+If your repository already has a flake dev shell, a Containerfile or a dev container, the layer uses it
+instead of a retyped copy (the proposal in `LLM.txt` does this for you):
+
+| You have | Declare | What `al gen` writes |
+|---|---|---|
+| `flake.nix` with `devShells` | `(environment nix-devshell #:flake "." #:shell "default")` | `env/flake.nix`, which wraps your dev shell (`inputsFrom`) and adds only `#:packages` and `#:browser` |
+| a `Containerfile` / `Dockerfile` | `(environment podman #:containerfile "Containerfile" #:target "dev" #:context ".")` | a thin `env/Containerfile` on top of your image: the run user's home, `#:packages`, `#:setup`, a browser, the agent CLI when it runs inside; the entrypoint is reset |
+| `.devcontainer/devcontainer.json` | `(environment podman #:devcontainer ".devcontainer/devcontainer.json")` | the same thin layer on its `image` or `build`; known features as packages, `containerEnv`, `forwardPorts` as published ports, `postCreateCommand` as the prepare step |
+
+Your files are read from the default branch and never edited. Each run builds your Containerfile from
+its own worktree (`localhost/al-<layer>-base`) when it changed, and the thin layer on top as
+`al-<layer>:<recipe hash>`. That hash also covers your Containerfile and its context on the default
+branch (or the dev container's image), so a change there gives a new image at the next run; old ones
+are pruned by `al sandbox LAYER prune`. A flake is refreshed at the start of every run, so a run uses the
+default branch as it is then. `env/SOURCE.md` says what was reused and what was not (dev container
+feature versions, `remoteUser`, `mounts`, `runArgs`, lifecycle commands other than `postCreateCommand`,
+`customizations`); `al gen` prints the same as `note:` lines. A dev container made of compose services is
+refused: use `#:containerfile` with its Dockerfile, or `#:base-image`. Compose services are proposed as
+`(service container …)` declarations; al never starts them from your compose file.
+
+Dependency installs get a place of their own: `(environment worktree #:prepare (install))` runs the
+`install` cmd once per run, after the worktree exists and before the first step, in the run's environment
+(a container's caches are mounted). The dashboard shows it as a `setup` step; if it fails, the run ends
+at once with its output. `#:browser #t` on a nix-devshell or podman option adds a headless Chromium and
+sets `AL_BROWSER` and `CHROME_BIN`.
+
+Limits: `al sandbox LAYER build` and `push` need the base image a run or `al verify LAYER` built first
+(they say so when it is missing); the flake wrapper carries your shell's inputs and `shellHook` but not plain attributes set
+on the shell derivation.
 
 ## Step 7 — Prove the commands are true
 
@@ -1272,6 +1322,39 @@ With `#:fallback-build #f` the deploy stops instead.
 A deploy also works while runs are in flight on the host. The checkout is updated through a
 temporary repository, so commits that live only in a run's private object store never get in the way.
 
+## Where it runs: platforms
+
+`al doctor --platform` says what this machine can run. It asks only podman and Nix about themselves and
+changes nothing:
+
+```
+$ al doctor --platform
+al doctor --platform: what this host can run
+
+  os                 Linux x86_64
+  podman             5.2.1, rootless
+  nix                2.24.9, flakes enabled
+  host browser       chromium
+  environment kinds  worktree, nix-devshell, podman
+  browser feature    nix-devshell, podman
+  zero-touch         yes
+
+zero-touch: a workflow that ships without a person can run here (it runs in podman)
+
+notes:
+  - podman runs natively; rootless podman is what al expects
+  - the browser feature of a nix-devshell option (#:browser #t) works: Chromium from nixpkgs
+```
+
+| Host | worktree | nix-devshell | podman | zero-touch |
+|---|---|---|---|---|
+| Linux x86-64 / arm64 | yes | yes (browser feature: yes) | yes, rootless | yes |
+| macOS | yes | yes (browser feature: no, use podman) | through `podman machine`: bind mounts slower, only shared folders (home) mountable, ports forwarded to 127.0.0.1 | yes, with a running machine |
+| Windows | inside WSL | inside WSL | through `podman machine` (WSL); keep app and layer in the WSL filesystem | yes, with a running machine |
+| neither podman nor Nix | yes | no | no | no (compiler rule) |
+
+On arm64, the images you use must exist for `linux/arm64`. `--json` prints the same facts as JSON.
+
 ## When something goes wrong
 
 | What you see | What it means | What to do |
@@ -1291,6 +1374,8 @@ temporary repository, so commits that live only in a run's private object store 
 | `al adopt` refuses to write | a file it wrote earlier was edited by hand | move your change into `agentic.rkt`, or `--force` |
 | a run fails at `preflight` with a table | its container lacks something the workflow needs | the `fix` column names the declaration to change; `al gen`, then `al sandbox LAYER doctor` until it passes |
 | the image did not change although you changed `env/Containerfile` by hand | the Containerfile is generated: `al gen` overwrites it from `agentic.rkt` | change `#:packages` / `#:setup` in `agentic.rkt`; `al sandbox LAYER status` shows the recipe hash |
+| a podman or Nix environment does not start on this machine | podman or Nix is missing, stopped or not set up for al | run `al doctor --platform`: it says what is missing and what can run here |
+| a run fails at its `prepare` step | an install command of `#:prepare` (or the dev container's `postCreateCommand`) failed | read its log on the dashboard or in `agents/<run id>/scripts/prepare.1.log` |
 
 Every run leaves `agents/<run id>/`: `state.json` (what happened), `run.log`, each step's exact prompt
 and raw agent output, and each check's log. Start there.

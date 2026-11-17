@@ -1549,6 +1549,13 @@
                 "description": "Ports reserved per run (exported as ADW_PORT_0..n).",
                 "type": "integer"
               },
+              "prepare": {
+                "description": "Codebase cmds run once per run, in order, after the worktree exists and before the first step, in the run's environment (a container's caches are mounted): dependency installs such as `uv sync`, `bun install`, `cargo fetch`. Shown as a `setup` step; a failure ends the run with that output. With a podman #:devcontainer and no #:prepare, the dev container's postCreateCommand is the prepare step.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "sparse": {
                 "description": "Sparse-checkout these directories only (cone mode); empty = full checkout. For large monorepos.",
                 "items": {
@@ -1570,6 +1577,7 @@
               "kind",
               "portBase",
               "portsPerRun",
+              "prepare",
               "sparse",
               "status"
             ],
@@ -1579,6 +1587,14 @@
             "additionalProperties": false,
             "description": "A Nix flake dev shell generated in the layer; every codebase command and the agent run inside `nix develop`.",
             "properties": {
+              "browser": {
+                "description": "Add a headless Chromium (Linux) and set AL_BROWSER and CHROME_BIN to it, for browser tests.",
+                "type": "boolean"
+              },
+              "flake": {
+                "description": "Directory of the repository's own flake, relative to its root (\".\" = top level). Its dev shell #:shell is used (read from the default branch, refreshed at the start of every run); #:packages and #:browser are added on top. Empty = a shell generated from #:packages.",
+                "type": "string"
+              },
               "id": {
                 "type": "string"
               },
@@ -1590,7 +1606,7 @@
                 "type": "string"
               },
               "packages": {
-                "description": "nixpkgs attribute names providing the toolchain (e.g. python312 uv).",
+                "description": "nixpkgs attribute names providing the toolchain (e.g. python312 uv); with #:flake, extras added on top of the repository's dev shell.",
                 "items": {
                   "type": "string"
                 },
@@ -1599,6 +1615,10 @@
               "pure": {
                 "description": "Use `nix develop --ignore-environment` (keeps HOME, PATH is nix-only).",
                 "type": "boolean"
+              },
+              "shell": {
+                "description": "Name of the dev shell in the repository's flake (devShells.<system>.<name>). Only with #:flake.",
+                "type": "string"
               },
               "shellHook": {
                 "description": "Extra shell hook.",
@@ -1609,11 +1629,14 @@
               }
             },
             "required": [
+              "browser",
+              "flake",
               "id",
               "kind",
               "nixpkgs",
               "packages",
               "pure",
+              "shell",
               "shellHook",
               "status"
             ],
@@ -1670,12 +1693,24 @@
                 "description": "Base image.",
                 "type": "string"
               },
+              "browser": {
+                "description": "Install a headless Chromium in the image and set AL_BROWSER and CHROME_BIN.",
+                "type": "boolean"
+              },
               "caches": {
                 "description": "Named cache volumes shared across runs, mounted at /caches/NAME. Known names also set the tool's cache variable: uv, pip, cargo, go, npm, pre-commit.",
                 "items": {
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "containerfile": {
+                "description": "Path of the repository's own Containerfile or Dockerfile, relative to its root. The run builds it (from the run's worktree) as the base image; al adds only a thin final layer (run user home, #:packages, #:setup, #:browser, the agent CLI when #:agent-inside #t, no entrypoint). The repository's file is never edited.",
+                "type": "string"
+              },
+              "context": {
+                "description": "Build context of #:containerfile, relative to the repository root. Only with #:containerfile.",
+                "type": "string"
               },
               "cpus": {
                 "description": "CPU limit.",
@@ -1691,6 +1726,10 @@
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "devcontainer": {
+                "description": "Path of the repository's dev container file (e.g. .devcontainer/devcontainer.json). Honoured: image or build (dockerfile, context, target), known features, containerEnv, postCreateCommand (as the prepare step), forwardPorts (as published ports). Everything else is listed in env/SOURCE.md and by al gen.",
+                "type": "string"
               },
               "id": {
                 "type": "string"
@@ -1757,14 +1796,22 @@
               },
               "status": {
                 "const": "stable"
+              },
+              "target": {
+                "description": "Build stage of #:containerfile (podman build --target). Only with #:containerfile.",
+                "type": "string"
               }
             },
             "required": [
               "agentInside",
               "baseImage",
+              "browser",
               "caches",
+              "containerfile",
+              "context",
               "cpus",
               "credentials",
+              "devcontainer",
               "id",
               "kind",
               "memory",
@@ -1776,7 +1823,8 @@
               "scope",
               "services",
               "setup",
-              "status"
+              "status",
+              "target"
             ],
             "type": "object"
           }

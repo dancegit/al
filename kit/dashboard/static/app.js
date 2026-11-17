@@ -599,6 +599,7 @@
       const status = opts.static ? "pending" : (node.status || "pending");
       const classes = ["g-node", `st-${status}`];
       if (node.type === "script") classes.push("t-script-node");
+      if (node.type === "setup") classes.push("t-setup-node");
       if (opts.selected && opts.selected === node.step && node.type !== "candidate") classes.push("selected");
       if (node.picked) classes.push("picked");
       const meta = [];
@@ -1843,7 +1844,7 @@
           sources.push({ key: at.file, kind: "check", label: `${name} #${at.attempt}${at.phase ? " (re-check)" : ""}${at.running ? " (running)" : ""}`, status, start: at.start || at.end, attempt: at, check: name });
         }
       }
-      const script = type === "script" && detail.scripts ? detail.scripts[step] : null;
+      const script = (type === "script" || type === "setup") && detail.scripts ? detail.scripts[step] : null;
       if (script) {
         const waits = !!script.waiting;
         sources.push({ key: script.log, kind: "script", label: `${step} (exit ${script.exit}${waits ? ", waiting" : ""})`,

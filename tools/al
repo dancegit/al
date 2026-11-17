@@ -23,9 +23,12 @@
                                    with the layer's LLM.txt, then compiles it; never overwrites an agentic.rkt
                                    (--accept-existing: take one that is already there if it compiles); prints
                                    progress lines and the agent's report (--raw: the agent's event stream)
-  al doctor  [LAYER] [--for CMD,…] [--agent A] [--json]
+  al doctor  [LAYER] [--for CMD,…] [--agent A] [--platform] [--json]
                                    where al finds racket, raco, uv, git and the agent CLI, with versions;
-                                   --for: only whether CMD's prerequisites are there (exit 4 when not)
+                                   --for: only whether CMD's prerequisites are there (exit 4 when not);
+                                   with --platform: what this host can run: OS, architecture, podman (machine,
+                                   rootless), Nix (flakes), a host browser, the environment kinds and whether
+                                   zero-touch can run
   al adopt   LAYER [--app APP] [--dry-run [--diff]] [--only rules|prompts|workflows …]
                                    bring a codebase's existing agent setup (rule files, prompts, workflow
                                    scripts) into the layer, deterministically; reports what a person must decide
@@ -288,6 +291,7 @@ def scout(app: Path, layer: Path | None = None) -> dict:
         "existing_agent_setup": existing,
         "existing_adw_suite": suite_module().detect_suite(app, tracked),
         "delivery": delivery_module().detect(app, tracked, forge_layer=layer, default_branch=head),
+        "environment": envscan_module().detect(app, tracked, cmds, nix + ["git"]),
     }
 
 
@@ -340,6 +344,22 @@ def suite_module():
         sys.path.insert(0, str(ROOT / "tools"))
     import al_suite
     return al_suite
+
+
+def envscan_module():
+    """tools/al_envscan.py: read-only detection of the environment a repository already describes (`al scout`, `al gen`)."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_envscan
+    return al_envscan
+
+
+def platform_module():
+    """tools/al_platform.py: the host's platform facts for `al doctor --platform`."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_platform
+    return al_platform
 
 
 def author_module():
@@ -408,6 +428,10 @@ def render_llm_txt(s: dict) -> str:
     def bullets(items, empty="- (none found)"):
         return "\n".join(f"- {i}" for i in items) or empty
     rows = "\n".join(f"| {c['name']} | `{c['shell']}` | {c['proves']} | UNVERIFIED | {c['network']} |" for c in s["commands"])
+    env = s.get("environment")
+    system = ", ".join(f"`{p['name']}` ({p['file']}:{p['line']})" for p in (env or {}).get("system_packages", [])) or "UNVERIFIED"
+    services = ", ".join(f"`{v['id']}` ({v['image']})" for v in (env or {}).get("services", [])) or "UNVERIFIED"
+    environment = (envscan_module().render_section(env) + "\n\n") if env else ""
     layout = "\n".join(
         f"- `{d}/` — {n} files" + (" (tests)" if d in s["tests"] else " (docs)" if d in s["docs"] else "")
         for d, n in s["top"])
@@ -445,10 +469,10 @@ def render_llm_txt(s: dict) -> str:
 
 - nixpkgs attributes (guess from languages): {' '.join(s['nix'])}
 - Package manager: {s['package_manager'] or 'UNVERIFIED'}
-- System packages: UNVERIFIED
-- Services: UNVERIFIED
+- System packages: {system}
+- Services: {services}
 
-## Artefacts
+{environment}## Artefacts
 
 - log — always (captured command output)
 - junit / coverage / images / video / traces: UNVERIFIED — state the flag that emits each and the glob where it lands
@@ -832,6 +856,29 @@ WantedBy=default.target
 """
 
 
+BROWSER_APT = ["chromium", "fonts-liberation"]
+BROWSER_ENV = "ENV AL_BROWSER=/usr/bin/chromium CHROME_BIN=/usr/bin/chromium"
+BROWSER_NIX_PACKAGES = " ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.chromium ]"
+BROWSER_NIX_HOOK = """ + lib.optionalString pkgs.stdenv.isLinux ''
+              export AL_BROWSER=${pkgs.chromium}/bin/chromium
+              export CHROME_BIN=$AL_BROWSER
+            ''"""
+AGENT_CLI_INSTALL = {
+    "claude-code": "HOME=/opt/claude bash -c 'curl -fsSL https://claude.ai/install.sh | bash' && chmod -R a+rX /opt/claude "
+                   "&& ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude",
+    "codex": "npm install -g @openai/codex",
+}
+
+
+def apt_guarded(packages: list[str], why: str) -> str:
+    """A RUN line installing Debian packages into an image al did not choose: when the image has no
+    apt-get it says what to do instead of failing obscurely."""
+    names = " ".join(packages)
+    return (f"RUN if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends "
+            f"{names} && rm -rf /var/lib/apt/lists/*; else echo 'al: this image has no apt-get; install {names} ({why}) "
+            f"with #:setup' >&2; exit 1; fi")
+
+
 def runs_in(adw: dict, environments: dict) -> tuple[str, str]:
     """(where the agent runs, where the checks run), as README cells; tools/explain.py: where_it_runs is the long form."""
     stack = [environments[i] for i in adw["environment"]]
@@ -855,6 +902,7 @@ class Generator:
         self.cb = ir["codebase"]
         self.cmds = {c["name"]: c for c in self.cb["commands"]}
         self.in_repo = (ir.get("layer") or {}).get("kind") == "in-repo"
+        self.notes: list[str] = []  # what `al gen` does not honour of the application's own setup files
 
     @property
     def written(self) -> list[str]:
@@ -1018,10 +1066,22 @@ if __name__ == "__main__":
     def environments(self) -> None:
         name = self.ir["name"]
         envs = {e["kind"]: e for e in reversed(self.ir["environments"])}  # first declared of each kind wins
+        source: dict = {"version": 1, "podman": None, "nix": None}  # env/source.json: what the runtime reuses
+        source_md: list[str] = []                                     # env/SOURCE.md: the same, for a person
         if "nix-devshell" in envs:
             e = envs["nix-devshell"]
             hook = e["shellHook"].replace("''", "'''")
-            self.write("env/flake.nix", f'''# Generated by al from agentic.rkt — do not edit.
+            if e["flake"]:
+                self.flake_wrapper(e, hook)
+                source["nix"] = {"option": e["id"], "flake": e["flake"], "shell": e["shell"]}
+                source_md += self.flake_source_md(e)
+            else:
+                packages = f"with pkgs; [ {' '.join(e['packages'])} ]"
+                lib_line, hook_tail = "", ""
+                if e["browser"]:  # only then: a layer without #:browser generates exactly what it did before
+                    packages = f"({packages}){BROWSER_NIX_PACKAGES}"
+                    lib_line, hook_tail = "\n      lib = nixpkgs.lib;", BROWSER_NIX_HOOK
+                self.write("env/flake.nix", f'''# Generated by al from agentic.rkt — do not edit.
 {{
   description = "Agentic layer toolchain for {name}";
 
@@ -1030,17 +1090,17 @@ if __name__ == "__main__":
   outputs = {{ self, nixpkgs }}:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
-      forAllSystems = nixpkgs.lib.genAttrs systems;
+      forAllSystems = nixpkgs.lib.genAttrs systems;{lib_line}
     in {{
       devShells = forAllSystems (system:
         let pkgs = import nixpkgs {{ inherit system; }};
         in {{
           default = pkgs.mkShell {{
-            packages = with pkgs; [ {' '.join(e['packages'])} ];
+            packages = {packages};
             shellHook = \'\'
               export AL_LAYER="{name}"
               {hook}
-            \'\';
+            \'\'{hook_tail};
           }};
         }});
     }};
@@ -1060,13 +1120,178 @@ if __name__ == "__main__":
 ''', local=True)
         if "podman" in envs:
             e = envs["podman"]
-            lines = [f"# Generated by al from agentic.rkt — do not edit.\nFROM {e['baseImage']}"]
-            if e["packages"]:
-                lines.append("RUN apt-get update && apt-get install -y --no-install-recommends "
-                             + " ".join(e["packages"]) + " && rm -rf /var/lib/apt/lists/*")
-            lines += [f"RUN {s}" for s in e["setup"]]
-            lines += ["ENV HOME=/tmp/home", "RUN mkdir -p /tmp/home && chmod 1777 /tmp/home", "WORKDIR /work", ""]
-            self.write("env/Containerfile", "\n".join(lines))
+            if e["containerfile"] or e["devcontainer"]:
+                source["podman"], md = self.sourced_containerfile(e)
+                source_md += md
+            else:
+                lines = [f"# Generated by al from agentic.rkt — do not edit.\nFROM {e['baseImage']}"]
+                if e["packages"]:
+                    lines.append("RUN apt-get update && apt-get install -y --no-install-recommends "
+                                 + " ".join(e["packages"]) + " && rm -rf /var/lib/apt/lists/*")
+                if e["browser"]:
+                    lines += ["RUN apt-get update && apt-get install -y --no-install-recommends "
+                              + " ".join(BROWSER_APT) + " && rm -rf /var/lib/apt/lists/*", BROWSER_ENV]
+                lines += [f"RUN {s}" for s in e["setup"]]
+                lines += ["ENV HOME=/tmp/home", "RUN mkdir -p /tmp/home && chmod 1777 /tmp/home", "WORKDIR /work", ""]
+                self.write("env/Containerfile", "\n".join(lines))
+        if source["podman"] or source["nix"]:
+            self.write("env/source.json", json.dumps(source, indent=2, sort_keys=True) + "\n")
+            self.write("env/SOURCE.md", "# Where this layer's environment comes from\n\n"
+                       "Generated by `al gen` from agentic.rkt and the application's own setup files, read from its "
+                       "default branch: never edited, never executed by `al gen`.\n\n" + "\n".join(source_md))
+
+    # ---------------------------------------------------------------- environments the repository describes
+
+    def app_file(self, rel: str, who: str) -> str:
+        """A file of the application as it is on its default branch (`git show`), never the working tree."""
+        app, branch = app_root_of(self.layer, self.ir), self.cb["defaultBranch"]
+        cp = run(["git", "-C", str(app), "show", f"{branch}:{rel}"], check=False)
+        if cp.returncode != 0:
+            raise AlError(f"{who}: {rel} is not on branch {branch} of the application ({app})")
+        return cp.stdout
+
+    @staticmethod
+    def flake_file(flake: str) -> str:
+        directory = flake.strip("/")
+        return "flake.nix" if directory in ("", ".") else f"{directory}/flake.nix"
+
+    def flake_wrapper(self, e: dict, hook: str) -> None:
+        """env/flake.nix wrapping the repository's own dev shell (inputsFrom) and adding the extras.
+        It names this machine's checkout of the application, so it is a local file."""
+        name, branch = self.ir["name"], self.cb["defaultBranch"]
+        self.app_file(self.flake_file(e["flake"]), "(environment nix-devshell)")
+        directory = e["flake"].strip("/")
+        url = (f"git+file://{app_root_of(self.layer, self.ir)}?ref={branch}"
+               + ("" if directory in ("", ".") else f"&dir={directory}"))
+        packages = f"(with pkgs; [ {' '.join(e['packages'])} ])" + (BROWSER_NIX_PACKAGES if e["browser"] else "")
+        self.write("env/flake.nix", f'''# Generated by al from agentic.rkt — do not edit.
+# Wraps the dev shell `{e['shell']}` of the application's own flake ({self.flake_file(e['flake'])} on branch {branch}):
+# its packages, inputs and shellHook come from there (inputsFrom); al adds only what is below. The
+# `app` input is refreshed at the start of every run, so each run uses the default branch as it is then.
+{{
+  description = "Agentic layer toolchain for {name}: the application's dev shell {e['shell']}";
+
+  inputs.nixpkgs.url = "{e['nixpkgs']}";
+  inputs.app.url = "{url}";
+
+  outputs = {{ self, nixpkgs, app }}:
+    let
+      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      forAllSystems = nixpkgs.lib.genAttrs systems;
+      lib = nixpkgs.lib;
+    in {{
+      devShells = forAllSystems (system:
+        let pkgs = import nixpkgs {{ inherit system; }};
+        in {{
+          default = pkgs.mkShell {{
+            inputsFrom = [ app.devShells.${{system}}."{e['shell']}" ];
+            packages = {packages};
+            shellHook = \'\'
+              export AL_LAYER="{name}"
+              {hook}
+            \'\'{BROWSER_NIX_HOOK if e["browser"] else ""};
+          }};
+        }});
+    }};
+}}
+''', local=True)
+
+    def flake_source_md(self, e: dict) -> list[str]:
+        return [f"## Nix dev shell (`{e['id']}`)", "",
+                f"- reused: dev shell `{e['shell']}` of `{self.flake_file(e['flake'])}` on branch `{self.cb['defaultBranch']}` "
+                "(inputsFrom: its packages, inputs and shellHook)",
+                "- refreshed at the start of every run (`nix flake lock --update-input app`)",
+                *([f"- added: {' '.join(e['packages'])}"] if e["packages"] else []),
+                *(["- added: a headless Chromium (Linux) with AL_BROWSER and CHROME_BIN"] if e["browser"] else []),
+                "- not reused: plain attributes set on the repository's shell derivation (inputsFrom carries only "
+                "its inputs and shellHook)", ""]
+
+    def agent_cli_lines(self, option_id: str) -> list[str]:
+        """RUN lines installing the agent CLIs of the ADWs whose stack has this podman option."""
+        agents = {a["id"]: a for a in self.ir["agents"]}
+        kinds: list[str] = []
+        for adw in self.ir["adws"]:
+            if option_id in adw["environment"]:
+                for agent_id in [adw["agent"], *(s.get("agent") for s in adw["steps"] if s.get("kind") == "run")]:
+                    kind = agents.get(agent_id or "", {}).get("kind")
+                    if kind in AGENT_CLI_INSTALL and kind not in kinds:
+                        kinds.append(kind)
+        return [f"RUN {AGENT_CLI_INSTALL[k]}" for k in kinds]
+
+    def sourced_containerfile(self, e: dict) -> tuple[dict, list[str]]:
+        """The thin env/Containerfile on top of the repository's Containerfile or dev container.
+        Returns (the `podman` entry of env/source.json, the lines of env/SOURCE.md)."""
+        name, branch = self.ir["name"], self.cb["defaultBranch"]
+        who = f"(environment podman #:id {e['id']})"
+        base = f"localhost/al-{name}-base:latest"
+        image, publish, prepare, not_honoured, packages = "", [], "", [], []
+        container_env: dict[str, str] = {}
+        md = [f"## Container image (`{e['id']}`)", ""]
+        if e["containerfile"]:
+            self.app_file(e["containerfile"], who)
+            build = {"containerfile": e["containerfile"], "target": e["target"], "context": e["context"]}
+            stage = f" (stage {e['target']})" if e["target"] else ""
+            header = (f"# A thin layer on top of the repository's own {e['containerfile']}{stage}, context {e['context']},\n"
+                      f"# which each run builds from its worktree (branch {branch}) as {base}.")
+            md.append(f"- base: `{e['containerfile']}`{stage}, context `{e['context']}`, built by each run from its "
+                      f"worktree (branch `{branch}`) as `{base}`")
+        else:
+            envscan = envscan_module()
+            text = self.app_file(e["devcontainer"], who)
+            try:
+                plan = envscan.devcontainer_plan(envscan.read_devcontainer(text), os.path.dirname(e["devcontainer"]) or ".")
+            except ValueError as exc:
+                raise AlError(f"{who}: {e['devcontainer']} does not parse as JSON with comments: {exc}") from exc
+            if plan["problems"]:
+                raise AlError(f"{who}: {e['devcontainer']}: " + "; ".join(plan["problems"]))
+            if not (plan["image"] or plan["build"]):
+                raise AlError(f"{who}: {e['devcontainer']} names no `image` and no `build`"
+                              + (" (a dev container made of compose services, dockerComposeFile, is not reused)" if plan["compose"] else "")
+                              + "; declare the image with #:containerfile (e.g. the service's Dockerfile) or #:base-image instead")
+            build, image = plan["build"], plan["image"]
+            if build:
+                self.app_file(build["containerfile"], who)
+            packages, container_env = plan["packages"], plan["container_env"]
+            publish, not_honoured = plan["forward_ports"], plan["not_honoured"]
+            users = [a for a in self.ir["adws"] if e["id"] in a["environment"]]
+            replaced = bool(users) and all(any(o["kind"] == "worktree" and o.get("prepare") for o in self.ir["environments"]
+                                               if o["id"] in a["environment"]) for a in users)
+            prepare = "" if replaced else plan["post_create"]
+            what = f"its image {image}" if image else f"its build {build['containerfile']}, which each run builds from its worktree as {base}"
+            header = f"# A thin layer on top of the repository's dev container {e['devcontainer']} (branch {branch}):\n# {what}."
+            md.append(f"- base: dev container `{e['devcontainer']}` (branch `{branch}`): " + (
+                f"image `{image}`" if image else f"build `{build['containerfile']}`"
+                + (f" stage `{build['target']}`" if build["target"] else "") + f", context `{build['context']}`"))
+            md += [f"- honoured: {h}" for h in plan["honoured"]]
+            if plan["post_create"]:
+                md.append("- postCreateCommand: replaced by #:prepare" if replaced
+                          else f"- postCreateCommand: the run's prepare step (`{plan['post_create']}`)")
+            md += [f"- not honoured: {n['item']} — {n['reason']}" for n in not_honoured]
+            self.notes += [f"{who}: {n['item']} of {e['devcontainer']} is not honoured: {n['reason']}" for n in not_honoured]
+        if build:
+            image = ""
+        lines = ["# Generated by al from agentic.rkt — do not edit.", header, f"FROM {image or base}", "USER root"]
+        if packages:
+            lines.append(apt_guarded(packages, "the dev container's features"))
+        if e["browser"]:
+            lines += [apt_guarded(BROWSER_APT, "#:browser"), BROWSER_ENV]
+        if e["packages"]:
+            lines.append(apt_guarded(e["packages"], "#:packages"))
+        lines += [f"ENV {key}={json.dumps(value)}" for key, value in container_env.items()]
+        lines += [f"RUN {s}" for s in e["setup"]]
+        agent_lines = self.agent_cli_lines(e["id"]) if e["agentInside"] else []
+        lines += agent_lines
+        lines += ["ENV HOME=/tmp/home", "RUN mkdir -p /tmp/home && chmod 1777 /tmp/home", "WORKDIR /work",
+                  "ENTRYPOINT []", "CMD []", ""]
+        self.write("env/Containerfile", "\n".join(lines))
+        added = (["the run user's home (/tmp/home)"] + (["a headless Chromium"] if e["browser"] else [])
+                 + ([f"packages {' '.join(e['packages'])}"] if e["packages"] else [])
+                 + ([f"{len(e['setup'])} #:setup line(s)"] if e["setup"] else []) + (["the agent CLI"] if agent_lines else []))
+        if publish:
+            md.append(f"- published: {' '.join(map(str, publish))} (forwardPorts, after #:publish)")
+        md += [f"- added by al: {', '.join(added)}; the image's entrypoint and command are reset", ""]
+        return ({"option": e["id"], "build": build, "image": image, "publish": publish, "prepare": prepare,
+                 "notHonoured": not_honoured}, md)
 
     def hosts(self) -> None:
         """env/hosts/<id>/{home-manager.nix,nixos.nix,provision.sh} of each (host …): committed, they
@@ -1975,6 +2200,10 @@ def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print,
         from adw_modules.errors import LayerError, StepFailed
     except ImportError as exc:
         raise AlError(f"cannot import the layer runtime from {layer / 'adws'}: {exc}") from exc
+    try:  # a layer generated before environment sources existed has neither module: nothing to prepare
+        from adw_modules import envsource, prepare
+    except ImportError:
+        envsource = prepare = None
     try:
         loaded = ir_module.load(layer)
     except LayerError as exc:
@@ -2009,20 +2238,24 @@ def verify_layer(layer: Path, names: list[str], timeout: int | None, say=print,
     report: list[dict] = []
     made_branches: set[str] = set()
     problems: list[str] = []
+    prepared: list[str] = []
     try:
         for index, (env_ids, adw) in enumerate(stacks):
             rows, branch, trouble = _verify_stack(loaded, layer, app, adw, list(env_ids), selected, timeout, say,
                                                   out_dir, envs, (LayerError, StepFailed), several=len(stacks) > 1,
-                                                  skipped=skipped if index == 0 else [])
+                                                  skipped=skipped if index == 0 else [],
+                                                  envsource=envsource, prepare=prepare)
             report += rows
             problems += trouble
+            prepared += [row["name"] for row in rows
+                         if row["name"].startswith("prepare:") and row["name"] not in prepared]
             if branch:
                 made_branches.add(branch)
     finally:
         for branch in set(git(app, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines()) - heads_before:
             if branch in made_branches:  # only a branch the runtime made for one of these very runs
                 run(["git", "-C", str(app), "branch", "-D", branch], check=False)
-        write_verify_report(out_dir / "report.json", report, [c["name"] for c in declared])
+        write_verify_report(out_dir / "report.json", report, prepared + [c["name"] for c in declared])
         after = app_fingerprint(app)
         if after != before:
             changed = ", ".join(k for k in before if before[k] != after[k])
@@ -2044,9 +2277,11 @@ def stack_label(env_ids: list[str]) -> str:
 
 def _verify_stack(loaded, layer: Path, app: Path, adw: dict, env_ids: list[str], selected: list[dict],
                   timeout: int | None, say, out_dir: Path, envs, failures: tuple, *, several: bool,
-                  skipped: list[str]) -> tuple[list[dict], str, list[str]]:
-    """Run the selected cmds in one environment stack, on its own throwaway worktree. Returns
-    (rows, the branch the runtime made for this run or "", cleanup problems)."""
+                  skipped: list[str], envsource=None, prepare=None) -> tuple[list[dict], str, list[str]]:
+    """Run the selected cmds in one environment stack, on its own throwaway worktree, after the
+    stack's prepare commands (if any; `envsource` and `prepare` are the layer runtime's modules, None
+    for a layer generated before they existed). Returns (rows, the branch the runtime made for this
+    run or "", cleanup problems)."""
     label = stack_label(env_ids)
     tree_dir = "trees"
     for env_id in env_ids:
@@ -2070,8 +2305,12 @@ def _verify_stack(loaded, layer: Path, app: Path, adw: dict, env_ids: list[str],
     try:
         try:
             stack = envs.build(loaded, state, env_ids)
+            if envsource is not None:
+                envsource.apply_publish(loaded, stack)
             with contextlib.redirect_stdout(sys.stderr):  # runtime progress lines never mix into our stdout
                 stack.setup()
+                if envsource is not None:
+                    envsource.ensure_ready(loaded, state, stack)  # the repository's own image or dev shell
         except failures as exc:
             raise AlError(f"environment setup failed ({label}): {exc}") from exc
         if Path(state.worktree).resolve() != worktree:
@@ -2081,6 +2320,27 @@ def _verify_stack(loaded, layer: Path, app: Path, adw: dict, env_ids: list[str],
             f"({label}), worktree {worktree}")
         for name in skipped:
             say(f"  skip  {name}  (never run implicitly; name it with --cmd {name})")
+        slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", "-".join(env_ids) or "host")
+        if prepare is not None:
+            with contextlib.redirect_stdout(sys.stderr):
+                prepared = prepare.run_for_verify(loaded, stack, out_dir)
+            for row in prepared:
+                row.update({"workflow": adw["name"], "stack": label})
+                if several:  # each stack keeps its own log, as its cmds do
+                    log = layer / row["log"]
+                    own = log.with_name(f"{log.stem}.{slug}{log.suffix}")
+                    if log.is_file():
+                        log.replace(own)
+                    row["log"] = own.relative_to(layer).as_posix()
+                say(f"  {'ok  ' if row['exit'] == 0 else 'FAIL'}  {row['name']}  exit {row['exit']}  "
+                    f"{row['seconds']}s{suffix}")
+                if row["exit"] != 0:
+                    for line in (layer / row["log"]).read_text(errors="replace").splitlines()[-VERIFY_TAIL:]:
+                        say(f"        {line}")
+            rows += prepared
+            if any(row["exit"] != 0 for row in prepared):
+                say(f"  stop  the prepare step failed: no cmd runs in an environment that is not prepared{suffix}")
+                selected = []
         for c in selected:
             limit = int(timeout if timeout is not None else c.get("timeout", 1800))
             started = time.monotonic()
@@ -2091,7 +2351,6 @@ def _verify_stack(loaded, layer: Path, app: Path, adw: dict, env_ids: list[str],
             except failures as exc:  # e.g. the podman image does not build
                 code, output = 125, f"environment failed before the command ran: {exc}\n"
             seconds = round(time.monotonic() - started, 1)
-            slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", "-".join(env_ids) or "host")
             log = out_dir / (f"{c['name']}.{slug}.log" if several else f"{c['name']}.log")
             log.write_text(output)
             rows.append({"name": c["name"], "cmd": c["run"], "exit": code, "seconds": seconds,
@@ -2350,7 +2609,7 @@ def layer_sandbox_module(layer: Path):
 
 
 def _sandbox_stack(loaded, env_id: str | None, workflow: str | None) -> tuple[dict, dict | None, list[str]]:
-    """(podman option, ADW or None, environment ids) that `al sandbox doctor|shell` starts: the
+    """(podman option, ADW or None, environment ids) that `al sandbox LAYER doctor|shell` starts: the
     workflow's own stack; by default the first workflow whose stack holds the chosen podman option."""
     podman = [e for e in loaded.ir.get("environments") or [] if e.get("kind") == "podman"]
     if not podman:
@@ -2772,6 +3031,8 @@ def main(argv: list[str] | None = None) -> int:
                    "print ok, or one sentence per missing tool; no versions")
     p.add_argument("--agent", choices=("claude-code", "codex", "mock"), help="the agent kind whose CLI counts")
     p.add_argument("--json", action="store_true", help="print the rows as JSON")
+    p.add_argument("--platform", action="store_true", help="what this host can run: OS, architecture, podman "
+                   "(machine, rootless), Nix (flakes), a host browser, the environment kinds; changes nothing")
     p = sub.add_parser("verify", help="run the layer's codebase cmds on a throwaway worktree",
                        description=VERIFY_DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("layer", type=Path)
@@ -2848,6 +3109,8 @@ def main(argv: list[str] | None = None) -> int:
             new = [rel for rel in gen.scaffolded if not rel.endswith(".gitkeep")]
             print((f"scaffolded (written once, yours from now on): {', '.join(new)}\n" if new else "")
                   + f"generated {len(written)} files in {layer} ({len(gen.changed)} changed{shown})")
+            for note in gen.notes:
+                print(f"note: {note}")
         elif a.cmd == "check":
             layer = a.layer.resolve()
             problems = check_layer(layer)
@@ -2952,8 +3215,17 @@ def tool_missing(cmd: str, e) -> int:
 
 
 def doctor_cli(a: argparse.Namespace) -> int:
-    """`al doctor [LAYER] [--for CMD,…] [--agent A] [--json]`: exit 0, or 4 when a tool is missing."""
+    """`al doctor [LAYER] [--for CMD,…] [--agent A] [--platform] [--json]`: exit 0, or 4 when a tool is missing."""
     tools = tools_module()
+    if a.platform:
+        module = platform_module()
+        found = module.facts(which=lambda n: tools.find(n).path or None,
+                             run=lambda argv, **kw: subprocess.run([tools.find(argv[0]).path or argv[0], *argv[1:]], **kw))
+        print(json.dumps(found, indent=2) if a.json else module.render(found))
+        if not tools.find("git").path:
+            print("al: doctor: git is missing; al needs it for every layer", file=sys.stderr)
+            return 4
+        return 0
     layer = a.layer.resolve() if a.layer else None
     if a.for_:
         names: list[str] = []

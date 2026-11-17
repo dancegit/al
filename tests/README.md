@@ -32,7 +32,8 @@ A `-m` on the command line replaces the default selection:
 | `-m "not slow and not llm and not podman"` | default tier without the gate scenarios |
 | `-m podman` | only the zero-touch gate scenarios |
 | `-m slow` | real codebase commands through `al verify`: `test_verify` (flask) and `test_real_checks` (one per testbed) |
-| `-m "slow and nix"` | only `test_verify`: flask `typecheck` + `test` in the layer's nix dev shell |
+| `-m "slow and nix"` | `test_verify` (flask `typecheck` + `test` in the layer's nix dev shell) and `test_env_reuse.py`'s flake test |
+| `-m slow test_env_reuse.py` | the reused environments, built and run for real: a flake dev shell with a browser page test, a Containerfile, a dev container (each skips without its tool; nothing is downloaded) |
 | `-m slow -k "real_checks and gin"` | one testbed's real check |
 | `--update-golden` | rewrite `tests/integration/golden/` from the freshly generated layers (review the diff, commit it) |
 
@@ -45,6 +46,7 @@ Markers (registered in `tests/integration/pytest.ini`):
 | `nix` | needs nix | `nix` is not on `PATH` |
 | `network` | needs network | `github.com:443` is unreachable |
 | `llm` | drives a real agent | never selected by default; no test carries it yet |
+| `browser` | needs a headless Chromium (from the nix store for `test_env_reuse.py`) | the browser is not already present; the test never downloads one |
 
 `test_real_checks` additionally skips a testbed whose toolchain is missing: `go` + `make` (gin),
 `node` + `npm` (express), `nix` (flask), `podman` (ripgrep and jq, whose layers run checks in a
@@ -65,6 +67,9 @@ container that carries cargo / autoconf + make).
 | `test_verify_reports_true_and_false`, `test_verify_timeout_kills_the_cmd` | flask | `al verify` exit code, report, logs, skip rule, `--cmd`, `--json`, `--timeout`, and that nothing is left behind |
 | `test_verify` (`slow`, `nix`, `network`) | flask | the authored flask layer's `typecheck` and `test` cmds are true |
 | `test_real_checks` (`slow`, `network`) | all five | each authored layer's `test` cmd (`build` for jq) is true |
+| `test_env_reuse.py::test_flake_proposal_runs_the_page_test` (`slow`, `nix`, `network`, `browser`) | the `lumen` fixture (`tests/tools/env_fixtures.py`) | `al scout`'s proposal for a flake dev shell with Playwright, generated and verified: a page test runs in the wrapped dev shell with `#:browser #t` |
+| `test_env_reuse.py::test_containerfile_reuse_builds_and_runs` (`slow`, `podman`) | `tarn` | the repository's Containerfile is built (stage `dev`) with al's thin layer on top: its marker is in the image, its `ENTRYPOINT` is reset, and a second verify does not rebuild |
+| `test_env_reuse.py::test_devcontainer_reuse_builds_and_prepares` (`slow`, `podman`) | `quill` (without features) | a dev container's image, `containerEnv` and `postCreateCommand` (the first row of the report: `prepare:postCreateCommand`) |
 
 ### Setup and teardown guarantees
 

@@ -443,6 +443,10 @@ You need `racket`, `uv`, `git`, and `podman` for containers.
 tools/al init ~/code/myapp            # creates ~/code/myapp.al with a draft LLM.txt and the language reference
 ```
 
+`al scout` also proposes an environment from the repository's own setup files (a flake dev shell, a
+Containerfile, a dev container, version files, lockfiles, CI), every line citing its file, so the layer
+reuses that setup instead of retyping it; `tools/al doctor --platform` says what this machine can run.
+
 If the repository already has an agent setup (`CLAUDE.md`, `AGENTS.md`, `.claude/commands/`, an `adws/`
 folder), `al scout` lists it in `LLM.txt`, and `tools/al adopt ~/code/myapp.al --app ~/code/myapp` brings
 it into the layer: rule files become documents every agent must read, your prompts become commands, your
@@ -537,7 +541,7 @@ repository, and why a small language in Racket, is in [`docs/DESIGN.md`](docs/DE
 
 ```
 racket/al/        the language: vocabulary, compiler, schema and reference generators, tests
-tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard
+tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard · doctor
 tools/al_provision.py   the provisioning files of a (host …): Home Manager, NixOS, shell script
 tools/al_sandbox.py     al sandbox LAYER push|pull and the sandbox image on deploy (the runtime's recipe hash)
 kit/host/pins.json      pinned versions and sha256 of uv and the agent CLIs a host installs

@@ -30,7 +30,7 @@ TEMPLATE: meta/LLM.txt.template.md
 2. Read the sources of truth for commands, in this order: CI configuration; Makefile, justfile, task runner files, tox or nox configuration; package and build manifests and their script sections; CONTRIBUTING and developer docs; README.
 3. Commands: establish the exact install, lint, format, typecheck, test, test-fast, e2e, build, start, docs and deploy commands that exist. For each: what it proves, typical duration (from CI logs or configuration timeouts if present, else `UNVERIFIED`), and whether it needs the network.
 4. Layout: source, test and documentation paths, with how tests are named and where a new test for a given source file goes.
-5. Toolchain: language and tool versions from version files, manifests, lock files and CI matrices, as nixpkgs attribute names; system packages and services that commands need.
+5. Toolchain: language and tool versions from version files, manifests, lock files and CI matrices, as nixpkgs attribute names; system packages and services that commands need. Then verify the draft's `## Environment` section against the files it cites: each found file, version, service, system package, browser reason and variable name. Complete its UNVERIFIED cells (a service's readiness command, a system package a command needs). Never edit the proposed declaration except to correct a fact, and then cite the evidence (`file:line`) in `## Evidence`; never copy a value of an environment variable, only its name.
 6. Artefacts: what proof each command can emit and where it lands: junit XML (the flag that enables it), coverage, screenshots, video, traces, HTML reports. Put the flag into the command in `## Commands` when the test tool supports it and the configuration shows how.
 7. User-visible change: state under `## Work classes` what a user-visible change looks like in this codebase (a screen, an endpoint response, CLI output, a public API signature) and which artefact can prove it.
 8. Protected paths: CI configuration, release and publishing scripts, security-sensitive code (authentication, cryptography, secrets handling), migrations, generated files, vendored code. Give the reason for each.
@@ -46,6 +46,7 @@ TEMPLATE: meta/LLM.txt.template.md
 - Every path in Layout, Protected paths and Conditional docs exists in `git ls-files` output (or is a directory prefix of entries in it).
 - Every artefact glob is produced by a command listed in `## Commands`.
 - Every row of `## Existing agent setup` names a path that exists in `git ls-files` output, and every `in use?` cell is `yes` or `no` with evidence, or `UNVERIFIED`.
+- Every line of the proposed declaration in `## Environment` still cites a file that exists in `git ls-files` output (or is a comment).
 - Section headings match TEMPLATE exactly and no guidance text remains.
 - `git -C APP_DIR status --short` is unchanged from before you started.
 

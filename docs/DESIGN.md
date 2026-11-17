@@ -98,7 +98,7 @@ Adding a PITER alternative is one `define-kind` plus its runtime support. Kinds 
 |---|---|
 | **P**rompt input | `cli` · `issue` (GitHub/Forgejo) · `tasklist` (tasks.md) · `spec-file` (drop a spec, skip planning) · `voice` (speech → text) · `webhook-payload` · planned: `notion`, `chat` |
 | **T**rigger | `manual` · `cron` (poller, optional systemd unit) · `webhook` (HMAC-verified HTTP) · `forge-actions` (GitHub/Forgejo Actions workflow) · `file-watch` · `voice` (push-to-talk loop) |
-| **E**nvironment | `host` (read-only) · `worktree` · `nix-devshell` (flake) · `home-manager` (module) · `podman` (rootless container) — stacked per ADW |
+| **E**nvironment | `host` (read-only) · `worktree` · `nix-devshell` (flake) · `home-manager` (module) · `podman` (rootless container) — stacked per ADW; a nix-devshell or podman option may reuse the repository's own flake dev shell, Containerfile or dev container (`#:flake`, `#:containerfile`, `#:devcontainer`), and the worktree option runs `#:prepare` cmds once per run |
 | **R**eview | `human` (PR) · `agent` (verdict + proof, human merges) · `auto` (zero-touch: verdict + gates → merge/deploy) |
 
 Supporting families: `agent` (claude-code, codex, custom, mock), `forge` (none, github, forgejo),
@@ -302,6 +302,48 @@ the arguments substituted and shell-quoted and the run context in `ADW_*` variab
 step's output, a non-zero exit fails the run (a shipping workflow hands its work to a person), and it
 is not a check: no resolve loop, and the gate never counts it as verification.
 
+## Environments the repository already describes
+
+A sandbox that drifts from the repository's own setup fails checks for reasons that are not the
+change's fault, so al reuses what the repository declares instead of retyping it.
+
+- **Detection** (`tools/al_envscan.py`, called by `al scout`): reads tracked files only, at most 256 KiB
+  each, and executes, imports and evaluates nothing (flakes by pattern, not `nix eval`): flake dev
+  shells, `shell.nix`, devenv, Containerfile stages and `EXPOSE`, dev containers (JSON with comments),
+  compose services, version files, `pyproject.toml` / `package.json` / `go.mod`, lockfiles, browser test
+  dependencies, CI workflows (`apt-get install`, `setup-*` versions, job services) and `.env` examples
+  (names only: the rest of the line is never stored). It reports conflicts between sources and
+  proposes a declaration whose every line ends in `; from FILE[:LINE]`. Text and `--json` come from the
+  same data.
+- **Reuse** (the generator): the repository's files are read with `git show <default branch>:<path>`,
+  never from the working tree and never executed. `#:flake` writes `env/flake.nix`, a wrapper whose
+  `app` input is `git+file://<app>?ref=<branch>` and whose shell takes the repository's shell through
+  `inputsFrom`; it names this machine's checkout, so it is a local (git-ignored) file. `#:containerfile`
+  and `#:devcontainer` write a **thin** `env/Containerfile` (`FROM` the repository's image, then the run
+  user's home, packages, `#:setup`, a browser, the agent CLI when it runs inside, `ENTRYPOINT []`).
+  `env/source.json` tells the runtime what to build and publish; `env/SOURCE.md` and `al gen`'s `note:`
+  lines say what was not honoured and why.
+- **Runtime** (`adw_modules/envsource.py`, without changing `envs.py`): after the worktree exists it
+  builds the repository's Containerfile from the run's worktree as `localhost/al-<layer>-base:latest`,
+  labelled `al.env-fingerprint`, under a file lock; a matching label builds nothing. Before the
+  preflight, `sandbox.ensure_image` then builds the thin layer as `al-<layer>:<recipe hash>`, whose hash
+  includes the repository's source (Containerfile and context on the default branch, or the dev
+  container's image), and re-points `:latest`, which `envs.py` uses unchanged. A flake's `app` input is relocked at
+  each run start. A dev container's `forwardPorts` are merged into the option's `publish` in memory, so
+  the existing per-run port leases apply.
+- **Prepare** (`adw_modules/prepare.py`): `(environment worktree #:prepare (cmd …))` runs once per run,
+  before the first step, through `stack.wrap` (the container and its caches, or the Nix shell), each
+  command in a `checks` slot. It is recorded as the step `prepare` of kind `setup`; a failure ends the
+  run at once with the output; a resumed run does not prepare again. Without `#:prepare`, a dev
+  container's `postCreateCommand` is the prepare step. The step name `prepare` is reserved.
+- **Platforms** (`tools/al_platform.py`, `al doctor --platform`): OS, architecture, podman (machine,
+  rootless), Nix (flakes), a host browser, the environment kinds that can run, and whether zero-touch can
+  (it needs podman, by the compiler's rule).
+
+Not reused, on purpose: starting services from a compose file (they are proposed as `(service
+container …)`), a dev container made of compose services, devenv and `shell.nix` (translated to
+`#:packages`, not wrapped), and editing any repository file.
+
 ## Supporting the LLM: our own commands
 
 `meta/commands/` holds the prompts that drive an LLM through the pipeline: `scout-codebase`
@@ -393,7 +435,7 @@ layer shares that image and differs only in how a container is started.
   ones, and those older than 14 days, are untagged (`podman rmi`, never forced); `al sandbox LAYER
   prune` removes every unused old one.
 - **Preflight.** Before a run's first step the runtime ensures the image and runs the fast checks
-  of `al sandbox doctor` in the run's own container (started exactly as its steps will use it): the
+  of `al sandbox LAYER doctor` in the run's own container (started exactly as its steps will use it): the
   first executable of every codebase cmd the workflow runs (check and script steps, and the review's
   `#:require-checks` when it ships), the agent CLI and a credential when the agent runs inside (variable names and
   file paths only; values are never printed), git in the worktree, an init process, every cache

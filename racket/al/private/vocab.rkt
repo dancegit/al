@@ -287,13 +287,17 @@
   [keep (enum never on-failure always) on-failure "When the worktree is kept after the run."]
   [sparse (list-of string) () "Sparse-checkout these directories only (cone mode); empty = full checkout. For large monorepos."]
   [gc-days integer 7 "Kept worktrees of finished runs older than this are removed when a new run starts; 0 = never."]
-  [delete-merged-branches boolean #t "When a run's worktree is removed, delete its branch if it holds nothing that is not already on the default or al/ship branch."])
+  [delete-merged-branches boolean #t "When a run's worktree is removed, delete its branch if it holds nothing that is not already on the default or al/ship branch."]
+  [prepare (list-of (ref cmd)) () "Codebase cmds run once per run, in order, after the worktree exists and before the first step, in the run's environment (a container's caches are mounted): dependency installs such as `uv sync`, `bun install`, `cargo fetch`. Shown as a `setup` step; a failure ends the run with that output. With a podman #:devcontainer and no #:prepare, the dev container's postCreateCommand is the prepare step."])
 (define-kind environment nix-devshell
   "A Nix flake dev shell generated in the layer; every codebase command and the agent run inside `nix develop`."
-  [packages (list-of string) #:required "nixpkgs attribute names providing the toolchain (e.g. python312 uv)."]
+  [packages (list-of string) () "nixpkgs attribute names providing the toolchain (e.g. python312 uv); with #:flake, extras added on top of the repository's dev shell."]
   [nixpkgs string "github:NixOS/nixpkgs/nixos-unstable" "nixpkgs flake reference."]
   [shell-hook string "" "Extra shell hook."]
-  [pure boolean #f "Use `nix develop --ignore-environment` (keeps HOME, PATH is nix-only)."])
+  [pure boolean #f "Use `nix develop --ignore-environment` (keeps HOME, PATH is nix-only)."]
+  [flake string "" "Directory of the repository's own flake, relative to its root (\".\" = top level). Its dev shell #:shell is used (read from the default branch, refreshed at the start of every run); #:packages and #:browser are added on top. Empty = a shell generated from #:packages."]
+  [shell string "default" "Name of the dev shell in the repository's flake (devShells.<system>.<name>). Only with #:flake."]
+  [browser boolean #f "Add a headless Chromium (Linux) and set AL_BROWSER and CHROME_BIN to it, for browser tests."])
 (define-kind environment home-manager
   "A Home Manager module generated in the layer that installs the toolchain and the layer's helper commands for a user."
   [packages (list-of string) #:required "nixpkgs attribute names."]
@@ -314,7 +318,12 @@
   [publish (list-of integer) () "Container ports published on 127.0.0.1 at the run's leased host ports, in order (first → ADW_PORT_0). Every run has its own network namespace, so the app inside always binds its usual ports and runs never collide; publish only what a host-side tool (browser, reviewer) must reach."]
   [services (list-of (ref service)) () "Sidecar services started with the run in the same pod (they share localhost with the run's container) and removed with it."]
   [pids-limit integer 2048 "Process limit inside the container."]
-  [read-only-root boolean #f "Mount the image's root filesystem read-only; the worktree, caches, /tmp and the home directory stay writable."])
+  [read-only-root boolean #f "Mount the image's root filesystem read-only; the worktree, caches, /tmp and the home directory stay writable."]
+  [containerfile string "" "Path of the repository's own Containerfile or Dockerfile, relative to its root. The run builds it (from the run's worktree) as the base image; al adds only a thin final layer (run user home, #:packages, #:setup, #:browser, the agent CLI when #:agent-inside #t, no entrypoint). The repository's file is never edited."]
+  [target string "" "Build stage of #:containerfile (podman build --target). Only with #:containerfile."]
+  [context string "." "Build context of #:containerfile, relative to the repository root. Only with #:containerfile."]
+  [devcontainer string "" "Path of the repository's dev container file (e.g. .devcontainer/devcontainer.json). Honoured: image or build (dockerfile, context, target), known features, containerEnv, postCreateCommand (as the prepare step), forwardPorts (as published ports). Everything else is listed in env/SOURCE.md and by al gen."]
+  [browser boolean #f "Install a headless Chromium in the image and set AL_BROWSER and CHROME_BIN."])
 
 (define-family service #:key "services" #:letter "" #:default #f
   "Per-run sidecar services (database, cache, mock API). Each run gets its own instances, so parallel runs never share state.")
@@ -700,4 +709,5 @@
     "#:may-commit #t is rejected on a read-only template (review, classify, question, pull-request, branch-name, summarize): those steps never commit."
     "(host #:id ID …) is written with keywords only and may be declared several times, each with a unique #:id of lowercase letters, digits and dashes (no dots: an id is not a host name). It needs (layer in-repo …). Every name in #:units is a unit the layer declares (a cron or webhook trigger, a dashboard other than none); #:dashboard-port is 0 or 1–65535, and a non-zero port needs the dashboard unit. #:images pull needs a (registry …); #:images pull and load need a podman environment."
     "(registry …) is declared at most once. #:address-env, #:username-env and #:password-env take the NAME of an environment variable in capitals; a value that looks like a URL, an e-mail address or a host name is rejected. #:username-env and #:password-env are given both or neither."
+    "Environment sources: a podman option takes its image from at most one of #:base-image, #:containerfile, #:devcontainer; #:target and #:context need #:containerfile; paths are relative to the repository root, without `..` or a leading `/`. A nix-devshell option needs #:packages or #:flake; #:shell needs #:flake. Only the first declared podman option may use #:containerfile or #:devcontainer and only the first nix-devshell option may use #:flake (the layer has one image and one flake). #:prepare names declared codebase cmds; an ADW whose worktree option prepares has no step named `prepare`."
     "Kinds marked planned compile but are refused by the generator."))

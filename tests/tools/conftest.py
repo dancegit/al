@@ -167,7 +167,15 @@ def mock_scripts(tmp_path: Path, scripts: dict[str, dict]) -> Path:
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "browser: drives the host's Chrome through Playwright (skipped without one)")
     config.addinivalue_line("markers", "slow: records clips with ffmpeg/Chrome (runs only with AL_SHOWCASE_RECORD=1)")
-    config.addinivalue_line("markers", "podman: uses the real podman and a registry on 127.0.0.1:5000 (skipped without them)")
+    config.addinivalue_line("markers", "podman: needs the real podman (skipped when the binary is missing); some tests also need a registry on 127.0.0.1:5000")
+    config.addinivalue_line("markers", "nix: needs nix (skipped when the binary is missing)")
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    import shutil
+    for marker, binary in (("podman", "podman"), ("nix", "nix")):
+        if item.get_closest_marker(marker) and shutil.which(binary) is None:
+            pytest.skip(f"marked `{marker}` and `{binary}` is not on PATH")
 
 
 # A run's sandbox points git at the run's own object store through environment variables. Tests build
