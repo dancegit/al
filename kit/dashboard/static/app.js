@@ -1553,11 +1553,13 @@
       }
     };
     const proofItem = (item) => {
-      const mark = item.ok ? "✓" : "✗";
+      const unaffected = item.outcome === "not-affected";
+      const mark = unaffected ? GLYPH["not-affected"] : item.ok ? "✓" : "✗";
+      const cls = unaffected ? "s-not-affected" : item.ok ? "ok" : "bad";
       if ((item.kind === "image" || item.kind === "video") && item.path) {
-        return h("li", { class: item.ok ? "ok" : "bad" }, `${mark} ${item.kind} `, fileLink(item.path, item.label));
+        return h("li", { class: cls }, `${mark} ${item.kind} `, fileLink(item.path, item.label));
       }
-      return h("li", { class: item.ok ? "ok" : "bad", text: `${mark} ${item.label}` });
+      return h("li", { class: cls, text: `${mark} ${item.label}` });
     };
     const decided = (change) => change.status === "refused"
       ? h("span", { class: "badge warn", text: `refused by ${change.by}${change.excluded ? ` · ${change.excluded}` : ""}` })

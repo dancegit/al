@@ -3,6 +3,7 @@ tags, freezes, branch resolution, the presentation pack and forge approvals. The
 promotion are the compiler's real output (data/delivery-sprint.json)."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import subprocess
@@ -74,6 +75,67 @@ def test_each_criterion_lists_the_proof_that_covers_it():
     assert not any(item["uncovered"] for item in proof)
     bare = promotion.Change(id="00000002", criteria=["works"], checks={"test": 1}, verdict={"success": True})
     assert promotion.proof_for(None, bare)[0]["uncovered"] is True
+
+
+def test_a_check_that_was_not_run_is_not_proof(make_layer, app_repo):
+    layer = sprint_layer(make_layer, app_repo)
+    base = git(app_repo, "rev-parse", f"refs/heads/{SPRINT}")
+    head = commit_on(app_repo, SPRINT, {"a.py": "A = 1\n"})
+    _state(layer, "00000001", ended="2026-11-16T10:00:00",
+           delivery={"branch": SPRINT, "delivered": True, "base": base, "head": head},
+           checks={"suite-a": {"cmd": "./a.sh", "exit": 0, "log": "agents/00000001/checks/suite-a.1.log"},
+                   "suite-b": {"cmd": "./b.sh", "exit": 0, "outcome": "not-affected",
+                               "why": "no covered path changed", "paths": ["a.py"], "paths_total": 1,
+                               "tree": "t" * 40, "log": "agents/00000001/checks/suite-b.not-affected.log"},
+                   "again": {"cmd": "./a.sh", "exit": 0, "outcome": "reused",
+                             "from": {"step": "suite-a", "phase": "check"}, "tree": "t" * 40,
+                             "log": "agents/00000001/checks/suite-a.1.log"}})
+    (change,), _ = promotion.changes(ir.load(layer), SPRINT, "main")
+    assert change.checks == {"suite-a": 0, "suite-b": 0, "again": 0}
+    assert change.check_outcomes == {
+        "suite-b": {"outcome": "not-affected", "why": "no covered path changed", "from": ""},
+        "again": {"outcome": "reused", "why": "", "from": "suite-a"}}
+    changed = dataclasses.replace(change, criteria=["suite-b is green", "it works"])
+    proof = promotion.proof_for(None, changed)
+    assert [p for p in proof[0]["proof"] if p["kind"] == "check"] == [
+        {"kind": "check", "label": "suite-b not affected (no covered path changed)", "ok": False,
+         "outcome": "not-affected"}]
+    assert proof[0]["uncovered"] is True
+    assert [p["label"] for p in proof[1]["proof"]] == [
+        "suite-a exit 0", "suite-b not affected (no covered path changed)", "again reused from suite-a"]
+    assert proof[1]["uncovered"] is False
+    assert not any(p["label"] == "suite-b exit 0" for item in proof for p in item["proof"])
+    only = promotion.Change(id="00000002", criteria=["works"], checks={"suite-b": 0},
+                            check_outcomes={"suite-b": {"outcome": "not-affected",
+                                                        "why": "no covered path changed", "from": ""}},
+                            verdict={"success": True})
+    assert promotion.proof_for(None, only)[0]["uncovered"] is True
+    saved = {"id": "00000003", "criteria": ["works"], "checks": {"test": 0}}   # saved before the field existed
+    assert promotion.proof_for(None, saved)[0]["proof"][0]["label"] == "test exit 0"
+
+
+def test_pack_does_not_show_a_check_that_was_not_run_as_passed(make_layer, app_repo):
+    layer = sprint_layer(make_layer, app_repo)
+    deliver(layer, app_repo, "a2100001", {"cart.py": "CART = 1\n"}, prompt="Add a cart",
+            criteria=["The cart holds items"])
+    path = layer / "agents" / "a2100001" / "state.json"
+    state = json.loads(path.read_text())
+    state["checks"]["test"] = {**state["checks"]["test"], "outcome": "not-affected",
+                               "why": "no covered path changed", "paths": ["cart.py"], "paths_total": 1}
+    path.write_text(json.dumps(state))
+    code, out = promote(layer, "sprint", "main")
+    assert code == 75, out
+    pack = layer / "artefacts" / open_id(layer) / "pack"
+    page = (pack / "index.html").read_text()
+    assert "test not affected (no covered path changed)" in page
+    assert "test exit 0" not in page
+    assert '<span class="ok">test not affected' not in page
+    assert '<span class="bad">test not affected' not in page
+    assert "(uncovered: no passing check and no picture)" in page
+    (line,) = [text for text in (pack / "acceptance.md").read_text().splitlines() if "The cart holds items" in text]
+    assert "(uncovered)" in line and "test not affected (no covered path changed)" in line
+    assert "test exit 0" not in line
+    assert "test not affected (no covered path changed) (failed)" not in line
 
 
 def test_record_decision_writes_an_auditable_record(make_layer, app_repo):
