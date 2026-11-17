@@ -67,7 +67,7 @@
   ;; The sandbox of the zero-touch workflow: the agent and every check run inside this container, which
   ;; sees only the run's worktree. It carries what this repository's suites need: Racket, uv and git.
   (environment podman #:id sandbox #:base-image "docker.io/library/python:3.12-slim"
-               #:packages ("git" "curl" "ca-certificates" "libatomic1" "racket" "chromium" "fonts-liberation" "fonts-dejavu-core" "ffmpeg")
+               #:packages ("git" "curl" "ca-certificates" "libatomic1" "racket" "chromium" "fonts-liberation" "fonts-dejavu-core" "ffmpeg" "espeak-ng" "libsndfile1")
                #:setup ("pip install --no-cache-dir uv"
                         "HOME=/opt/claude bash -c 'curl -fsSL https://claude.ai/install.sh | bash' && chmod -R a+rX /opt/claude && ln -s /opt/claude/.local/bin/claude /usr/local/bin/claude")
                #:memory "8g" #:cpus "4" #:caches ("uv") #:agent-inside #t #:credentials (claude))

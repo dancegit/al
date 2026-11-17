@@ -1001,7 +1001,9 @@
         "chromium",
         "fonts-liberation",
         "fonts-dejavu-core",
-        "ffmpeg"
+        "ffmpeg",
+        "espeak-ng",
+        "libsndfile1"
       ],
       "pidsLimit": 2048,
       "publish": [],
