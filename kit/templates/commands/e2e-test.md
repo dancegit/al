@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [scenario-path]
 ---
+{{step_block}}
 
 # E2E Test
 

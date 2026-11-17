@@ -5,8 +5,9 @@
 planted.patch is a unified diff against tests/rotademo/app. This applies it to a copy of APP_DIR
 (`git apply`, which refuses a patch that no longer fits, so the planted change cannot silently drift
 from the app), and writes OUT_JSON in the mock agent's format (kit/runtime/adw_modules/agents.py):
-{"output": ..., "files": {path: full new content}, "commit": true}. The mock agent writes the files
-into the run's worktree and commits them. Files are passed through the runtime's own template
+{"output": ..., "files": {path: full new content}}. The mock agent writes the files into the run's
+worktree, uncommitted, as every build step leaves its work; the scenario's own commit step commits
+them. Files are passed through the runtime's own template
 renderer to prove that no `$1` / `${name}` in them would be substituted on the way.
 """
 from __future__ import annotations
@@ -50,7 +51,7 @@ def main() -> int:
         if render(content, {"adw_id": "x", "plan": "x", "prompt": "x", "class": "x"}, ["ARG"]) != content:
             print(f"render: {path} contains template tokens the mock agent would substitute", file=sys.stderr)
             return 1
-    out.write_text(json.dumps({"output": OUTPUT, "files": files, "commit": True}, indent=1) + "\n", encoding="utf-8")
+    out.write_text(json.dumps({"output": OUTPUT, "files": files}, indent=1) + "\n", encoding="utf-8")
     print(f"render: {len(files)} file(s): {', '.join(paths)}")
     return 0
 

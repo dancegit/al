@@ -2,6 +2,15 @@
 description: run-plan for <NAME>
 argument-hint: [plan-or-prompt-path]
 ---
+## Your step
+
+${workflow_steps}
+
+Leave your work as uncommitted changes in the worktree. Do not commit, merge into any branch, push, tag, open a pull request, or change any ref. The runtime checks this when you finish: a step that moved HEAD or a ref, changed the main checkout, or left a file at the top of the layer directory fails, and what it did is undone.
+
+Git in this step is for reading (`git status`, `git diff`, `git log`, `git show`) and, when the plan asks, for bringing content into the working tree (`git merge --no-commit --squash <ref>`, `git checkout <ref> -- <path>`, `git apply`), always ending uncommitted. Never run in this step: `git commit`, `git merge` without `--no-commit --squash`, `git rebase`, `git cherry-pick`, `git revert`, `git reset` to another commit, `git push`, `git tag`, `git branch`, `git switch`, `git checkout -b`, `git stash`, `git update-ref`.
+
+Notes, scratch files and helper scripts go in `${scratch_dir}`, and nowhere else in the layer.
 
 # Run Plan (higher-order prompt)
 
@@ -15,7 +24,7 @@ ADW_ID: ${adw_id}
 ## Instructions
 
 - Work only inside `${worktree}` (your current directory, branch `${branch}`). Never switch branches, push, or touch the main checkout.
-- Application code is the only thing you write to the worktree. Notes, scratch files and anything about the run go under `${layer_dir}`. Do not edit PLAN_FILE.
+- Application code is the only thing you write to the worktree. Do not edit PLAN_FILE.
 - Read PLAN_FILE in full before changing anything. It may be a chore, bug, feature or patch plan, a hand-written spec, or a plain prompt; whatever its shape, it defines the work. If it does not exist or is empty, stop and report that.
 - Think hard: restate to yourself what the file asks for, what done looks like, and which of its steps depend on which.
 - Execute it completely and in its own order, top to bottom. Do not skip, merge or reorder steps, and do not add work it does not ask for.
@@ -23,7 +32,7 @@ ADW_ID: ${adw_id}
 - Read each file before editing it and match the surrounding style. Add dependencies only when the file says so, using `(not specified — do not add dependencies without flagging it)`.
 - If a step is wrong or impossible as written, do the closest thing that serves the file's stated goal and report the deviation.
 - Tests are the source of truth: never weaken, skip or delete a test to make validation pass.
-- Do not commit unless PLAN_FILE explicitly makes committing one of its steps.
+- If PLAN_FILE has a step that commits, merges, pushes, tags, releases or opens a pull request, skip it and list it in the report: delivery is the workflow's.
 - Read a conditional document when its condition matches what you are changing.
 
 
@@ -97,5 +106,15 @@ All must exit 0 before you report.
 - A bullet summary of the work, one bullet per step of the file, with deviations and `REQUIRES HUMAN` lines called out.
 - The pass/fail result of each validation command.
 - The output of `git diff --stat` (plus `git status --short` if you created files).
+
+End the report with this section, filled from commands you run (`git rev-parse HEAD` before your first change and again now; `git status --short`):
+
+### State of the worktree
+- HEAD before: `<sha>`; HEAD after: `<sha>` (must be equal)
+- `git status --short`: <n> modified, <n> added, <n> deleted, <n> untracked
+- Changed outside the plan's scope: <paths, or "none">
+- Nothing is committed; nothing left this worktree.
+
+Wording: say "applied to the worktree". Never write "merged onto main", "shipped" or "delivered": no step before `ship` does any of those.
 
 Finish with a concise report in plain markdown. No preamble.

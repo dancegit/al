@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from . import budget, events, gitsafe, models, slots, storage, usage
+from . import budget, discipline, events, gitsafe, models, slots, storage, usage
 from .errors import LayerError, StepFailed
 from .templates import render
 
@@ -38,6 +38,8 @@ def template_variables(layer: Any, state: Any) -> dict[str, str]:
         "class": state.klass,
         "prompt": state.prompt,
         "plan": state.plan,
+        "workflow_steps": discipline.workflow_steps(layer, state),
+        "scratch_dir": str(discipline.scratch_dir(layer, state)),
     }
 
 

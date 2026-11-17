@@ -582,6 +582,7 @@ to its check, a re-check and the reviewers to the review step).
 | `notify.sent` | `notifier` (the option id), `kind` (email / command), `event` (needs-human / failed / passed / shipped), `seconds`; never a recipient, a server or a variable's value |
 | `notify.failed` | as `notify.sent`, plus `reason` (one of a fixed list, e.g. `variable AL_NOTIFY_TO is not set`, `timed out after 10 s`, `login refused (SMTP 535)`, `exit 3`) |
 | `fanout.candidate` | `step`, `id`, `index`, `status` (running / passed / failed / stopped), and when finished `exit`, `seconds`, `reason` |
+| `step.discipline` | after a `run` step that may not commit: `step`, `ok`, `head_before`, `head_after`, `branch_before`, `branch_after`, `refs` (`created`, `moved`, `deleted`), `main_checkout` (new status lines), `layer_entries` (new top-level names), `violations` (kinds: `committed`, `head-moved`, `ref-created`, `ref-moved`, `ref-deleted`, `main-checkout-changed`, `layer-entry`), `texts`, `restored`, `not_restored`; after a step that may commit (the `commit` template or `#:may-commit #t`): `step`, `ok`, `left_out_restored` (the uncommitted paths under the layer directory or a protected path it restored). The same facts are in the step's record in `state.json` (`discipline`, or `left_out` on a commit step) |
 
 Two more things make a run observable from outside. A check's log file grows while the check runs
 (its output goes straight to the file; when it ends the content is normalised exactly as before).

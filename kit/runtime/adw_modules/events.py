@@ -39,6 +39,7 @@ TYPES = (
     "review.round", "gate.decision", "ship.result", "handoff",
     "notify.sent", "notify.failed",
     "fanout.candidate",
+    "step.discipline",
 )
 
 

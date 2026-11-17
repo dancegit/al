@@ -250,7 +250,7 @@ def test_issue_comment_and_tasklist_marker_point_at_the_handoff_pr(make_layer, a
 def test_failing_agent_step_hands_over_too(make_layer, app_repo, monkeypatch) -> None:
     _with_origin(app_repo)
     layer = _layer(make_layer, forge=FORGEJO, failing="agent")
-    _build_changes(layer, commit=True)
+    _build_changes(layer)
     forge = _fake_forge(monkeypatch)
     assert main("demo", layer, ["Record each worker's pay band", "--adw-id", ADW_ID, "--class", "feature"]) == 1
     state = _state(layer)
@@ -262,7 +262,7 @@ def test_failing_agent_step_hands_over_too(make_layer, app_repo, monkeypatch) ->
 
 def test_resume_after_a_handoff_starts_the_ship_record_afresh(make_layer, app_repo, monkeypatch) -> None:
     layer = _layer(make_layer)
-    _build_changes(layer, commit=True)
+    _build_changes(layer)
     assert main("demo", layer, ["Record each worker's pay band", "--adw-id", ADW_ID, "--class", "feature"]) == 1
     assert _state(layer)["ship"]["action"] == "handoff"
     monkeypatch.setenv("FAILING_LOG_FILE", "/dev/null")           # the human fixed it: the check passes now
@@ -278,7 +278,7 @@ def test_resume_after_a_handoff_starts_the_ship_record_afresh(make_layer, app_re
 
 def test_without_a_forge_the_handoff_is_pr_md_and_the_branch(make_layer, app_repo, monkeypatch) -> None:
     layer = _layer(make_layer)
-    _build_changes(layer, commit=True)
+    _build_changes(layer)
     assert main("demo", layer, ["Record each worker's pay band", "--adw-id", ADW_ID, "--class", "feature"]) == 1
     state = _state(layer)
     ship = state["ship"]
@@ -321,7 +321,7 @@ def test_nothing_changed_means_nothing_to_hand_over(make_layer, app_repo, monkey
 def test_integrity_failure_is_never_handed_over(make_layer, app_repo, monkeypatch) -> None:
     _with_origin(app_repo)
     layer = _layer(make_layer, forge=FORGEJO, failing="agent")
-    _build_changes(layer, commit=True)
+    _build_changes(layer)
     forge = _fake_forge(monkeypatch)
     real = steps.run_agent
 
@@ -340,7 +340,7 @@ def test_integrity_failure_is_never_handed_over(make_layer, app_repo, monkeypatc
 def test_adw_without_a_ship_step_is_not_handed_over(make_layer, app_repo, monkeypatch) -> None:
     _with_origin(app_repo)
     layer = _layer(make_layer, forge=FORGEJO, ship_step=False)
-    _build_changes(layer, commit=True)
+    _build_changes(layer)
     forge = _fake_forge(monkeypatch)
     assert main("demo", layer, ["Record each worker's pay band", "--adw-id", ADW_ID, "--class", "feature"]) == 1
     assert forge["created"] == [] and _state(layer)["ship"] == {}
@@ -353,7 +353,7 @@ def test_adw_without_a_ship_step_is_not_handed_over(make_layer, app_repo, monkey
 def test_handoff_failing_keeps_the_original_failure(make_layer, app_repo, monkeypatch) -> None:
     _with_origin(app_repo)
     layer = _layer(make_layer, forge=FORGEJO)
-    _build_changes(layer, commit=True)
+    _build_changes(layer)
     forge = _fake_forge(monkeypatch, create_errors=99)
     assert main("demo", layer, ["Record each worker's pay band", "--adw-id", ADW_ID, "--class", "feature"]) == 1
     state = _state(layer)

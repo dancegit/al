@@ -92,7 +92,7 @@ def _layer(make_layer, notifiers, *, steps_=None, review=None, failing=None) -> 
     if notifiers is not None:
         ir_["notifiers"] = notifiers
     layer = make_layer(ir_)
-    _mock(layer, "build", files={"seed.py": "PAY_BANDS = {'hca': 'Band 3'}\n"}, commit=True, output="built")
+    _mock(layer, "build", files={"seed.py": "PAY_BANDS = {'hca': 'Band 3'}\n"}, output="built")
     return layer
 
 

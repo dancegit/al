@@ -189,11 +189,15 @@ def test_sandboxed_run_ships_through_the_host_only(make_layer, app_repo, monkeyp
 def test_failed_sandboxed_run_keeps_unshipped_work_on_a_branch(make_layer, app_repo, monkeypatch) -> None:
     layer = _sandbox_layer(make_layer, app_repo, ship="none")
     _fake_podman(monkeypatch)
-    _script(layer, "build", {"files": {"feature.py": "FEATURE = True\n"}, "commit": True})
+    _script(layer, "build", {"files": {"feature.py": "FEATURE = True\n"}})
+    _script(layer, "commit", {"commit": True})       # the commit step commits; the build step never does
     data = json.loads((layer / "agentic-layer.json").read_text())
+    data["commands"].append({"name": "commit", "template": "commit", "modelSet": "base", "output": "text"})
+    (layer / "commands" / "commit.md").write_text("# commit\n$ARGUMENTS\n", encoding="utf-8")
     # the check "runs" in a container that the fake podman never started, so it fails
     data["codebase"]["commands"] = [{"name": "test", "run": "./test.sh", "timeout": 20}]
-    data["adws"][0]["steps"] = data["adws"][0]["steps"][:2] + [{"name": "test", "kind": "check", "cmd": "test"}]
+    data["adws"][0]["steps"] = data["adws"][0]["steps"][:2] + [{"name": "commit", "kind": "run", "command": "commit"},
+                                                               {"name": "test", "kind": "check", "cmd": "test"}]
     (layer / "agentic-layer.json").write_text(json.dumps(data))
     assert main("demo", layer, ["Doomed work", "--adw-id", ADW_ID]) == 1
     state = json.loads((layer / f"agents/{ADW_ID}/state.json").read_text())

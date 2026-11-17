@@ -2,6 +2,13 @@
 description: commit for <NAME>
 argument-hint: [extra-context]
 ---
+## Your step
+
+${workflow_steps}
+
+You are the step that commits. Commit exactly what the earlier steps left in the worktree, as one commit on the branch you are on, and change no file. Never merge, rebase, push, tag, create or switch a branch, or open a pull request: the steps after you do what comes next. Uncommitted changes you leave under the layer directory or a protected path are restored by the runtime when you finish and listed in the step's record.
+
+Notes and scratch files go in `${scratch_dir}`, and nowhere else in the layer.
 
 # Commit
 
@@ -23,7 +30,8 @@ PLAN_FILE: ${plan}
 - If the diff touches a protected path, do not stage that path; commit the rest and report the path on a line starting `REQUIRES HUMAN`.
 - Write the message in the Message Format below.
 - One commit. Do not amend, rebase, squash or rewrite existing commits. Do not skip hooks.
-- If a commit hook fails, read its output. Fix what it reports when the fix is mechanical (formatting, lint autofix), re-stage, and commit again. Otherwise stop and report the hook output.
+- If a commit hook fails, do not change any file to satisfy it: stop and report the hook output.
+- Never merge, rebase, push, tag, or create or switch a branch.
 - If there is nothing to commit, change nothing and say so.
 
 ## Message Format

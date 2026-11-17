@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [plan-path] [review-verdict] [artefact-manifest-path]
 ---
+{{step_block}}
 
 # Pull Request
 

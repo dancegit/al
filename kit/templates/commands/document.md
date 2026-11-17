@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [plan-path]
 ---
+{{step_block}}
 
 # Document
 

@@ -1619,6 +1619,10 @@
         headEl.appendChild(h("a", { class: "toggle", href: link(["documents"], { path: doc.path }), text: `document: ${doc.name}` }));
       }
       panel.appendChild(headEl);
+      if (record.discipline) {
+        const ok = record.discipline.ok;
+        panel.appendChild(h("div", { class: `discipline ${ok ? "good" : "warn"}`, text: record.discipline.text }));
+      }
       if (type === "review" && detail.review && detail.review.rounds.length) {
         panel.appendChild(h("div", { class: "step-rounds" }, reviewRounds(detail.review)));
       }

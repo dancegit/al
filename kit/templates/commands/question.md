@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [question]
 ---
+{{step_block}}
 
 # Question
 

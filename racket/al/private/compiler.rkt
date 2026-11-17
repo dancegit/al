@@ -508,6 +508,12 @@
                       (equal? (hash-ref r 'template) "custom")
                       (string=? (hash-ref r 'file) ""))
              (fail "(command ~a): #:template custom needs #:file" (hash-ref r 'name)))
+           (when (and (eq? (car d) 'command)
+                      (hash-ref r 'mayCommit #f)
+                      (member (hash-ref r 'template)
+                              '("review" "classify" "question" "pull-request" "branch-name" "summarize")))
+             (fail "(command ~a): #:may-commit #t on template ~a, which only reads"
+                   (hash-ref r 'name) (hash-ref r 'template)))
            (if (eq? (car d) 'command) (set! commands (cons r commands)) (set! hops (cons r hops)))]
           [(eq? (car d) 'expert) (set! experts (cons (compile-named 'expert d) experts))]
           [(eq? (car d) 'stage)

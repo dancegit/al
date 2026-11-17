@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [spec-path] [artefact-manifest-path]
 ---
+{{step_block}}
 
 # Review
 

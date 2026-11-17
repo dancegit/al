@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [failed-adw-id-or-failure-description] [run-log-path]
 ---
+{{step_block}}
 
 # Self-Improve the Layer
 

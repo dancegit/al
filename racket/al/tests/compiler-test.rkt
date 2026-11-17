@@ -875,3 +875,14 @@
   (check-equal? (length (layer-warnings ir)) 2)
   (check-equal? (json-pretty ir) before)
   (check-equal? (json-pretty (compile-layer-datum with-conditions)) before))
+
+(test-case "#:may-commit says which commands may commit; it defaults to #f and read-only templates refuse it"
+  (define (may-commit-of cmd-datum)
+    (define ir (compile-layer-datum (layer plan cmd-datum simple-adw)))
+    (define name (cadr cmd-datum))
+    (hash-ref (findf (lambda (c) (equal? (hash-ref c 'name) (symbol->string name))) (hash-ref ir 'commands))
+              'mayCommit))
+  (check-equal? (may-commit-of '(command commit #:template commit)) #f)
+  (check-equal? (may-commit-of '(command c #:template custom #:file "x.md" #:may-commit #t)) #t)
+  (check-rejects (layer plan '(command r #:template review #:output json #:may-commit #t) simple-adw)
+                 #rx"#:may-commit #t on template review"))

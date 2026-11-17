@@ -63,7 +63,7 @@ def _layer(make_layer, review: dict, *, steps: list[dict] | None = None, codebas
     if codebase is not None:
         overrides["codebase"] = codebase
     layer = make_layer(overrides)
-    _mock(layer, "build", files={"feature.py": "FEATURE = True\n"}, commit=True, output="built")
+    _mock(layer, "build", files={"feature.py": "FEATURE = True\n"}, output="built")
     return layer
 
 

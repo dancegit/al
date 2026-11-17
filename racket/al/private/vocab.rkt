@@ -441,7 +441,8 @@
   [focus (list-of string) () "Codebase-specific instructions injected into the template's Instructions section."]
   [relevant (list-of string) () "Codebase paths listed under Relevant Files; empty = codebase source+tests paths."]
   [validation (list-of (ref cmd)) () "Codebase commands listed as Validation Commands."]
-  [fabric (list-of symbol) () "Fabric patterns vendored into the layer and applied by this command."])
+  [fabric (list-of symbol) () "Fabric patterns vendored into the layer and applied by this command."]
+  [may-commit boolean #f "Whether a run step of this command may commit (move HEAD in the worktree). The commit template always may; every other step's HEAD, refs and the layer directory are checked after it and a change fails the step."])
 
 (define-record hop
   "(hop NAME #:template T …): a higher-order prompt — it takes another prompt, plan or command as its argument."
@@ -645,4 +646,5 @@
     "A zero-touch ADW (review auto with #:ship merge or deploy) may only deliver to stages with #:agents-may-merge #t."
     "#:entry fast-forward is rejected with every forge (github, forgejo): a pull request is merged by merge, squash or rebase."
     "(delivery PRESET #:param value …) is declared at most once and expands to (stage …) and (cycle …) clauses (see Delivery presets); a (stage NAME …) with the name of a preset's stage replaces it, another name adds a stage; a (cycle …) next to a preset that declares one is an error."
+    "#:may-commit #t is rejected on a read-only template (review, classify, question, pull-request, branch-name, summarize): those steps never commit."
     "Kinds marked planned compile but are refused by the generator."))

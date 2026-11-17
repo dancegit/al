@@ -104,6 +104,9 @@ h3 { font-size: 13px; }
 .badge.bad { color: var(--failed); border-color: rgba(242, 85, 90, .45); background: rgba(242, 85, 90, .08); }
 .badge.good { color: var(--passed); border-color: rgba(63, 185, 80, .4); background: rgba(63, 185, 80, .08); }
 .badge.info { color: var(--accent); border-color: rgba(110, 168, 254, .4); background: rgba(110, 168, 254, .08); }
+.discipline { margin: 6px 0 8px; padding: 4px 8px; font-size: 12px; border-radius: 4px; border: 1px solid var(--panel-3); color: var(--text-2); }
+.discipline.good { color: var(--passed); border-color: rgba(63, 185, 80, .4); background: rgba(63, 185, 80, .08); }
+.discipline.warn { color: var(--waiting); border-color: rgba(214, 162, 58, .45); background: rgba(214, 162, 58, .08); }
 .sev-blocker { color: var(--failed); } .sev-tech_debt { color: var(--waiting); } .sev-skippable { color: var(--dim); }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 
