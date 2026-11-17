@@ -142,6 +142,11 @@ class ForgeClient:
         [] when the forge cannot tell (see promotion.py, which counts them as approvals)."""
         return []
 
+    def pr_state(self, number: int) -> dict:
+        """Whether pull request `number` is merged, read only: {"state": open | merged | closed | unknown,
+        "commit": merge commit sha, "at": merge time}. {"state": "unknown"} when the forge cannot tell."""
+        return {"state": "unknown"}
+
     can_attach = False  # True when attach() really uploads (see ship.post_proof)
 
     def attach(self, n: int, path: Path, name: str | None = None, comment_id: Any = None) -> str:
@@ -307,6 +312,15 @@ class GitHubForge(ForgeClient):
                 for r in (data.get("reviews") if isinstance(data, dict) else None) or []
                 if isinstance(r, dict) and str(r.get("state") or "").upper() == "APPROVED"]
 
+    def pr_state(self, number):
+        data = json.loads(self.gh("pr", "view", str(int(number)), "--json", "state,mergedAt,mergeCommit") or "{}")
+        if not isinstance(data, dict):
+            return {"state": "unknown"}
+        state = str(data.get("state") or "").lower()
+        commit = str((data.get("mergeCommit") or {}).get("oid") or "") if isinstance(data.get("mergeCommit"), dict) else ""
+        return {"state": state if state in ("open", "merged", "closed") else "unknown", "commit": commit,
+                "at": str(data.get("mergedAt") or "")}
+
     def branch_protection(self, branch):
         argv = ["gh", "api", f"repos/{self.repo}/branches/{urllib.parse.quote(branch, safe='')}/protection"]
         run = self._run or subprocess.run
@@ -433,6 +447,17 @@ class ForgejoForge(ForgeClient):
         return [{"by": str((r.get("user") or {}).get("login") or ""), "state": "APPROVED",
                  "at": str(r.get("submitted_at") or "")}
                 for r in data if isinstance(r, dict) and str(r.get("state") or "").upper() == "APPROVED"]
+
+    def pr_state(self, number):
+        data = self.request("GET", f"/pulls/{int(number)}")
+        if not isinstance(data, dict):
+            return {"state": "unknown"}
+        if data.get("merged"):
+            state = "merged"
+        else:
+            state = str(data.get("state") or "").lower()
+            state = state if state in ("open", "closed") else "unknown"
+        return {"state": state, "commit": str(data.get("merge_commit_sha") or ""), "at": str(data.get("merged_at") or "")}
 
     def branch_protection(self, branch):
         try:

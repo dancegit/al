@@ -111,7 +111,7 @@ def test_now_view_shows_the_running_run_and_held_slots(page, site):
 
 
 def test_runs_filters_search_and_sort(page):
-    open_(page, "/runs")
+    open_(page, "/runs?view=all")   # the list opens on "Needs you"; this test is about every run
     page.wait_for_selector("tbody tr[data-key]")
     assert page.locator("tbody tr[data-key]").count() == 14
     page.select_option("select[aria-label='statuses']", "failed")

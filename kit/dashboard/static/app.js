@@ -515,6 +515,17 @@
 
   let current = null;
 
+  /** The count on the Runs link: the runs that need someone, over every layer (layers[].needs_you). */
+  function updateNavCount() {
+    const total = (store.layers || []).reduce((sum, l) => sum + (l.needs_you || 0), 0);
+    for (const el of document.querySelectorAll('[data-count="needs-you"]')) {
+      el.textContent = total ? String(total) : "";
+      el.hidden = !total;
+      el.title = `${total} run${total === 1 ? "" : "s"} need${total === 1 ? "s" : ""} you`;
+    }
+  }
+  store.on((kind) => { if (kind === "snapshot" || kind === "layers") updateNavCount(); });
+
   function router() {
     const route = parseRoute();
     for (const link of document.querySelectorAll(".views a")) {
@@ -1407,9 +1418,44 @@
   }
 
   // =========================================================================== views: Runs
+  /** The buckets of the Runs view (attention() in dashboard.py): what needs someone first. */
+  const RUN_VIEWS = [["needs-you", "Needs you"], ["running", "Running"], ["landed", "Landed"], ["settled", "Settled"], ["all", "All"]];
+
+  /** "landed in 1a2b3c4 (patch-id), 2026-11-02": what put a handed-over run's work on its target. */
+  function landedText(run) {
+    const l = run.landing || {};
+    if (l.state !== "landed") return run.reason || "";
+    return `landed in ${l.commit || "?"} (${l.how || "?"})${l.at ? `, ${fmt.time(l.at).slice(0, 10)}` : ""}`;
+  }
+
+  /** What settled a run: "superseded by B", "replaced by NEW (running)", "abandoned by WHO: note". */
+  function settledText(run) {
+    if (run.superseded_by) return `superseded by ${run.superseded_by}`;
+    if (run.replaced_by && !run.settled) return run.reason || `replaced by ${run.replaced_by}`;
+    return run.reason || "";
+  }
+
+  /** Start each failed run of `runs` again (POST /api/start {again}), one after the other; `report`
+   * gets one line per run. The request key again-<id> starts one run however often it is sent. */
+  async function startAgain(runs, report) {
+    const lines = [];
+    for (const run of runs) {
+      try {
+        const answer = await api.post("/api/start", { layer: run.layer, again: run.id, request_key: `again-${run.id}` });
+        lines.push({ ok: true, text: `${run.id} → ${answer.run_id || answer.status}${answer.existing ? " (already started)" : ""}` });
+      } catch (err) {
+        lines.push({ ok: false, text: `${run.id}: ${err.message || err}` });
+      }
+      report(lines);
+    }
+    return lines;
+  }
+
+  const groupState = { open: new Set(), lines: [] };   // failure groups: expanded, and the last "Start all again" answers
+
   function RunsView(main, crumbs, route) {
-    crumbs.textContent = "run history";
-    const params = { layer: "", adw: "", status: "", klass: "", from: "", to: "", q: "", sort: "time", dir: "desc", ...route.params };
+    const params = { view: "needs-you", layer: "", adw: "", status: "", klass: "", from: "", to: "", q: "", sort: "time", dir: "desc", ...route.params };
+    if (!RUN_VIEWS.some(([v]) => v === params.view)) params.view = "needs-you";
     const selects = {};
     const select = (name, label, values) => {
       const el = h("select", { "aria-label": label, onchange: () => { params[name] = el.value; update(); } },
@@ -1422,9 +1468,16 @@
     const from = h("input", { type: "date", value: params.from, "aria-label": "from date", onchange: () => { params.from = from.value; update(); } });
     const to = h("input", { type: "date", value: params.to, "aria-label": "to date", onchange: () => { params.to = to.value; update(); } });
     const filters = h("div", { class: "filters" });
+    const chips = h("div", { class: "chips", role: "tablist", "aria-label": "which runs" });
     const totals = h("div", { class: "strip" });
+    const report = h("div", { class: "start-report", role: "status" });   // what "Start all again" did, kept while rows change
     const table = h("table");
-    main.append(filters, totals, h("div", { class: "table-wrap" }, table));
+    main.append(chips, filters, totals, report, h("div", { class: "table-wrap" }, table));
+    const showReport = (lines) => {
+      groupState.lines = lines;
+      replace(report, lines.map((line) => h("div", { class: line.ok ? "ok" : "error", text: line.text })));
+    };
+    showReport(groupState.lines);
     let selectedKey = null;
 
     function buildFilters() {
@@ -1435,14 +1488,18 @@
         h("label", {}, "from", from), h("label", {}, "to", to), search);
     }
 
-    function filtered() {
+    const bucketOf = (r) => r.bucket || (r.status === "running" || r.status === "unknown" ? "running" : "done");
+    const inView = (r) => params.view === "all" || bucketOf(r) === params.view;
+
+    function filtered(all) {
       const q = params.q.toLowerCase();
       const fromT = params.from ? new Date(`${params.from}T00:00:00`).getTime() / 1000 : null;
       const toT = params.to ? new Date(`${params.to}T23:59:59`).getTime() / 1000 : null;
       let runs = store.runList().filter((r) => (!params.layer || r.layer === params.layer) && (!params.adw || r.adw === params.adw)
         && (!params.status || r.status === params.status) && (!params.klass || r.klass === params.klass)
         && (!fromT || (r.started || 0) >= fromT) && (!toT || (r.started || 0) <= toT)
-        && (!q || `${r.id} ${r.title} ${r.prompt} ${r.error} ${r.adw} ${r.layer}`.toLowerCase().includes(q)));
+        && (!q || `${r.id} ${r.title} ${r.prompt} ${r.error} ${r.adw} ${r.layer} ${r.reason || ""}`.toLowerCase().includes(q))
+        && (all || inView(r)));
       const key = { time: (r) => r.started || 0, cost: (r) => r.cost ?? -1, duration: (r) => (r.duration ?? (r.status === "running" ? now() - (r.started || now()) : -1)) }[params.sort] || ((r) => r.started || 0);
       runs.sort((a, b) => (key(a) - key(b)) * (params.dir === "asc" ? 1 : -1));
       return runs;
@@ -1460,7 +1517,62 @@
         onclick: sortKey ? () => { params.dir = active && params.dir === "desc" ? "asc" : "desc"; params.sort = sortKey; update(); } : null });
     }
 
+    function renderChips() {
+      const every = filtered(true);
+      const count = (view) => (view === "all" ? every.length : every.filter((r) => bucketOf(r) === view).length);
+      replace(chips, RUN_VIEWS.map(([view, label]) => h("button", { type: "button", role: "tab", class: `chip${params.view === view ? " active" : ""}`,
+        "aria-selected": params.view === view ? "true" : "false", dataset: { view },
+        onclick: () => { params.view = view; update(); } }, label, " ", h("span", { class: "num", text: `(${count(view)})` }))));
+      const need = store.runList().filter((r) => r.bucket === "needs-you").length;
+      replace(crumbs, h("span", { class: "need-count", text: `${need} need${need === 1 ? "s" : ""} you` }));
+    }
+
+    function groupRow(group, members, columns) {
+      const open = groupState.open.has(group.id);
+      const again = h("button", { type: "button", class: "btn start-all", text: "Start all again", onclick: async (e) => {
+        e.stopPropagation();
+        const yes = await confirmDialog(`Start ${members.length} runs again?`,
+          `${members.map((r) => r.id).join(", ")} failed at ${group.step} with the same reason. Each starts again from its own request and records which run it replaces.`,
+          "Start all again");
+        if (!yes) return;
+        again.disabled = true;
+        showReport([]);
+        try { await startAgain(members, (lines) => showReport([{ ok: true, text: `Start all again (${group.step}):` }, ...lines])); }
+        finally { again.disabled = false; }
+      } });
+      const toggle = h("button", { type: "button", class: "toggle", "aria-expanded": open ? "true" : "false", text: open ? "hide runs" : "show runs",
+        onclick: (e) => { e.stopPropagation(); if (open) groupState.open.delete(group.id); else groupState.open.add(group.id); render(); } });
+      return h("tr", { class: "group-row", dataset: { group: group.id } },
+        h("td", {}, pill("failed")), h("td", { class: "num", text: fmt.time(Math.max(...members.map((r) => r.started || 0))) }),
+        h("td", { text: members[0].layer }), h("td", { text: [...new Set(members.map((r) => r.adw))].join(", ") }),
+        h("td", { class: "mono dim", text: members.map((r) => r.id).join(" ") }),
+        h("td", { class: "title-cell", colspan: columns - 6 }, h("b", { text: `${members.length} runs: ${group.step}, same reason` }),
+          h("div", { class: "reason dim", text: group.reason || "" })),
+        h("td", { class: "next" }, toggle, again));
+    }
+
+    function runRow(run, needs) {
+      const open = () => go(`#/run/${enc(run.layer)}/${enc(run.id)}`);
+      const base = [h("td", {}, pill(run.status)), h("td", { class: "num", text: fmt.time(run.started) }), h("td", { text: run.layer }), h("td", { text: run.adw }),
+        h("td", { class: "mono dim", text: run.id })];
+      if (needs) {
+        return h("tr", { "data-key": run.key, class: `${run.key === selectedKey ? "selected" : ""}${run.group ? " group-member" : ""}`, onclick: open },
+          ...base, h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }),
+          h("td", { class: "reason" }, limitBadge(run) || budgetBadge(run), run.reason || ""), h("td", { class: "next mono", text: run.next || "" }));
+      }
+      const bucket = bucketOf(run);
+      const why = bucket === "landed" ? h("span", { class: "landing", text: landedText(run) })
+        : bucket === "settled" ? h("span", { class: "landing settled", text: settledText(run) }) : null;
+      return h("tr", { "data-key": run.key, "data-bucket": bucket, class: run.key === selectedKey ? "selected" : "", onclick: open },
+        ...base, h("td", { text: run.klass }),
+        h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }), h("td", {}, progress(run.steps)),
+        h("td", { class: "right num", ...(run.status === "running" ? { "data-since": run.started } : {}), text: run.status === "running" ? fmt.dur(now() - (run.started || now())) : fmt.dur(run.duration) }),
+        h("td", { class: "right num", text: fmt.cost(run.cost) }), h("td", { class: "right num dim", text: fmt.tokens((run.tokens || {}).out) }),
+        h("td", {}, why || outcomeBadge(run), why ? null : promotionBadge(run), run.dry_run ? h("span", { class: "badge", text: "dry" }) : null));
+    }
+
     function render() {
+      renderChips();
       const runs = filtered();
       const finished = runs.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over");
       const passed = finished.filter((r) => r.status === "passed").length;
@@ -1473,19 +1585,30 @@
         stat("total cost", fmt.cost(costs.reduce((a, b) => a + b, 0))), stat("median cost", fmt.cost(median(costs))),
         stat("median time", fmt.dur(median(durations))), stat("total time", fmt.dur(durations.reduce((a, b) => a + b, 0))));
       const body = h("tbody");
+      const needs = params.view === "needs-you";
+      const columns = needs ? 8 : 12;
+      const shown = new Set();
       for (const run of runs) {
-        const tr = h("tr", { "data-key": run.key, class: run.key === selectedKey ? "selected" : "", onclick: () => go(`#/run/${enc(run.layer)}/${enc(run.id)}`) },
-          h("td", {}, pill(run.status)), h("td", { class: "num", text: fmt.time(run.started) }), h("td", { text: run.layer }), h("td", { text: run.adw }),
-          h("td", { class: "mono dim", text: run.id }), h("td", { text: run.klass }),
-          h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }), h("td", {}, progress(run.steps)),
-          h("td", { class: "right num", ...(run.status === "running" ? { "data-since": run.started } : {}), text: run.status === "running" ? fmt.dur(now() - (run.started || now())) : fmt.dur(run.duration) }),
-          h("td", { class: "right num", text: fmt.cost(run.cost) }), h("td", { class: "right num dim", text: fmt.tokens((run.tokens || {}).out) }),
-          h("td", {}, outcomeBadge(run), promotionBadge(run), run.dry_run ? h("span", { class: "badge", text: "dry" }) : null));
-        body.appendChild(tr);
+        const group = needs && run.group && run.group.count > 1 ? run.group : null;
+        if (group) {   // a failure group shows once, where its newest run would be
+          if (shown.has(group.id)) continue;
+          shown.add(group.id);
+          const members = runs.filter((r) => r.group && r.group.id === group.id);
+          body.appendChild(groupRow(group, members, columns));
+          if (groupState.open.has(group.id)) for (const member of members) body.appendChild(runRow(member, true));
+          continue;
+        }
+        body.appendChild(runRow(run, needs));
       }
-      if (!runs.length) body.appendChild(h("tr", {}, h("td", { colspan: 12, class: "dim", text: store.loaded ? "no runs match" : "loading…" })));
-      replace(table, h("thead", {}, h("tr", {}, header("status"), header("started", "time"), header("layer"), header("workflow"), header("id"), header("class"),
-        header("request"), header("steps"), header("time", "duration", true), header("cost", "cost", true), header("out tok", null, true), header("outcome"))), body);
+      const empty = !store.loaded ? "loading…" : needs ? "nothing needs you" : "no runs match";
+      if (!runs.length) body.appendChild(h("tr", {}, h("td", { colspan: columns, class: "dim", text: empty })));
+      const head = needs
+        ? [header("status"), header("started", "time"), header("layer"), header("workflow"), header("id"), header("request"), header("reason"), header("next")]
+        : [header("status"), header("started", "time"), header("layer"), header("workflow"), header("id"), header("class"),
+          header("request"), header("steps"), header("time", "duration", true), header("cost", "cost", true), header("out tok", null, true),
+          header(params.view === "landed" ? "landed" : params.view === "settled" ? "settled" : "outcome")];
+      table.className = needs ? "needs-you" : "";
+      replace(table, h("thead", {}, h("tr", {}, head)), body);
     }
 
     function update() {
@@ -1599,6 +1722,73 @@
       decisions.length ? h("details", { class: "promotion-decisions", open: true }, h("summary", { text: `decisions (${decisions.length})` }), h("ul", {}, decisions)) : null);
   }
 
+  const settleForm = new Map();   // run key -> {as, by, note}: kept while the card is rebuilt
+
+  /** The settle card of a finished run nobody settled yet: a person records that it needs nothing more
+   * (landed, superseded or abandoned, with an optional run or commit and a note); POST /api/settle
+   * writes agents/<id>/settlement.json and nothing else. */
+  function settleCard(detail, layerKey, reload) {
+    const sm = detail.summary;
+    const form = settleForm.get(sm.key) || { as: sm.landing && sm.landing.state === "landed" ? "landed" : "abandoned", by: "", note: "" };
+    settleForm.set(sm.key, form);
+    const note = h("div", { class: "settle-note", role: "status" });
+    const as = h("select", { class: "settle-as", "aria-label": "settle as", onchange: () => { form.as = as.value; } },
+      ["landed", "superseded", "abandoned"].map((v) => h("option", { value: v, text: v, selected: form.as === v })));
+    const by = h("input", { type: "text", class: "settle-by mono", placeholder: "by run or commit (optional)", maxlength: 40, value: form.by,
+      "aria-label": "by run or commit", oninput: () => { form.by = by.value; } });
+    const why = h("textarea", { class: "settle-note-text", placeholder: "note (optional)", maxlength: 500, rows: 2, "aria-label": "note",
+      oninput: () => { form.note = why.value; } });
+    why.value = form.note;
+    const who = h("input", { type: "text", class: "settle-who", placeholder: "your name", maxlength: 80,
+      value: localStorage.getItem("al.settle.who") || localStorage.getItem("al.promotion.by") || "", "aria-label": "your name" });
+    const button = h("button", { type: "button", class: "btn primary settle-go", text: "Settle", onclick: async () => {
+      button.disabled = true;
+      localStorage.setItem("al.settle.who", who.value.trim());
+      try {
+        const answer = await api.post("/api/settle", { layer: layerKey, run: sm.id, as: as.value, by: by.value.trim(), note: why.value, who: who.value.trim() });
+        settleForm.delete(sm.key);
+        replace(note, h("span", { class: "badge ok", text: `settled as ${answer.record.as}` }));
+        reload();
+      } catch (error) {
+        replace(note, h("span", { class: "badge warn", text: error.message }));
+      } finally {
+        button.disabled = false;
+      }
+    } });
+    return h("div", { class: "card settle-card" },
+      h("div", { class: "card-head" }, h("h2", { text: "Settle this run" }), h("span", { class: "spacer" }),
+        h("span", { class: "faint", text: "it leaves Needs you; nothing of the run is deleted" })),
+      sm.reason ? h("div", { class: "settle-reason", text: `${sm.reason}${sm.next ? ` · next: ${sm.next}` : ""}` }) : null,
+      h("div", { class: "settle-fields" }, as, by, who, why, h("div", { class: "buttons" }, button, note)));
+  }
+
+  /** "Start again" for a failed or died run nothing replaces yet: the same request, recorded as replacing it. */
+  function startAgainButton(summary) {
+    if (!(summary.status === "failed" || summary.status === "died") || summary.replaced_by) return null;
+    const button = h("button", { type: "button", class: "btn start-again", text: "Start again", title: "start this request again; the new run records that it replaces this one" });
+    const send = async (extra) => {
+      button.disabled = true;
+      try {
+        const answer = await api.post("/api/start", { layer: summary.layer, again: summary.id, request_key: `again-${summary.id}`, ...extra });
+        if (answer.url) location.hash = answer.url;
+      } catch (err) {
+        const data = err.data || {};
+        if (err.status === 409 && data.confirm) {
+          const yes = await confirmDialog(data.confirm === "ships" ? "This workflow ships without a person" : "Start the same request again?",
+            data.message || err.message, data.confirm === "ships" ? "Start anyway" : "Start again");
+          if (yes) return send({ ...extra, [`confirm_${data.confirm}`]: true });
+        } else {
+          button.title = String(err.message || err);
+          button.textContent = `Start again: ${err.message || err}`;
+        }
+      } finally {
+        button.disabled = false;
+      }
+    };
+    button.addEventListener("click", () => send({}));
+    return button;
+  }
+
   function RunView(main, crumbs, route) {
     let [, layerKey, runId] = route.parts;
     let detail = null;
@@ -1668,6 +1858,9 @@
             sm.status === "waiting" ? h("span", { class: "badge waiting", title: "a script step exited with a code it declares as waiting; the worktree is kept",
               text: `⏸ waiting${sm.waiting_step ? ` at ${sm.waiting_step.name}` : ""} · resume: ${sm.resume || ""}` }) : null,
             sm.current ? h("span", { class: "badge info", text: `▶ ${sm.current.step}: ${sm.current.action}` }) : null,
+            sm.bucket === "landed" ? h("span", { class: "badge good landing", text: landedText(sm) }) : null,
+            sm.bucket === "settled" ? h("span", { class: "badge settled", text: settledText(sm) }) : null,
+            startAgainButton(sm),
             h("button", { class: "toggle", type: "button", text: "copy link", title: "copy a deep link to this view", onclick: (e) => copyLink(e.target) })),
           prompt,
           sm.problem ? h("div", { class: "badge warn", text: sm.problem }) : null),
@@ -1699,6 +1892,8 @@
     function renderOverview() {
       for (const child of [...body.children]) if (child !== graphCard) child.remove();
       if (detail.promotion) body.appendChild(promotionCard(detail, layerKey, load));
+      const sm = detail.summary;
+      if (!["running", "unknown"].includes(sm.status) && !sm.settled) body.appendChild(settleCard(detail, layerKey, load));
       const grid = h("div", { class: "grid-2" }, h("div", { class: "stack" }, timelineCard(), costsCard()), h("div", { class: "stack" }, outcomeCard()));
       body.appendChild(grid);
     }
@@ -1764,7 +1959,15 @@
         kv([["failed step", sm.failed_step], ["why", sm.error], ["branch", detail.state.branch ? h("span", { class: "mono", text: detail.state.branch }) : ""],
           ["plan", detail.state.plan ? h("span", { class: "mono", text: detail.state.plan }) : ""], ["source", detail.state.source],
           ["ports", (detail.state.ports || []).join(", ")],
-          ["models", runModelsText(detail.state.models)]])));
+          ["models", runModelsText(detail.state.models)],
+          ["replaces", sm.replaces ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(sm.replaces)}`, text: sm.replaces }) : ""],
+          ["replaced by", sm.replaced_by ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(sm.replaced_by)}`, text: sm.replaced_by }) : ""],
+          ["superseded by", sm.superseded_by ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(sm.superseded_by)}`, text: sm.superseded_by }) : ""],
+          ["landed", sm.landing && sm.status === "handed-over" ? (sm.landing.state === "landed" ? landedText(sm)
+            : sm.landing.state === "partly" ? `partly: ${(sm.landing.differs || []).join(", ")} differ on ${sm.landing.target}`
+              : `${sm.landing.state}${sm.landing.why ? ` (${sm.landing.why})` : ""} on ${sm.landing.target || "?"}`) : ""],
+          ["settled", sm.settled ? `${settledText(sm)}${sm.settled.at ? ` · ${sm.settled.at}` : ""}` : ""],
+          ["next", sm.bucket === "needs-you" ? sm.next : ""]])));
       if (detail.budget) {
         const b = detail.budget, stop = b.stopped;
         const limit = (v) => (v === null || v === undefined ? "none" : fmt.cost(v));

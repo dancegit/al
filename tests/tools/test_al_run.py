@@ -106,3 +106,24 @@ def test_adopted_workflows_and_commands_are_startable(tmp_path):
     state = json.loads((layer / "agents" / match.group(1) / "state.json").read_text())
     assert state["status"] == "passed" and state["scripts"]["run"]["exit"] == 0
     assert status(larder) == ""
+
+
+def test_al_run_replaces_records_the_old_run(sibling):
+    old = "0a1d0a1d"
+    run_dir = sibling / "agents" / old
+    run_dir.mkdir(parents=True)
+    (run_dir / "state.json").write_text(json.dumps({
+        "adw_id": old, "adw": "command:tidy", "prompt": "tidy the readme", "source": "cli", "status": "failed",
+        "started": "2026-11-10T09:00:00+00:00", "ended": "2026-11-10T09:01:00+00:00", "steps": [
+            {"name": "tidy", "kind": "run", "status": "failed", "started": "2026-11-10T09:00:00+00:00",
+             "ended": "2026-11-10T09:01:00+00:00", "detail": "tidy: the agent stopped"}]}))
+    cp = al("run", sibling, "/tidy", "tidy", "the", "readme", "--dry-run", "--replaces", old)
+    new = STARTED.search(cp.stdout).group(1)
+    assert "replaces:  " + old in cp.stdout   # the run's summary names it
+    state = json.loads((sibling / "agents" / new / "state.json").read_text())
+    assert state["replaces"] == old and state["status"] == "passed"
+    settled = al("runs", sibling, "--view", "settled").stdout
+    assert re.search(rf"^{old} .*replaced by {new} \(passed\)$", settled, re.MULTILINE), settled
+    assert old not in al("runs", sibling).stdout
+    bad = al("run", sibling, "/tidy", "x", "--dry-run", "--replaces", "nothex!", ok=False)
+    assert bad.returncode == 2 and "replaces" in bad.stderr

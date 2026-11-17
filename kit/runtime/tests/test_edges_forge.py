@@ -183,3 +183,35 @@ def test_none_forge_cannot_create_an_issue(tmp_path):
     c = forge.get_client(layer(tmp_path, {"id": "none", "kind": "none", "remote": ""}))
     with pytest.raises(forge.ForgeError, match="create_issue"):
         c.create_issue("t", "b")
+
+
+def test_pr_state_forgejo_merged_open_closed(tmp_path):
+    http = FakeHttp([
+        {"number": 7, "state": "closed", "merged": True, "merge_commit_sha": "abc1234def",
+         "merged_at": "2026-11-01T10:00:00Z"},
+        {"number": 8, "state": "open", "merged": False, "merge_commit_sha": None, "merged_at": None},
+        {"number": 9, "state": "closed", "merged": False},
+        None,
+    ])
+    c = forge.ForgejoForge(FORGEJO, tmp_path, env={}, http=http)
+    assert c.pr_state(7) == {"state": "merged", "commit": "abc1234def", "at": "2026-11-01T10:00:00Z"}
+    assert (http.calls[0]["method"], http.calls[0]["url"]) == (
+        "GET", "https://git.example.org/api/v1/repos/acme/shop/pulls/7")
+    assert c.pr_state(8) == {"state": "open", "commit": "", "at": ""}
+    assert c.pr_state(9)["state"] == "closed"
+    assert c.pr_state(10) == {"state": "unknown"}
+    assert all(call["method"] == "GET" for call in http.calls)   # read only
+    none = forge.get_client(layer(tmp_path, {"id": "none", "kind": "none", "remote": ""}), env={})
+    assert none.pr_state(7) == {"state": "unknown"}
+
+
+def test_pr_state_github_gh_json(tmp_path):
+    run = FakeRun(json.dumps({"state": "MERGED", "mergedAt": "2026-11-01T10:00:00Z",
+                              "mergeCommit": {"oid": "abc1234def"}}))
+    c = forge.GitHubForge(GITHUB, tmp_path, env={}, run=run)
+    assert c.pr_state(7) == {"state": "merged", "commit": "abc1234def", "at": "2026-11-01T10:00:00Z"}
+    assert run.calls[0][0] == ["gh", "pr", "view", "7", "--json", "state,mergedAt,mergeCommit", "--repo", "acme/shop"]
+    run.stdout = json.dumps({"state": "OPEN", "mergedAt": None, "mergeCommit": None})
+    assert c.pr_state(8) == {"state": "open", "commit": "", "at": ""}
+    run.stdout = json.dumps({"state": "CLOSED"})
+    assert c.pr_state(9)["state"] == "closed"
