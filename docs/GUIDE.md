@@ -325,7 +325,7 @@ mistakes in layers that compiled perfectly.
 
 | Symptom | Usual cause | Fix |
 |---|---|---|
-| `command not found` in the container | the image lacks a tool | add it to the podman option's `#:packages` or `#:setup` in `agentic.rkt`, then `al gen`; `al sandbox LAYER doctor` lists every missing tool at once |
+| `command not found` in the container | the image lacks a tool | with a toolchain, add its nixpkgs name to the toolchain's `#:packages` or use a `#:features` bundle; without one, add it to the podman option's `#:packages` or `#:setup` in `agentic.rkt`; then `al gen`; `al sandbox LAYER doctor` lists every missing tool at once |
 | cannot write to `.git`, or `git submodule` fails | the container sees your repository's git data read-only, by design | change the command so it does not need to write there |
 | a test cannot bind a port that is busy on your machine | it ran on the host | run checks in a container: each run has its own network |
 | needs the network but has none | the podman option has `#:network none` | remove it, or add a `#:caches` entry and warm the cache |
@@ -379,6 +379,8 @@ doctor: 7 ok, 1 missed, 0 skipped
   the container are removed when you leave it.
 - `build [--no-cache]` — build now, with the output as it happens (otherwise the next run does it).
   `--no-cache` also picks up a newer base image under the same tag.
+- `update` — with a toolchain: re-pin nixpkgs in `env/flake.lock` and show what changed (see
+  [Choose where the tools come from](#choose-where-the-tools-come-from)).
 - `prune` — remove every old image nothing uses. Runs keep the two newest old images and remove those
   older than 14 days by themselves.
 
@@ -697,18 +699,95 @@ the next step: see [Let a stand-in decide when a run stops](#let-a-stand-in-deci
 
 *Where does the agent itself run?* By default on your machine, in the private copy, with permission to
 edit files and run commands there. To put the agent inside the container as well, the image must
-contain the agent CLI. This is the recipe the examples use for Claude Code:
+contain the agent CLI. The simplest way is a toolchain with the `agent-cli` feature (next section):
 
 ```racket
+(toolchain nix #:id dev #:packages ("python312" "uv" "git") #:features (agent-cli))
 (agent claude-code #:id claude-sandboxed #:permission-mode bypassPermissions)
+(environment podman #:toolchain dev #:agent-inside #t #:credentials (claude))
+```
+
+and the workflow names that agent with `#:agent claude-sandboxed`. The compiler only accepts an agent
+with all permissions when it runs inside a container. The Debian form still works if you prefer it; then
+you install the CLI yourself with a `#:setup` line, e.g. the vendor's installer:
+
+```racket
 (environment podman #:base-image "docker.io/library/python:3.12-slim"
              #:packages ("git" "curl" "ca-certificates")
              #:setup ("HOME=/opt/claude bash -c 'curl -fsSL https://claude.ai/install.sh | bash' && chmod -R a+rX /opt/claude && ln -s /opt/claude/.local/bin/claude /usr/local/bin/claude")
              #:agent-inside #t #:credentials (claude))
 ```
 
-and the workflow names that agent with `#:agent claude-sandboxed`. The compiler only accepts an agent
-with all permissions when it runs inside a container.
+### Choose where the tools come from
+
+An environment gets its tools in one of three ways:
+
+| You want | Declare | Notes |
+|---|---|---|
+| the agent and checks on your machine, with a reproducible set of tools | `(environment nix-devshell #:toolchain dev)` (or `#:packages (…)`) | needs Nix on your machine; no container |
+| a container whose tools are pinned and match the dev shell | `(toolchain nix #:id dev …)` and `(environment podman #:toolchain dev)` | Nix on the host is optional: without it the image is built in a builder container |
+| a container from a Debian image | `(environment podman #:packages ("git" …) #:setup (…))` | apt is not pinned; you write the install lines |
+
+A toolchain is declared once, and the dev shell, the container and the Home Manager module that name it
+all get exactly that set, from one generated file `env/toolchain-dev.nix`:
+
+```racket
+(toolchain nix #:id dev
+  #:packages ("python312" "uv" "git")          ; nixpkgs attribute names
+  #:features (browser agent-cli)              ; ready-made bundles, see AL-DSL.llms.txt "Toolchain features"
+  #:env (("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" "1")))
+(environment nix-devshell #:toolchain dev)
+(environment podman #:id sandbox #:toolchain dev #:setup ("true"))   ; #:setup lines become a last layer
+(environment home-manager #:toolchain dev)
+```
+
+`browser` adds Chromium with fonts and the variables that make Playwright and Puppeteer use it;
+`agent-cli` adds the CLI of every agent that runs inside an environment using the toolchain; `video`,
+`build-essentials`, `docker-cli` and `podman-cli` add what their names say. `al gen` pins nixpkgs in
+`env/flake.lock`, which is committed:
+
+```
+generated 61 files in /home/you/code/myapp.al (61 changed)
+lock: env/flake.lock written (no Nix on this host: built in the builder container docker.io/nixos/nix@sha256:b49cb33f…, store volume al-nix-store-b49cb33f3a7e)
+```
+
+The image is the layer's one image, named after its recipe like every sandbox image
+(see [The container: `al sandbox`](#the-container-al-sandbox)): `al-<layer>:<hash>`. With a toolchain the
+hash also covers `env/flake.lock` and the toolchain's declaration, so a changed lock or declaration is
+built at the next run and an unchanged one never is. `al sandbox LAYER build` builds it now, says how it
+built and what each feature costs:
+
+```
+$ al sandbox ~/code/myapp.al build
+sandbox: al-myapp:4be1c07a92d3 from toolchain `dev` (built with Nix on this host)
+  base        412.3 MiB
+  browser     604.8 MiB
+  agent-cli   221.0 MiB
+  image       1.1 GiB
+report: agents/sandbox/dev.json
+$ al sandbox ~/code/myapp.al build
+sandbox: al-myapp:4be1c07a92d3 is up to date (toolchain dev, lock and declaration unchanged)
+```
+
+`al verify` and every run's preflight build it too, before anything runs in the container; `doctor`,
+`shell`, `status`, `prune`, `push` and `pull` work as for any sandbox image, and the doctor's `fix`
+column names the toolchain. `#:nested-engine #t` needs the `#:packages` form and cannot be combined with
+`#:toolchain`. To move to newer packages, re-pin and rebuild:
+
+```
+$ al sandbox ~/code/myapp.al update
+sandbox: env/flake.lock re-pinned (built with Nix on this host)
+  nixpkgs_dev: 3f0b4e1 (2026-09-30) → 9c2d7a4 (2026-11-12)
+run `al sandbox /home/you/code/myapp.al build` to rebuild
+```
+
+Without Nix on your machine both commands run Nix in a builder container pinned by digest, with its
+store in a podman volume named after that digest (`al-nix-store-…`). It sees only the layer's `env/`
+directory. The volume is never cleaned up for you: `podman volume rm al-nix-store-<…>` frees the space.
+`AL_SANDBOX_BUILD=nix` or `=container` forces one way.
+
+The Home Manager module evaluates the same toolchain against your own nixpkgs: the same package names, at
+your pin's versions. Claude Code is unfree; the module's header says what to allow.
 
 ## Choose models and limit spending
 
@@ -1639,6 +1718,7 @@ dashboard shows the decision on the run page as a **Decision** block. It does no
 | `al adopt` refuses to write | a file it wrote earlier was edited by hand | move your change into `agentic.rkt`, or `--force` |
 | a run fails at `preflight` with a table | its container lacks something the workflow needs | the `fix` column names the declaration to change; `al gen`, then `al sandbox LAYER doctor` until it passes |
 | the image did not change although you changed `env/Containerfile` by hand | the Containerfile is generated: `al gen` overwrites it from `agentic.rkt` | change `#:packages` / `#:setup` in `agentic.rkt`; `al sandbox LAYER status` shows the recipe hash |
+| the image is older than the pinned packages you expect | with a toolchain, `env/flake.lock` and the toolchain's declaration are part of the recipe: a changed lock or declaration is a new recipe | it is built at the next run or by `al sandbox LAYER build`; `al sandbox LAYER update` re-pins nixpkgs in `env/flake.lock` |
 
 Every run leaves `agents/<run id>/`: `state.json` (what happened), `run.log`, each step's exact prompt
 and raw agent output, and each check's log. Start there.

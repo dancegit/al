@@ -1,0 +1,735 @@
+{
+  "adws": [
+    {
+      "agent": "claude-code",
+      "changes": "codebase",
+      "classes": [],
+      "description": "Classify, plan by class and implement the plan",
+      "environment": [
+        "worktree",
+        "home-manager"
+      ],
+      "input": [
+        "tasklist",
+        "voice"
+      ],
+      "name": "plan-build",
+      "review": "agent",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "implement",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        }
+      ],
+      "trigger": [
+        "voice",
+        "file-watch",
+        "manual"
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "changes": "codebase",
+      "classes": [],
+      "description": "Plan, build, lint, test, document, commit, agent review; a human merges",
+      "environment": [
+        "worktree",
+        "home-manager"
+      ],
+      "input": [
+        "tasklist",
+        "voice"
+      ],
+      "name": "sdlc",
+      "review": "agent",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "implement",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "cmd": "lint",
+          "collect": [],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "lint",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test",
+          "collect": [
+            "log",
+            "coverage"
+          ],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "test",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "document",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "document",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [],
+          "command": "commit",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "commit",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "implement": "implement",
+          "kind": "review",
+          "name": "review",
+          "patch": "plan-patch"
+        },
+        {
+          "kind": "ship",
+          "message": "",
+          "name": "ship"
+        }
+      ],
+      "trigger": [
+        "voice",
+        "file-watch",
+        "manual"
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "changes": "codebase",
+      "classes": [],
+      "description": "Read-only: answer a spoken question about the codebase",
+      "environment": [
+        "host"
+      ],
+      "input": [
+        "voice"
+      ],
+      "name": "ask",
+      "review": "agent",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "question",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "answer",
+          "retries": 0,
+          "when": "always"
+        }
+      ],
+      "trigger": [
+        "voice",
+        "manual"
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "allowedTools": [
+        "Read",
+        "Glob",
+        "Grep",
+        "Edit",
+        "Write",
+        "Bash"
+      ],
+      "id": "claude-code",
+      "kind": "claude-code",
+      "maxTurns": 600,
+      "models": [
+        {
+          "effort": "default",
+          "model": "claude-opus-5-5",
+          "tier": "base"
+        },
+        {
+          "effort": "default",
+          "model": "claude-opus-5-5",
+          "tier": "heavy"
+        }
+      ],
+      "permissionMode": "acceptEdits",
+      "safeMode": true,
+      "status": "stable",
+      "timeout": 9000
+    }
+  ],
+  "artefacts": [
+    {
+      "id": "log",
+      "kind": "log",
+      "status": "stable",
+      "tailLines": 200
+    },
+    {
+      "glob": "coverage/lcov.info",
+      "id": "coverage",
+      "kind": "coverage",
+      "status": "stable"
+    }
+  ],
+  "budget": null,
+  "codebase": {
+    "commands": [
+      {
+        "description": "dependencies and devDependencies resolve and install into node_modules",
+        "name": "install",
+        "run": "npm install",
+        "timeout": 1800
+      },
+      {
+        "description": "eslint reports no violation of .eslintrc.yml in any JavaScript file of the repository",
+        "name": "lint",
+        "run": "npm run lint",
+        "timeout": 1800
+      },
+      {
+        "description": "the whole mocha suite (test/ and test/acceptance/) passes with global-leak checking, under nyc, writing coverage/lcov.info and a text coverage table to stdout",
+        "name": "test",
+        "run": "npm run test-ci",
+        "timeout": 1800
+      },
+      {
+        "description": "the whole mocha suite (test/ and test/acceptance/) passes with global-leak checking, without coverage",
+        "name": "test-fast",
+        "run": "npm test",
+        "timeout": 1800
+      }
+    ],
+    "conditionalDocs": [
+      {
+        "path": "examples/README.md",
+        "when": "When adding, renaming or removing a directory under examples/"
+      },
+      {
+        "path": "History.md",
+        "when": "When a change alters behaviour that an earlier release entry describes"
+      }
+    ],
+    "defaultBranch": "master",
+    "description": "express is a web framework for Node.js, published to the npm registry as the package express and consumed through require('express'). CommonJS JavaScript with no build step: index.js re-exports lib/express.js. Tested with mocha and supertest, linted with eslint 8, published to npm by a GitHub Actions workflow when a GitHub release is published.",
+    "languages": [
+      "javascript"
+    ],
+    "packageManager": "npm install",
+    "paths": {
+      "docs": [],
+      "protected": [
+        ".github",
+        "LICENSE",
+        ".npmrc"
+      ],
+      "source": [
+        "lib",
+        "index.js"
+      ],
+      "tests": [
+        "test"
+      ]
+    },
+    "readme": "Readme.md",
+    "root": "<APP>"
+  },
+  "commands": [
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "prime",
+      "output": "text",
+      "relevant": [],
+      "template": "prime",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "classify",
+      "output": "json",
+      "relevant": [],
+      "template": "classify",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "No lock file is committed: never add package-lock.json, npm-shrinkwrap.json or yarn.lock.",
+        "A test-only addition goes in test/<object>.<member>.js (unit) or test/acceptance/<example>.js (acceptance test for examples/<example>)."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-chore",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-chore",
+      "validation": [
+        "lint",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "The regression test goes in the existing test/<object>.<member>.js for the affected member (test/res.send.js for res.send in lib/response.js); create that file if absent.",
+        "Tests are mocha describe/it blocks issuing HTTP requests with supertest; the outer describe names the object (res), the inner one the member (.send()).",
+        "Code must run on every Node.js version from 18 and must not create global variables: mocha runs with --check-leaks."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-bug",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-bug",
+      "validation": [
+        "lint",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "A new member of lib/response.js, lib/request.js or lib/application.js gets its tests in test/res.<member>.js, test/req.<member>.js or test/app.<member>.js.",
+        "State the user-visible change as a public API signature or the HTTP response (status, headers, body) an application produces.",
+        "The global Buffer is forbidden; take Buffer from the node:buffer module.",
+        "Code must run on every Node.js version from 18 and must not create global variables: mocha runs with --check-leaks."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-feature",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-feature",
+      "validation": [
+        "lint",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-patch",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-patch",
+      "validation": [
+        "lint",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "JavaScript is indented with 2 spaces, files end with a newline, no trailing whitespace, comparisons use === except == null, no unused variables."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "resolve-test",
+      "output": "text",
+      "relevant": [],
+      "template": "resolve-test",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "The proof is the mocha spec output in the test log: the names of the tests covering the change and the pass count must be present.",
+        "A bug fix or feature without a test in test/<object>.<member>.js for the changed member is a blocker.",
+        "A change under .github, LICENSE or .npmrc is a blocker for a human."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "review",
+      "output": "json",
+      "relevant": [],
+      "template": "review",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "document",
+      "output": "text",
+      "relevant": [],
+      "template": "document",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "commit",
+      "output": "text",
+      "relevant": [],
+      "template": "commit",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "pull-request",
+      "output": "text",
+      "relevant": [],
+      "template": "pull-request",
+      "validation": []
+    },
+    {
+      "description": "Answer a question about the codebase without changing it",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "question",
+      "output": "text",
+      "relevant": [],
+      "template": "question",
+      "validation": []
+    }
+  ],
+  "concurrency": {
+    "id": "slots",
+    "kind": "slots",
+    "maxAgents": 2,
+    "maxChecks": 2,
+    "maxRuns": 4,
+    "status": "stable",
+    "waitSeconds": 3600
+  },
+  "dashboard": {
+    "also": [],
+    "bind": "127.0.0.1",
+    "id": "local",
+    "kind": "local",
+    "pollMs": 750,
+    "port": 8765,
+    "status": "stable",
+    "systemd": false,
+    "tokenEnv": ""
+  },
+  "description": "Agentic layer for the express Node.js web framework library",
+  "environments": [
+    {
+      "copyFiles": [],
+      "deleteMergedBranches": true,
+      "dir": "trees",
+      "gcDays": 7,
+      "id": "worktree",
+      "keep": "on-failure",
+      "kind": "worktree",
+      "portBase": 9100,
+      "portsPerRun": 2,
+      "sparse": [],
+      "status": "stable"
+    },
+    {
+      "id": "home-manager",
+      "kind": "home-manager",
+      "moduleName": "agentic-layer",
+      "packages": [
+        "nodejs_22"
+      ],
+      "stateVersion": "25.05",
+      "status": "stable"
+    },
+    {
+      "id": "host",
+      "kind": "host",
+      "readOnly": true,
+      "status": "stable"
+    }
+  ],
+  "experts": [],
+  "forge": {
+    "id": "none",
+    "kind": "none",
+    "remote": "",
+    "status": "stable"
+  },
+  "hops": [
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "implement",
+      "produces": "changes",
+      "takes": "plan",
+      "template": "run-plan"
+    },
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "meta-command",
+      "produces": "command",
+      "takes": "prompt",
+      "template": "meta-command"
+    },
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "meta-adw",
+      "produces": "adw",
+      "takes": "prompt",
+      "template": "meta-adw"
+    }
+  ],
+  "hosts": [],
+  "layer": {
+    "dir": "",
+    "git": true,
+    "id": "sibling",
+    "kind": "sibling",
+    "status": "stable"
+  },
+  "llmTxt": "LLM.txt",
+  "name": "<NAME>",
+  "notifiers": [
+    {
+      "id": "none",
+      "kind": "none",
+      "status": "stable"
+    }
+  ],
+  "promptInputs": [
+    {
+      "blockedMarker": "[>]",
+      "doneMarker": "[x]",
+      "failedMarker": "[!]",
+      "id": "tasklist",
+      "kind": "tasklist",
+      "openMarker": "[ ]",
+      "path": "tasks.md",
+      "runningMarker": "[~]",
+      "status": "stable",
+      "tagSyntax": "braces"
+    },
+    {
+      "appendToTasklist": true,
+      "confirm": true,
+      "id": "voice",
+      "kind": "voice",
+      "route": "auto",
+      "status": "stable"
+    }
+  ],
+  "registry": null,
+  "reviews": [
+    {
+      "agent": "",
+      "artefacts": [
+        "log"
+      ],
+      "bodyCmd": "",
+      "command": "review",
+      "id": "agent",
+      "kind": "agent",
+      "maxRetries": 3,
+      "reviewers": 1,
+      "status": "stable"
+    }
+  ],
+  "schemaVersion": "agentic-layer-v1",
+  "services": [],
+  "storage": {
+    "dir": "artefacts",
+    "id": "local",
+    "kind": "local",
+    "status": "stable"
+  },
+  "triggers": [
+    {
+      "hotkey": "enter",
+      "id": "voice",
+      "kind": "voice",
+      "status": "stable"
+    },
+    {
+      "debounceSeconds": 3,
+      "id": "file-watch",
+      "kind": "file-watch",
+      "status": "stable"
+    },
+    {
+      "confirm": false,
+      "id": "manual",
+      "kind": "manual",
+      "status": "stable"
+    }
+  ],
+  "voice": {
+    "id": "kokoro",
+    "kind": "kokoro",
+    "recordSeconds": 8,
+    "speakSummaries": true,
+    "status": "stable",
+    "sttDevice": "auto",
+    "sttModel": "base.en",
+    "ttsLang": "en-us",
+    "ttsSpeed": 100,
+    "ttsVoice": "af_heart"
+  }
+}

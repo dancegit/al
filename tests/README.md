@@ -52,10 +52,11 @@ A `-m` on the command line replaces the default selection:
 | *(none)* | default tier: pipeline, dry runs, golden snapshots, tasklist + cron, concurrency, killed run, gate scenarios, fast `al verify` |
 | `-m "not slow and not llm and not podman"` | default tier without the gate scenarios |
 | `-m podman` | only the zero-touch gate scenarios |
-| `-m slow` | real codebase commands through `al verify`: `test_verify` (flask) and `test_real_checks` (one per testbed) |
-| `-m "slow and nix"` | only `test_verify`: flask `typecheck` + `test` in the layer's nix dev shell |
+| `-m slow` | real codebase commands through `al verify`: `test_verify` (flask) and `test_real_checks` (one per testbed); and the real sandbox image builds of `test_toolchain_image.py` |
+| `-m "slow and nix"` | `test_verify` (flask `typecheck` + `test` in the layer's nix dev shell) and `test_builds_with_host_nix` |
+| `-m slow test_toolchain_image.py` | the real sandbox image builds; set `AL_TOOLCHAIN_SHOTS=DIR` to keep the headless chromium screenshot `toolchain-browser.png` there. With `AL_TOOLCHAIN_SHOTS` set, the run also leaves `al-sandbox-build.txt` and `dev.json` next to `toolchain-browser.png` |
 | `-m slow -k "real_checks and gin"` | one testbed's real check |
-| `--update-golden` | rewrite `tests/integration/golden/` from the freshly generated layers (review the diff, commit it) |
+| `--update-golden` | rewrite `tests/integration/golden/` (and, with `-k golden_ir_and_env`, `golden-env/`) from the freshly generated layers (review the diff, commit it) |
 
 Markers (registered in `tests/integration/pytest.ini`):
 
@@ -86,6 +87,8 @@ container that carries cargo / autoconf + make).
 | `test_verify_reports_true_and_false`, `test_verify_timeout_kills_the_cmd` | flask | `al verify` exit code, report, logs, skip rule, `--cmd`, `--json`, `--timeout`, and that nothing is left behind |
 | `test_verify` (`slow`, `nix`, `network`) | flask | the authored flask layer's `typecheck` and `test` cmds are true |
 | `test_real_checks` (`slow`, `network`) | all five | each authored layer's `test` cmd (`build` for jq) is true |
+| `test_golden_ir_and_env` | all five | `agentic-layer.json` and every `env/` file equal the snapshots in `golden-env/<name>/`: a layer without a toolchain generates no toolchain file and no `toolchains` key |
+| `test_toolchain_image.py` (`slow`, `podman`, `network`; the host way also `nix`) | none (its own small layer) | `al sandbox LAYER build` of a toolchain with `browser` and `agent-cli` builds the recipe image (`al-<name>:<recipe hash>`, `:latest` pointing at it) without host Nix (`AL_SANDBOX_BUILD=container`) and with it; `hello`, `jq`, `git`, `whoami`, a writable home and `/usr/bin/env` work under the runtime's hardening flags; `chromium --headless` takes a screenshot; `claude --version` answers; a second build is up to date |
 
 ### Setup and teardown guarantees
 

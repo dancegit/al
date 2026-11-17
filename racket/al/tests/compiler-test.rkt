@@ -1159,3 +1159,83 @@
   (check-equal? (hash-ref (check-step spec "build" "engine-test") 'in) "engine")
   (check-true (for/and ([o (in-list (hash-ref spec 'environments))] #:when (equal? (hash-ref o 'kind) "podman"))
                 (hash-ref o 'nestedEngine))))
+;; --- toolchains ------------------------------------------------------------------------------
+
+(define dev-toolchain '(toolchain nix #:id dev #:packages ("git") #:features (browser agent-cli)))
+(define (toolchain-layer #:toolchain [tc dev-toolchain] #:podman [podman '(environment podman #:toolchain dev #:agent-inside #t)]
+                         #:adw [adw '(adw a #:environment (worktree podman) (steps (run plan #:command plan)))]
+                         . more)
+  (apply layer plan tc '(environment worktree) podman adw more))
+
+(test-case "toolchain family and references"
+  (define ir (compile-layer-datum
+              (layer plan dev-toolchain
+                     '(environment worktree)
+                     '(environment nix-devshell #:toolchain dev)
+                     '(environment podman #:toolchain dev #:agent-inside #t)
+                     '(environment home-manager #:toolchain dev)
+                     '(adw a #:environment (worktree nix-devshell podman) (steps (run plan #:command plan))))))
+  (define tcs (hash-ref ir 'toolchains))
+  (check-equal? (length tcs) 1)
+  (check-equal? (hash-ref (car tcs) 'id) "dev")
+  (check-equal? (hash-ref (car tcs) 'agentClis) '("claude-code"))
+  (check-equal? (hash-ref (car tcs) 'features) '("browser" "agent-cli"))
+  (for ([e (in-list (hash-ref ir 'environments))] #:unless (equal? (hash-ref e 'kind) "worktree"))
+    (check-equal? (hash-ref e 'toolchain) "dev" (hash-ref e 'kind))))
+
+(test-case "toolchain errors"
+  (check-rejects (toolchain-layer #:podman '(environment podman #:id sandbox #:toolchain dev #:packages ("git"))
+                                  #:adw '(adw a #:environment (worktree sandbox) (steps (run plan #:command plan))))
+                 #rx"\\(environment podman sandbox\\): give either #:toolchain or #:packages, not both")
+  (check-rejects (toolchain-layer '(environment nix-devshell #:toolchain dev #:nixpkgs "github:NixOS/nixpkgs/nixos-unstable"))
+                 #rx"nix-devshell.*#:nixpkgs")
+  (check-rejects (toolchain-layer #:podman '(environment podman #:toolchain dev #:base-image "docker.io/library/debian:stable"))
+                 #rx"podman.*#:base-image")
+  (check-rejects (toolchain-layer #:podman '(environment podman #:id sandbox #:toolchain dev #:nested-engine #t)
+                                  #:adw '(adw a #:environment (worktree sandbox) (steps (run plan #:command plan))))
+                 #rx"\\(environment podman sandbox\\): #:nested-engine needs the #:packages form \\(a Debian base image\\); it cannot be combined with #:toolchain")
+  (check-rejects (toolchain-layer '(environment nix-devshell)) #rx"nix-devshell.*give #:toolchain or #:packages")
+  (check-rejects (toolchain-layer '(environment home-manager)) #rx"home-manager.*give #:toolchain or #:packages")
+  (check-rejects (toolchain-layer #:podman '(environment podman #:toolchain nope))
+                 #rx"`nope` is not a declared toolchain")
+  (check-rejects (toolchain-layer #:toolchain '(toolchain nix #:id dev #:features (gpu)))
+                 #rx"one of: browser, agent-cli")
+  (check-rejects (toolchain-layer #:toolchain '(toolchain nix #:id dev))
+                 #rx"at least one package .* or feature")
+  (check-rejects (toolchain-layer #:toolchain '(toolchain nix #:id dev #:packages ("git") #:env (("1BAD" "x"))))
+                 #rx"#:env.*`1BAD` is not a variable name")
+  (check-rejects (toolchain-layer #:podman '(environment podman #:toolchain dev #:agent-inside #f))
+                 #rx"agent-cli.*no workflow runs its agent inside")
+  (check-rejects (toolchain-layer '(agent custom #:command "my-agent")) ; first declared agent: the ADW's
+                 #rx"agent-cli.*custom"))
+
+(test-case "warning: a toolchain's packages and features count for the container"
+  (define (stack tc)
+    (layer-warnings
+     (compile-layer-datum
+      (layer plan tc '(environment worktree) '(environment nix-devshell #:packages ("python312" "uv" "ffmpeg"))
+             '(environment podman #:id box #:toolchain dev)
+             '(adw a #:environment (worktree nix-devshell box) (steps (run plan #:command plan)))))))
+  (check-equal? (stack '(toolchain nix #:id dev #:packages ("python312" "uv") #:features (video))) '())
+  (check-equal? (stack '(toolchain nix #:id dev #:packages ("python312")))
+                '("workflow a runs its commands in (environment podman #:id box), which does not provide what (environment nix-devshell #:id nix-devshell) declares: uv, ffmpeg")))
+
+(test-case "no toolchain, no new keys"
+  (define spec (dynamic-require (build-path examples "minimal.rkt") 'layer-spec))
+  (define ir (compile-layer-datum
+              (layer plan '(environment worktree) '(environment nix-devshell #:packages ("uv"))
+                     '(environment podman #:packages ("git")) '(environment home-manager #:packages ("uv"))
+                     '(adw a #:environment (worktree nix-devshell podman) (steps (run plan #:command plan))))))
+  (for ([x (list spec ir)])
+    (check-false (hash-has-key? x 'toolchains))
+    (for ([e (in-list (hash-ref x 'environments))])
+      (check-false (hash-has-key? e 'toolchain) (hash-ref e 'kind)))))
+
+(test-case "every feature is documented"
+  (define tc (find-kind (find-family 'toolchain) 'nix))
+  (define features (findf (lambda (f) (eq? (field-name f) 'features)) (kind-fields tc)))
+  (check-equal? (cdr (cadr (field-type features))) (map car toolchain-features))
+  (define ref (reference-text))
+  (check-true (string-contains? ref "## Toolchain features"))
+  (for ([f (in-list toolchain-features)])
+    (check-true (string-contains? ref (format "- `~a` — ~a" (car f) (cdr f))) (symbol->string (car f)))))

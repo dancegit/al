@@ -70,12 +70,26 @@ def commit(repo: Path, message: str, *paths: str) -> None:
 
 
 def al(*args, cwd=None, env=None, ok=True, timeout=900) -> subprocess.CompletedProcess:
+    """tools/al with this environment. AL_SANDBOX_OFFLINE=1 unless `env` says otherwise: `al gen` of a
+    layer with a toolchain does not try to pin nixpkgs (nothing here downloads)."""
     full_env = {k: v for k, v in os.environ.items() if k != "AL_APP_ROOT"}
+    full_env["AL_SANDBOX_OFFLINE"] = "1"
     full_env.update(env or {})
     cp = sh([AL, *args], cwd=cwd, env=full_env, timeout=timeout)
     if ok:
         assert cp.returncode == 0, f"al {' '.join(map(str, args))} exited {cp.returncode}\n{cp.stdout}\n{cp.stderr}"
     return cp
+
+
+def stub_bin(tmp_path: Path, name: str, script: str) -> Path:
+    """Put an executable `name` with the given script (its own #! line) into tmp_path/stub-bin, and
+    return that directory: put it first on PATH to stand in for nix or podman."""
+    directory = tmp_path / "stub-bin"
+    directory.mkdir(exist_ok=True)
+    path = directory / name
+    path.write_text(script)
+    path.chmod(0o755)
+    return directory
 
 
 def status(repo: Path) -> str:

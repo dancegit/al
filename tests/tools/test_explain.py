@@ -194,3 +194,40 @@ def test_explain_promotion_in_words():
     _, delivery, stage_lines = explain.explain({"head": "delivery", "first": "  (delivery sprint #:length-days 14)"},
                                                FULL_IR)
     assert any("promoted into main with `al promote LAYER sprint main`" in line for line in stage_lines)
+
+
+# --- toolchains --------------------------------------------------------------------------------
+
+TOOLCHAIN_IR = {
+    "codebase": {"commands": [], "paths": {"protected": []}, "conditionalDocs": []},
+    "toolchains": [{"id": "dev", "kind": "nix", "packages": ["python312", "uv"], "features": ["browser", "agent-cli"],
+                    "nixpkgs": "github:NixOS/nixpkgs/nixos-25.05", "env": [{"name": "TZ", "value": "UTC"}],
+                    "shellHook": "", "agentClis": ["claude-code"], "status": "stable"}],
+    "environments": [
+        {"id": "worktree", "kind": "worktree"},
+        {"id": "nix-devshell", "kind": "nix-devshell", "packages": [], "toolchain": "dev"},
+        {"id": "sandbox", "kind": "podman", "packages": [], "toolchain": "dev", "agentInside": True,
+         "baseImage": "docker.io/library/debian:stable-slim", "caches": [], "services": [], "publish": []},
+        {"id": "home-manager", "kind": "home-manager", "packages": ["uv"]},
+    ],
+}
+
+
+def test_toolchain_block_lists_packages_features_and_pin():
+    heading, text, bullets = explain.explain({"head": "toolchain"}, TOOLCHAIN_IR)
+    assert heading == "Which tools the environments have"
+    assert "`dev`" in text and "python312 and uv" in text and "pinned" in text
+    joined = "\n".join(bullets)
+    assert "`browser`: Chromium with fonts" in joined
+    assert "`agent-cli`: The CLI of every agent kind" in joined and "claude-code" in joined
+    assert "github:NixOS/nixpkgs/nixos-25.05" in joined and "env/flake.lock" in joined
+    assert "Used by `nix-devshell` and `sandbox`" in joined
+    assert "`TZ`" in joined
+
+
+def test_environment_with_toolchain_names_it():
+    _heading, _text, bullets = explain.explain({"head": "environment"}, TOOLCHAIN_IR)
+    assert "`nix-devshell`: uses toolchain `dev`" in bullets
+    podman = next(b for b in bullets if b.startswith("`podman`"))
+    assert "built from toolchain `dev` with Nix" in podman and "debian" not in podman
+    assert "`home-manager`: provides uv" in bullets

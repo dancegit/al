@@ -168,9 +168,27 @@
   (unless (null? pos) (fail "~a: unexpected ~s; fields are given as #:keyword value" who (car pos)))
   (define id (cond [(assq '#:id kws) => (lambda (p) (name->string (cdr p) who))]
                    [else (symbol->string (kind-name k))]))
+  (when (eq? fname 'environment) (check-environment-source (kind-name k) id kws))
   (compile-fields (kind-fields k) kws who #:extra '(#:id)
                   #:init (hasheq 'id id 'kind (symbol->string (kind-name k))
                                  'status (symbol->string (kind-status k)))))
+
+;; Where an environment's tools come from: a declared toolchain, or the kind's own #:packages
+;; (with #:nixpkgs / #:base-image). Judged on the keywords written, not on the defaults.
+(define (check-environment-source kind id kws)
+  (define who (format "(environment ~a ~a)" kind id))
+  (define (given? kw) (and (assq kw kws) #t))
+  (define toolchain? (given? '#:toolchain))
+  (when (and toolchain? (given? '#:packages))
+    (fail "~a: give either #:toolchain or #:packages, not both" who))
+  (when (and toolchain? (eq? kind 'nix-devshell) (given? '#:nixpkgs))
+    (fail "~a: #:nixpkgs goes with #:packages; with #:toolchain the toolchain's own #:nixpkgs pins the packages" who))
+  (when (and toolchain? (eq? kind 'podman) (given? '#:base-image))
+    (fail "~a: #:base-image goes with #:packages; with #:toolchain the image is built from the toolchain with Nix" who))
+  (when (and toolchain? (eq? kind 'podman) (let ([p (assq '#:nested-engine kws)]) (and p (eq? (cdr p) #t))))
+    (fail "~a: #:nested-engine needs the #:packages form (a Debian base image); it cannot be combined with #:toolchain" who))
+  (when (and (memq kind '(nix-devshell home-manager)) (not toolchain?) (not (given? '#:packages)))
+    (fail "~a: give #:toolchain or #:packages: the environment needs to know which tools to provide" who)))
 
 (define (default-option fam)
   (define k (find-kind fam (family-default-kind fam)))
@@ -548,6 +566,7 @@
            (when (eq? (family-name fam) 'cycle) (hash-set! clause-of 'cycle-clause (car c)))
            (when (eq? (family-name fam) 'agent) (hash-set! clause-of (cons 'agent (hash-ref o 'id)) (car c)))
            (when (eq? (family-name fam) 'notify) (hash-set! clause-of (cons 'notify (hash-ref o 'id)) (car c)))
+           (when (eq? (family-name fam) 'toolchain) (hash-set! clause-of (cons 'toolchain (hash-ref o 'id)) (car c)))
            (hash-set! options (family-name fam) (cons o existing))]
           [(eq? (car d) 'codebase)
            (when codebase (fail "(codebase …) given twice"))
@@ -1125,6 +1144,59 @@
                    (not podman))
           (fail "~a: review `~a` ships without a human, so the ADW's #:environment must include a podman option (declare (environment podman …) and list its id)" who (hash-ref rv 'id)))))
 
+    ;; ---- toolchains ---------------------------------------------------------------------
+    ;; The agents of an ADW: its own, every run step's #:agent and the review agent (the same set
+    ;; as the bypassPermissions rule).
+    (define (agent-ids-of a)
+      (define rv (opt 'review (hash-ref a 'review)))
+      (define steps (hash-ref a 'steps))
+      (remove-duplicates
+       (append (list (hash-ref a 'agent))
+               (for/list ([st (in-list steps)]
+                          #:when (and (equal? (hash-ref st 'kind) "run") (not (string=? (hash-ref st 'agent "") ""))))
+                 (hash-ref st 'agent))
+               (if (and (member (hash-ref rv 'kind) '("agent" "auto"))
+                        (findf (lambda (st) (equal? (hash-ref st 'kind) "review")) steps)
+                        (not (string=? (hash-ref rv 'agent "") "")))
+                   (list (hash-ref rv 'agent))
+                   '()))))
+    ;; ADWs whose agent runs inside an environment that uses toolchain `tid`.
+    (define (adws-inside tid)
+      (for/list ([a (in-list adws)]
+                 #:when (for/or ([id (in-list (hash-ref a 'environment))])
+                          (define e (opt 'environment id))
+                          (and (equal? (hash-ref e 'toolchain "") tid)
+                               (or (equal? (hash-ref e 'kind) "nix-devshell")
+                                   (and (equal? (hash-ref e 'kind) "podman") (hash-ref e 'agentInside))))))
+        a))
+    (define toolchains
+      (for/list ([t (in-list (opts 'toolchain))])
+        (parameterize ([current-clause (hash-ref clause-of (cons 'toolchain (hash-ref t 'id)) #f)])
+          (define tid (hash-ref t 'id))
+          (define who (format "(toolchain ~a ~a)" (hash-ref t 'kind) tid))
+          (when (and (null? (hash-ref t 'packages)) (null? (hash-ref t 'features)))
+            (fail "~a: list at least one package (#:packages (\"git\" …)) or feature (#:features (browser …))" who))
+          (for ([v (in-list (hash-ref t 'env))])
+            (unless (regexp-match? #px"^[A-Za-z_][A-Za-z0-9_]*$" (hash-ref v 'name))
+              (fail "~a #:env: `~a` is not a variable name (letters, digits and _, not starting with a digit)" who (hash-ref v 'name))))
+          (define inside (adws-inside tid))
+          (define agents (remove-duplicates (map (lambda (id) (opt 'agent id)) (append-map agent-ids-of inside))))
+          (when (member "agent-cli" (hash-ref t 'features))
+            (when (null? inside)
+              (fail "~a: feature agent-cli, but no workflow runs its agent inside an environment using toolchain `~a`; use it from a nix-devshell or from (environment podman #:toolchain ~a #:agent-inside #t) in a workflow's #:environment, or drop agent-cli"
+                    who tid tid))
+            (for ([ag (in-list agents)])
+              (unless (member (hash-ref ag 'kind) '("claude-code" "codex" "mock"))
+                (fail "~a: feature agent-cli provides the CLI of claude-code and codex agents, but agent `~a` is ~a, whose CLI al does not know; install it with #:packages or #:setup instead, and drop agent-cli"
+                      who (hash-ref ag 'id) (hash-ref ag 'kind)))))
+          (hash-set t 'agentClis
+                    (sort (remove-duplicates (filter (lambda (k) (not (equal? k "mock"))) (map (lambda (ag) (hash-ref ag 'kind)) agents)))
+                          string<?)))))
+    ;; an environment without a toolchain is emitted as before toolchains existed
+    (define environments
+      (for/list ([e (in-list (opts 'environment))])
+        (if (equal? (hash-ref e 'toolchain #f) "") (hash-remove e 'toolchain) e)))
+
     (define (single fname) (let ([l (opts fname)]) (if (null? l) 'null (car l))))
     (define ir-out
       (hash-set* top
@@ -1141,7 +1213,7 @@
                'agents (opts 'agent)
                'promptInputs (opts 'prompt-input)
                'triggers (opts 'trigger)
-               'environments (opts 'environment)
+               'environments environments
                'reviews (opts 'review)
                'artefacts (opts 'artefact)
                'services (opts 'service)
@@ -1152,10 +1224,12 @@
                'registry (or registry 'null)
                'adws adws))
     ;; no stage: exactly the IR of before (no stages, cycle or delivery key, no deliverTo)
-    (if (null? stage-list)
-        (hash-set ir-out 'adws (for/list ([a (in-list adws)]) (hash-remove a 'deliverTo)))
-        (hash-set* ir-out
-                   'stages stage-list
-                   'cycle (single 'cycle)
-                   'delivery (or delivery 'null)
-                   'promotions promotion-list))))
+    (define ir
+      (if (null? stage-list)
+          (hash-set ir-out 'adws (for/list ([a (in-list adws)]) (hash-remove a 'deliverTo)))
+          (hash-set* ir-out
+                     'stages stage-list
+                     'cycle (single 'cycle)
+                     'delivery (or delivery 'null)
+                     'promotions promotion-list)))
+    (if (null? toolchains) ir (hash-set ir 'toolchains toolchains))))

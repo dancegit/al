@@ -1,0 +1,47 @@
+{
+  "claude-code": {
+    "nixpkgs": "claude-code",
+    "minVersion": "2.0.0",
+    "binary": "claude",
+    "env": {"DISABLE_AUTOUPDATER": "1"},
+    "fallback": {
+      "version": "2.1.325",
+      "patchelf": true,
+      "systems": {
+        "x86_64-linux": {
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.325.tgz",
+          "hash": "sha512-BqZzMvP/zgLLL34S+7OzbG+cyoFp7gwWHU5koVwsyMlTAz+0zZAmbY+UkzvtN2RXxp6AcMenbYIjQJxoXfUY3w==",
+          "path": "package/claude"
+        },
+        "aarch64-linux": {
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64/-/claude-code-linux-arm64-2.1.325.tgz",
+          "hash": "sha512-NCvQcOxr685Y4mkYUjQT8l/Ouzw0k2xWloWeyzfsUtWiOedHosPkaW6XCSpzAl1dMuvDNBF97qpWgVDrSdK2Vw==",
+          "path": "package/claude"
+        }
+      }
+    }
+  },
+  "codex": {
+    "nixpkgs": "codex",
+    "minVersion": "0.50.0",
+    "binary": "codex",
+    "env": {},
+    "fallback": {
+      "version": "0.169.0",
+      "patchelf": false,
+      "systems": {
+        "x86_64-linux": {
+          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.169.0-linux-x64.tgz",
+          "hash": "sha512-o05NyAOCDygSPRo1yinzxvkRSdmsZyBD9E7mbpmjRanSfM8lypqWtQgEo4XfNkwhuCR2aFu8mlGOsQGFXVbVww==",
+          "path": "package/vendor/x86_64-unknown-linux-musl/bin/codex"
+        },
+        "aarch64-linux": {
+          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.169.0-linux-arm64.tgz",
+          "hash": "sha512-NZ/DaQUpcQmxmqee7Z9uC1rzw3GhSbooawcaTe1LN5Yk+WlinUKGdTXJgClRT/9ogQEEM9TWxYzvxPfj5G/xFg==",
+          "path": "package/vendor/aarch64-unknown-linux-musl/bin/codex"
+        }
+      }
+    }
+  },
+  "unfree": ["claude-code"]
+}

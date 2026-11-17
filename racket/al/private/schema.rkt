@@ -21,25 +21,41 @@
   (define s (hash-set (type->schema (field-type f)) 'description (field-doc f)))
   (if (field-none? f) (hash-set s 'type (list (hash-ref s 'type) "null")) s))
 
+;; The compiler leaves these out of the IR when they are empty, so that a layer without a toolchain
+;; compiles to the same IR as before toolchains existed: they are not required.
+(define (omitted-when-empty? f) (equal? (field-type f) '(optional-ref toolchain)))
+(define optional-families '(toolchain))
+
 ;; #:optional lists JSON keys (symbols) that are left out of `required`.
 (define (object doc fields #:extra [extra (hasheq)] #:optional [optional '()])
   (define props
     (for/fold ([h extra]) ([f (in-list (emitted-fields fields))])
       (hash-set h (field-json-key f) (field-schema f))))
+  (define left-out (append optional (map field-json-key (filter omitted-when-empty? fields))))
   (hasheq 'type "object"
           'description doc
           'additionalProperties #f
-          'required (sort (map symbol->string (filter (lambda (k) (not (memq k optional))) (hash-keys props))) string<?)
+          'required (sort (map symbol->string (filter (lambda (k) (not (memq k left-out))) (hash-keys props))) string<?)
           'properties props))
 
-(define (kind-schema k)
+;; Keys the compiler derives for an option of a family, beyond its declared fields.
+(define (derived-props fam)
+  (case (family-name fam)
+    [(toolchain)
+     (hasheq 'agentClis (hasheq 'type "array" 'items (hasheq 'type "string")
+                                'description "Derived: the agent kinds (sorted, without mock) whose workflows run their agent inside an environment using this toolchain; feature agent-cli provides their CLIs."))]
+    [else (hasheq)]))
+
+(define (kind-schema fam k)
   (object (kind-doc k) (kind-fields k)
-          #:extra (hasheq 'id (hasheq 'type "string")
-                          'kind (hasheq 'const (symbol->string (kind-name k)))
-                          'status (hasheq 'const (symbol->string (kind-status k))))))
+          #:extra (for/fold ([h (derived-props fam)])
+                            ([(key v) (in-hash (hasheq 'id (hasheq 'type "string")
+                                                       'kind (hasheq 'const (symbol->string (kind-name k)))
+                                                       'status (hasheq 'const (symbol->string (kind-status k)))))])
+                    (hash-set h key v))))
 
 (define (family-schema fam)
-  (define alts (map kind-schema (family-kinds fam)))
+  (define alts (map (lambda (k) (kind-schema fam k)) (family-kinds fam)))
   (cond
     [(memq (family-name fam) singleton-families)
      (hasheq 'description (family-doc fam)
@@ -103,6 +119,13 @@
           'description "IR emitted by #lang al. Generated from racket/al/private/vocab.rkt — do not edit."
           'type "object"
           'additionalProperties #f
-          ;; stages, cycle, delivery and promotions exist only in the IR of a layer that declares a stage
-          'required (sort (map symbol->string (filter (lambda (k) (not (memq k '(stages cycle delivery promotions)))) (hash-keys props))) string<?)
+          ;; stages, cycle, delivery and promotions exist only in the IR of a layer that declares a stage,
+          ;; and toolchains only in the IR of a layer that declares one
+          'required (sort (for/list ([k (in-list (hash-keys props))]
+                                     #:unless (or (memq k '(stages cycle delivery promotions))
+                                                  (member (symbol->string k)
+                                                          (for/list ([fam (in-list (all-families))] #:when (memq (family-name fam) optional-families))
+                                                            (family-key fam)))))
+                            (symbol->string k))
+                          string<?)
           'properties props))

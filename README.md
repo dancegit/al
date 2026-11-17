@@ -76,7 +76,7 @@ flask.al/
   commands/   prompts written for flask: plan-chore, plan-bug, plan-feature, review, commit, …
   hops/       prompts that take another prompt or plan as input (e.g. "implement this plan")
   adws/       the workflows as runnable scripts, plus triggers
-  env/        the container image and the Nix environment
+  env/        the container image and the Nix environment (from one pinned `toolchain`, if declared)
   tasks.md    the task list
   specs/  agents/  artefacts/  trees/     plans, run logs, proof, and the agents' working copies
 ```
@@ -112,7 +112,7 @@ Work should go on while nobody watches. Every workflow makes four choices, which
 |---|---|---|
 | **P**rompt input | Where does the work come from? | command line · forge issue · task file · spec file · voice · webhook payload |
 | **T**rigger | What starts a run? | by hand · poller · webhook · forge CI · file watcher · voice |
-| **E**nvironment | Where does the agent work? | worktree · Nix shell · Home Manager · container, with its own network and services |
+| **E**nvironment | Where does the agent work? | worktree · Nix shell · Home Manager · container, with its own network and services; one pinned Nix `toolchain` can provide the tools of all three |
 | **R**eview | Who decides it is done? | a human, via a pull request · an agent with proof, a human merges · automatic, with hard rules |
 
 A **worktree** is a private working copy of the repository for one run; agents never work in your own checkout.

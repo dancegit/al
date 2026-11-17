@@ -1,0 +1,357 @@
+{
+  "adws": [
+    {
+      "agent": "claude-code",
+      "changes": "codebase",
+      "classes": [],
+      "description": "Plan, build, test; a person reviews",
+      "environment": [
+        "worktree",
+        "nix-devshell",
+        "sandbox"
+      ],
+      "input": [
+        "cli"
+      ],
+      "name": "change",
+      "review": "human",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "implement",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "cmd": "test",
+          "collect": [],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "test",
+          "resolve": "",
+          "retries": 3
+        },
+        {
+          "agent": "",
+          "args": [],
+          "command": "commit",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "commit",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "implement": "",
+          "kind": "review",
+          "name": "review",
+          "patch": ""
+        },
+        {
+          "kind": "ship",
+          "message": "",
+          "name": "ship"
+        }
+      ],
+      "trigger": [
+        "manual"
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "allowedTools": [
+        "Read",
+        "Glob",
+        "Grep",
+        "Edit",
+        "Write",
+        "Bash"
+      ],
+      "id": "claude-code",
+      "kind": "claude-code",
+      "maxTurns": 600,
+      "models": [
+        {
+          "effort": "default",
+          "model": "claude-opus-5-5",
+          "tier": "base"
+        },
+        {
+          "effort": "default",
+          "model": "claude-opus-5-5",
+          "tier": "heavy"
+        }
+      ],
+      "permissionMode": "acceptEdits",
+      "safeMode": true,
+      "status": "stable",
+      "timeout": 9000
+    }
+  ],
+  "artefacts": [],
+  "budget": null,
+  "codebase": {
+    "commands": [
+      {
+        "description": "the tests pass",
+        "name": "test",
+        "run": "./test.sh",
+        "timeout": 60
+      }
+    ],
+    "conditionalDocs": [],
+    "defaultBranch": "main",
+    "description": "A tiny app: app.py and test.sh.",
+    "languages": [
+      "python"
+    ],
+    "packageManager": "",
+    "paths": {
+      "docs": [],
+      "protected": [
+        "test.sh"
+      ],
+      "source": [
+        "app.py"
+      ],
+      "tests": [
+        "test.sh"
+      ]
+    },
+    "readme": "README.md",
+    "root": "../notes"
+  },
+  "commands": [
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-chore",
+      "validation": [
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "tidy",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-chore",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "commit",
+      "output": "text",
+      "relevant": [],
+      "template": "commit",
+      "validation": []
+    }
+  ],
+  "concurrency": {
+    "id": "slots",
+    "kind": "slots",
+    "maxAgents": 2,
+    "maxChecks": 2,
+    "maxRuns": 4,
+    "status": "stable",
+    "waitSeconds": 3600
+  },
+  "dashboard": {
+    "also": [],
+    "bind": "127.0.0.1",
+    "id": "local",
+    "kind": "local",
+    "pollMs": 750,
+    "port": 8765,
+    "status": "stable",
+    "systemd": false,
+    "tokenEnv": ""
+  },
+  "description": "Agentic layer of a tiny test app",
+  "environments": [
+    {
+      "copyFiles": [],
+      "deleteMergedBranches": true,
+      "dir": "trees",
+      "gcDays": 7,
+      "id": "worktree",
+      "keep": "on-failure",
+      "kind": "worktree",
+      "portBase": 9100,
+      "portsPerRun": 2,
+      "sparse": [],
+      "status": "stable"
+    },
+    {
+      "id": "nix-devshell",
+      "kind": "nix-devshell",
+      "nixpkgs": "github:NixOS/nixpkgs/nixos-unstable",
+      "packages": [
+        "python312",
+        "uv"
+      ],
+      "pure": false,
+      "shellHook": "",
+      "status": "stable"
+    },
+    {
+      "id": "home-manager",
+      "kind": "home-manager",
+      "moduleName": "agentic-layer",
+      "packages": [
+        "python312"
+      ],
+      "stateVersion": "25.05",
+      "status": "stable"
+    },
+    {
+      "agentInside": true,
+      "baseImage": "docker.io/library/debian:stable-slim",
+      "caches": [],
+      "cpus": "2",
+      "credentials": [],
+      "id": "sandbox",
+      "kind": "podman",
+      "memory": "4g",
+      "nestedEngine": false,
+      "network": "slirp",
+      "packages": [
+        "git"
+      ],
+      "pidsLimit": 2048,
+      "publish": [],
+      "readOnlyRoot": false,
+      "scope": "run",
+      "services": [],
+      "setup": [
+        "true"
+      ],
+      "status": "stable"
+    }
+  ],
+  "experts": [
+    {
+      "domain": "How notes are stored",
+      "maxLines": 1000,
+      "name": "storage",
+      "paths": [
+        "app.py"
+      ]
+    }
+  ],
+  "forge": {
+    "id": "none",
+    "kind": "none",
+    "remote": "",
+    "status": "stable"
+  },
+  "hops": [
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "implement",
+      "produces": "changes",
+      "takes": "plan",
+      "template": "run-plan"
+    },
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "new-adw",
+      "produces": "adw",
+      "takes": "prompt",
+      "template": "meta-adw"
+    }
+  ],
+  "hosts": [],
+  "layer": {
+    "dir": "",
+    "git": true,
+    "id": "sibling",
+    "kind": "sibling",
+    "status": "stable"
+  },
+  "llmTxt": "LLM.txt",
+  "name": "notes",
+  "notifiers": [
+    {
+      "id": "none",
+      "kind": "none",
+      "status": "stable"
+    }
+  ],
+  "promptInputs": [
+    {
+      "allowStdin": true,
+      "id": "cli",
+      "kind": "cli",
+      "status": "stable"
+    }
+  ],
+  "registry": null,
+  "reviews": [
+    {
+      "bodyCmd": "",
+      "draft": false,
+      "id": "human",
+      "kind": "human",
+      "reviewers": [],
+      "status": "stable"
+    }
+  ],
+  "schemaVersion": "agentic-layer-v1",
+  "services": [],
+  "storage": {
+    "dir": "artefacts",
+    "id": "local",
+    "kind": "local",
+    "status": "stable"
+  },
+  "triggers": [
+    {
+      "confirm": false,
+      "id": "manual",
+      "kind": "manual",
+      "status": "stable"
+    }
+  ],
+  "voice": null
+}

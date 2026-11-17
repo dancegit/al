@@ -40,7 +40,7 @@ application repo ──al scout──▶ LLM.txt (draft) ──LLM + scout-codeb
 | ZTE: SDLC + ship, "only if all phases pass", start with chores | `(review auto …)`: agent verdict AND deterministic gates (required checks, allowed classes, max diff, protected paths) → merge/deploy, else fall back to a human PR |
 | Work collects in stages that people accept as a whole | `(delivery sprint\|gitflow\|…)` / `(cycle …)` / `al promote` + `al decide`: the stages work collects in, branches only people may change, a presentation pack and recorded acceptance before merge, version, tag, deploy (see "How work is delivered", "Promotion between stages") |
 | Isolation via worktrees + ports; layer separate from app | `environment worktree` creates `trees/<adw-id>` under the layer; the app's working tree is never written |
-| The sandbox is built once per recipe and checked before work starts | image `al-<layer>:<recipe hash>`, built only when the recipe changed; a preflight before the first step; `al sandbox build\|doctor\|shell\|status\|prune\|push\|pull` (see "Sandbox image") |
+| The sandbox is built once per recipe and checked before work starts | image `al-<layer>:<recipe hash>`, built only when the recipe changed; a preflight before the first step; `al sandbox LAYER build\|update\|doctor\|shell\|status\|prune\|push\|pull` (see "Sandbox image") |
 | `tasks.md` two-way task list polled by a cron trigger | `(prompt-input tasklist)` + `(trigger cron)` / `(trigger file-watch)` |
 | Agent experts: expertise file + self-improve | `(expert NAME #:domain … #:paths …)` |
 | Model sets base/heavy; KPIs | named model tiers per agent (`base`, `heavy`, any others in `#:models`), picked with `#:model-set` on commands/hops/steps and overridable per run; `(budget limits …)`; `track-kpis` template |
@@ -382,6 +382,69 @@ default environment and what makes N agents on one repository safe. On top of th
   runs of a child ADW. Each candidate is a full run with its own worktree, container, port lease and
   slots; the winner (fewest resolve attempts, then smallest diff) is merged into the parent run, which
   goes on to check, review and ship it. Losers' branches are removed and their ids recorded.
+
+## Toolchains: one declaration, three consumers
+
+Before toolchains, a layer said what its environments contain three ways: nixpkgs names for the dev
+shell and the Home Manager module, Debian names and raw `RUN` lines for the container. They drifted,
+and the container was not reproducible (unpinned apt, a `curl | bash` installer for the agent CLI).
+`(toolchain nix …)` is the one declaration:
+
+| Declared | Generated (`env/`) | Consumed by |
+|---|---|---|
+| `#:packages`, `#:features`, `#:env`, `#:shell-hook` | `toolchain-<id>.nix` (imports the kit's `features.nix` and `agent-cli.json`) | everything below |
+| `(environment nix-devshell #:toolchain ID)` | `flake.nix` `devShells.default` | `nix develop path:env` |
+| `(environment podman #:toolchain ID …)` | `flake.nix` `packages.image-<id>` (`dockerTools.streamLayeredImage`) and a `Containerfile` with the `#:setup` lines on top | `al sandbox LAYER build`, `al verify`, runs |
+| `(environment home-manager #:toolchain ID)` | `home-manager.nix` | the user's Home Manager, against their own nixpkgs |
+
+The compiler checks the references (an environment gives `#:toolchain` or `#:packages`, never both; no
+`#:nixpkgs` or `#:base-image` beside a toolchain; no `#:nested-engine #t` on a podman option with a
+toolchain, because the nested engine is installed with Debian packages and a `COPY` into
+`env/Containerfile`, which the Nix-built image cannot take), and that `agent-cli` is only asked for where an
+agent runs inside an environment using the toolchain and is one al knows a CLI for. It derives
+`agentClis`, the agent kinds whose CLI the bundle installs. A layer without a toolchain compiles and
+generates byte for byte what it did before (`toolchains` and an empty `toolchain` are left out of the IR).
+
+**Pinning.** Each toolchain is one flake input, `nixpkgs_<id>`, locked in `env/flake.lock`, which is
+committed (the layer's `.gitignore` excepts it). `al gen` writes the lock when there is none and keeps
+it otherwise; `al sandbox LAYER update` re-pins and prints the revision and date per input. Unfree packages are
+allowed by name only, from `agent-cli.json` (`claude-code`). An agent CLI comes from nixpkgs when the
+pinned nixpkgs has it at the recorded minimum version, else from the vendor's release, fetched by the
+recorded SRI hash.
+
+**Two ways to build** (`kit/runtime/adw_modules/images.py`, standard library only):
+
+- *nix*: `nix` is on the host's PATH; it builds the stream script and al pipes it into `podman load`.
+- *container*: no Nix on the host. Nix runs in `docker.io/nixos/nix@sha256:…` (pinned by digest),
+  with `--option sandbox false` and its store in the volume `al-nix-store-<first 12 of the digest>`,
+  so a new builder never runs on an old store. The builder sees only `env/`, mounted read-only except
+  for `lock` and `update`, and its volume: never a worktree or a credential.
+
+Either way the Nix image is tagged `localhost/al-<layer>-toolchain-<id>:latest`, and `podman build` of
+`env/Containerfile` puts the `#:setup` lines on top. The result is the layer's one sandbox image,
+`al-<layer>:<recipe hash>` (see "Sandbox image"), with the labels of every sandbox image (`al.layer`,
+`al.layer-dir`, `al.recipe`) and `al.toolchain.key`: a sha256 over the flake, the lock, the toolchain
+file, the kit files, the setup lines and the builder digest. For a recipe option with a toolchain the
+recipe hash covers that key, so a changed lock or declaration is a new recipe, built at the next run,
+and an unchanged one is never built; `al-<layer>:latest` is re-pointed at it. `sandbox.build_image`
+builds it through `images.ensure` (which takes the recipe's ref and labels) and then does what it does
+for every image: the build events, `:latest`, the prune. The doctor's fix hints name the toolchain
+(`#:packages`, feature `browser`, feature `agent-cli`) instead of the podman option.
+
+**Image layout guarantees.** The image has a normal filesystem layout, so the runtime's hardening flags
+(`--cap-drop=ALL`, `no-new-privileges`, `--userns=keep-id`, optionally `--read-only`) work unchanged:
+`/bin/sh`, `/usr/bin/env`, bash and the core utilities, a CA bundle (`SSL_CERT_FILE`), a regular writable
+`/etc/passwd` and `/etc/group`, and `/tmp`, `/tmp/home` (`HOME`) and `/work` with mode 1777. In the image
+only, `chromium` is a wrapper adding `--no-sandbox --disable-dev-shm-usage`: the container is the
+sandbox, and chromium's own cannot start with every capability dropped.
+
+**Follow-ups for a person (protected modules).** None is required: every run goes through the preflight,
+which ensures the recipe image (`sandbox.ensure_image`) before a container starts, and `al verify` and
+`al sandbox LAYER doctor|shell` do the same, so `envs.py` finds `al-<layer>:latest` and never builds. For
+symmetry a person may make `EnvStack._ensure_podman_image` call `sandbox.ensure_image(self.layer)`
+(imported inside the function, `sandbox` imports `envs`) instead of its own `podman build`; today that
+fallback build would fail on a toolchain layer whose Nix base image was never loaded, with podman's
+message about the missing base.
 
 ## What the sandbox guarantees
 

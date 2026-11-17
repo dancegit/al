@@ -26,11 +26,23 @@
   (hash "nodejs" '("nodejs" "node") "node" '("node" "nodejs")
         "python" '("python" "python3") "python3" '("python3" "python")))
 
-(define (provided? package podman)
+;; what a toolchain feature brings, by the names a dev shell would list
+(define feature-packages
+  (hash "browser" '("chromium") "video" '("ffmpeg") "build-essentials" '("gcc" "gnumake" "pkg-config")
+        "docker-cli" '("docker") "podman-cli" '("podman")))
+
+;; `toolchain` is the (toolchain nix …) the podman option uses, or #f: then the image is built
+;; from the toolchain's packages and features (and the #:setup lines), not from a base image.
+(define (provided? package podman [toolchain #f])
   (define names (hash-ref aliases (normalise package) (list (normalise package))))
   ;; the base image counts too: docker.io/library/python:3.12-slim provides python
-  (define provided (map string-downcase (append (list (field podman 'baseImage ""))
-                                                (field podman 'packages) (field podman 'setup))))
+  (define provided
+    (map string-downcase
+         (if toolchain
+             (append (field toolchain 'packages)
+                     (append* (map (lambda (f) (hash-ref feature-packages f '())) (field toolchain 'features)))
+                     (field podman 'setup))
+             (append (list (field podman 'baseImage "")) (field podman 'packages) (field podman 'setup)))))
   (for*/or ([name (in-list names)] [line (in-list provided)])
     (string-contains? line name)))
 
@@ -83,7 +95,9 @@
   (for*/list ([entry (in-list (reverse stacks))]
               [nix (in-value (car (car entry)))]
               [podman (in-value (cdr (car entry)))]
-              [missing (in-value (filter (lambda (p) (not (provided? p podman))) (field nix 'packages)))]
+              [toolchain (in-value (findf (lambda (t) (equal? (field t 'id "") (field podman 'toolchain "")))
+                                          (field ir 'toolchains)))]
+              [missing (in-value (filter (lambda (p) (not (provided? p podman toolchain))) (field nix 'packages)))]
               #:when (pair? missing))
     (format "workflow ~a runs its commands in ~a, which does not provide what (environment nix-devshell #:id ~a) declares: ~a"
             (string-join (cdr entry) ", ") (podman-decl podman) (field nix 'id "")
