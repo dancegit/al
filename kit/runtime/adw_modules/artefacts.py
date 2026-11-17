@@ -192,3 +192,18 @@ def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str
     state.artefacts[:] = [item for item in state.artefacts if item.get("id") not in replaced] + collected
     write_manifest(layer, state)
     return collected
+
+
+def add_files(layer: Any, state: Any, artefact_id: str, kind: str, step: str,
+              matches: list[tuple[str, Path]]) -> list[dict[str, Any]]:
+    """Record arbitrary files as the artefacts of `artefact_id` (e.g. the kept work of a run, see
+    keep.py): `matches` are (relative path under artefacts/<adw_id>/<id>/, source file). Like
+    `collect`, it REPLACES an earlier collection of the same id, files and manifest entries."""
+    store = storage.get_storage(layer)
+    run_root = storage.artefacts_root(layer) / state.adw_id
+    _clear(run_root, artefact_id)
+    option = {"id": artefact_id, "kind": kind}
+    collected = [_record(layer, state, store, option, step, relative, source) for relative, source in matches]
+    state.artefacts[:] = [item for item in state.artefacts if item.get("id") != artefact_id] + collected
+    write_manifest(layer, state)
+    return collected

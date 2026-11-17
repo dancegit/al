@@ -283,7 +283,8 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"cost:      {budget.summary(state)}",
         *([f"models:    {_models_line(state)}"] if state.agent_calls else []),
         f"ship:      {ship}",
-        *([f"delivery:  {_delivery_line(state)}"] if state.delivery else []),
+        *([f"kept:      {_kept_line(state)}"] if state.kept.get("changed") or state.kept.get("error") else []),
+        *([f"delivery:  {_delivery_line(state)}"] if state.delivery or state.kept else []),
         *([f"promotion: {_promotion_line(state)}"] if state.promotion else []),
         *([f"replaces:  {state.replaces}"] if state.replaces else []),
         *([handoff] if handoff else []),
@@ -294,9 +295,32 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
     ]
 
 
+def _kept_line(state: state_module.ADWState) -> str:
+    """What keep.py kept of a run without a ship step, e.g. `branch chore/1a2b3c4d-report (2 files)`."""
+    kept = state.kept
+    if kept.get("error"):
+        return f"FAILED ({str(kept['error'])[:160]}); the worktree is kept"
+    count = kept.get("count", 0)
+    if kept.get("branch"):
+        line = f"branch {kept['branch']} ({count} files)"
+    else:
+        line = f"no branch; {kept.get('artefacts', 0)} files as artefacts"
+    too_large = len(kept.get("too_large") or [])
+    return line + (f", {too_large} too large for the artefacts" if too_large else "")
+
+
 def _delivery_line(state: state_module.ADWState) -> str:
-    """Where the run delivers, e.g. `sprint -> sprint/2026-s47 (merge; delivered=True)`."""
+    """Where the run delivers, e.g. `sprint -> sprint/2026-s47 (merge; delivered=True)`; for a run
+    without a ship step, what happened to its work (see keep.py)."""
     d = state.delivery
+    if state.kept:
+        stage = f" (stage {d.get('stage')} -> {d.get('branch')})" if d else ""
+        if state.kept.get("error"):
+            return "none (no ship step); keeping failed, the worktree is kept" + stage
+        if state.kept.get("changed"):
+            where = f"on branch {state.kept['branch']}" if state.kept.get("branch") else "as artefacts"
+            return f"none (no ship step); work kept {where}" + stage
+        return "nothing changed" + stage
     if d.get("refused"):
         return f"{d.get('stage') or '?'} -> {d.get('branch') or '?'} (refused: {d['refused']})"
     where = f" @ {d['environment_name']}" if d.get("environment_name") else ""
@@ -522,6 +546,15 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
         if notify.report(layer, state, force=bool(getattr(args, "notify", False)), at="handover"):
             state.save(layer.layer_dir)
     finally:
+        if state.status != "waiting":  # a waiting run keeps its worktree for --resume
+            from . import keep
+
+            try:
+                keep.keep_work(layer, state, adw, stack)
+            except Exception as exc:  # keep.keep_work never raises by contract; this keeps the run result intact
+                print(f"[adw {state.adw_id}] warning: keeping the work failed: {type(exc).__name__}: {exc}")
+                stack.keep_worktree = True
+            state.save(layer.layer_dir)
         try:
             stack.teardown(state.status in ("passed", HANDED_OVER))
         except (StepFailed, LayerError, OSError) as exc:

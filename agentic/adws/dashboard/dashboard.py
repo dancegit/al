@@ -75,7 +75,7 @@ PRUNE_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "target", 
 EXPLAIN_FILES = ("EXPLAIN.md", "explain.md", "docs/EXPLAIN.md", "docs/explain.md", "docs/explain.txt")
 DEFINITION_FILES = (LAYER_FILE, "agentic.rkt")
 SERVED_TREES = ("agents", "artefacts", "specs", "promotions")
-DOC_SUFFIXES = (".md", ".txt", ".json", ".log")   # what counts as a run's document (viewable as text)
+DOC_SUFFIXES = (".md", ".txt", ".json", ".log", ".diff")   # what counts as a run's document (viewable as text)
 DOC_VIEW_CAP = 1_000_000    # bytes shown inline; larger documents are download only
 DOC_ZIP_CAP = 50_000_000    # bytes put into one "download all" zip
 DOC_TYPES = {".md": "text/markdown; charset=utf-8", ".txt": "text/plain; charset=utf-8",
@@ -2597,6 +2597,33 @@ def tier_fields(record: dict[str, Any]) -> dict[str, str]:
             "tier_from": str(record.get("tier_from") or ""), "model_from": str(record.get("model_from") or "")}
 
 
+KEPT_FILES_SHOWN = 500   # the kept files listed on a run page; the rest is a count
+
+
+def kept_view(state: dict[str, Any], short: Any) -> dict[str, Any] | None:
+    """What the runtime kept of a run whose workflow has no ship step (kit/runtime keep.py): the
+    branch, the files with their artefact copies, the diff; None for every other run."""
+    kept = state.get("kept") if isinstance(state.get("kept"), dict) else {}
+    if not kept:
+        return None
+    copies: dict[str, str] = {}
+    prefix = f"artefacts/{state.get('adw_id', '')}/kept-files/"
+    for item in state.get("artefacts") or []:
+        if isinstance(item, dict) and item.get("id") == "kept-files" and isinstance(item.get("path"), str):
+            path = item["path"]
+            copies[path.split("/kept-files/", 1)[1] if "/kept-files/" in path else path.removeprefix(prefix)] = path
+    names = [str(f) for f in kept.get("files") or [] if isinstance(f, (str, int))]
+    files = [{"path": short(name), "artefact": copies.get(name, "")} for name in names[:KEPT_FILES_SHOWN]]
+    return {"changed": kept.get("changed"), "error": short(str(kept.get("error") or "")),
+            "branch": str(kept.get("branch") or ""), "commit": str(kept.get("commit") or "")[:12],
+            "count": int(kept.get("count") or len(names)), "files": files,
+            "more": max(0, len(names) - KEPT_FILES_SHOWN), "diff": str(kept.get("diff") or ""),
+            "too_large": [{"path": short(str(i.get("path", ""))), "bytes": i.get("bytes")}
+                          for i in kept.get("too_large") or [] if isinstance(i, dict)],
+            "skipped": [short(str(i)) for i in kept.get("skipped") or []],
+            "left_uncommitted": [short(str(i)) for i in kept.get("left_uncommitted") or []]}
+
+
 def budget_view(state: dict[str, Any]) -> dict[str, Any] | None:
     """Limits, what the run spent and whether a limit stopped it; None for a run without limits or cost."""
     record = state.get("budget") if isinstance(state.get("budget"), dict) else {}
@@ -3639,7 +3666,8 @@ class RunModel:
             "review": {"mode": review.get("mode", ""), "success": (review.get("verdict") or {}).get("success"),
                        "summary": short((review.get("verdict") or {}).get("summary", "")), "rounds": rounds},
             "ship": {k: (short(v) if isinstance(v, str) else v) for k, v in ship.items() if k != "gate"},
-            "gate": gate, "handoff": handoff, "decision": decision, "fanout": fanout, "artefacts": artefacts,
+            "gate": gate, "handoff": handoff, "decision": decision, "kept": kept_view(state, short), "fanout": fanout,
+            "artefacts": artefacts,
             "documents": run_documents(self.layer, self.id, state),
             "budget": budget_view(state),
             "usage": usage_view(state),

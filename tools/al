@@ -391,6 +391,23 @@ def adopt_module():
     return al_adopt
 
 
+def explain_module():
+    """tools/explain.py: `al explain`, and the rule of which workflows keep their result on a branch."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import explain
+    return explain
+
+
+def kept_branch_warnings(ir: dict) -> list[str]:
+    """One line per workflow that can change files but has neither a commit nor a ship step: the
+    runtime keeps its result on a local branch (kit/runtime keep.py). Never a problem."""
+    rule = explain_module().result_kept_on_branch
+    return [f"workflow `{adw['name']}` can change files but has neither a commit nor a ship step: "
+            "its result is kept on a local branch"
+            for adw in ir.get("adws") or [] if isinstance(adw, dict) and rule(adw, ir)]
+
+
 def delivery_module():
     """tools/al_delivery.py: read-only detection of the branching style in use (`al scout`)."""
     if str(ROOT / "tools") not in sys.path:
@@ -3824,6 +3841,8 @@ def main(argv: list[str] | None = None) -> int:
                 app = app_root_of(layer, json.loads((layer / "agentic-layer.json").read_text()))
                 for line in (adopt_module().check(layer, app)[1] if app.exists() else []):
                     print(f"note: {line}")
+                for line in kept_branch_warnings(json.loads((layer / "agentic-layer.json").read_text())):
+                    print(f"warning: {line}")
             print("check: " + ("FAILED" if problems else "ok"))
             return 1 if problems else 0
         elif a.cmd == "eject":

@@ -91,6 +91,10 @@ class ADWState:
     # check | recheck | gate, outcome: passed | failed | not-affected | reused, tree, definition, exit,
     # log, why, paths, paths_total, from: {step, phase, log} | null, at}; left out of state.json while empty
     check_results: list[dict[str, Any]] = field(default_factory=list)
+    # the work of a workflow without a ship step, kept before teardown (keep.py): {changed, workflow_ships,
+    # branch, commit, committed, files, count, left_uncommitted, artefacts, too_large, skipped, diff} or
+    # {changed: None, error}; empty, and then left out of state.json, for every other run
+    kept: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -128,6 +132,8 @@ class ADWState:
                 data.pop("decision", None)  # so does a run the decider never looked at
             if not data.get("check_results"):
                 data.pop("check_results", None)  # a run without a check writes the state.json of before
+            if not data.get("kept"):
+                data.pop("kept", None)  # only a run of a workflow without a ship step has one
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")

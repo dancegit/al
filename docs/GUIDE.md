@@ -652,6 +652,22 @@ $ al run myapp.al /tidy remove the unused import --dry-run      # again, within 
 al run: the same request to command tidy started run 93f3f743 6 s ago; pass --yes to start it anyway
 ```
 
+A single command, like `plan-build` and any workflow without a ship step, never commits or ships. Its
+work is not thrown away when the run ends: before the worktree is removed, what the agents left in it is
+committed on the run's branch (`work of run <id>, kept because the workflow has no ship step`) and copied
+into the run's artefacts. The summary of a run that is not a `--dry-run` says so:
+
+```
+kept:      branch chore/5e2a01c4-remove-unused-import (1 files)
+delivery:  none (no ship step); work kept on branch chore/5e2a01c4-remove-unused-import
+```
+
+or `delivery:  nothing changed` when the run left nothing (its branch is deleted as before). On the
+dashboard, the run page's **Kept on a branch** block links each kept file (`artefacts/<id>/kept-files/…`)
+and the whole change (`artefacts/<id>/kept-diff/changes.diff`), so they stay readable after the branch is
+gone. Files over 1 MB are on the branch only and listed as too large. `al check` warns about such
+workflows, and `al explain` says where their result goes.
+
 The prompt is the rest of the line (or stdin with `-`). `--class`, `--model-set`, `--model TIER=ID` and
 `--dry-run` work as for a workflow script; `--yes` confirms a shipping workflow or a repeated request;
 `--request-key K` makes a retry safe. Exit codes: the run's own (0 with `--detach`), 2 for an unknown

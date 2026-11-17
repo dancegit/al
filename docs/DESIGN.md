@@ -495,7 +495,9 @@ default environment and what makes N agents on one repository safe. On top of th
   available. `bypassPermissions` is only accepted in this configuration.
 - A zero-touch ADW (auto review that merges or deploys) must have a podman option in its stack.
 - Worktree hygiene: `#:sparse` for monorepos, `#:gc-days` for kept worktrees of old runs, and
-  branches that hold nothing unshipped are deleted with their worktree.
+  branches that hold nothing unshipped are deleted with their worktree. The work of a workflow without
+  a ship step is committed to its branch and copied into its artefacts before teardown (the runtime's
+  `keep.py`), so that branch is kept; when keeping fails, the worktree is kept instead.
 
 - `(fan-out NAME #:adw CHILD #:count N #:pick best|first|all)` — race one task across N independent
   runs of a child ADW. Each candidate is a full run with its own worktree, container, port lease and
