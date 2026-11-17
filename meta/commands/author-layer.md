@@ -11,8 +11,8 @@ Write one `#lang al` file that declares the agentic layer for the codebase descr
 
 LLM_TXT: $1
 OUTPUT: $2
-PREFERENCES: $3 (optional: PITER choices in plain language; empty means the defaults)
-DSL_REFERENCE: docs/AL-DSL.llms.txt
+PREFERENCES: $3 (optional: the choices `al author` derived from the repository's facts, each as a DSL clause with the fact behind it or the default it fell back to, e.g. the forge clause; or PITER choices in plain language; empty means the defaults)
+DSL_REFERENCE: AL-DSL.llms.txt in OUTPUT's directory (the layer's own copy of docs/AL-DSL.llms.txt)
 COMPILE: tools/al compile $2 >/dev/null
 
 ## Instructions
@@ -23,7 +23,7 @@ COMPILE: tools/al compile $2 >/dev/null
 - `(codebase …)` comes strictly from LLM_TXT: languages, default branch, description, package manager, readme; one `(cmd NAME "shell")` per row of its Commands table, with the table's name and the exact shell string, `#:description` from "proves what", and `#:timeout` of about three times the typical duration when that exceeds the default. `(paths …)` from Layout and Protected paths; one `(conditional-doc …)` per Conditional docs line.
 - Never declare a cmd, path or artefact glob marked `UNVERIFIED`; list it in your report instead.
 - `#:root` is the application checkout relative to OUTPUT's directory. Take it from PREFERENCES; if it is not given, use `../<name>` and say so in the report.
-- Options follow PREFERENCES where it speaks and the decision table where it does not. Omit a family entirely when its default is what you want.
+- Options follow PREFERENCES where it speaks and the decision table where it does not: a choice in PREFERENCES wins over the Decision Table, also where the table would choose otherwise (e.g. a forge clause with `#:host` and `#:repo` is written exactly as given). Omit a family entirely when its default is what you want. A forge token is never written into any file: the forge clause's `#:token-env` names the variable that holds it.
 - Commands: `prime`, `classify` (json output), one planning command per class (`plan-chore`, `plan-bug`, `plan-feature`, plus `plan-patch`), `resolve-test`, `review` (json output), `document`, `commit`, `pull-request`; `e2e-test` when an e2e cmd exists. Hops: `run-plan` taking a plan, and `meta-command` and `meta-adw`.
 - Every planning command is `#:model-set heavy`, `#:output path`, and has `#:validation` listing the declared cmds that prove that class of work (lint, typecheck, test; e2e for bug and feature when it exists).
 - `#:focus` lines come from LLM_TXT Conventions and Work classes, placed on the command they govern (test placement on the planners, commit format on `commit`, proof requirements on `review`). Each is specific and checkable. Never write a generic line such as "follow best practices"; no focus line is better than a generic one.
@@ -63,7 +63,7 @@ COMPILE: tools/al compile $2 >/dev/null
 ## Report
 
 - The path of OUTPUT and the final compile result, with the number of repair rounds.
-- Under a `### Decisions` heading: the decisions taken, as "fact, then choice" bullets, including every default you relied on (`#:root` above all).
+- Under a `### Decisions` heading: the decisions taken, as "fact, then choice" bullets, including every default you relied on (`#:root` above all), and every choice PREFERENCES marks `default` (the facts were silent there).
 - Under a `### Left out and why` heading: what was left out and why, as bullets: `UNVERIFIED` items, preferences the language cannot express, kit steps left out because a team rule forbids them (rule and source line).
 
 ## Fabric patterns

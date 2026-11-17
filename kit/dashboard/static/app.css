@@ -494,6 +494,21 @@ code.cmd { font: 12px/1.5 var(--mono); color: var(--text-2); background: #0b0e13
 .action-confirm h4 { margin: 12px 0 4px; color: var(--text-2); font-weight: 600; }
 .action-confirm .writes { margin: 0; padding-left: 18px; }
 .action-confirm .actions-row { display: flex; gap: 8px; margin-top: 12px; }
+.choices { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.choices .choice { display: grid; grid-template-columns: 140px minmax(160px, 320px) auto; gap: 2px 10px; align-items: center;
+  padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; }
+.choices .choice.changed { border-color: var(--waiting); }
+.choices .choice-key { color: var(--text-2); }
+.choices select, .choices input { font: 12px var(--mono); background: #0b0e13; color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 2px 6px; }
+.choices .multi { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--mono); }
+.choices .multi label { display: inline-flex; align-items: center; gap: 4px; }
+.choices .fact { grid-column: 2 / -1; color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+.result-card .card-row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 4px 0; border-top: 1px solid var(--border); }
+.result-card .card-key { color: var(--text-2); }
+.result-card .card-value { overflow-wrap: anywhere; }
+.result-card .card-value .badge { margin: 0 4px 2px 0; }
+.result-card ul, .result-card ol { margin: 0; padding-left: 18px; }
 .diff { font-size: 12px; line-height: 1.45; background: #0b0e13; border: 1px solid var(--border); border-radius: 4px; padding: 6px 0;
   max-height: 50vh; overflow: auto; white-space: pre; }
 .diff > div { padding: 0 10px; min-height: 1.45em; }

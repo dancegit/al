@@ -3,7 +3,7 @@
 Every subprocess al starts by one of these names goes through `argv` (or `need` first), so there is
 one search order, used the same way everywhere:
 
-1. the setting, an absolute path: AL_RACKET, AL_RACO, AL_UV, AL_GIT, AL_CLAUDE, AL_CODEX, read from
+1. the setting, an absolute path: AL_RACKET, AL_RACO, AL_UV, AL_GIT, AL_CLAUDE, AL_CODEX, AL_PODMAN, read from
    the process environment, else from (highest precedence first) `<layer>/local.env`,
    `$XDG_CONFIG_HOME/al/<layer name>.env` and `$XDG_CONFIG_HOME/al/tools.env` (default
    `~/.config/al/`). A setting that names something that is not an executable file is reported as
@@ -15,7 +15,9 @@ one search order, used the same way everywhere:
 The env files are read with kit/runtime/adw_modules/localenv.py (the same format the runtime reads).
 `need` only looks at files (no subprocess), so a missing tool is named in well under a second;
 `doctor_rows` also asks each found tool for its version. `shell_finder` is the same search as a POSIX
-sh function, for `al deploy` on another machine. Standard library only.
+sh function, for `al deploy` on another machine. `agent_isolation` is how every agent al starts runs:
+without the account's personal settings, hooks, instructions and plugins (AL_AGENT_PERSONAL=1 keeps
+them). Standard library only.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -47,6 +50,7 @@ TOOLS: dict[str, Tool] = {
     "git": Tool("git", "AL_GIT", "git", "install git"),
     "claude": Tool("claude", "AL_CLAUDE", "the Claude Code agent CLI", "install Claude Code (https://claude.com/claude-code)"),
     "codex": Tool("codex", "AL_CODEX", "the Codex agent CLI", "install the Codex CLI (https://github.com/openai/codex)"),
+    "podman": Tool("podman", "AL_PODMAN", "podman, which runs a layer's sandboxed environments", "install podman (https://podman.io)"),
 }
 
 USER_FOLDERS = ("~/.nix-profile/bin", "~/.local/state/nix/profile/bin", "/etc/profiles/per-user/{user}/bin",
@@ -62,6 +66,7 @@ NEEDS: dict[str, tuple[str, ...]] = {
     "author": ("racket",),
     "improve": ("git", "uv", "racket"),
     "init": ("git",), "check": ("git",), "verify": ("git",), "scout": ("git",),
+    "create": ("git", "racket"), "adopt-all": ("git", "racket"), "result": (),
 }
 
 
@@ -271,6 +276,53 @@ def argv(cmd: list[Any], layer: Path | str | None = None) -> list[Any]:
             raise ToolMissing([found])
         path = _ARGV_CACHE[key] = found.path
     return [path, *cmd[1:]]
+
+
+# ------------------------------------------------------------------------------------------ agents
+
+PERSONAL = "AL_AGENT_PERSONAL"     # "1": agents al starts load the account's own settings, hooks and plugins
+CREDENTIALS = ".credentials.json"
+
+
+def personal_agent(layer: Path | str | None = None) -> bool:
+    """AL_AGENT_PERSONAL=1 in the environment, LAYER/local.env, ~/.config/al/<layer>.env or tools.env."""
+    value = os.environ.get(PERSONAL) or settings(layer).get(PERSONAL, "")
+    return value.strip() == "1"
+
+
+@dataclass
+class Isolation:
+    """What an agent CLI al starts gets: extra argv, extra environment, and what to remove afterwards."""
+    argv_extra: list[str]
+    env: dict[str, str]
+    folder: Path | None = None
+
+    def cleanup(self) -> None:
+        if self.folder is not None:
+            shutil.rmtree(self.folder, ignore_errors=True)
+            self.folder = None
+
+
+def write_rules(writable: Path) -> list[str]:
+    """Permission rules that let the agent edit and write below `writable` only (absolute path rules)."""
+    base = str(Path(writable).resolve())
+    return [f"Edit(/{base}/**)", f"Write(/{base}/**)"]
+
+
+def agent_isolation(layer: Path, writable: Path, allowed: list[str]) -> Isolation:
+    """The isolation of an agent al starts (scout, author): a clean CLAUDE_CONFIG_DIR that holds only a
+    link to the account's credentials file, `--setting-sources project` (no user settings, hooks or
+    plugins), `--strict-mcp-config` (no MCP servers), and tool rules that allow `allowed` plus Edit and
+    Write below `writable` only. AL_AGENT_PERSONAL=1 keeps the personal setup; the write rules stay."""
+    rules = ["--allowedTools", ",".join([*allowed, *write_rules(writable)])]
+    if personal_agent(layer):
+        return Isolation(rules, {})
+    folder = Path(tempfile.mkdtemp(prefix="al-agent-"))
+    credentials = Path.home() / ".claude" / CREDENTIALS
+    if credentials.is_file():
+        (folder / CREDENTIALS).symlink_to(credentials)
+    return Isolation(["--setting-sources", "project", "--strict-mcp-config", *rules],
+                     {"CLAUDE_CONFIG_DIR": str(folder)}, folder)
 
 
 # ------------------------------------------------------------------------------------------ PATH

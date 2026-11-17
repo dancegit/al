@@ -1,8 +1,9 @@
 """The dashboard's workspace end to end, with the real al tool, real git and the mock author agent (no LLM):
 started for one repository's layer, it lists the repositories beside it with their al state, scouts the
 one with a hand-built suite, adopts it (a dry-run diff first, then a new layer with the proposed
-workflows), creates a layer for the empty one, runs check / explain / gen / verify on a layer, and never
-overwrites a definition. No application checkout changes.
+workflows), creates a layer for the empty one (init, scout, adopt, author, gen, check, result: the card names
+its forge), runs check / explain / gen / verify on a layer, and never overwrites a definition. No
+application checkout changes.
 
     uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_dashboard_workspace.py -q
 """
@@ -27,7 +28,10 @@ helpers = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(helpers)  # type: ignore[union-attr]
 dashboard = helpers.dashboard
 
-DEFINITION = LAYER_TEMPLATE.format(root="${root}", placement="(layer sibling)").replace('#:name "notes"', '#:name "${name}"')
+# the mock author: what a real one is told to do, including the two include lines when adopt ran before it
+DEFINITION = (LAYER_TEMPLATE.format(root="${root}", placement="(layer sibling)\n  ${includes}")
+              .replace('#:name "notes"', '#:name "${name}"')
+              .replace('#:protected ("test.sh"))', '#:protected ("test.sh"))\n    ${codebase_includes}'))
 
 
 def repo(root: Path, name: str, files: dict[str, str]) -> Path:
@@ -148,11 +152,14 @@ def test_adopt_preview_lists_the_files_then_the_new_layer_has_the_proposed_workf
     finished(server, preview["job"])
     diff = doc(server, preview["job"], "preview.diff.txt")
     assert "would write:" in diff and "+++ b/adopted/REPORT.md" in diff and "--- /dev/null" in diff
+    choices = json.loads(doc(server, preview["job"], "choices.json"))      # the start form's detected choices
+    assert choices["forge"]["value"] == "none" and choices["review"]["fact"] == "default: facts are silent"
     assert not (ws / "orbit.al").exists()
     code, body = post(server, {"repo": "orbit", "action": "adopt", "confirm": preview["nonce"]})
     assert code == 202, body
     job = finished(server, body["job"])
-    assert [(s["name"], s["exit"]) for s in job["steps"]] == [("init", 0), ("author", 0), ("adopt", 0), ("gen", 0), ("check", 0)]
+    assert [(s["name"], s["exit"]) for s in job["steps"]] == [("init", 0), ("scout", 0), ("adopt", 0), ("author", 0),
+                                                              ("gen", 0), ("check", 0), ("result", 0)]
     assert {"path": "orbit.al/agentic.rkt", "change": "added"} in job["changed"]
     assert job["repo_unchanged"] is True
     wait(lambda: states(server)["orbit"] == "layer" and layer_of(server, "orbit"), 60, "orbit to become a watched layer")
@@ -162,9 +169,15 @@ def test_adopt_preview_lists_the_files_then_the_new_layer_has_the_proposed_workf
 
 def test_create_a_layer_for_the_empty_repository_end_to_end(server, ws):
     job = create_fern(server, ws)
-    assert [s["name"] for s in job["steps"]] == ["init", "author", "gen", "check"]
-    assert "agentic.rkt compiles" in output(job["id"], server)
-    # the author step ran with --raw through the job runner: its journal and the page's view of it
+    assert [(s["name"], s["status"]) for s in job["steps"]] == [
+        (name, "passed") for name in ("init", "scout", "adopt", "author", "gen", "check", "result")]
+    log = output(job["id"], server)
+    assert "agentic.rkt compiles" in log and "nothing to adopt: no existing agent setup found" in log
+    card = json.loads(doc(server, job["id"], "result.json"))
+    assert card["forge"]["clause"] == "(forge none)" and card["layer"].endswith("fern.al")
+    assert card["next"][0].startswith("al verify ")
+    # both agent steps ran with --raw through the job runner; the author's journal and the page's view of it
+    assert next(s for s in job["steps"] if s["name"] == "scout")["stream"] == "agent"
     author = next(s for s in job["steps"] if s["name"] == "author")
     assert author["stream"] == "agent" and author["activity"] == "journal" and author["raw"] is True
     journal = server.json(f"/api/job/journal?id={job['id']}&step=author&from=0")
@@ -173,7 +186,7 @@ def test_create_a_layer_for_the_empty_repository_end_to_end(server, ws):
     assert any(e["kind"] == "report" for e in journal["events"])
     outcome = job["outcome"]
     assert outcome["status"] == "passed" and outcome["created"]["layer"].endswith("fern.al")
-    assert outcome["created"]["added"] >= 1 and outcome["next"].startswith("al gen ")
+    assert outcome["created"]["added"] >= 1 and outcome["next"].startswith("al verify ")
     assert str(Path.home()) not in json.dumps(job) and str(ws) not in json.dumps(job)
     al("compile", ws / "fern.al")
     assert "change" in layer_of(server, "fern")["adws"]

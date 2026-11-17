@@ -215,3 +215,17 @@ def test_adopt_diff_without_dry_run_is_refused(larder, layer):
     assert cp.returncode in (1, 2)
     assert cp.returncode == 2 or "al: --diff goes with --dry-run" in cp.stderr
     assert not (layer / "adopted").exists()
+
+
+def test_adopt_with_nothing_to_adopt_is_a_clear_no_op(tmp_path):
+    import forge_fixtures
+    app = forge_fixtures.bare_repo(tmp_path)
+    al("init", app)
+    layer = tmp_path / "fern.al"
+    before = sorted(p.relative_to(layer).as_posix() for p in layer.rglob("*"))
+    cp = al("adopt", layer, "--app", app)
+    assert cp.returncode == 0
+    assert cp.stdout.strip() == f"nothing to adopt: no existing agent setup found in {app.resolve()}"
+    assert not (layer / "adopted").exists()
+    assert sorted(p.relative_to(layer).as_posix() for p in layer.rglob("*")) == before
+    assert status(app) == ""

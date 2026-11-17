@@ -58,28 +58,68 @@ To keep the layer inside your repository instead, versioned with the code, use
 `~/code/myapp/agentic` where this guide writes `~/code/myapp.al`, and scripts are run from the repository
 root as `uv run agentic/adws/…`. Step 14 explains what is committed and the one rule that comes with it.
 
-You should see the path of the new folder, `~/code/myapp.al`, containing two files (three with
+You should see the path of the new folder, `~/code/myapp.al`, containing three files (four with
 `--in-repo`: a `.gitignore` as well):
 
 - `LLM.txt`: a draft description of your codebase, made by a script from facts it can prove (manifests,
   lock files, CI config). Lines it could not establish are marked `UNVERIFIED`.
+- `scout.json`: the same facts as data (commands, forge, languages, existing agent setup), without any
+  absolute path, so the layer can be committed. Step 2 adds the measured commands; step 4 builds the
+  author's preferences from it.
 - `AL-DSL.llms.txt`: the complete reference of the layer language, for the LLM that will write your layer.
 
 The command also prints the relative path from the layer to your codebase. You need it in step 4.
 
-The draft records your repository's web address, without any user name or token.
+The draft records your repository's web address, without any user name or token, and the forge behind
+it: `forgejo` when the repository tracks a `.forgejo/` or `.gitea/` folder (also on a self-hosted server
+whose name does not say so) or the host is a Forgejo, Gitea or Codeberg one; `github` for a GitHub host;
+`gitlab` for a `.gitlab-ci.yml`; `unknown` for a web address without such evidence; `none` without a
+remote. `## Forge` in `LLM.txt` shows the host and the evidence that decided it.
+
+**Steps 1 to 6 in one command.** `al create ~/code/myapp` runs the whole sequence the dashboard's Create
+runs (see "Work with several repositories from the dashboard"): `init`, `scout` (step 2's measuring and
+scout agent), `adopt` (a no-op when there is nothing to adopt), `author` (step 4), `gen`, `check`, and a
+result card. `al adopt-all ~/code/myapp` is the same for a repository with an agent setup of its own; it
+refuses one without (`use al create`). Each step prints `== STEP` first; the first that fails stops the
+sequence and keeps what the steps before it wrote. `al create ~/code/myapp --choices` prints the choices
+step 4 will make (with `--json`: as data) and writes nothing; `--choice KEY=VALUE` changes one (step 4).
+The steps below are what it does, one at a time.
 
 ## Step 2 — Describe the codebase
 
-The draft is not good enough to build on: it has guesses and gaps. An LLM completes it by reading your
-repository, and must cite a file for every command it lists.
+The draft is not good enough to build on: it has guesses and gaps. First measure what the script found:
 
-Open your coding agent **in the `al` repository** (`cd ~/tools/al && claude`) and give it this, with your paths:
+```bash
+al scout ~/code/myapp --into ~/code/myapp.al
+```
+
+It runs each detected command once, in a throwaway worktree of your repository's `HEAD` under
+`~/code/myapp.al/trees/` (removed afterwards), with a time limit (`--timeout S`, default 600 s), and
+records its exit code and duration in `scout.json` and in the `LLM.txt` draft's Commands table. A command
+that needs the network is not run unless you add `--network`. Your checkout is never changed:
+
+```text
+scout: running 3 detected command(s) once in a throwaway worktree (600s each at most)
+  skip  install  not run: needs network (--network runs it)
+  ok    build  ok  0.1s
+  ok    test  ok  0.1s
+```
+
+A command that failed, timed out (`timed out after 600s`) or did not run stays `UNVERIFIED`, with the
+reason; its output is in `~/code/myapp.al/agents/scout/<name>.log`. Then the same command hands
+`meta/commands/scout-codebase.md` to the agent CLI (`claude`), which reads your CI files for work classes
+and artefacts and completes `LLM.txt` (it runs without your personal setup and may write only in the layer
+folder: see step 4). `--agent mock` skips that part. `LLM.txt` is rewritten only while it is still the
+untouched draft; one you or the agent completed is kept.
+
+To complete it by hand instead, an LLM reads your repository, and must cite a file for every command it
+lists. Open your coding agent **in the `al` repository** (`cd ~/tools/al && claude`) and give it this, with your paths:
 
 ```text
 Follow meta/commands/scout-codebase.md with
 $1 = ~/code/myapp
 $2 = ~/code/myapp.al/LLM.txt
+$3 = ~/code/myapp.al/scout.json
 The codebase is read-only: do not change anything in it and do not run its build.
 ```
 
@@ -107,8 +147,13 @@ al adopt ~/code/myapp.al --app ~/code/myapp
 Rule files become documents every agent must read; your prompts become commands of the layer, as they
 are; your workflow scripts become proposed workflows that a person reviews. It never changes your
 repository. Read `adopted/REPORT.md`, especially "For a person to decide": where an existing rule
-contradicts a built-in prompt, it shows both texts and leaves the choice to you. If you run `al adopt`
-before `agentic.rkt` exists, run it again after step 4.
+contradicts a built-in prompt, it shows both texts and leaves the choice to you. Run it before step 4, as
+`al create` does: `al author` then tells the agent to include what was adopted. A repository with nothing
+to adopt gets one line and no `adopted/` folder:
+
+```text
+nothing to adopt: no existing agent setup found in /home/you/code/myapp
+```
 
 **If your `adws/` (or `adw/`) scripts form a hand-built suite** (at least two of them import the same
 package beside them, such as `adws/adw_modules/`), `LLM.txt` adds an `### Existing ADW suite` section
@@ -170,10 +215,39 @@ lists the valid choices, and the agent fixes it. When it reports success, check 
 al compile ~/code/myapp.al > /dev/null && echo "compiles"
 ```
 
-`al author ~/code/myapp.al --preferences "…"` does the same hand-off with the agent CLI (`claude`): it gives
-the agent `meta/commands/author-layer.md` with the layer's `LLM.txt`, then compiles what it wrote. Without
-`--preferences` it uses the conservative answers above and the codebase root beside the layer. It never
-overwrites an existing `agentic.rkt`. It checks first that `racket` and the agent CLI are there, so a
+`al author ~/code/myapp.al` does the same hand-off with the agent CLI (`claude`): it gives the agent
+`meta/commands/author-layer.md` (inlined, with the layer's own `AL-DSL.llms.txt`) and the layer's
+`LLM.txt`, then compiles what it wrote. The preferences come from the facts in `scout.json`, not from a
+fixed sentence: the forge the remote and CI folders show (with `#:host` and `#:repo`), issues as input
+and webhook and manual triggers when there is a forge (a task list, cron and manual without one), podman
+when it is found on this machine, the delivery preset the history shows. These choices win over the
+decision table of `author-layer.md`. Every choice the facts are silent on falls back to a default, and
+`al author` names each one:
+
+```text
+default: environment = worktree (facts are silent)
+default: review = human (facts are silent)
+default: delivery = none (facts are silent)
+set FORGEJO_TOKEN in the environment (or /home/you/code/myapp.al/local.env) before a run talks to the forge; al never reads or stores it
+```
+
+A token is never read: the forge clause names the variable (`FORGEJO_TOKEN`, `GITHUB_TOKEN`) that will
+hold it. A GitLab repository gets `(forge none)` with the reason (GitLab is planned in the language).
+`--choice KEY=VALUE` (repeatable) changes one choice: `forge` (none, github, forgejo), `host`, `repo`,
+`input` (tasklist, issue), `trigger` and `environment` (comma-separated lists), `review` (human, agent),
+`delivery` (a preset, or none); an unknown key or value stops it with the list of what is allowed. Each
+decision, with its fact or its default, is written to `agents/author/choices.json`, and the whole prompt
+to `agents/author/prompt.txt`. `--preferences "…"` replaces the preferences with your own text. It never
+overwrites an existing `agentic.rkt`.
+
+The agents al starts (the scout agent of step 2, the author, and the workflow `al improve` runs) work
+without your account's personal setup: no user settings, hooks, `CLAUDE.md`, plugins or MCP servers (a
+clean `CLAUDE_CONFIG_DIR` that holds only a link to your credentials file, `--setting-sources project`,
+`--strict-mcp-config`), and the scout and author agents may edit and write only inside the layer folder.
+To give them your personal setup back, set `AL_AGENT_PERSONAL=1` in the environment,
+`~/code/myapp.al/local.env` or `~/.config/al/tools.env`; the write limit stays. Any other agent al starts
+in the future gets the same isolation (`agent_isolation` in `tools/al_tools.py`). It does not keep out
+project-level `CLAUDE.md` files in the folders above the layer. It checks first that `racket` and the agent CLI are there, so a
 missing one costs no agent time. `al author ~/code/myapp.al --accept-existing` takes an `agentic.rkt` that
 is already there (say, one an earlier attempt wrote before the compiler could be found) when it compiles,
 and asks no agent; one that does not compile is reported with the repair hint below.
@@ -455,23 +529,34 @@ its state, each with the exact command line it runs:
 | Action | For | Runs |
 |---|---|---|
 | scout | any | `al scout ~/code/orbit` (read-only; its output is the job's `LLM.txt`) |
-| create | `none`, `setup` | `al init ~/code/fern` → `al author ~/code/fern.al` → `al gen ~/code/fern.al` → `al check ~/code/fern.al` |
-| adopt | `setup` | first `al adopt ~/code/orbit.al --app ~/code/orbit --dry-run --diff`, shown as a diff; on Confirm `al init` → `al author` → `al adopt` → `al gen` → `al check` |
+| create | `none`, `setup` | first `al create ~/code/fern --choices --json` (the detected choices); on Confirm `al init ~/code/fern` → `al scout ~/code/fern --into ~/code/fern.al` → `al adopt ~/code/fern.al --app ~/code/fern` → `al author ~/code/fern.al` → `al gen` → `al check` → `al result ~/code/fern.al --json` |
+| adopt | `setup` | first `al adopt ~/code/orbit.al --app ~/code/orbit --dry-run --diff`, shown as a diff, and the detected choices; on Confirm the same seven steps as create |
 | gen | `layer` | `al gen LAYER` |
 | check | `layer` | `al check LAYER` (read-only) |
 | verify | `layer` | `al verify LAYER --json` (writes the report and a throwaway worktree) |
 | explain | `layer` | `al explain LAYER --md …` (read-only; its output is the job's `EXPLAIN.md`) |
 
-An action that writes asks first: it shows the command lines and the paths it writes (for adopt, the dry
-run's diff) and runs only after **Confirm**; if the repository changed in between, it asks again. Create
-and adopt never overwrite an `agentic.rkt`, wherever it is. Each action is a **job**. Its page shows, in
-this order: the outcome once it ended (what was created and what is unverified, or the failing step with
-its reason in one sentence, **Retry from STEP** and **Download log**); the steps, the running one saying
-what it is doing right now ("reading the CI files", "compiling, attempt 2"); the selected step's activity
-(the author step's messages, one line per tool call, errors in red; hooks and bookkeeping only with
-**show everything**; a plain step's own output), with a search box and its log, raw events and journal
-to download; the author's **Decisions** and **Left out and why**; the files of the layer it changed and
-its documents; and, collapsed, the full output of every step. One action runs per
+Create and adopt are `al create` and `al adopt-all` (step 1): the same steps in the same order, so the
+author sees what was adopted. An action that writes asks first: it shows the command lines and the paths
+it writes (for adopt, the dry run's diff) and runs only after **Confirm**; if the repository changed in
+between, it asks again. The start form of create and adopt shows "detecting choices…" and then each
+choice step 4 will make (forge, forge host, repository, where work comes from, what starts it,
+environment, review, delivery preset) with the fact that supports it, or "default: facts are silent".
+Change any of them before you confirm: a changed one is marked "changed", and the job's `author` step
+gets it as `--choice KEY=VALUE`. Create and adopt never overwrite an `agentic.rkt`, wherever it is. Each
+action is a **job**. Its page shows, in this order: the outcome once it ended — for a passed create or
+adopt, the **result card**: the layer, its forge clause, its workflows, what was adopted (rule files,
+commands, suite workflows) and left behind, what is unverified, the commands that failed or did not run,
+and what to do next (the token variable to set for a forge, `al verify`, the adoption report; `al result
+~/code/fern.al` prints the same card); for a failed job the failing step with its reason in one
+sentence, **Retry from STEP** and **Download log**; the steps, the running one saying what it is doing
+right now ("reading the CI files", "compiling, attempt 2"); the selected step's activity (an agent
+step's messages — the scout's or the author's, the author by default — one line per tool call, errors in
+red; hooks and bookkeeping only with **show everything**; a plain step's own output), with a search box
+and its log, raw events and journal to download; the author's **Decisions** and **Left out and why**; the
+files of the layer it changed and its documents; and, collapsed, the full output of every step. On the
+command line, `al author` and `al scout --into` print the same condensed view (progress lines, then the
+report); `--raw` prints the agent's event stream instead. One action runs per
 repository at a time. A job keeps running when you restart the dashboard; a job whose process is gone
 is shown as `interrupted`, never as running. Jobs are kept in `~/.local/state/al/dashboard-jobs`
 (`$XDG_STATE_HOME`), outside every repository.

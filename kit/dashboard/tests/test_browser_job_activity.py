@@ -132,7 +132,8 @@ def test_finished_job_shows_the_result_card_decisions_and_left_out(tmp_path, wor
         outcome = page.locator('[data-role="outcome"]')
         assert "ws/fern.al" in outcome.locator('[data-role="created"]').inner_text()
         assert "UNVERIFIED" in outcome.locator('[data-role="unverified"]').inner_text()
-        assert outcome.locator('[data-role="next"]').inner_text() == "al gen ws/fern.al"
+        assert "al verify ws/fern.al" in outcome.locator('[data-role="next"]').inner_text()
+        assert outcome.locator('[data-role="forge"]').count() == 1                     # the result card is in the outcome
         assert page.locator('[data-role="decisions"] li').count() == 3
         assert page.locator('[data-role="left-out"] li').count() == 2
         assert page.locator('[data-role="needs-person"]').inner_text() == "needs a person: 2"

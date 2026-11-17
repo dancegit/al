@@ -128,7 +128,7 @@ WORKSPACE_REPO_CAP = 500       # repositories listed
 WORKSPACE_GIT_TIMEOUT = 5      # seconds per git call of the scan
 JOB_ID = re.compile(r"^[0-9a-f]{8}$")
 JOB_HEARTBEAT = 5              # seconds between a job runner's heartbeats
-ACTION_KEYS = {"repo", "action", "confirm"}
+ACTION_KEYS = {"repo", "action", "confirm", "choices"}
 RETRY_KEYS = {"job", "from"}
 PREFLIGHT_TIMEOUT = 10      # seconds `al doctor --for …` may take before a job's first pending step
 TOOL_ROWS_TTL = 300         # seconds the Repos view's tools table (with versions) is kept
@@ -916,7 +916,7 @@ def transcript_rows(path: Path, short: Shortener | None = None) -> tuple[list[di
 
 # ============================================================================ job journal
 #
-# A job's agent step (`al author … --raw`) prints Claude Code's raw event stream. The job runner keeps it
+# A job's agent step (`al scout --into … --raw`, `al author … --raw`) prints Claude Code's raw event stream. The job runner keeps it
 # whole in steps/<name>.log and condenses it once, line by line as it arrives, into
 # steps/<name>.journal.jsonl: one small event per line, each with `t` (the runner's clock), `kind` and
 # `text`. The page reads the journal and never parses the stream; `al author` prints the same events.
@@ -3367,8 +3367,10 @@ class Model:
             self._tool_rows = (now, rows)
         return self._tool_rows[1]
 
-    def start_action(self, entry: RepoEntry, name: str, nonce: str | None) -> tuple[int, dict[str, Any]]:
-        """Every guard, then a preview (a writing action without a confirmation) or a job. → (status, body)."""
+    def start_action(self, entry: RepoEntry, name: str, nonce: str | None,
+                     choices: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
+        """Every guard, then a preview (a writing action without a confirmation) or a job. → (status, body).
+        `choices` (create and adopt only, checked against CHOICE_RULES) go to the author step."""
         action = ACTIONS[name]
         if self.al is None:
             return 409, {"error": f"this action needs the al tool; looked for: {', '.join(self.al_looked)}"}
@@ -3387,7 +3389,7 @@ class Model:
             problem = definition_problem(Path(app), layer, self.ws_display)
             if problem:
                 return 409, {"error": problem}
-        cfg = ActionConfig(self.al, self.author_flags)
+        cfg = ActionConfig(self.al, self.author_flags, dict(choices or {}))
         with self.action_lock:
             busy = self.jobs.running_for(app)
             if busy is not None or lock_held(lock_file(self.jobs.root, app)):
@@ -3436,7 +3438,7 @@ class Model:
                "path": self.job_path(),
                "preflight": [str(cfg.al), "doctor", str(layer),
                              "--for", ",".join(dict.fromkeys(s.argv[1] for s in steps if len(s.argv) > 1)), *agent_flag],
-               "retries": []}
+               "retries": [], "choices": {} if preview else dict(cfg.choices)}
         uv = self.finder.find("uv") if self.finder is not None else None
         if uv is not None and not uv.path and job["steps"]:
             # the al tool starts through uv (its shebang): without it no step can run; say so at once
@@ -4428,6 +4430,47 @@ class Step:
 class ActionConfig:
     al: Path
     author_flags: list[str]
+    choices: dict[str, str] = field(default_factory=dict)    # --choice KEY=VALUE of the author step
+
+
+# What the start form may send as `choices` (KEY → allowed values, a comma-separated list of them, or a
+# pattern): the same as `CHOICES` in tools/al_author.py (a test keeps the two equal; this file stays
+# standard library only and needs no al tool to be imported).
+CHOICE_RULES: dict[str, tuple[tuple[str, ...], bool, str]] = {
+    "forge": (("none", "github", "forgejo"), False, ""),
+    "host": ((), False, r"https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?"),
+    "repo": ((), False, r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"),
+    "input": (("tasklist", "issue"), False, ""),
+    "trigger": (("manual", "cron", "webhook", "forge-actions"), True, ""),
+    "environment": (("worktree", "podman", "nix-devshell"), True, ""),
+    "review": (("human", "agent"), False, ""),
+    "delivery": (("trunk", "sprint", "gitflow", "release-train", "phase-gate", "none"), False, ""),
+}
+CHOICE_ACTIONS = ("create", "adopt")
+
+
+def choice_problem(key: Any, value: Any) -> str:
+    """Why one choice of the start form is refused, or ""."""
+    if not isinstance(key, str) or key not in CHOICE_RULES:
+        return f"unknown choice {key!r}; the choices are: {', '.join(CHOICE_RULES)}"
+    if not isinstance(value, str):
+        return f"the choice {key} must be a string"
+    values, multi, pattern = CHOICE_RULES[key]
+    if pattern:
+        return "" if re.fullmatch(pattern, value) else f"{key}: not a valid value"
+    parts = value.split(",") if multi else [value]
+    if not parts or any(v not in values for v in parts):
+        return f"{key}: {'each of ' if multi else ''}one of {', '.join(values)}"
+    return ""
+
+
+def _agent_flag(c: ActionConfig) -> list[str]:
+    flags = c.author_flags
+    return ["--agent", flags[flags.index("--agent") + 1]] if "--agent" in flags[:-1] else []
+
+
+def _choice_args(choices: dict[str, str]) -> list[str]:
+    return [arg for key in sorted(choices) for arg in ("--choice", f"{key}={choices[key]}")]
 
 
 def layer_of(entry: RepoEntry) -> Path:
@@ -4443,23 +4486,28 @@ def _steps_scout(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
 
 
 def _steps_create(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    """Create and adopt run the same sequence as `al create` / `al adopt-all` (tools/al_create.py; a test
+    keeps the two equal): init, scout, adopt (a no-op without an agent setup), author, gen, check, result."""
     al, app, layer = str(c.al), os.path.realpath(e.path), str(layer_of(e))
     return [Step("init", [al, "init", app], None, 300),
-            Step("author", [al, "author", layer, *c.author_flags, "--raw"], None, 3600, "agent"),
-            Step("gen", [al, "gen", layer], None, 600), Step("check", [al, "check", layer], None, 600)]
+            Step("scout", [al, "scout", app, "--into", layer, *_agent_flag(c), "--raw"], None, 1800, "agent"),
+            Step("adopt", [al, "adopt", layer, "--app", app], None, 600),
+            Step("author", [al, "author", layer, *c.author_flags, "--raw", *_choice_args(c.choices)], None, 3600, "agent"),
+            Step("gen", [al, "gen", layer], None, 600), Step("check", [al, "check", layer], None, 600),
+            Step("result", [al, "result", layer, "--json"], "result.json", 120)]
+
+
+def _steps_choices(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    """The start form's preview: the choices the facts lead to (value, options, the fact), read-only."""
+    return [Step("choices", [str(c.al), "create", os.path.realpath(e.path), "--choices", "--json"], "choices.json", 300)]
 
 
 def _steps_adopt_preview(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
     return [Step("adopt-dry-run", [str(c.al), "adopt", str(layer_of(e)), "--app", os.path.realpath(e.path), "--dry-run",
-                                   "--diff"], "preview.diff.txt", 300)]
+                                   "--diff"], "preview.diff.txt", 300), *_steps_choices(e, c, docs)]
 
 
-def _steps_adopt(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
-    al, app, layer = str(c.al), os.path.realpath(e.path), str(layer_of(e))
-    return [Step("init", [al, "init", app], None, 300),
-            Step("author", [al, "author", layer, *c.author_flags, "--raw"], None, 3600, "agent"),
-            Step("adopt", [al, "adopt", layer], None, 600), Step("gen", [al, "gen", layer], None, 600),
-            Step("check", [al, "check", layer], None, 600)]
+_steps_adopt = _steps_create
 
 
 def _one(name: str, *extra: str, doc: str | None = None, timeout: int = 600):
@@ -4487,7 +4535,7 @@ class Action:
 ACTIONS: dict[str, Action] = {
     "scout": Action(("layer", "setup", "none"), False, "draft LLM.txt facts of the repository (read-only)", _steps_scout),
     "create": Action(("none", "setup"), True, "create a layer beside the repository and have its definition written",
-                     _steps_create, lambda e: [layer_of(e)], definition=True),
+                     _steps_create, lambda e: [layer_of(e)], preview=_steps_choices, definition=True),
     "adopt": Action(("setup",), True, "create a layer that adopts the repository's existing agent setup",
                     _steps_adopt, lambda e: [layer_of(e), layer_of(e) / "adopted", layer_of(e) / "templates" / "custom"],
                     preview=_steps_adopt_preview, definition=True),
@@ -4826,8 +4874,9 @@ def last_relevant_lines(directory: Path, step: str, n: int = 12) -> list[str]:
 
 
 def job_report(job: dict[str, Any], directory: Path) -> dict[str, Any] | None:
-    """The agent step's last `report`: {text, decisions, left_out}, or None."""
-    for step in reversed([s for s in job.get("steps") or [] if isinstance(s, dict)]):
+    """The author step's last `report`: {text, decisions, left_out}, or None. Only the step named
+    `author`: the scout agent's final message is not the layer's report."""
+    for step in reversed([s for s in job.get("steps") or [] if isinstance(s, dict) and s.get("name") == "author"]):
         files = step_files(directory, step.get("name"))
         if step.get("stream") != "agent" or not files or not confined_file(directory, files["journal"]):
             continue
@@ -4861,10 +4910,36 @@ def job_next(job: dict[str, Any], directory: Path) -> str:
     return clip(found, 300) or JOB_NEXT.get(str(job.get("action") or ""), "")
 
 
+def job_card(job: dict[str, Any], directory: Path) -> dict[str, Any] | None:
+    """The result card of a passed `result` step (`al result LAYER --json`, kept as docs/<doc>), its layer
+    and next steps shortened as job_next shortens a log line; None without one."""
+    step = next((s for s in job.get("steps") or [] if isinstance(s, dict) and s.get("name") == "result"), None)
+    doc = str((step or {}).get("doc") or "")
+    if not step or step.get("status") != "passed" or not doc or not SAFE_NAME.match(doc):
+        return None
+    path = Path(directory) / "docs" / doc
+    if not confined_file(directory, path):
+        return None
+    try:
+        card = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(card, dict):
+        return None
+    short = Shortener([(str(job.get("layer_dir") or ""), str(job.get("layer_display") or "")),
+                       (str(job.get("repo_path") or ""), str(job.get("repo_dir") or ""))])
+    if isinstance(card.get("layer"), str):
+        card["layer"] = short(card["layer"])
+    if isinstance(card.get("next"), list):
+        card["next"] = [short(item) for item in card["next"] if isinstance(item, str)]
+    return card
+
+
 def job_outcome(job: dict[str, Any], directory: Path, report: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """The outcome card of an ended job (None while it runs, or for a preview). Passed: what was created or
     adopted, what is unverified, the next action. Failed or interrupted: the step, the reason in one
-    sentence, its last relevant lines, where a retry starts and the step's log."""
+    sentence, its last relevant lines, where a retry starts and the step's log. A passed create or adopt
+    also holds the result card (job_card); its first next step is the next action."""
     status = job.get("status")
     if job.get("preview") or status in (None, "running"):
         return None
@@ -4872,12 +4947,14 @@ def job_outcome(job: dict[str, Any], directory: Path, report: dict[str, Any] | N
         changed = [c for c in job.get("changed") or [] if isinstance(c, dict)]
         count = lambda kind: sum(1 for c in changed if c.get("change") == kind)  # noqa: E731
         left_out = (report or {}).get("left_out") or []
+        card = job_card(job, directory)
         return {"status": "passed",
                 "created": {"layer": str(job.get("layer_display") or ""), "added": count("added"),
                             "modified": count("modified"), "removed": count("removed")},
                 "adopted": sum(1 for c in changed if "/adopted/" in "/" + str(c.get("path") or "")),
                 "unverified": [item for item in left_out if "UNVERIFIED" in item],
-                "next": job_next(job, directory)}
+                "next": card["next"][0] if card and card.get("next") else job_next(job, directory),
+                "card": card}
     steps = [s for s in job.get("steps") or [] if isinstance(s, dict)]
     failed = next((s for s in steps if s.get("status") in ("failed", "interrupted")), None)
     name = str((failed or {}).get("name") or retry_from(job) or "")
@@ -5339,12 +5416,23 @@ class Handler(BaseHTTPRequestHandler):
             request = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             return self._error(400, "expected a JSON object")
-        usage = 'expected {"repo": KEY, "action": NAME}, and "confirm": NONCE to confirm a preview; nothing else'
+        usage = ('expected {"repo": KEY, "action": NAME}, and "confirm": NONCE to confirm a preview, and for create '
+                 'or adopt "choices": {KEY: VALUE}; nothing else')
         if not isinstance(request, dict) or not set(request) <= ACTION_KEYS or not {"repo", "action"} <= set(request) \
-                or not all(isinstance(v, str) for v in request.values()):
+                or not all(isinstance(v, str) for k, v in request.items() if k != "choices"):
             return self._error(400, usage)
         if request["action"] not in ACTIONS:
             return self._error(400, "unknown action")
+        choices = request.get("choices")
+        if choices is not None:
+            if request["action"] not in CHOICE_ACTIONS:
+                return self._error(400, f"choices are for {' and '.join(CHOICE_ACTIONS)} only")
+            if not isinstance(choices, dict):
+                return self._error(400, usage)
+            for key, value in choices.items():
+                problem = choice_problem(key, value)
+                if problem:
+                    return self._error(400, problem)
         if not request["repo"] or WS_KEY_BAD.search(request["repo"]) or WS_KEY_BAD.search(request.get("confirm", "")):
             return self._error(400, usage)
         if model.workspace is None:
@@ -5352,7 +5440,7 @@ class Handler(BaseHTTPRequestHandler):
         entry = model.workspace.entry(request["repo"])
         if entry is None:
             return self._error(404, "unknown repository")
-        status, answer = model.start_action(entry, request["action"], request.get("confirm") or None)
+        status, answer = model.start_action(entry, request["action"], request.get("confirm") or None, choices)
         return self._json(answer, status)
 
     def _retry(self) -> None:

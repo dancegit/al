@@ -9,6 +9,11 @@
   al init    APP --in-repo [--dir agentic]   … or inside the application repository, committed with it
   al scout   APP [-o LLM.txt] [--layer LAYER]  deterministic LLM.txt draft (an LLM completes it: meta/commands/scout-codebase.md);
                                    with --layer, its declared forge is asked for branch protection
+  al scout   APP --into LAYER [--agent claude-code|mock] [--scout-mock F] [--timeout S] [--network] [--raw]
+                                   complete LAYER's facts: run each detected command once in a throwaway worktree
+                                   (exit code, duration) into LAYER/scout.json and LLM.txt, then an isolated agent
+                                   reads the CI files (meta/commands/scout-codebase.md); APP is never changed;
+                                   --raw: the scout agent's event stream instead of progress lines
   al compile LAYER                 agentic.rkt -> agentic-layer.json (validated against the schema)
   al gen     LAYER [--discard-edits]  compile + generate commands, HOPs, ADWs, env, triggers, forge files
   al explain LAYER [--md F] [--gif F]  explain the layer definition in plain language, block by block
@@ -18,11 +23,19 @@
                                    copy a kit template into LAYER/templates/ so your edits to it survive `al gen`
   al improve LAYER "request" [--dry-run] [--review human|agent] [--model-set T] [--model T=ID] [--max-cost USD]
                                    change the layer through al's own reviewed workflow: ends in a pull request
-  al author  LAYER [--agent claude-code|mock] [--mock F] [--preferences T] [--accept-existing] [--raw]
+  al author  LAYER [--agent claude-code|mock] [--mock F] [--preferences T] [--choice KEY=VALUE …] [--accept-existing] [--raw]
                                    have agentic.rkt written: hands meta/commands/author-layer.md to the agent CLI
-                                   with the layer's LLM.txt, then compiles it; never overwrites an agentic.rkt
+                                   with the layer's LLM.txt and preferences built from its scout.json (--choice
+                                   overrides one), then compiles it; never overwrites an agentic.rkt
                                    (--accept-existing: take one that is already there if it compiles); prints
                                    progress lines and the agent's report (--raw: the agent's event stream)
+  al create  APP [--agent claude-code|mock] [--mock F] [--scout-mock F] [--choice KEY=VALUE …]
+                                   a layer beside APP in one command, the sequence the dashboard runs: init, scout
+                                   (--into), adopt, author, gen, check, result; `--choices [--json]` prints the
+                                   choices the facts lead to (value, options, fact) and writes nothing
+  al adopt-all APP [same flags]    the same for a repository with an agent setup to adopt (refused without one)
+  al result  LAYER [--json]        the result card: forge, workflows, adopted and left behind, unverified
+                                   commands, what to do next
   al doctor  [LAYER] [--for CMD,…] [--agent A] [--json]
                                    where al finds racket, raco, uv, git and the agent CLI, with versions;
                                    --for: only whether CMD's prerequisites are there (exit 4 when not)
@@ -254,7 +267,7 @@ def scout(app: Path, layer: Path | None = None) -> dict:
     m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", remote)
     if m:
         repo = m.group(1)
-        forge = "github" if "github.com" in remote else "forgejo" if re.search(r"forgejo|gitea|codeberg", remote) else "unknown"
+    forge, forge_host, forge_evidence = forge_facts(remote, repo, files)
     ci = [p for p in (".github/workflows", ".forgejo/workflows", ".gitea/workflows", ".gitlab-ci.yml", ".circleci") if has(p)]
     head = git(app, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/") or git(app, "branch", "--show-current") or "main"
     readme = next((p for p in ("README.md", "README.rst", "README.txt", "README") if has(p)), "")
@@ -273,7 +286,8 @@ def scout(app: Path, layer: Path | None = None) -> dict:
         nix.append("bun")
     return {
         "name": re.sub(r"[^a-z0-9._-]", "-", repository_name(app, repo).lower()), "app": str(app), "summary": summary,
-        "remote": remote, "remote_kind": "" if remote or not raw_remote else "local", "repo": repo, "forge": forge, "ci": ci, "default_branch": head,
+        "remote": remote, "remote_kind": "" if remote or not raw_remote else "local", "repo": repo, "forge": forge,
+        "forge_host": forge_host, "forge_evidence": forge_evidence, "ci": ci, "default_branch": head,
         "license": license_file, "languages": langs, "lang_counts": dict(exts.most_common(6)),
         "files": len(files), "top": top.most_common(14), "src": src_dirs, "tests": test_dirs,
         "docs": doc_dirs, "readme": readme, "commands": cmds, "evidence": evidence, "notes": notes,
@@ -282,7 +296,34 @@ def scout(app: Path, layer: Path | None = None) -> dict:
         "existing_agent_setup": existing,
         "existing_adw_suite": suite_module().detect_suite(app, tracked),
         "delivery": delivery_module().detect(app, tracked, forge_layer=layer, default_branch=head),
+        "container": "podman" if tools_module().find("podman", layer).path else "",
     }
+
+
+def forge_facts(remote: str, repo: str, files: list[str]) -> tuple[str, str, list[str]]:
+    """(kind, host, evidence) of the forge behind a repository, from its web remote and its tracked CI
+    folders: forgejo for a tracked .forgejo/ or .gitea/ (or a host named forgejo, gitea, codeberg), github
+    for a GitHub host, gitlab for .gitlab-ci.yml (or a gitlab host), unknown for a web remote without
+    evidence, none without a remote. Never a user name or token: `remote` is already a web URL."""
+    if not remote or not repo:
+        return "none", "", ["no origin remote with a web URL"]
+    scheme, _, rest = remote.partition("://")
+    hostname = rest.split("/", 1)[0].lower()
+    host = f"{scheme}://{hostname}"
+    tracked = lambda prefix: any(f.startswith(prefix) for f in files)  # noqa: E731
+    evidence = [f"origin remote on {hostname} ({repo})"]
+    found = [f"`{d}workflows/` is tracked" for d in (".forgejo/", ".gitea/") if tracked(d + "workflows/")]
+    found += [f"`{d}` is tracked" for d in (".forgejo/", ".gitea/") if tracked(d) and not tracked(d + "workflows/")]
+    if "github" in hostname:
+        workflows = ["`.github/workflows/` is tracked"] if tracked(".github/workflows/") else []
+        return "github", host, evidence + [f"the host {hostname} is GitHub"] + workflows
+    if found or re.search(r"forgejo|gitea|codeberg", hostname):
+        named = [] if found else [f"the host name {hostname} names Forgejo or Gitea"]
+        return "forgejo", host, evidence + found + named
+    if "gitlab" in hostname or ".gitlab-ci.yml" in files:
+        return "gitlab", host, evidence + (["`.gitlab-ci.yml` is tracked"] if ".gitlab-ci.yml" in files else
+                                          [f"the host name {hostname} names GitLab"])
+    return "unknown", host, evidence + ["no CI folder or host name says which forge this is"]
 
 
 def web_url(remote: str) -> str:
@@ -361,6 +402,14 @@ def dashboard_kit_module():
     return module
 
 
+def scout_step_module():
+    """tools/al_scout_step.py: `al scout APP --into LAYER` (measured commands, scout.json, the scout agent)."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_scout_step
+    return al_scout_step
+
+
 def deploy_module():
     """tools/al_deploy.py: `al deploy` (a layer on another machine, over ssh) and `al dashboard --remote`."""
     if str(ROOT / "tools") not in sys.path:
@@ -385,7 +434,9 @@ def kit_template_names() -> list[str]:
 def render_llm_txt(s: dict) -> str:
     def bullets(items, empty="- (none found)"):
         return "\n".join(f"- {i}" for i in items) or empty
-    rows = "\n".join(f"| {c['name']} | `{c['shell']}` | {c['proves']} | UNVERIFIED | {c['network']} |" for c in s["commands"])
+    runs = {r["name"]: r for r in s.get("runs") or []}
+    rows = "\n".join(f"| {c['name']} | `{c['shell']}` | {c['proves']} | {duration_cell(runs.get(c['name']))} | {c['network']} |"
+                     for c in s["commands"])
     layout = "\n".join(
         f"- `{d}/` — {n} files" + (" (tests)" if d in s["tests"] else " (docs)" if d in s["docs"] else "")
         for d, n in s["top"])
@@ -446,6 +497,8 @@ def render_llm_txt(s: dict) -> str:
 ## Forge
 
 - Forge: {s['forge']}{f" ({s['repo']})" if s['repo'] else ''}
+- Host: {s.get('forge_host') or '(none)'}
+- Evidence: {'; '.join(s.get('forge_evidence') or []) or '(none)'}
 - CI: {', '.join(f'`{c}`' for c in s['ci']) or '(none found)'}
 
 ## Delivery
@@ -466,8 +519,17 @@ def render_llm_txt(s: dict) -> str:
 
 ## Unknowns
 
-{bullets(s['notes'] + ['command durations', 'which commands need network', 'artefact globs'])}
+{bullets(s['notes'] + ([] if s.get('runs') else ['command durations']) + ['which commands need network', 'artefact globs'])}
 """
+
+
+def duration_cell(row: dict | None) -> str:
+    """The `typical duration` cell of a command: what `al scout --into` measured, else UNVERIFIED."""
+    if not row:
+        return "UNVERIFIED"
+    if row.get("exit") == 0:
+        return f"{row['seconds']}s (measured by al scout, exit 0)"
+    return f"UNVERIFIED ({row.get('result') or 'not run'})"
 
 
 # ------------------------------------------------------------------------------------------
@@ -2110,6 +2172,29 @@ def improve_main(a: argparse.Namespace) -> int:
     return al_improve.main(a, sys.modules[__name__])
 
 
+SCOUT_JSON = "scout.json"
+
+
+def facts_for_layer(facts: dict) -> dict:
+    """The scout facts as kept in LAYER/scout.json: without the absolute `app` path (a layer may be committed)."""
+    return {k: v for k, v in facts.items() if k != "app"}
+
+
+def write_scout_json(layer: Path, facts: dict) -> None:
+    (layer / SCOUT_JSON).write_text(json.dumps(facts_for_layer(facts), indent=2) + "\n")
+
+
+def init_facts(app: Path, layer: Path) -> None:
+    """`al init`: the draft LLM.txt and scout.json (each only when absent), from one scout of APP."""
+    if (layer / "LLM.txt").exists() and (layer / SCOUT_JSON).exists():
+        return
+    facts = scout(app)
+    if not (layer / "LLM.txt").exists():
+        (layer / "LLM.txt").write_text(render_llm_txt(facts))
+    if not (layer / SCOUT_JSON).exists():
+        write_scout_json(layer, facts)
+
+
 def init_in_repo(app: Path, directory: str, layer_arg: Path | None) -> None:
     if layer_arg:
         raise AlError("--layer and --in-repo exclude each other: an in-repo layer is <repository>/<--dir>")
@@ -2122,14 +2207,14 @@ def init_in_repo(app: Path, directory: str, layer_arg: Path | None) -> None:
     rel = "/".join(parts)
     layer = app / rel
     layer.mkdir(parents=True, exist_ok=True)
-    if not (layer / "LLM.txt").exists():
-        (layer / "LLM.txt").write_text(render_llm_txt(scout(app)))
+    init_facts(app, layer)
     shutil.copy(REFERENCE, layer / "AL-DSL.llms.txt")
     if not (layer / ".gitignore").exists():  # `al gen` replaces it with the full list
         (layer / ".gitignore").write_text(f"/trees/\n/agents/\n/artefacts/\n/specs/\n/docs/\n/{IMPROVE_DIR}/\n/tasks.md\n/local.env\n__pycache__/\n*.lock\n")
     up = "/".join([".."] * len(parts))
     print(f"layer: {layer}   (in-repo: committed with the application)\n"
           f"  LLM.txt          draft — complete it with meta/commands/scout-codebase.md\n"
+          f"  scout.json       the facts behind the draft (al scout {app} --into {layer} measures the commands)\n"
           f"  AL-DSL.llms.txt  language reference\n"
           f"next: author {rel}/agentic.rkt (meta/commands/author-layer.md) with\n"
           f"        (codebase #:root \"{up}\" …)\n        (layer in-repo #:dir \"{rel}\")\n"
@@ -2593,6 +2678,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dir", default="agentic", help="with --in-repo: the layer directory, relative to the repository root")
     p = sub.add_parser("scout"); p.add_argument("app", type=Path); p.add_argument("-o", "--out", type=Path); p.add_argument("--json", action="store_true")
     p.add_argument("--layer", type=Path, help="a layer whose declared forge is asked for branch protection (nothing else is read)")
+    p.add_argument("--into", type=Path, metavar="LAYER", help="complete LAYER's facts: run each detected command once in a "
+                   "throwaway worktree (exit code, duration), write LAYER/scout.json and the draft LLM.txt, then have an "
+                   "isolated agent read the CI files (meta/commands/scout-codebase.md)")
+    p.add_argument("--agent", choices=("claude-code", "mock"), default="claude-code",
+                   help="with --into: the agent that completes LLM.txt (mock: none, or --scout-mock F)")
+    p.add_argument("--scout-mock", type=Path, metavar="FILE", help="with --into --agent mock: a JSON file of the files to write")
+    p.add_argument("--timeout", type=int, default=600, metavar="S", help="with --into: seconds per command (default 600)")
+    p.add_argument("--network", action="store_true", help="with --into: also run the commands that need the network")
+    p.add_argument("--raw", action="store_true", help="with --into: print the scout agent's event stream instead of progress lines")
     p = sub.add_parser("explain", help="explain a layer definition in plain language, block by block")
     p.add_argument("layer", type=Path); p.add_argument("--md", type=Path); p.add_argument("--gif", type=Path)
     for name in ("compile", "check"):
@@ -2701,6 +2795,25 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--raw", action="store_true",
                    help="print the agent's event stream as it comes (a dashboard job condenses it itself) instead of "
                         "progress lines and the report")
+    p.add_argument("--choice", action="append", default=[], metavar="KEY=VALUE",
+                   help="override one choice the facts led to (repeatable): forge, host, repo, input, trigger, "
+                   "environment, review, delivery")
+    for name, what in (("create", "create a layer beside APP from what the repository shows: init, scout, adopt, "
+                                   "author, gen, check, result"),
+                       ("adopt-all", "the same sequence for a repository with an existing agent setup to adopt "
+                                     "(refused when there is nothing to adopt)")):
+        p = sub.add_parser(name, help=what)
+        p.add_argument("app", type=Path)
+        p.add_argument("--agent", choices=("claude-code", "mock"), default="claude-code", help="the agent of scout and author")
+        p.add_argument("--mock", type=Path, metavar="FILE", help="with --agent mock: the author's files (as al author --mock)")
+        p.add_argument("--scout-mock", type=Path, metavar="FILE", help="with --agent mock: the scout agent's files")
+        p.add_argument("--choice", action="append", default=[], metavar="KEY=VALUE", help="override a choice (repeatable)")
+        p.add_argument("--choices", action="store_true", help="print the choices the facts lead to; write nothing")
+        p.add_argument("--json", action="store_true", help="with --choices: as JSON")
+    p = sub.add_parser("result", help="the result card of a layer: forge, workflows, what was adopted and left behind, "
+                       "unverified commands, what to do next")
+    p.add_argument("layer", type=Path)
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("doctor", help="where al finds racket, raco, uv, git and the agent CLI (exit 4 when one is missing)")
     p.add_argument("layer", nargs="?", type=Path, help="a layer whose settings (local.env, ~/.config/al/<name>.env) count")
     p.add_argument("--for", dest="for_", metavar="CMD,…", help="only check the prerequisites of these subcommands: "
@@ -2741,7 +2854,19 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "explain":
             extra = (["--md", str(a.md)] if a.md else []) + (["--gif", str(a.gif)] if a.gif else [])
             return subprocess.call([str(ROOT / "tools" / "explain.py"), str(a.layer), *extra])
+        if a.cmd == "scout" and a.into:
+            tools = tools_module()
+            tools.need(tools.NEEDS["scout"] + tools.agent_bin(a.agent), a.into.resolve())
+            module = scout_step_module()
+            try:
+                return module.complete(sys.modules[__name__], a.app, a.into, a.agent, a.scout_mock, a.timeout, a.network,
+                                       say=lambda line: print(line, flush=True), raw=a.raw,
+                                       kit=None if a.raw else dashboard_kit_module())
+            except (module.ScoutError, author_module().AuthorError) as exc:
+                raise AlError(f"scout: {exc}") from exc
         if a.cmd == "scout":
+            if a.raw:
+                raise AlError("scout: --raw goes with --into")
             facts = scout(a.app, layer=a.layer)
             text = json.dumps(facts, indent=2) if a.json else render_llm_txt(facts)
             a.out.write_text(text) if a.out else print(text)
@@ -2753,10 +2878,10 @@ def main(argv: list[str] | None = None) -> int:
             if layer == app or app in layer.parents:
                 raise AlError("the layer must not live inside the application tree")
             layer.mkdir(parents=True, exist_ok=True)
-            if not (layer / "LLM.txt").exists():
-                (layer / "LLM.txt").write_text(render_llm_txt(scout(app)))
+            init_facts(app, layer)
             shutil.copy(REFERENCE, layer / "AL-DSL.llms.txt")
             print(f"layer: {layer}\n  LLM.txt          draft — complete it with meta/commands/scout-codebase.md\n"
+                  f"  scout.json       the facts behind the draft (al scout {app} --into {layer} measures the commands)\n"
                   f"  AL-DSL.llms.txt  language reference\nnext: author {layer}/agentic.rkt (meta/commands/author-layer.md), then `al gen {layer}`\n"
                   f"codebase root to use in agentic.rkt: {os.path.relpath(app, layer)}")
         elif a.cmd == "doctor":
@@ -2837,9 +2962,15 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 return module.author(sys.modules[__name__], a.layer, a.agent, a.mock, a.preferences,
                                      say=lambda line: print(line, flush=True), accept_existing=a.accept_existing,
-                                     raw=a.raw)
+                                     raw=a.raw, choices=module.parse_choices(a.choice))
             except module.AuthorError as exc:
                 raise AlError(f"author: {exc}") from exc
+        elif a.cmd in ("create", "adopt-all"):
+            return create_cli(a)
+        elif a.cmd == "result":
+            module = create_module()
+            card = module.result_card(a.layer)
+            print(json.dumps(card, indent=2) if a.json else module.render_card(card))
         elif a.cmd == "verify":
             say = (lambda line: print(line, file=sys.stderr, flush=True)) if a.json else (lambda line: print(line, flush=True))
             report, _ = verify_layer(a.layer.resolve(), a.names, a.timeout, say, workflow=a.workflow)
@@ -2870,6 +3001,34 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def create_module():
+    """tools/al_create.py: `al create`, `al adopt-all` and `al result` (the dashboard runs the same sequence)."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_create
+    return al_create
+
+
+def create_cli(a: argparse.Namespace) -> int:
+    module, author = create_module(), author_module()
+    try:
+        choices = author.parse_choices(a.choice)
+        if a.choices:
+            detected = module.detect_choices(facts_for_layer(scout(a.app)))
+            if a.json:
+                print(json.dumps(detected, indent=2))
+            else:
+                for key, c in detected.items():
+                    print(f"{key:12} {c['value'] or '-':20} {c['fact']}")
+            return 0
+        tools = tools_module()
+        tools.need(tools.NEEDS[a.cmd] + tools.agent_bin(a.agent), a.app.resolve().with_name(a.app.resolve().name + ".al"))
+        return module.create(sys.modules[__name__], a.app, a.cmd == "adopt-all", a.agent, a.mock, a.scout_mock, choices,
+                             say=lambda line: print(line, flush=True))
+    except (module.CreateError, author.AuthorError) as exc:
+        raise AlError(f"{a.cmd}: {exc}") from exc
+
+
 def tool_missing(cmd: str, e) -> int:
     """A missing prerequisite: one `al: CMD: sentence` line per tool (and the caller's hint), exit 4."""
     for sentence in e.sentences:
@@ -2891,7 +3050,7 @@ def doctor_cli(a: argparse.Namespace) -> int:
             if cmd not in tools.NEEDS:
                 raise AlError(f"doctor: --for {cmd}: not one of {', '.join(sorted(tools.NEEDS))}")
             names += tools.NEEDS[cmd]
-            if cmd in ("author", "improve"):
+            if cmd in ("author", "improve", "scout", "create", "adopt-all"):
                 names += tools.agent_bin(a.agent or "claude-code")
         try:
             tools.need(names, layer)
