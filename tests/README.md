@@ -19,6 +19,7 @@ image's static busybox, built inside the sandbox. Its run tests need the one-lin
 protected `envs.py` (`docs/DESIGN.md`, "An engine for the sandbox"): until a person applies it they skip
 with `REQUIRES HUMAN: envs.py does not pass nested_engine.podman_flags yet`, and
 `test_preflight_refuses_a_nested_run_when_envs_is_not_wired` runs instead (and skips once it is applied).
+With `AL_SANDBOX_PROOF` set, a host without a usable podman fails the run instead of skipping it.
 
 ```bash
 (cd kit/runtime && AL_SANDBOX_PROOF=/tmp/proof env -u AL_APP_ROOT uv run --with pytest pytest -q -m podman tests/test_nested_engine_podman.py)

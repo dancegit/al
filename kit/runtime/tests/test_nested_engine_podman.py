@@ -8,12 +8,14 @@ with the image's static busybox. The run tests need the one-line change to the p
 (docs/DESIGN.md "An engine for the sandbox"); until a person applies it they skip with the
 REQUIRES HUMAN reason, and test_preflight_refuses_a_nested_run_when_envs_is_not_wired runs instead.
 
-With AL_SANDBOX_PROOF=<dir>: nested-isolation.txt, nested-run-summary.txt and doctor-engine.txt."""
+With AL_SANDBOX_PROOF=<dir>: nested-isolation.txt, nested-run-summary.txt and doctor-engine.txt, and a
+missing or unusable podman fails the run instead of skipping it."""
 from __future__ import annotations
 
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -40,6 +42,17 @@ def _proof(name: str, text: str) -> None:
     if target:
         Path(target).mkdir(parents=True, exist_ok=True)
         (Path(target) / name).write_text(text, encoding="utf-8")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _proof_needs_podman() -> None:
+    """With AL_SANDBOX_PROOF set, the run is meant to be proof: a missing podman is a failure, not a skip."""
+    if not os.environ.get("AL_SANDBOX_PROOF"):
+        return
+    if shutil.which("podman") is None:
+        pytest.fail("AL_SANDBOX_PROOF is set but podman is not installed: this host cannot produce the nested-engine proof")
+    if _podman("info").returncode != 0:
+        pytest.fail("AL_SANDBOX_PROOF is set but podman is not usable here: this host cannot produce the nested-engine proof")
 
 
 @pytest.fixture(scope="module")

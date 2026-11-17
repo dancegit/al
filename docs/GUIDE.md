@@ -710,18 +710,7 @@ run. `docs/DESIGN.md`, "An engine for the sandbox", lists every flag and why.
 `al sandbox notes.al doctor --env box` and every run's preflight check the engine (`engine:*` rows).
 Until a person has applied the one-line change to the protected `envs.py` that passes the engine's
 flags (see `docs/DESIGN.md`), the run's container has no `/dev/fuse`, and a run is refused before its
-first step. The rows then read:
-
-```text
-check              | result | detail                                               | fix
-engine:fuse        | miss   | the run's container has no /dev/fuse                 | the protected kit/runtime/adw_modules/envs.py does not pass the nested-engine flags yet: a person applies the change in docs/DESIGN.md "An engine for the sandbox"; until then this environment cannot run
-engine             | ok     | /usr/bin/podman                                      |
-engine:storage     | ok     | /al-engine/storage                                   |
-engine:isolation   | ok     | no host engine socket, CONTAINER_HOST or DOCKER_HOST |
-engine:userns      | ok     | podman unshare works                                 |
-engine:host-fuse   | ok     | /dev/fuse exists on this machine                     |
-engine:host-userns | ok     | user.max_user_namespaces=63412                       |
-```
+first step. The preflight then fails on the `engine:fuse` row, and its fix reads: "the protected kit/runtime/adw_modules/envs.py does not pass the nested-engine flags yet: a person applies the change in docs/DESIGN.md "An engine for the sandbox"; until then this environment cannot run".
 
 An `engine:userns` miss means the host does not let the container create a user namespace
 (`user.max_user_namespaces`, or `kernel.apparmor_restrict_unprivileged_userns=1` with a container
