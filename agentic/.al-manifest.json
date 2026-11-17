@@ -55,7 +55,7 @@
   "adws/dashboard/static/index.html": "4b40182b7284821784b0f9be4111b3a9a6748b567469fc3141de2290e9c0ef1c",
   "adws/dispatch.py": "128ee12f9dac7c33c5f2f64c3e8af204cfe6d8ac7cfb61fb91441c6b8bfbf80a",
   "adws/triggers/trigger_cron.py": "1e8abe9da031337abe61858849aa84ab13494e5271ece3af7f6212ac1e216349",
-  "agentic-layer.json": "7ff5a23a01541bbe1a865d5e1548eccb1a1e557a510fc27b2f8c903fc6327fce",
+  "agentic-layer.json": "3f0f45bae2d5f638f84558f58eff8b096beb22640b173657be40b12cd0bcaeab",
   "commands/classify.md": "348923602cb942eace16f3ba6274b1fdf4a2adf4761db4ad067f599cfe12104c",
   "commands/commit.md": "3c7fc6536d8f12c7abce202bb7d312eb02d427774a61f0a9af7c690eac413834",
   "commands/document.md": "649f219b84392e96520dafafba6d30909ba19c95991fc764dd56ad307ad8b5b5",
@@ -63,9 +63,9 @@
   "commands/plan-chore.md": "9a73cdf0741c9850413d24dfa5416b45d3f7e1021ee7460c9a98e074099e3fcf",
   "commands/plan-feature.md": "48db8c7c026e6ca0c71c2ffd23177ed4062ba9799d262802cc1debe67a5e3cd7",
   "commands/plan-patch.md": "93f89da60290058a70d2b2853ee232bfff34e04f7246f8ce2ba278b19c5774ef",
-  "commands/prime.md": "0fd24bc401432a1e972e26a395bf995f70c42858306969200384b743e0697ae8",
+  "commands/prime.md": "3008253fa63d8ef93d9e7b392581b803fafb067ed2d133f9b4be0165d6a2c9b2",
   "commands/pull-request.md": "137723931263ee65cf5975eb7455c72e7014ba3ce202d3a46c1a9595eca88076",
-  "commands/resolve-test.md": "0ecb8df254b2614b4917fc9e32a92746169441922aea9553262904cbf846abaa",
+  "commands/resolve-test.md": "0d667c11c5ac2e4c82c661338c4ab363890144feed4607b365339a87aa12747c",
   "commands/review.md": "215e075fc7b303e03dcbbf0d80e55c399e596e916c66e3f743f04dee331e0541",
   "conditional_docs.md": "c58df43e5a665afcf0654a456dcff3dcbe6dc11ac836056fed69ad9200bce7b6",
   "env/Containerfile": "89eaf4b3f43d1e152d71b518e56954b6a92745ade0068363127646c5db4382e6",
@@ -77,6 +77,6 @@
   "experts/runtime/self-improve.md": "bdb2cae392b90c2b67e4b4f4421b595b86b3abd324232244371d25f03a6e5280",
   "hops/implement.md": "285bc93d67a4e26aefc3f127a6f44b9c8af1cd3ae58275863d0d718decde8ea7",
   "hops/meta-adw.md": "142f21132a1f28ccbd8cad88ac1e2e5ab221e9e82d8827a27347145256948097",
-  "hops/meta-command.md": "ca3ff8f26871f6b10af655a2ea8d57921bb0e1300941ea82967d4b451c16245f"
+  "hops/meta-command.md": "292631a2f27ea3172acb34879822b42df599cf26928c8fb6af054edef4a0bbef"
  }
 }

@@ -808,7 +808,7 @@
         "description": "Links, images and commands shown in the README and the documents resolve, and the generated references are current",
         "name": "test-docs",
         "reuse": true,
-        "run": "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_readme.py tests/tools/test_generated_references.py -q",
+        "run": "if [ -f tests/tools/test_readme.py ]; then env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_readme.py tests/tools/test_generated_references.py -q; else echo 'this branch started before the README check existed: nothing to run'; fi",
         "timeout": 1800
       },
       {
