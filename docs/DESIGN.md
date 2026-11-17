@@ -34,10 +34,13 @@ application repo ──al scout──▶ LLM.txt (draft) ──LLM + scout-codeb
 | PITER: Prompt input, Trigger, Environment, Review | Four option families, each with alternatives; every ADW picks one or more of each |
 | ADW = deterministic code + agents, composed plan → build → test → review → document | `(adw … (steps (run …) (check …) (review) (ship) (compose other-adw)))`, interpreted by one generic uv runtime |
 | One agent, one prompt, one purpose | Every `(run …)` step is a fresh headless agent with one command |
+| Each step does only its own job, and the runtime checks it | `adw_modules/discipline.py` compares HEAD, the refs, the main checkout and the layer's top level before and after every step that may not commit; a difference fails the step as a step-discipline violation and is undone where that is safe (`step.discipline` event) |
 | Always add feedback loops (request → validate → resolve) | `(check NAME #:cmd test #:resolve resolve-test #:retries 3)` |
 | Review = "is what we built what we asked for? prove it", severities blocker / tech_debt / skippable | `review` command returns that JSON; artefacts (logs, junit, images, video keyframes) are collected, stored and handed to the reviewer |
 | ZTE: SDLC + ship, "only if all phases pass", start with chores | `(review auto …)`: agent verdict AND deterministic gates (required checks, allowed classes, max diff, protected paths) → merge/deploy, else fall back to a human PR |
+| Work collects in stages that people accept as a whole | `(delivery sprint\|gitflow\|…)` / `(cycle …)` / `al promote` + `al decide`: the stages work collects in, branches only people may change, a presentation pack and recorded acceptance before merge, version, tag, deploy (see "How work is delivered", "Promotion between stages") |
 | Isolation via worktrees + ports; layer separate from app | `environment worktree` creates `trees/<adw-id>` under the layer; the app's working tree is never written |
+| The sandbox is built once per recipe and checked before work starts | image `al-<layer>:<recipe hash>`, built only when the recipe changed; a preflight before the first step; `al sandbox build\|doctor\|shell\|status\|prune\|push\|pull` (see "Sandbox image") |
 | `tasks.md` two-way task list polled by a cron trigger | `(prompt-input tasklist)` + `(trigger cron)` / `(trigger file-watch)` |
 | Agent experts: expertise file + self-improve | `(expert NAME #:domain … #:paths …)` |
 | Model sets base/heavy; KPIs | named model tiers per agent (`base`, `heavy`, any others in `#:models`), picked with `#:model-set` on commands/hops/steps and overridable per run; `(budget limits …)`; `track-kpis` template |

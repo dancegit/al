@@ -148,7 +148,7 @@ def _headings(markdown: str) -> list[str]:
 
 def _readme_section() -> str:
     text = (ROOT / "README.md").read_text(encoding="utf-8")
-    start = text.index("\n## More to see\n")
+    start = text.index("\n## What you can do with it today\n")
     end = text.index("\n## ", start + 5)
     return text[start:end]
 
@@ -209,10 +209,10 @@ def test_clips_are_h264_720p_and_10_to_40_seconds():
         assert clips.MIN_SECONDS <= float(info["duration"]) <= clips.MAX_SECONDS, (c.stem, info["duration"])
 
 
-def test_readme_more_to_see_lists_every_clip():
+def test_readme_capabilities_list_every_clip():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     headings = re.findall(r"^## (.+)$", text, re.M)
-    assert headings[headings.index("Watching the agents work") + 1] == "More to see"
+    assert headings[headings.index("The principles, and what al does about each") + 1] == "What you can do with it today"
     section = _readme_section()
     for c in clips.CLIPS:
         assert f"docs/showcase/{c.stem}.gif" in section and f"docs/showcase/{c.stem}.mp4" in section, c.stem
