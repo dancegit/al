@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import affected
 from . import artefacts
 from . import discipline
 from . import checkenv
@@ -25,6 +26,7 @@ from .templates import render_step_arg
 from .usage import LimitReached
 
 REJECTED = "rejected"
+NOT_AFFECTED = "not-affected"  # a check step that was not run: no changed path is under what its cmd covers
 
 
 def _timestamp() -> str:
@@ -104,12 +106,14 @@ def run_command(argv: list[str], cwd: Path, env: dict[str, str], timeout: int,
 
 
 def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
-              attempt_offset: int = 0, timeout: int | None = None) -> int:
-    """Run a check step's cmd once; `timeout` overrides the cmd's own time limit."""
+              attempt_offset: int = 0, timeout: int | None = None, decision: Any = None) -> int:
+    """Run a check step's cmd once; `timeout` overrides the cmd's own time limit. `decision` is
+    what affected.decide said about this attempt (its tree and definition are not computed again)."""
     name = str(step["name"])
     if env_stack.read_only:
         raise StepFailed(name, "check refused in read-only host environment")
     command = layer.cmd(step["cmd"])
+    tree_before = decision.tree if decision is not None else affected.tree(layer, state, env_stack)
     cmd = str(command["run"])
     check_dir = Path(layer.layer_dir) / "agents" / state.adw_id / "checks"
     check_dir.mkdir(parents=True, exist_ok=True)
@@ -131,7 +135,10 @@ def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
         exit_code, report, problems = _skip_rules(layer, state, step, log_path, started_wall, exit_code)
         events.emit("check.end", **span, exit=exit_code, seconds=round(time.monotonic() - started, 3),
                     **_skip_fields(report, env_id))
-    record: dict[str, Any] = {"cmd": cmd, "exit": exit_code, "log": relative_log}
+    # a result belongs to a tree only when the command left the worktree as it found it
+    tree = tree_before if tree_before and tree_before == affected.tree(layer, state, env_stack) else ""
+    outcome = affected.PASSED if exit_code == 0 else affected.FAILED
+    record: dict[str, Any] = {"cmd": cmd, "exit": exit_code, "log": relative_log, "outcome": outcome, "tree": tree}
     if report is not None:
         record["skips"] = report.as_dict()
     if problems:
@@ -139,6 +146,10 @@ def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
     if env_id:
         record["in"] = env_id
     state.checks[name] = record
+    affected.record(state, check=str(step["cmd"]), step=name, phase=span["phase"], outcome=outcome, tree=tree,
+                    definition=(decision.definition if decision is not None
+                                else affected.definition(layer, state, command, step)),
+                    exit=exit_code, log=relative_log, why=decision.why if decision is not None else "")
     state.save(layer.layer_dir)
     if report is not None:
         artefacts.write_manifest(layer, state)  # reviewers see the skips without a #:collect
@@ -175,14 +186,95 @@ def running_step(state: Any) -> str:
     return next((str(r.get("name")) for r in reversed(state.steps) if r.get("status") == "running"), "")
 
 
+def _decision_text(name: str, decision: Any, entry: dict[str, Any]) -> str:
+    """What a log file says in place of a command's output when the command was not run."""
+    lines = [f"al: check {name} not run: {affected.summary_text(entry)}"]
+    if decision.action == affected.REUSE:
+        source = decision.source or {}
+        lines.append(f"al: it passed in {source.get('phase')} step {source.get('step')} on the same tree; "
+                     f"log {source.get('log')}")
+    else:
+        lines.append(f"al: compared with {decision.reference or '(unknown)'}")
+    lines.append(f"al: tree {decision.tree or '(unknown)'}")
+    if decision.action != affected.REUSE:
+        lines.append(f"al: {decision.paths_total} changed path(s) compared with what the check covers:")
+        lines += [f"al:   {path}" for path in decision.paths]
+        if decision.paths_total > len(decision.paths):
+            lines.append(f"al:   … and {decision.paths_total - len(decision.paths)} more")
+    return "\n".join(lines) + "\n"
+
+
+def _decided(layer: Any, state: Any, step: dict[str, Any], decision: Any, phase: str,
+             log_path: Path | None = None) -> dict[str, Any]:
+    """Record a check that was not run (`reuse` or `not-affected`): its log, a check.decision
+    event, the ledger entry and, for a check step itself, its `state.checks` record. With
+    `log_path` (the gate) the decision is that log's content and `state.checks` is left alone."""
+    name, cmd_name = str(step["name"]), str(step["cmd"])
+    reused = decision.action == affected.REUSE
+    source = decision.source or {}
+    outcome = affected.REUSED if reused else affected.NOT_AFFECTED
+    entry: dict[str, Any] = {"outcome": outcome, "why": decision.why, "tree": decision.tree,
+                             "paths_total": decision.paths_total, "from": source if reused else None}
+    if log_path is None and not reused:
+        log_path = Path(layer.layer_dir) / "agents" / state.adw_id / "checks" / f"{name}.not-affected.log"
+    if log_path is not None:
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(log_path).write_text(_decision_text(cmd_name if phase == "gate" else name, decision, entry),
+                                  encoding="utf-8")
+        log = Path(log_path).relative_to(layer.layer_dir).as_posix()
+    else:
+        log = str(source.get("log") or "")
+    events.emit("check.decision", step=name, owner=running_step(state), phase=phase, cmd=cmd_name,
+                outcome=outcome, why=decision.why, paths=list(decision.paths), paths_total=decision.paths_total,
+                tree=decision.tree, from_step=str(source.get("step") or "") if reused else "",
+                from_phase=str(source.get("phase") or "") if reused else "", log=log)
+    recorded = affected.record(state, check=cmd_name, step=name, phase=phase, outcome=outcome, tree=decision.tree,
+                               definition=decision.definition, exit=0 if reused else None, log=log, why=decision.why,
+                               paths=decision.paths, paths_total=decision.paths_total,
+                               **({"from": source} if reused else {}))
+    if phase == "check":
+        # exit 0 because the gate counts a check step without a record as failed; `outcome` is
+        # what every reader shows, so a check that was not run is never displayed as passed
+        cmd = str(layer.cmd(cmd_name)["run"])
+        if reused:
+            record: dict[str, Any] = {"cmd": cmd, "exit": 0, "log": log, "outcome": outcome,
+                                      "from": recorded["from"], "tree": decision.tree}
+            earlier = state.checks.get(str(source.get("step"))) or {}
+            if earlier.get("log") == log and earlier.get("skips"):
+                record["skips"] = earlier["skips"]
+        else:
+            record = {"cmd": cmd, "exit": 0, "outcome": outcome, "why": decision.why,
+                      "paths": list(decision.paths), "paths_total": decision.paths_total,
+                      "tree": decision.tree, "log": log}
+        state.checks[name] = record
+    state.save(layer.layer_dir)
+    return recorded
+
+
+def _review_option(layer: Any, state: Any) -> dict[str, Any]:
+    try:
+        return layer.option("reviews", layer.adw(state.adw)["review"])
+    except (LayerError, KeyError):
+        return {}
+
+
 def run_logged(layer: Any, state: Any, env_stack: Any, command: dict[str, Any], log_path: Path,
                step: str, phase: str) -> int:
     """A codebase command outside a check step (the gate's re-runs, the deploy command), with its
-    log streamed to log_path and a check.start / check.end pair."""
+    log streamed to log_path and a check.start / check.end pair. At the gate the command is not
+    run when it already passed on exactly the tree that ships (the pass is reused) or, with
+    `#:require affected`, when no changed path is under what it covers; both are recorded."""
     span = {"step": step, "owner": running_step(state), "phase": phase, "cmd": str(command["name"]),
             "attempt": 1, "log": Path(log_path).relative_to(layer.layer_dir).as_posix()}
     # the gate re-runs a cmd where its check step runs it (#:in) and under the same skip rules
     check = checkenv.check_for_cmd(layer, state, str(command["name"])) if phase == "gate" else None
+    decision = None
+    if phase == "gate":
+        decision = affected.decide_gate(layer, state, env_stack, command, check, _review_option(layer, state))
+        if decision.action != affected.RUN:
+            entry = _decided(layer, state, {"name": step, "cmd": str(command["name"])}, decision, phase, log_path)
+            print(f"[adw {state.adw_id}] gate: {command['name']} not run: {affected.summary_text(entry)}")
+            return 0
     stack = checkenv.stack_for(layer, state, check, env_stack) if check is not None else env_stack
     env_id = checkenv.target(layer.adw(state.adw), check) if check is not None else None
     argv = stack.wrap(str(command["run"]))
@@ -196,6 +288,14 @@ def run_logged(layer: Any, state: Any, env_stack: Any, command: dict[str, Any], 
         code, report, _problems = _skip_rules(layer, state, check, log_path, started_wall, code)
         fields = _skip_fields(report, env_id)
     events.emit("check.end", **span, exit=code, seconds=round(time.monotonic() - started, 3), **fields)
+    if decision is not None:
+        # the result belongs to the shipping tree only when that is what the command ran on and left
+        tree = decision.tree if decision.tree and decision.tree == affected.tree(layer, state, env_stack) else ""
+        affected.record(state, check=str(command["name"]), step=step, phase=phase,
+                        outcome=affected.PASSED if code == 0 else affected.FAILED, tree=tree,
+                        definition=decision.definition, exit=code, log=span["log"], why=decision.why,
+                        paths=decision.paths, paths_total=decision.paths_total)
+        state.save(layer.layer_dir)
     return code
 
 
@@ -241,20 +341,37 @@ def run_run(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> Non
         state.plan = output
 
 
-def run_check_with_resolve(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> None:
-    """Run a check step's cmd; on failure let the resolve command fix it and re-run, up to `retries`."""
+def run_check_with_resolve(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
+                           redecide: bool = True) -> bool:
+    """Run a check step's cmd; on failure let the resolve command fix it and re-run, up to `retries`.
+
+    Before each attempt affected.decide says whether the cmd runs at all: a pass on the same tree
+    is reused, and a `#:when-affected` step whose cmd covers no changed path is recorded as not
+    affected. Returns True when the cmd ran (and passed), False when it was not run. In a review
+    round (the owner is another step) the check steps recorded as not affected are decided again."""
     name = str(step["name"])
     retries = max(0, int(step.get("retries", 0)))
+    owner = running_step(state)
+    in_round = redecide and owner not in ("", name)
     for attempt in range(retries + 1):
-        exit_code = run_check(layer, state, step, env_stack)
+        decision = affected.decide(layer, state, env_stack, step)
+        if decision.action != affected.RUN:
+            entry = _decided(layer, state, step, decision, "check" if owner in ("", name) else "recheck")
+            print(f"[adw {state.adw_id}] check {name} not run: {affected.summary_text(entry)}")
+            if in_round:
+                _redecide_not_affected(layer, state, env_stack)
+            return False
+        exit_code = run_check(layer, state, step, env_stack, decision=decision)
         if exit_code == 124:
-            exit_code = _retry_time_limit(layer, state, step, env_stack)
+            exit_code = _retry_time_limit(layer, state, step, env_stack, decision)
         final = exit_code == 0 or not step.get("resolve") or attempt == retries
         if final:
             # Collected on failure too: screenshots of a failing run are the proof a human needs.
             artefacts.collect(layer, state, list(step.get("collect", [])), name)
             if exit_code == 0:
-                return
+                if in_round:
+                    _redecide_not_affected(layer, state, env_stack)
+                return True
             raise StepFailed(name, f"check {step['cmd']} exited {exit_code} after {attempt + 1} attempt(s); "
                                    f"log {state.checks[name]['log']}")
         log_path = Path(layer.layer_dir) / state.checks[name]["log"]
@@ -265,9 +382,32 @@ def run_check_with_resolve(layer: Any, state: Any, step: dict[str, Any], env_sta
         output = run_agent(layer, state, f"{name}-resolve-{attempt + 1}", step["resolve"], resolve_args,
                            model_set, env_stack)
         state.outputs[f"{name}-resolve-{attempt + 1}"] = output
+    return True
 
 
-def _retry_time_limit(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> int:
+def _redecide_not_affected(layer: Any, state: Any, env_stack: Any) -> None:
+    """A review round changed the tree: decide again for every check step that was recorded as not
+    affected and has no decision for the tree as it is now. The round re-runs only the check steps
+    that ran (review._checks_that_ran), so a patch that touches what such a step covers would
+    otherwise go unchecked until the gate. A step that runs now becomes `passed`; a failure
+    raises as any re-check does."""
+    current = affected.tree(layer, state, env_stack)
+    for step in layer.adw(state.adw).get("steps", []):
+        if step.get("kind") != "check":
+            continue
+        record = next((r for r in state.steps if r.get("name") == step.get("name")), None)
+        if record is None or record.get("status") != NOT_AFFECTED:
+            continue
+        if current and any(entry.get("check") == step.get("cmd") and entry.get("tree") == current
+                           for entry in getattr(state, "check_results", [])):
+            continue
+        print(f"[adw {state.adw_id}] review round: deciding again for check {step['name']} (it was not affected before)")
+        if run_check_with_resolve(layer, state, step, env_stack, redecide=False):
+            record.update(status="passed", detail=_pass_detail(state, step))
+            state.save(layer.layer_dir)
+
+
+def _retry_time_limit(layer: Any, state: Any, step: dict[str, Any], env_stack: Any, decision: Any = None) -> int:
     """A check that hit its time limit runs once more with twice the limit, without the resolve
     agent: a slow (shared) machine is not broken code. Timing out again fails the step."""
     name = str(step["name"])
@@ -278,7 +418,7 @@ def _retry_time_limit(layer: Any, state: Any, step: dict[str, Any], env_stack: A
     entry: dict[str, Any] = {"limit": limit, "retry_limit": 2 * limit, "log": first_log}
     state.step_record(name, "check").setdefault("time_limit_retries", []).append(entry)
     state.save(layer.layer_dir)
-    exit_code = run_check(layer, state, step, env_stack, timeout=2 * limit)
+    exit_code = run_check(layer, state, step, env_stack, timeout=2 * limit, decision=decision)
     entry["exit"] = exit_code
     state.save(layer.layer_dir)
     if exit_code == 124:
@@ -387,6 +527,7 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
             from . import delivery
 
             delivery.after_ship(layer, state)
+        affected.publish(layer, state)  # what each check proved, next to the pull request text
     elif kind == "fan-out":
         from . import fanout
 
@@ -462,6 +603,11 @@ def _run_recorded(layer: Any, state: Any, name: str, kind: str, work: Any, step:
             # the review returned so a later ship step can route the work to a person: not a pass
             ended(REJECTED, detail, f"[adw {state.adw_id}] step {name} ({kind}) rejected: {detail}")
             return
+    if kind == "check" and (state.checks.get(name) or {}).get("outcome") == affected.NOT_AFFECTED:
+        check = state.checks[name]
+        detail = f"not affected: {check.get('why')} ({int(check.get('paths_total') or 0)} paths compared)"
+        ended(NOT_AFFECTED, detail, f"[adw {state.adw_id}] step {name} ({kind}) not affected: {detail}")
+        return
     detail = _pass_detail(state, step) if step is not None else "ok"
     ended("passed", detail, f"[adw {state.adw_id}] step {name} ({kind}) passed: {detail}")
 
@@ -485,6 +631,10 @@ def _pass_detail(state: Any, step: dict[str, Any]) -> str:
         success, detail = review_outcome(state)
         if success is not None:
             return detail
+    if step.get("kind") == "check" and (state.checks.get(name) or {}).get("outcome") == affected.REUSED:
+        check = state.checks[name]
+        return (f"reused from step {(check.get('from') or {}).get('step')}, same tree "
+                f"{str(check.get('tree') or '')[:8]}, log {check.get('log')}")
     if step.get("kind") == "check" and name in state.checks:
         detail = f"exit {state.checks[name]['exit']}, log {state.checks[name]['log']}"
         record = next((r for r in state.steps if r.get("name") == name), {})

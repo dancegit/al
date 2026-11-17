@@ -168,7 +168,8 @@
           "maxSkipped": -1,
           "name": "lint",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "test",
@@ -181,7 +182,8 @@
           "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "agent": "",
@@ -326,7 +328,8 @@
           "maxSkipped": -1,
           "name": "lint",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "test",
@@ -339,7 +342,8 @@
           "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "e2e",
@@ -353,7 +357,8 @@
           "maxSkipped": -1,
           "name": "e2e",
           "resolve": "resolve-test",
-          "retries": 2
+          "retries": 2,
+          "whenAffected": true
         },
         {
           "agent": "",
@@ -470,7 +475,8 @@
           "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "agent": "",
@@ -584,7 +590,8 @@
           "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "agent": "",
@@ -634,7 +641,8 @@
           "maxSkipped": -1,
           "name": "lint",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "test",
@@ -647,7 +655,8 @@
           "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "implement": "",
@@ -763,38 +772,61 @@
   "codebase": {
     "commands": [
       {
+        "always": true,
+        "covers": [],
         "description": "",
         "name": "install",
+        "reuse": true,
         "run": "bun install && (cd api && uv sync)",
         "timeout": 1200
       },
       {
+        "always": true,
+        "covers": [],
         "description": "",
         "name": "lint",
+        "reuse": true,
         "run": "bun run lint && (cd api && uv run ruff check)",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [
+          "web",
+          "api"
+        ],
         "description": "",
         "name": "test",
+        "reuse": true,
         "run": "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)",
         "timeout": 1800
       },
       {
+        "always": false,
+        "covers": [
+          "web"
+        ],
         "description": "Playwright; writes e2e-results/",
         "name": "e2e",
+        "reuse": true,
         "run": "bun run e2e",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "",
         "name": "deploy",
+        "reuse": true,
         "run": "./scripts/deploy.sh staging",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "the team's own script: appends the change to CHANGELOG.md",
         "name": "changelog",
+        "reuse": true,
         "run": "./scripts/changelog.sh",
         "timeout": 1800
       }
@@ -1314,6 +1346,7 @@
       "kind": "auto",
       "maxDiffLines": 300,
       "maxRetries": 3,
+      "require": "all",
       "requireChecks": [
         "lint",
         "test",

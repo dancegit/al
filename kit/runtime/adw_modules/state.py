@@ -87,6 +87,10 @@ class ADWState:
     # instructions, code, status, rounds, answers: [{kind, text, via, at}]}; empty, and then left out of
     # state.json, for a run the decider never looked at
     decision: dict[str, Any] = field(default_factory=dict)
+    # every check result and decision of the run, in order (affected.record): {check, step, phase:
+    # check | recheck | gate, outcome: passed | failed | not-affected | reused, tree, definition, exit,
+    # log, why, paths, paths_total, from: {step, phase, log} | null, at}; left out of state.json while empty
+    check_results: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -122,6 +126,8 @@ class ADWState:
                 data.pop("replaces", None)  # only a run that starts another again has one
             if not data.get("decision"):
                 data.pop("decision", None)  # so does a run the decider never looked at
+            if not data.get("check_results"):
+                data.pop("check_results", None)  # a run without a check writes the state.json of before
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")

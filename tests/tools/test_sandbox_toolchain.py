@@ -123,8 +123,24 @@ def tools(tmp_path: Path, *names: str) -> dict[str, str]:
     directory = None
     for name in names:
         directory = stub_bin(tmp_path, name, STUB)
-    keep = [d for d in os.environ.get("PATH", "").split(os.pathsep)
-            if d and not (Path(d) / "nix").exists() and not (Path(d) / "podman").exists()]
+    keep = []
+    for index, d in enumerate(os.environ.get("PATH", "").split(os.pathsep)):
+        if not d:
+            continue
+        if not (Path(d) / "nix").exists() and not (Path(d) / "podman").exists():
+            keep.append(d)
+            continue
+        # a folder that holds nix or podman may hold uv, racket and git too (a nix profile does):
+        # keep everything of it except the two engines, through links in a folder of our own
+        shim = tmp_path / "path-without-engines" / str(index)
+        shim.mkdir(parents=True, exist_ok=True)
+        for entry in Path(d).iterdir():
+            if entry.name in ("nix", "podman") or entry.name.startswith(("nix-", "podman-")):
+                continue
+            link = shim / entry.name
+            if not link.exists() and not link.is_symlink():
+                link.symlink_to(entry.resolve())
+        keep.append(str(shim))
     path = os.pathsep.join(([str(directory)] if directory else []) + keep)
     return {"PATH": path, "STUB_LOG": str(tmp_path / "stub.log"), "STUB_STORE": str(tmp_path / "store"),
             "AL_SANDBOX_OFFLINE": ""}

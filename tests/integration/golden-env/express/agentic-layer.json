@@ -168,7 +168,8 @@
           "maxSkipped": -1,
           "name": "lint",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "test",
@@ -182,7 +183,8 @@
           "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "agent": "",
@@ -306,26 +308,38 @@
   "codebase": {
     "commands": [
       {
+        "always": true,
+        "covers": [],
         "description": "dependencies and devDependencies resolve and install into node_modules",
         "name": "install",
+        "reuse": true,
         "run": "npm install",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "eslint reports no violation of .eslintrc.yml in any JavaScript file of the repository",
         "name": "lint",
+        "reuse": true,
         "run": "npm run lint",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "the whole mocha suite (test/ and test/acceptance/) passes with global-leak checking, under nyc, writing coverage/lcov.info and a text coverage table to stdout",
         "name": "test",
+        "reuse": true,
         "run": "npm run test-ci",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "the whole mocha suite (test/ and test/acceptance/) passes with global-leak checking, without coverage",
         "name": "test-fast",
+        "reuse": true,
         "run": "npm test",
         "timeout": 1800
       }

@@ -190,7 +190,8 @@
           "maxSkipped": -1,
           "name": "install",
           "resolve": "",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "build",
@@ -203,7 +204,8 @@
           "maxSkipped": -1,
           "name": "build",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "test",
@@ -218,7 +220,8 @@
           "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "agent": "",
@@ -314,26 +317,38 @@
   "codebase": {
     "commands": [
       {
+        "always": true,
+        "covers": [],
         "description": "The build system is generated and configured against the system Oniguruma (libonig-dev); the vendor/oniguruma submodule is not fetched, because a run's container mounts the repository's .git read-only and git submodule update cannot register it; must run once in a fresh checkout before build or test",
         "name": "install",
+        "reuse": true,
         "run": "autoreconf -i && ./configure --disable-docs --with-oniguruma=yes --enable-static",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "libjq and the jq binary compile and link with -Wextra -Wall",
         "name": "build",
+        "reuse": true,
         "run": "make -j\"$(nproc)\"",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "Every driver in TESTS of Makefile.am passes against the built ./jq; writes test-suite.log and tests/*.log",
         "name": "test",
+        "reuse": true,
         "run": "make check VERBOSE=yes",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "The website renders from docs/content into docs/output/",
         "name": "docs",
+        "reuse": true,
         "run": "(cd docs && pipenv sync && pipenv run python3 build_website.py)",
         "timeout": 1800
       }
@@ -757,6 +772,7 @@
       "kind": "auto",
       "maxDiffLines": 400,
       "maxRetries": 3,
+      "require": "all",
       "requireChecks": [
         "build",
         "test"

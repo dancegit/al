@@ -140,3 +140,42 @@ def test_check_skips_show_next_to_passed(epage, esite):
     assert epage.locator(".badge", has_text="exit 0").count() >= 1   # next to the passed exit
     from test_browser_documents import shot
     shot(epage, "check-skips.png")
+
+
+def test_checks_proof_shows_not_affected_and_reused(epage, esite):
+    """A run whose checks were decided: the graph node, the check panel and the outcome block say
+    not affected (with why and the compared paths) and reused, never passed."""
+    _running, agents = esite
+    fixtures_events.add_proof_run(agents.parent)
+    open_(epage, "/run/events-shop/e1000007")
+    epage.wait_for_selector(".g-node[data-step='test']")
+    until(epage, "document.querySelector(\".g-node[data-step='test']\").classList.contains('st-not-affected')", timeout=15000)
+    node = epage.locator(".g-node[data-step='test']")
+    assert "not affected" in node.text_content() and "∅" in node.text_content()
+    assert "st-passed" in epage.locator(".g-node[data-step='lint']").get_attribute("class")
+    block = epage.locator("[data-role='proof']")
+    block.wait_for()
+    assert "What the checks proved" in block.inner_text()
+    assert block.locator("thead th").all_text_contents() == ["Check", "Where", "Result", "Evidence"]
+    rows = [[cell.strip() for cell in row.locator("td").all_inner_texts()] for row in block.locator("tbody tr").all()]
+    assert [row[:3] for row in rows] == [
+        ["lint", "lint", "passed"],
+        ["lint", "gate", "reused from lint, same tree 9f2c1e7a"],
+        ["test", "test", "not affected (no covered path changed; 1 paths compared)"],
+        ["test", "gate", "not affected (no covered path changed; 1 paths compared)"]]
+    assert "README.md" in rows[2][3] and "9f2c1e7a" in rows[1][3]
+    assert block.locator("tr[data-outcome='not-affected'] .badge.good").count() == 0     # never shown as passed
+    block.scroll_into_view_if_needed()
+    from test_browser_documents import shot
+    shot(epage, "checks-proof.png")
+    open_(epage, "/run/events-shop/e1000007/step/test")
+    decision = epage.locator("[data-role='decision']")
+    decision.wait_for()
+    assert "not affected: no covered path changed" in decision.inner_text()
+    assert "1 path compared" in decision.inner_text() and "README.md" in decision.inner_text()
+    assert epage.locator("[data-role='decision-badge']").inner_text() == "not affected"
+    assert epage.locator(".badge", has_text="exit 0").count() == 0
+    open_(epage, "/run/events-shop/e1000007/step/ship")
+    epage.locator(".chip", has_text="gate lint reused").click()
+    until(epage, "document.querySelector(\"[data-role='decision']\") && "
+                 "document.querySelector(\"[data-role='decision']\").textContent.includes('reused from lint, tree 9f2c1e7a')")

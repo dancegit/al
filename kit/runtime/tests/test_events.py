@@ -107,9 +107,15 @@ def test_a_mock_run_records_every_span_in_order(make_layer, app_repo):
     assert checks[0]["log"] == "agents/ee000001/checks/test.1.log" and checks[0]["cmd"] == "test"
     resolve_at = types.index("agent.start", types.index("check.end"))
     assert found[resolve_at]["step"] == "test-resolve-1"
-    gate_checks = [e for e in checks if e["phase"] == "gate"]
-    assert [e["type"] for e in gate_checks] == ["check.start", "check.end"] and gate_checks[1]["exit"] == 0
-    assert gate_checks[0]["log"] == "agents/ee000001/checks/gate-test.log"
+    # the gate does not run the cmd again: it passed in the check step on exactly the tree that ships
+    assert [e for e in checks if e["phase"] == "gate"] == []
+    (reused,) = [e for e in found if e["type"] == "check.decision"]
+    assert (reused["phase"], reused["step"], reused["cmd"], reused["outcome"]) == ("gate", "gate", "test", "reused")
+    assert (reused["from_step"], reused["from_phase"]) == ("test", "check") and len(reused["tree"]) == 40
+    assert reused["log"] == "agents/ee000001/checks/gate-test.log"
+    gate_log = (layer / reused["log"]).read_text()
+    assert gate_log.startswith(f"al: check test not run: reused from test, same tree {reused['tree'][:8]}\n")
+    assert "agents/ee000001/checks/test.2.log" in gate_log
     review = next(e for e in found if e["type"] == "review.round")
     assert review["round"] == 1 and review["success"] is True and review["issues"] == {
         "blocker": 0, "tech_debt": 0, "skippable": 0}

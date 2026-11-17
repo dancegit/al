@@ -2650,12 +2650,81 @@ def _skip_view(event: dict[str, Any]) -> dict[str, Any]:
             "skip_reasons": reasons[:5], "env": str(event.get("in") or "")}
 
 
+def _decided_fields(item: dict[str, Any]) -> dict[str, Any]:
+    """outcome, why, compared paths, tree and source step of an attempt that is a decision; {} for a real run."""
+    if item.get("outcome") not in CHECK_DECISIONS:
+        return {}
+    return {key: item.get(key) for key in ("outcome", "why", "paths", "paths_total", "tree", "from_step")}
+
+
 def _state_skipped(state: dict[str, Any] | None, name: str) -> int | None:
     """Skipped tests of check `name` from state.json (its latest attempt), None when not counted."""
     record = ((state or {}).get("checks") or {}).get(name)
     skips = record.get("skips") if isinstance(record, dict) else None
     value = skips.get("skipped") if isinstance(skips, dict) else None
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+CHECK_DECISIONS = ("not-affected", "reused")   # a check that was not run, and why (check.decision)
+CHECK_OUTCOMES = ("passed", "failed", *CHECK_DECISIONS)
+PROOF_PATHS = 50
+
+
+def _decision_view(source: dict[str, Any]) -> dict[str, Any]:
+    """What a `check.decision` event (or a ledger entry) says about a check that was not run:
+    validated, every string capped, at most PROOF_PATHS compared paths."""
+    paths = [str(p)[:300] for p in (source.get("paths") if isinstance(source.get("paths"), list) else [])
+             if isinstance(p, str)][:PROOF_PATHS]
+    total = source.get("paths_total")
+    origin = source.get("from") if isinstance(source.get("from"), dict) else {}
+    return {"outcome": str(source.get("outcome") or "") if source.get("outcome") in CHECK_OUTCOMES else "",
+            "why": str(source.get("why") or "")[:500], "paths": paths,
+            "paths_total": total if isinstance(total, int) and not isinstance(total, bool) else len(paths),
+            "tree": str(source.get("tree") or "")[:64],
+            "from_step": str(source.get("from_step") or origin.get("step") or "")[:200]}
+
+
+def _state_outcome(state: dict[str, Any] | None, name: str) -> tuple[str, str]:
+    """(outcome, why) of check `name` from state.json: `not-affected` or `reused` when its step did
+    not run the command, else what the record says ("" for a run from before outcomes were recorded)."""
+    record = ((state or {}).get("checks") or {}).get(name)
+    if not isinstance(record, dict) or record.get("outcome") not in CHECK_OUTCOMES:
+        return "", ""
+    return str(record["outcome"]), str(record.get("why") or "")[:500]
+
+
+def proof_view(state: dict[str, Any] | None, short: Any) -> list[dict[str, Any]]:
+    """What the checks proved, from the run's ledger (state.json `check_results`), as the runtime's
+    `affected.rows` builds it: checks in order of first appearance; per check its latest entry of a
+    check step or a review round, then its latest gate entry. [] for a run without a ledger."""
+    ledger = (state or {}).get("check_results")
+    entries = [e for e in ledger if isinstance(e, dict) and isinstance(e.get("check"), str) and e["check"]
+               and e.get("outcome") in CHECK_OUTCOMES] if isinstance(ledger, list) else []
+    order: list[str] = []
+    for entry in entries:
+        if entry["check"] not in order:
+            order.append(entry["check"])
+    rows = []
+    for check in order:
+        mine = [e for e in entries if e["check"] == check]
+        step_entry = next((e for e in reversed(mine) if e.get("phase") in ("check", "recheck")), None)
+        gate_entry = next((e for e in reversed(mine) if e.get("phase") == "gate"), None)
+        for entry in (step_entry, gate_entry):
+            if entry is None:
+                continue
+            step = str(entry.get("step") or "")[:200]
+            where = "gate" if entry.get("phase") == "gate" else (f"{step} (review round)" if entry.get("phase") == "recheck" else step)
+            view = _decision_view(entry)
+            origin = entry.get("from") if isinstance(entry.get("from"), dict) else None
+            exit_code = entry.get("exit")
+            rows.append({"check": check[:200], "where": where, "outcome": view["outcome"], "why": short(view["why"]),
+                         "tree": view["tree"],
+                         "exit": exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None,
+                         "log": short(str(entry.get("log") or ""))[:500], "paths": [short(p) for p in view["paths"]],
+                         "paths_total": view["paths_total"],
+                         "from": {key: short(str(origin.get(key) or ""))[:500] for key in ("step", "phase", "log")}
+                         if origin else None})
+    return rows
 
 
 def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2732,6 +2801,23 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
                             "phase": owner if phase == "recheck" else "", "owner": owner or step}
                     items.append(item)
                 item.update(end=at, exit=exit_code, running=False, **_skip_view(event))
+        elif kind == "check.decision":
+            # a check that was not run: not affected by the change, or its pass on the same tree reused
+            phase = str(event.get("phase") or "check")
+            step, owner = str(event.get("step") or ""), str(event.get("owner") or "")
+            view = _decision_view(event)
+            if view["outcome"] not in CHECK_DECISIONS:
+                continue
+            file = os.path.basename(str(event.get("log") or ""))
+            if phase == "gate":
+                key = file or f"gate-{event.get('cmd') or ''}.log"
+                gates[key] = {"file": file, "phase": phase, "cmd": str(event.get("cmd") or ""), "owner": owner,
+                              "start": at, "end": at, "exit": None, **view}
+                continue
+            items = attempts.setdefault(step, [])
+            items.append({"file": file, "attempt": len(items) + 1, "start": at, "end": at, "exit": None,
+                          "phase": owner if phase == "recheck" else "", "owner": owner or step, "running": False,
+                          **view})
         elif kind == "slot.wait":
             key = (str(event.get("pool") or ""), str(event.get("who") or ""))
             open_waits[key] = {"pool": key[0], "who": key[1], "start": at, "end": None, "step": current}
@@ -2999,6 +3085,8 @@ class RunModel:
     def _event_checks(self, spans: dict[str, Any], activities: list[Activity], running: bool, unfinished: str,
                       cutoff: float) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any] | None]:
         def outcome(item: dict[str, Any]) -> str:
+            if item.get("outcome") in CHECK_DECISIONS:
+                return str(item["outcome"])   # not run: never shown as passed
             if item.get("exit") is not None:
                 return "passed" if item["exit"] == 0 else "failed"
             return "running" if running else unfinished
@@ -3014,20 +3102,28 @@ class RunModel:
                          "size": (stat_sig(self.files.dir / "checks" / item["file"]) or (0, 0))[1],
                          "skipped": item.get("skipped"), "skip_reasons": list(item.get("skip_reasons") or []),
                          "env": str(item.get("env") or "")}
+                decided = _decided_fields(item)
+                entry.update(decided)
                 out.append(entry)
                 recheck = bool(entry["phase"])
-                activities.append(Activity(item["file"], "check", entry["phase"] or name, "recheck" if recheck else "attempt",
-                                           f"{'re-check ' if recheck else ''}{name} #{item['attempt']}", item["start"], end,
+                # a decision's log may be the log of the run it reuses: its bar has a key of its own
+                key = f"{name}.decision.{item['attempt']}" if decided else item["file"]
+                what = {"not-affected": "not affected", "reused": "reused"}.get(decided.get("outcome"), f"#{item['attempt']}")
+                activities.append(Activity(key, "check", entry["phase"] or name, "recheck" if recheck else "attempt",
+                                           f"{'re-check ' if recheck else ''}{name} {what}", item["start"], end,
                                            state_, {"check": name, "attempt": item["attempt"], "exit": item.get("exit"),
                                                     "phase": entry["phase"], "skipped": entry["skipped"],
-                                                    "skip_reasons": entry["skip_reasons"], "env": entry["env"]}))
+                                                    "skip_reasons": entry["skip_reasons"], "env": entry["env"], **decided}))
             attempts[name] = out
         for gate in spans["gates"]:
             state_ = outcome(gate)
             end = gate["end"] if gate["end"] is not None else (None if state_ == "running" else cutoff)
             label = f"gate {gate['cmd']}" if gate["phase"] == "gate" else f"deploy ({gate['cmd']})"
-            activities.append(Activity(gate["file"], "gate", gate["owner"], "gate", label, gate["start"], end, state_,
-                                       {"check": gate["cmd"], "exit": gate["exit"]}))
+            if state_ in CHECK_DECISIONS:
+                label += " not affected" if state_ == "not-affected" else " reused"
+            activities.append(Activity(gate["file"] or f"gate-{gate['cmd']}.log", "gate", gate["owner"], "gate", label,
+                                       gate["start"], end, state_,
+                                       {"check": gate["cmd"], "exit": gate["exit"], **_decided_fields(gate)}))
         live = spans["live_check"] if running else None
         return attempts, live
 
@@ -3309,8 +3405,10 @@ class RunModel:
                                  "model": str(record.get("model") or "")}
             costs = [a["cost"] for a in group if a["cost"] is not None]
             node["cost"] = round(sum(costs), 4) if costs else None
-            node["attempts"] = len(data["attempts"].get(step, [])) if node["type"] == "check" else None
+            node["attempts"] = (len([a for a in data["attempts"].get(step, []) if not a.get("outcome")])
+                                if node["type"] == "check" else None)
             node["skipped"] = _state_skipped(state, step) if node["type"] == "check" else None   # = steps_detail
+            node["outcome"] = _state_outcome(state, step)[0] if node["type"] == "check" else ""
             node["resolves"] = sum(1 for a in group if a["role"] == "resolve")
             node["agents"] = [a["dir"] for a in group]
             node["detail"] = short(str(record.get("detail", "")))[:300]
@@ -3354,7 +3452,10 @@ class RunModel:
                          "kind": activity.kind, "role": activity.role, "label": activity.label,
                          "start": activity.start if activity.start is not None else activity.end,
                          "end": activity.end, "status": activity.status, "cost": activity.extra.get("cost"),
-                         "ref": activity.key, "check": activity.extra.get("check"), "exit": activity.extra.get("exit")})
+                         "ref": activity.key, "check": activity.extra.get("check"), "exit": activity.extra.get("exit"),
+                         **({key: (short(activity.extra[key]) if isinstance(activity.extra[key], str) else activity.extra[key])
+                             for key in ("outcome", "why", "paths", "paths_total", "tree", "from_step")}
+                            if activity.extra.get("outcome") else {})})
         # the inner steps of a script step that follows its own journal (script.event)
         inner = (data["spans"] or {}).get("inner") or {}
         for name, entries in inner.items():
@@ -3526,8 +3627,11 @@ class RunModel:
             "steps_detail": {name: {"detail": short(str(r.get("detail", ""))), "attempts": r.get("attempts"),
                                     "status": step_status(data, name), "started": parse_time(r.get("started")),
                                     "ended": parse_time(r.get("ended")), "discipline": discipline_view(r),
-                                    "skipped": _state_skipped(state, name)}
+                                    "skipped": _state_skipped(state, name),
+                                    "outcome": _state_outcome(state, name)[0],
+                                    "why": short(_state_outcome(state, name)[1])}
                              for name, r in records.items()},
+            "proof": proof_view(state, short),
             "promotion": promotion_view(self.layer, self.id, state, short),
         }
 

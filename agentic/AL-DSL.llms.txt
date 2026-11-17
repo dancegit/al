@@ -71,9 +71,13 @@ pairs, e.g. `#:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:eff
 - #:may-commit #t is rejected on a read-only template (review, classify, question, pull-request, branch-name, summarize): those steps never commit.
 - (host #:id ID …) is written with keywords only and may be declared several times, each with a unique #:id of lowercase letters, digits and dashes (no dots: an id is not a host name). It needs (layer in-repo …). Every name in #:units is a unit the layer declares (a cron or webhook trigger, a dashboard other than none); #:dashboard-port is 0 or 1–65535, and a non-zero port needs the dashboard unit. #:images pull needs a (registry …); #:images pull and load need a podman environment.
 - (registry …) is declared at most once. #:address-env, #:username-env and #:password-env take the NAME of an environment variable in capitals; a value that looks like a URL, an e-mail address or a host name is rejected. #:username-env and #:password-env are given both or neither.
+- (toolchain nix …) is used by an environment with #:toolchain ID. An environment gives #:toolchain or #:packages, never both. With #:toolchain, a nix-devshell gives no #:nixpkgs and a podman gives no #:base-image and no #:nested-engine #t. A nix-devshell or home-manager gives one of the two. A toolchain lists at least one package or feature, and its #:env names are variable names. Feature agent-cli needs a workflow whose agent runs inside an environment using the toolchain (a nix-devshell, or podman with #:agent-inside #t); the agents of those workflows are claude-code, codex or mock.
 - Kinds marked planned compile but are refused by the generator.
 - A (check …) #:in names a podman or nix-devshell environment option; the check runs in the run's worktree inside it instead of the ADW's stack. A zero-touch ADW whose check runs #:in a nix-devshell option gets a warning: that check runs outside the sandbox.
 - (check …) #:max-skipped is -1 (no limit) or more.
+- (cmd … #:always #f) needs a non-empty #:covers; a #:covers entry is a path or glob relative to the repository root, without `..` and without a leading `/`.
+- (check NAME #:cmds affected …) takes no #:cmd and no #:when-affected; at least one codebase cmd must declare #:covers; the steps it stands for are named after their cmds, so those names must be free in the ADW.
+- A review with #:require affected and #:ship merge or deploy compiles with a warning: required checks no changed path touches are not run before the change ships without a person.
 
 ## Option families
 
@@ -345,6 +349,18 @@ Declare any number. Default when omitted: `(trigger manual)`.
 - **`(trigger voice …)`** — Push-to-talk loop: press Enter, speak, the recognised text is routed by the voice prompt input.
   - `#:hotkey` (string; default "enter") — Key that starts recording in the terminal loop.
 
+### `toolchain`
+
+The tools a layer's environments provide, declared once and pinned with Nix: `(environment nix-devshell #:toolchain ID)`, `(environment podman #:toolchain ID …)` and `(environment home-manager #:toolchain ID)` all take exactly this set from one generated file, env/toolchain-<id>.nix. `al gen` pins nixpkgs in env/flake.lock (committed); `al sandbox LAYER update` re-pins it and `al sandbox LAYER build` builds the sandbox image when the lock or the declaration changed.
+Declare any number. Default when omitted: none.
+
+- **`(toolchain nix …)`** — A set of nixpkgs packages plus ready-made feature bundles, from one pinned nixpkgs. For a podman environment the image is built from it with Nix (on the host, or in a builder container pinned by digest when the host has no Nix).
+  - `#:packages` (list of string; default ()) — nixpkgs attribute names, e.g. ("python312" "uv" "git").
+  - `#:nixpkgs` (string; default "github:NixOS/nixpkgs/nixos-25.05") — nixpkgs flake reference; env/flake.lock pins its exact revision.
+  - `#:features` (list of browser | agent-cli | video | build-essentials | docker-cli | podman-cli; default ()) — Ready-made bundles; see `Toolchain features` below for what each adds.
+  - `#:env` (list of (NAME VALUE [#:field value …]), see record `env-var`; default ()) — Environment variables, e.g. (("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" "1")).
+  - `#:shell-hook` (string; default "") — Extra shell hook of the dev shell.
+
 ### `environment` — PITER letter E
 
 PITER · Environment: where the agent works. An ADW lists one or more; they stack in order (worktree → nix → podman).
@@ -364,19 +380,22 @@ Declare any number. Default when omitted: `(environment worktree)`.
   - `#:delete-merged-branches` (boolean; default #t) — When a run's worktree is removed, delete its branch if it holds nothing that is not already on the default or al/ship branch.
 
 - **`(environment nix-devshell …)`** — A Nix flake dev shell generated in the layer; every codebase command and the agent run inside `nix develop`.
-  - `#:packages` (list of string; default REQUIRED) — nixpkgs attribute names providing the toolchain (e.g. python312 uv).
-  - `#:nixpkgs` (string; default "github:NixOS/nixpkgs/nixos-unstable") — nixpkgs flake reference.
+  - `#:packages` (list of string; default ()) — nixpkgs attribute names providing the toolchain (e.g. python312 uv). Either this or #:toolchain.
+  - `#:toolchain` (name of a declared toolchain, or ""; default "") — A declared (toolchain nix …) that provides the packages; either this or #:packages.
+  - `#:nixpkgs` (string; default "github:NixOS/nixpkgs/nixos-unstable") — nixpkgs flake reference (with #:packages only; a toolchain has its own).
   - `#:shell-hook` (string; default "") — Extra shell hook.
   - `#:pure` (boolean; default #f) — Use `nix develop --ignore-environment` (keeps HOME, PATH is nix-only).
 
 - **`(environment home-manager …)`** — A Home Manager module generated in the layer that installs the toolchain and the layer's helper commands for a user.
-  - `#:packages` (list of string; default REQUIRED) — nixpkgs attribute names.
+  - `#:packages` (list of string; default ()) — nixpkgs attribute names. Either this or #:toolchain.
+  - `#:toolchain` (name of a declared toolchain, or ""; default "") — A declared (toolchain nix …) that provides the packages; either this or #:packages.
   - `#:module-name` (string; default "agentic-layer") — Option namespace: programs.<module-name>.enable.
   - `#:state-version` (string; default "25.05") — home.stateVersion used by the standalone example configuration.
 
 - **`(environment podman …)`** — A light rootless podman container; the worktree is bind-mounted, nothing else of the host is visible.
-  - `#:base-image` (string; default "docker.io/library/debian:stable-slim") — Base image.
+  - `#:base-image` (string; default "docker.io/library/debian:stable-slim") — Base image (with #:packages; not with #:toolchain).
   - `#:packages` (list of string; default ()) — Distribution packages installed in the image (apt names for Debian bases).
+  - `#:toolchain` (name of a declared toolchain, or ""; default "") — A declared (toolchain nix …): the image is built from it with Nix instead of from #:base-image and #:packages; #:setup lines are applied as a final layer.
   - `#:setup` (list of string; default ()) — Extra RUN lines for the Containerfile.
   - `#:network` (none | host | slirp; default slirp) — Network mode: `slirp` = podman's default rootless user-mode network, `none` = fully offline checks, `host` = host network.
   - `#:memory` (string; default "4g") — Memory limit.
@@ -430,6 +449,7 @@ Declare any number. Default when omitted: `(review human)`.
   - `#:ship` (pr | merge | deploy; default merge) — On pass: open PR only, merge to the default branch, or merge and run the deploy command.
   - `#:deploy-cmd` (name of a declared cmd, or ""; default "") — Codebase command run after merge when ship = deploy.
   - `#:require-checks` (list of name of a declared cmd; default REQUIRED) — Codebase commands that must exit 0 in the final state (the deterministic gate).
+  - `#:require` (all | affected; default all) — all = every #:require-checks cmd has a passing result for the exact tree that ships (run at the gate, or reused from the same tree). affected = a required cmd with #:always #f whose #:covers no changed path touches is recorded as not affected instead; the compiler warns when this is combined with #:ship merge or deploy.
   - `#:allowed-classes` (list of chore | bug | feature | patch; default (chore bug)) — Work classes allowed to ship untouched; others fall back to a human PR.
   - `#:max-diff-lines` (integer; default 400) — Larger diffs fall back to a human PR.
   - `#:block-protected-paths` (boolean; default #t) — Any change under codebase protected paths falls back to a human PR.
@@ -469,6 +489,17 @@ Declare any number. Default when omitted: none.
 - **`(artefact file …)`** — Any other file worth keeping.
   - `#:glob` (string; default REQUIRED) — Glob relative to the worktree.
 
+## Toolchain features
+
+What each name in #:features of `(toolchain nix …)` adds:
+
+- `browser` — Chromium with fonts (DejaVu, Liberation, Noto) and the variables that make Playwright and Puppeteer use it instead of downloading a browser (CHROME_BIN, CHROME_PATH, PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, PUPPETEER_EXECUTABLE_PATH, PUPPETEER_SKIP_DOWNLOAD, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, FONTCONFIG_FILE); in the sandbox image it runs with --no-sandbox, because the container is the sandbox.
+- `agent-cli` — The CLI of every agent kind whose workflows run inside an environment using the toolchain (claude for claude-code, codex for codex): the nixpkgs package when the pinned nixpkgs has a recent enough version, else the vendor's release pinned by hash.
+- `video` — ffmpeg, for recordings and keyframes.
+- `build-essentials` — A C compiler and build tools: gcc, gnumake, pkg-config.
+- `docker-cli` — The docker client (talks to a daemon you provide).
+- `podman-cli` — The podman CLI.
+
 ## Records
 
 ### `codebase`
@@ -487,6 +518,9 @@ A named shell command of the codebase: (cmd NAME "shell" …). Check steps and v
   - `#:run` (string; default REQUIRED) — Shell command, run from the worktree root.
   - `#:timeout` (integer; default 1800) — Seconds one run of the command may take; allow for several runs sharing the machine.
   - `#:description` (string; default "") — What the command proves.
+  - `#:covers` (list of string; default ()) — Paths this command proves something about, relative to the repository root: a directory ("kit/dashboard"), a file, or a glob ("*.md", "docs/**"). A cmd with #:covers is one of the layer's checks: (check NAME #:cmds affected) runs it, and `al verify` reports source paths no check covers.
+  - `#:always` (boolean; default #t) — #t = the command runs for every change. #f = where affected checks are asked for (a check step with #:when-affected #t, a gate with #:require affected) it runs only when a changed path is under its #:covers, and is recorded as not affected otherwise; needs #:covers.
+  - `#:reuse` (boolean; default #t) — #t = a passing result is reused when the same command is asked for again on an identical tree in the same run (the gate after a passing check step, a review round that changed nothing). #f = it always runs again: for a command that is not deterministic.
 
 ### `paths`
 
@@ -589,6 +623,12 @@ One model tier of an agent, written (TIER "MODEL-ID" [#:effort LEVEL]) inside #:
   - `#:model` (string; default REQUIRED) — Model id passed to the agent CLI.
   - `#:effort` (default | low | medium | high | xhigh | max; default default) — Reasoning effort for this tier: `default` leaves it to the CLI. Claude Code: passed as --effort (low…max). codex: passed as -c model_reasoning_effort=LEVEL (low…xhigh; codex has no flag of its own for it). Not available for custom agents.
 
+### `env-var`
+
+One environment variable of a toolchain, written ("NAME" "VALUE") inside #:env.
+  - `#:name` (string; default REQUIRED) — Variable name: letters, digits and _, not starting with a digit.
+  - `#:value` (string; default REQUIRED) — Value.
+
 ### `step-run`
 
 (run NAME #:command C …): one agent, one prompt, one purpose.
@@ -601,7 +641,7 @@ One model tier of an agent, written (TIER "MODEL-ID" [#:effort LEVEL]) inside #:
 
 ### `step-check`
 
-(check NAME #:cmd C …): a deterministic feedback loop. Runs a codebase command; on failure an agent resolves and the command re-runs.
+(check NAME #:cmd C …): a deterministic feedback loop. Runs a codebase command; on failure an agent resolves and the command re-runs. (check NAME #:cmds affected …) stands for one check step per codebase cmd that declares #:covers, each named after its cmd, with #:when-affected #t and the other fields as written.
   - `#:cmd` (name of a declared cmd; default REQUIRED) — Codebase command.
   - `#:resolve` (name of a declared command, or ""; default "") — Command given the failing output; empty = fail the run immediately.
   - `#:retries` (integer; default 3) — Resolve attempts.
@@ -609,6 +649,7 @@ One model tier of an agent, written (TIER "MODEL-ID" [#:effort LEVEL]) inside #:
   - `#:in` (name of a declared environment, or ""; default "") — Environment option the command runs in, together with the ADW's worktree: a podman option (its own container, e.g. one with #:nested-engine #t) or a nix-devshell option (on the host). "" = the ADW's own environment stack. The gate's re-run of the same cmd runs there too.
   - `#:max-skipped` (integer; default -1) — The check fails when more tests than this were skipped (counted from the output of pytest, go test, cargo test, mocha or a collected JUnit report); -1 = no limit. With a limit set, output al cannot count fails the check.
   - `#:forbid-skip-reason` (string; default "") — The check fails when a skipped test's reason contains this text (case-insensitive), e.g. "no podman"; "" = none. Skips without a visible reason then fail it too (pytest: -rs, go test: -v).
+  - `#:when-affected` (boolean; default #f) — #t = the step runs its cmd only when the run's changed paths (against the run's base; in a review round, since the cmd last passed) touch the cmd's #:covers, or the cmd is #:always #t. Not run, it is recorded as not affected with the paths compared, never as passed. A layer change, a changed path no check of the workflow covers, and a changed file two #:always #f checks cover run it anyway.
 
 ### `step-script`
 
@@ -766,13 +807,16 @@ Expands to (defaults):
 ;; next to a human-reviewed one, model tiers, a second vendor as reviewer, spending limits, and a
 ;; script step that runs one of the team's own scripts, notifications when a run needs a person, and
 ;; delivery into a sprint branch (with a hotfix route a person merges).
+;; The sandbox is built from a pinned Nix toolchain; the dev shell keeps the older #:packages form.
 (agentic-layer #:name "webshop" #:description "Agentic layer for the webshop monorepo"
   (codebase #:root "../webshop" #:languages (typescript python) #:default-branch "main"
             #:description "Vue storefront + FastAPI backend" #:package-manager "bun add / uv add"
     (cmd install "bun install && (cd api && uv sync)" #:timeout 1200)
     (cmd lint "bun run lint && (cd api && uv run ruff check)")
-    (cmd test "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)")
-    (cmd e2e "bun run e2e" #:timeout 1800 #:description "Playwright; writes e2e-results/")
+    (cmd test "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)"
+         #:covers ("web" "api"))
+    (cmd e2e "bun run e2e" #:timeout 1800 #:description "Playwright; writes e2e-results/"
+         #:covers ("web") #:always #f)   ; only run where affected checks are asked for and web/ changed
     (cmd deploy "./scripts/deploy.sh staging")
     (cmd changelog "./scripts/changelog.sh" #:description "the team's own script: appends the change to CHANGELOG.md")
     (paths #:source ("web/src" "api/app") #:tests ("web/tests" "api/tests") #:docs ("docs")
@@ -798,11 +842,10 @@ Expands to (defaults):
   (trigger voice)
   (trigger manual)
 
+  (toolchain nix #:id dev #:packages ("bun" "nodejs_22" "python312" "uv" "git" "curl") #:features (browser agent-cli video))
   (environment worktree #:copy-files (".env"))
   (environment nix-devshell #:packages ("bun" "nodejs_22" "python312" "uv" "ffmpeg"))
-  (environment podman #:id sandbox #:packages ("git" "curl" "nodejs" "npm" "python3" "ffmpeg")
-               #:setup ("npm install -g bun" "curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh")
-               #:network slirp #:caches ("npm" "uv"))
+  (environment podman #:id sandbox #:toolchain dev #:network slirp #:caches ("npm" "uv"))
 
   (artefact log)
   (artefact junit #:glob "reports/*.xml")
@@ -868,7 +911,7 @@ Expands to (defaults):
       (compose plan-build)
       (check lint #:cmd lint #:resolve resolve-test)
       (check test #:cmd test #:resolve resolve-test #:collect (junit))
-      (check e2e #:cmd e2e #:resolve resolve-test #:retries 2 #:collect (screenshots recordings))
+      (check e2e #:cmd e2e #:resolve resolve-test #:retries 2 #:collect (screenshots recordings) #:when-affected #t)
       (run commit #:command commit)
       (review #:patch patch #:implement implement)
       (ship)))

@@ -2,7 +2,10 @@
 
 Recipe identity. The image of a layer is `al-<layer>:<hash>`, where the hash covers the generated
 `env/Containerfile`, every file it COPY/ADDs from `env/` (content and executable bit) and the
-podman option's `baseImage`. A changed recipe is therefore always built and an unchanged one never
+podman option's `baseImage`. When that option has a `toolchain`, the hash also covers the toolchain
+key (images.key: the flake, its lock, the toolchain file, the kit files, the #:setup lines and the
+builder), and the image is built by images.ensure (Nix, then env/Containerfile on top) under the
+same name and labels. A changed recipe is therefore always built and an unchanged one never
 is. `al-<layer>:latest` is re-pointed at the current hash, so a runtime that still asks for
 `:latest` gets it too. Old hashes stay while a run or a container uses them and are pruned by
 count and age (KEEP_OLD, MAX_AGE_DAYS).
@@ -34,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from . import checkenv, envs, events, gitsafe, nested_engine, slots
+from . import checkenv, envs, events, gitsafe, images, nested_engine, slots
 from .errors import LayerError, StepFailed
 
 LEGACY_TAG = "latest"
@@ -167,7 +170,8 @@ def _hash_entries(context: Path, source: str) -> list[bytes]:
 
 
 def recipe_hash(layer: Any) -> str:
-    """12 hex digits over the Containerfile, the files it copies from env/ and the base image."""
+    """12 hex digits over the Containerfile, the files it copies from env/, the base image and,
+    for a recipe option with a toolchain, the toolchain key."""
     path = _containerfile(layer)
     text = path.read_bytes()
     digest = hashlib.sha256(b"containerfile\0" + text)
@@ -176,6 +180,9 @@ def recipe_hash(layer: Any) -> str:
             digest.update(entry)
     option = recipe_option(layer) or {}
     digest.update(b"base\0" + str(option.get("baseImage") or "").encode())
+    if option.get("toolchain"):
+        digest.update(b"toolchain\0" + images.key(path.parent, str(option["toolchain"]),
+                                                  list(option.get("setup") or [])).encode())
     return digest.hexdigest()[:12]
 
 
@@ -282,6 +289,9 @@ def build_image(layer: Any, *, no_cache: bool = False, say: Callable[[str], Any]
     layer directory and recipe; tag :latest to it and prune old images. StepFailed on failure."""
     recipe = recipe_hash(layer)
     ref = f"{image_name(layer)}:{recipe}"
+    option = recipe_option(layer) or {}
+    if option.get("toolchain"):
+        return _build_toolchain_image(layer, option, recipe, ref, no_cache=no_cache, say=say)
     argv = ["podman", "build", "-t", ref, *_labels(layer, recipe), *(["--no-cache"] if no_cache else []),
             "-f", "env/Containerfile", "env/"]
     events.say(f"[sandbox] building {ref} (recipe {recipe})", "env.build.start", image=ref, recipe=recipe)
@@ -321,6 +331,44 @@ def build_image(layer: Any, *, no_cache: bool = False, say: Callable[[str], Any]
     _tag_latest(layer, ref)
     prune_images(layer, keep_old=KEEP_OLD, max_age_days=MAX_AGE_DAYS)
     return {"image": ref, "recipe": recipe, "seconds": seconds, "size": size, "built": True}
+
+
+def _toolchain_features(layer: Any, toolchain_id: str) -> list[str]:
+    for entry in layer.ir.get("toolchains") or []:
+        if isinstance(entry, dict) and entry.get("id") == toolchain_id:
+            return [str(feature) for feature in entry.get("features") or []]
+    return []
+
+
+def _build_toolchain_image(layer: Any, option: dict[str, Any], recipe: str, ref: str, *, no_cache: bool,
+                           say: Callable[[str], Any]) -> dict[str, Any]:
+    """build_image for a recipe option with a toolchain: images.ensure builds it (Nix, podman load,
+    env/Containerfile on top) under the recipe's ref and labels; the events, :latest and the prune
+    are those of every build. The result also carries images.ensure's `report`."""
+    toolchain_id = str(option["toolchain"])
+    labels = [word for word in _labels(layer, recipe) if word != "--label"]
+    events.say(f"[sandbox] building {ref} (recipe {recipe}, toolchain {toolchain_id})", "env.build.start",
+               image=ref, recipe=recipe)
+    started = time.monotonic()
+    if no_cache and image_exists(ref):
+        _podman(["untag", ref])   # so that images.ensure builds again; the image itself is not removed
+    error = ""
+    report: dict[str, Any] = {}
+    try:
+        report = images.ensure(layer.layer_dir, layer.name,
+                               {**option, "features": _toolchain_features(layer, toolchain_id)}, ref,
+                               say=say, labels=labels)
+    except images.BuildError as exc:
+        error = str(exc)
+    seconds = round(time.monotonic() - started, 3)
+    size = image_info(ref).get("Size") if not error else None
+    events.emit("env.build.end", image=ref, recipe=recipe, status="failed" if error else "passed",
+                seconds=seconds, size=size, error=(error.splitlines()[0] if error else None))
+    if error:
+        raise StepFailed("environment setup", f"building {ref} from toolchain `{toolchain_id}` failed: {error}")
+    _tag_latest(layer, ref)
+    prune_images(layer, keep_old=KEEP_OLD, max_age_days=MAX_AGE_DAYS)
+    return {"image": ref, "recipe": recipe, "seconds": seconds, "size": size, "built": True, "report": report}
 
 
 def ensure_image(layer: Any, *, say: Callable[[str], Any] = print) -> dict[str, Any]:
@@ -753,20 +801,28 @@ def parse_doctor_output(text: str) -> list[Check]:
 def _fix(check: Check, option: dict[str, Any], cmds: dict[str, dict[str, Any]], layer_dir: str) -> str:
     decl = _decl(option)
     name = check.name
+    toolchain = f"(toolchain nix #:id {option['toolchain']}" if option.get("toolchain") else ""
     if name == "engine" or name.startswith("engine:"):
         return nested_engine.fixes(check, option)
     if name.startswith("command:"):
         cmd = name.split(":", 1)[1]
         exe = first_executable(str((cmds.get(cmd) or {}).get("run") or "")) or cmd
+        if toolchain:
+            return (f"add the nixpkgs package that provides `{exe}` to {toolchain} #:packages …), "
+                    f"or change (cmd {cmd} …)")
         return (f"add the package that provides `{exe}` to {decl} #:packages …) or #:setup, "
                 f"or change (cmd {cmd} …)")
     if name == "agent":
         if "credential" in check.detail:
             kind = "codex" if "codex" in check.detail else "claude"
             return f"add #:credentials ({kind}) to {decl} …) and log in (or set the API key) on this machine"
+        if option.get("agentInside") and toolchain:
+            return f"add feature agent-cli to {toolchain} #:features …), or set #:agent-inside #f on {decl} …)"
         if option.get("agentInside"):
             return f"add the agent CLI to the image with {decl} #:setup …), or set #:agent-inside #f"
         return "install the agent CLI on this machine (it runs outside the container)"
+    if name == "git" and toolchain:
+        return f"add the nixpkgs package that provides `git` to {toolchain} #:packages …)"
     if name == "git":
         return f"add git to #:packages of {decl} …)"
     if name == "init":
@@ -775,6 +831,8 @@ def _fix(check: Check, option: dict[str, Any], cmds: dict[str, dict[str, Any]], 
         cache = name.split(":", 1)[1]
         return (f"check the volume al-cache-{cache} (podman volume inspect al-cache-{cache}), or drop "
                 f"\"{cache}\" from #:caches of {decl} …)")
+    if name == "browser" and toolchain:
+        return f"add feature browser to {toolchain} #:features …), or turn the browser check off for this environment"
     if name == "browser":
         return f"add chromium to #:packages of {decl} …), or turn the browser check off for this environment"
     if name == "disk":

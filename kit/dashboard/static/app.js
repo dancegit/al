@@ -550,7 +550,14 @@
   }
 
   // =========================================================================== components: workflow graph
-  const GLYPH = { passed: "✓", failed: "✗", running: "●", pending: "○", skipped: "–", done: "•", unknown: "?", died: "⊘", waiting: "⏸", rejected: "⊗", "handed-over": "↪" };
+  const GLYPH = { passed: "✓", failed: "✗", running: "●", pending: "○", skipped: "–", done: "•", unknown: "?", died: "⊘", waiting: "⏸", rejected: "⊗", "handed-over": "↪", "not-affected": "∅", reused: "↺" };
+  // a check that was not run, in the runtime's own words (affected.summary_text)
+  function checkResultText(r) {
+    if (r.outcome === "not-affected") return `not affected (${r.why || "no covered path changed"}; ${r.paths_total ?? (r.paths || []).length} paths compared)`;
+    if (r.outcome === "reused") return `reused from ${(r.from && r.from.step) || r.from_step || "an earlier run"}, same tree ${String(r.tree || "").slice(0, 8)}`;
+    if (r.outcome === "failed") return r.exit === null || r.exit === undefined ? "failed" : `failed (exit ${r.exit})`;
+    return r.outcome || "";
+  }
 
   /** "claude-opus-5-5" → "opus-5-5": the part of a model name that tells models apart on a small node. */
   function shortModel(agent) {
@@ -615,10 +622,12 @@
       const meta = [];
       if (!opts.static) {
         if (status === "skipped") meta.push("skipped");
+        else if (status === "not-affected") meta.push("not affected");
         else if (node.duration !== null && node.duration !== undefined) meta.push(fmt.dur(node.duration));
         if (node.cost) meta.push(fmt.cost(node.cost));
         if (node.type === "check" && node.attempts > 1) meta.push(`${node.attempts} tries`);
         if (node.type === "check" && node.skipped) meta.push(`${node.skipped} skipped`);
+        if (node.type === "check" && node.outcome === "reused") meta.push("reused");
         if (node.resolves) meta.push(`${node.resolves} fix`);
       } else if (node.when && node.when !== "always") {
         meta.push(`when ${node.when.replace("class-", "")}`);
@@ -697,10 +706,10 @@
         s("title", { text: tip }),
         s("rect", { class: "tl-bg", x: 0, y, width: W, height: rowH }),
         s("text", { class: `tl-label l${bar.level}`, x: bar.level ? 14 : 4, y: y + 12, text: clip(label, 28) }),
-        bar.status === "skipped"
-          ? s("text", { class: "tl-tick", x: x + 3, y: y + 12, text: "skipped" })
+        bar.status === "skipped" || bar.status === "not-affected" || bar.status === "reused"
+          ? s("text", { class: "tl-tick", x: x + 3, y: y + 12, text: bar.status === "not-affected" ? "not affected" : bar.status })
           : s("rect", { class: `tl-bar k-${bar.kind} l${bar.level} st-${bar.status}`, x, y: y + 3, width: w, height: rowH - 6, rx: 2 }),
-        bar.level === 1 || bar.kind === "check" ? s("text", { class: "tl-tick", x: Math.min(x + w + 4, W - right + 4), y: y + 12,
+        (bar.level === 1 || bar.kind === "check") && !bar.outcome && bar.status !== "not-affected" ? s("text", { class: "tl-tick", x: Math.min(x + w + 4, W - right + 4), y: y + 12,
           text: `${fmt.dur(duration)}${bar.cost ? ` ${fmt.cost(bar.cost)}` : ""}` }) : null);
       svg.appendChild(row);
     });
@@ -1667,11 +1676,13 @@
       }
     };
     const proofItem = (item) => {
-      const mark = item.ok ? "✓" : "✗";
+      const unaffected = item.outcome === "not-affected";
+      const mark = unaffected ? GLYPH["not-affected"] : item.ok ? "✓" : "✗";
+      const cls = unaffected ? "s-not-affected" : item.ok ? "ok" : "bad";
       if ((item.kind === "image" || item.kind === "video") && item.path) {
-        return h("li", { class: item.ok ? "ok" : "bad" }, `${mark} ${item.kind} `, fileLink(item.path, item.label));
+        return h("li", { class: cls }, `${mark} ${item.kind} `, fileLink(item.path, item.label));
       }
-      return h("li", { class: item.ok ? "ok" : "bad", text: `${mark} ${item.label}` });
+      return h("li", { class: cls, text: `${mark} ${item.label}` });
     };
     const decided = (change) => change.status === "refused"
       ? h("span", { class: "badge warn", text: `refused by ${change.by}${change.excluded ? ` · ${change.excluded}` : ""}` })
@@ -2024,6 +2035,25 @@
             ["proof", ship.proof ? `${ship.proof.attached || 0} file(s) attached${ship.proof.reason ? ` (${ship.proof.reason})` : ""}` : ""],
             ["note", ship.note]])));
       }
+      if ((detail.proof || []).length) {
+        // what each check proved: ran (passed / failed), not affected (why) or reused; text only
+        const cls = { passed: "good", failed: "bad", "not-affected": "not-affected", reused: "reused" };
+        const evidence = (r) => {
+          if (r.outcome === "not-affected") {
+            const paths = r.paths || [], total = r.paths_total ?? paths.length;
+            return `${total} path${total === 1 ? "" : "s"} compared${paths.length ? `: ${paths.slice(0, 5).join(", ")}${total > Math.min(paths.length, 5) ? ` … and ${total - Math.min(paths.length, 5)} more` : ""}` : ""}`;
+          }
+          if (r.outcome === "reused") return `tree ${String(r.tree || "").slice(0, 8)}${r.from && r.from.log ? ` · log ${r.from.log}` : ""}`;
+          return [r.tree ? `tree ${String(r.tree).slice(0, 8)}` : "", r.log ? `log ${r.log}` : ""].filter(Boolean).join(" · ");
+        };
+        blocks.push(h("div", { class: "outcome-block", "data-role": "proof" }, h("div", { class: "card-head" }, h("h3", { text: "What the checks proved" })),
+          h("div", { class: "table-wrap" }, h("table", { class: "proof" },
+            h("thead", {}, h("tr", {}, ["Check", "Where", "Result", "Evidence"].map((label) => h("th", { text: label })))),
+            h("tbody", {}, detail.proof.map((r) => h("tr", { "data-outcome": r.outcome },
+              h("td", { class: "mono", text: r.check }), h("td", { text: r.where }),
+              h("td", {}, h("span", { class: `badge ${cls[r.outcome] || ""}`, text: checkResultText(r) })),
+              h("td", { class: "dim", text: evidence(r) }))))))));
+      }
       const review = detail.review;
       if (review && (review.rounds.length || review.mode)) {
         const block = h("div", { class: "outcome-block" }, h("div", { class: "card-head" }, h("h3", { text: "Review" }),
@@ -2057,6 +2087,11 @@
         for (const at of attempts) {
           const inStep = name === checkName || (type === "review" && at.phase === step);
           if (!inStep) continue;
+          if (at.outcome) {   // a decision: the check was not run (not affected, or its pass on the same tree reused)
+            sources.push({ key: `${name}.decision.${at.attempt}`, kind: "check", label: `${name} ${at.outcome === "reused" ? "reused" : "not affected"}${at.phase ? " (re-check)" : ""}`,
+              status: at.outcome, start: at.start || at.end, attempt: at, check: name });
+            continue;
+          }
           const status = at.running ? "running" : at.exit === 0 ? "passed" : at.exit === null || at.exit === undefined ? "done" : "failed";
           sources.push({ key: at.file, kind: "check", label: `${name} #${at.attempt}${at.phase ? " (re-check)" : ""}${at.running ? " (running)" : ""}`, status, start: at.start || at.end, attempt: at, check: name });
         }
@@ -2070,7 +2105,8 @@
       }
       if (type === "ship") {
         for (const bar of detail.timeline.bars.filter((b) => b.kind === "gate")) {
-          sources.push({ key: bar.ref, kind: "check", label: bar.label, status: bar.status, start: bar.start, attempt: { file: bar.ref, exit: bar.exit }, check: bar.check });
+          sources.push({ key: bar.ref, kind: "check", label: bar.label, status: bar.status, start: bar.start, check: bar.check,
+            attempt: { file: bar.ref, exit: bar.exit, outcome: bar.outcome, why: bar.why, paths: bar.paths, paths_total: bar.paths_total, tree: bar.tree, from_step: bar.from_step } });
         }
       }
       const live = detail.timeline.bars.find((b) => b.level === 1 && b.kind === "check" && b.step === step && b.status === "running");
@@ -2212,6 +2248,7 @@
         content.appendChild(h("div", { class: "toolbar" },
           h("span", { class: "mono", text: cmd ? `$ ${cmd}` : source.label }),
           at.exit !== undefined && at.exit !== null ? h("span", { class: `badge ${at.exit === 0 ? "good" : "bad"}`, text: at.exit === "fail" ? "exit ≠ 0" : `exit ${at.exit}` }) : null,
+          at.outcome ? h("span", { class: `badge ${at.outcome}`, "data-role": "decision-badge", text: at.outcome === "reused" ? "reused" : "not affected" }) : null,
           at.skipped ? h("span", { class: "badge warn", "data-role": "skips", text: `${at.skipped} skipped`,
             title: (at.skip_reasons || []).map(([reason, count]) => `${reason} ×${count}`).join("\n") }) : null,
           at.env ? h("span", { class: "badge", text: `in ${at.env}` }) : null,
@@ -2221,8 +2258,19 @@
             " · following the log as it is written") : null,
           resolveAfter ? h("a", { href: link(["step", step], { agent: resolveAfter.dir }), class: "toggle", text: `→ resolved by ${resolveAfter.dir}` }) : null,
           h("span", { class: "spacer" }),
-          !source.pending ? h("a", { class: "toggle", href: `/files/${enc(layerKey)}/agents/${enc(runId)}/checks/${enc(at.file)}?download=1`, text: "download log" }) : null));
-        if (!source.pending) {
+          !source.pending && at.file ? h("a", { class: "toggle", href: `/files/${enc(layerKey)}/agents/${enc(runId)}/checks/${enc(at.file)}?download=1`, text: "download log" }) : null));
+        if (at.outcome) {
+          // why the command was not run: text only, with the paths that were compared
+          const paths = at.paths || [], total = at.paths_total ?? paths.length;
+          content.appendChild(h("div", { class: "decision", "data-role": "decision" },
+            h("div", { class: "decision-what", text: at.outcome === "reused"
+              ? `reused from ${at.from_step || "an earlier run"}, tree ${String(at.tree || "").slice(0, 8)}: the command was not run again`
+              : `not affected: ${at.why || "no covered path changed"}` }),
+            at.outcome !== "reused" || paths.length ? h("div", { class: "dim", text: `${total} path${total === 1 ? "" : "s"} compared${paths.length ? ":" : ""}` }) : null,
+            paths.length ? h("pre", { class: "decision-paths", text: paths.join("\n") + (total > paths.length ? `\n… and ${total - paths.length} more` : "") }) : null,
+            at.outcome === "reused" && at.file ? h("div", { class: "dim", text: "the log below is the log of the run that passed on this tree" }) : null));
+        }
+        if (!source.pending && at.file) {
           const opts = { layer: layerKey, run: runId, what: "check", file: at.file, running: !!at.running, label: source.label };
           sub = previous instanceof LogView && previous.shows(opts) ? previous.mount(content) : new LogView(content, opts);
         }

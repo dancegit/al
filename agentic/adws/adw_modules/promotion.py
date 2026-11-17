@@ -49,7 +49,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable, Mapping
 
-from . import delivery, events, gitsafe, ir, slots, state as state_module, storage
+from . import affected, delivery, events, gitsafe, ir, slots, state as state_module, storage
 from .errors import LayerError, StepFailed, StepWaiting
 
 STEPS = ("open", "checks", "pack", "request", "approval", "version", "merge", "tag", "deploy", "back-merge", "close")
@@ -98,6 +98,7 @@ class Change:
     plan: str = ""                          # layer-relative
     criteria: list[str] = field(default_factory=list)
     checks: dict[str, int] = field(default_factory=dict)
+    check_outcomes: dict[str, dict[str, str]] = field(default_factory=dict)   # checks not run: {outcome, why, from}
     verdict: dict[str, Any] = field(default_factory=dict)       # {success, summary}
     risks: list[str] = field(default_factory=list)
     artefacts: list[dict[str, Any]] = field(default_factory=list)
@@ -365,11 +366,14 @@ def _change_from_state(layer: Any, data: Mapping[str, Any]) -> Change:
     if base and head:
         files = _app_git(app, ["diff", "--name-only", base, head]).stdout.split()
     plan = _layer_relative(layer, str(data.get("plan") or ""))
+    records = {name: c for name, c in (data.get("checks") or {}).items() if isinstance(c, dict)}
+    outcomes = {name: {"outcome": str(c["outcome"]), "why": str(c.get("why") or ""),
+                       "from": str((c.get("from") if isinstance(c.get("from"), dict) else {}).get("step") or "")}
+                for name, c in records.items() if c.get("outcome") in (affected.NOT_AFFECTED, affected.REUSED)}
     return Change(id=str(data["adw_id"]), adw=str(data.get("adw") or ""), prompt=str(data.get("prompt") or ""),
                   klass=str(data.get("klass") or "chore"), plan=plan,
                   criteria=criteria(layer, plan, str(data.get("prompt") or "")),
-                  checks={name: int(c.get("exit", 1)) for name, c in (data.get("checks") or {}).items()
-                          if isinstance(c, dict)},
+                  checks={name: int(c.get("exit", 1)) for name, c in records.items()}, check_outcomes=outcomes,
                   verdict={"success": bool(verdict.get("success")), "summary": str(verdict.get("summary") or ""),
                            "mode": str(verdict.get("mode") or "")} if verdict else {},
                   risks=risks, artefacts=media, base=base, head=head, files=files, ended=str(data.get("ended") or ""),
@@ -412,10 +416,25 @@ def changes(layer: Any, from_branch: str, to_branch: str, pinned: str = "") -> t
     return found, handed
 
 
+def _check_proof(name: str, code: int, decided: Mapping[str, str] | None) -> dict[str, Any]:
+    """One check as proof. A check that was not run is never proof: `ok` is False and its
+    label says why. A reused pass is the pass of the step it names, on an identical tree."""
+    outcome = (decided or {}).get("outcome")
+    if outcome == affected.NOT_AFFECTED:
+        return {"kind": "check", "label": f"{name} not affected ({decided.get('why') or 'no reason recorded'})",
+                "ok": False, "outcome": outcome}
+    if outcome == affected.REUSED:
+        return {"kind": "check", "label": f"{name} reused from {decided.get('from') or '?'}",
+                "ok": code == 0, "outcome": outcome}
+    return {"kind": "check", "label": f"{name} exit {code}", "ok": code == 0}
+
+
 def proof_for(layer: Any, change: Change | Mapping[str, Any]) -> list[dict[str, Any]]:
     """Per acceptance criterion the proof that covers it: the checks named in it (else every check
     of the run), the pictures and recordings named in it (else all of them), and the reviewer
-    verdict. A criterion with neither a passing check nor a picture or recording is `uncovered`."""
+    verdict. A criterion with neither a passing check nor a picture or recording is `uncovered`.
+    A check that was not run because the change does not affect it is listed as not affected and
+    covers nothing."""
     c = change if isinstance(change, Change) else Change(**{k: v for k, v in dict(change).items()
                                                            if k in {f.name for f in dataclasses.fields(Change)}})
     del layer
@@ -426,7 +445,7 @@ def proof_for(layer: Any, change: Change | Mapping[str, Any]) -> list[dict[str, 
         checks = named or dict(c.checks)
         media = [a for a in c.artefacts if Path(str(a.get("path"))).name.lower() in lowered]
         media = media or list(c.artefacts)
-        items: list[dict[str, Any]] = [{"kind": "check", "label": f"{name} exit {code}", "ok": code == 0}
+        items: list[dict[str, Any]] = [_check_proof(name, code, c.check_outcomes.get(name))
                                        for name, code in checks.items()]
         for item in media:
             kind = "video" if item.get("type") in VIDEO_TYPES else "image"
@@ -1267,7 +1286,8 @@ def _pack_html(run: _Run, included: list[Change], excluded: list[Change], handed
         rows = []
         for item in proofs.get(change.id, []):
             proof = "; ".join(
-                f'<span class="{"ok" if pr["ok"] else "bad"}">{_h(pr["label"])}</span>' for pr in item["proof"]) or "none"
+                f'<span class="{"ok" if pr["ok"] else "" if pr.get("outcome") == affected.NOT_AFFECTED else "bad"}">'
+                f'{_h(pr["label"])}</span>' for pr in item["proof"]) or "none"
             flag = ' <span class="uncovered">(uncovered: no passing check and no picture)</span>' if item["uncovered"] else ""
             rows.append(f"<li>{clean(item['criterion'])}{flag}<br><span class=\"meta\">proof: {proof}</span></li>")
         risks = "".join(f"<li>{clean(r)}</li>" for r in change.risks) or "<li>none noted by the reviewers</li>"
@@ -1384,7 +1404,8 @@ def build_pack(run: _Run, checks: Mapping[str, Any] | None = None) -> Path:
         decided = f"Decision: {s['status']}" + (f" by {s['by']} ({s['at']})" if s["by"] else "")
         acceptance += [f"## `{change.id}` {change.title}", "", decided, ""]
         for item in proofs[change.id]:
-            proof = "; ".join(f"{pr['label']}{'' if pr['ok'] else ' (failed)'}" for pr in item["proof"]) or "none"
+            proof = "; ".join(f"{pr['label']}{'' if pr['ok'] or pr.get('outcome') == affected.NOT_AFFECTED else ' (failed)'}"
+                              for pr in item["proof"]) or "none"
             acceptance.append(f"- {item['criterion']}{' (uncovered)' if item['uncovered'] else ''} — proof: {proof}")
         acceptance.append("")
     (pack / "acceptance.md").write_text(_clean(run, "\n".join(acceptance) + "\n", [c.worktree for c in included]),

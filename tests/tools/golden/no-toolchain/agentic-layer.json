@@ -49,7 +49,8 @@
           "maxSkipped": -1,
           "name": "test",
           "resolve": "",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "agent": "",
@@ -114,8 +115,11 @@
   "codebase": {
     "commands": [
       {
+        "always": true,
+        "covers": [],
         "description": "the tests pass",
         "name": "test",
+        "reuse": true,
         "run": "./test.sh",
         "timeout": 60
       }

@@ -169,7 +169,8 @@
           "maxSkipped": -1,
           "name": "lint",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "typecheck",
@@ -182,7 +183,8 @@
           "maxSkipped": -1,
           "name": "typecheck",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "test",
@@ -196,7 +198,8 @@
           "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "agent": "",
@@ -328,7 +331,8 @@
           "maxSkipped": -1,
           "name": "lint",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "typecheck",
@@ -341,7 +345,8 @@
           "maxSkipped": -1,
           "name": "typecheck",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "test",
@@ -355,7 +360,8 @@
           "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "agent": "",
@@ -434,32 +440,47 @@
   "codebase": {
     "commands": [
       {
+        "always": true,
+        "covers": [],
         "description": "Every pre-commit hook passes on all files: ruff lint rules B, E, F, I, UP, W; ruff format; uv.lock matches pyproject.toml; codespell; whitespace and end-of-file hooks. Hooks rewrite files in place and exit non-zero when they changed something.",
         "name": "lint",
+        "reuse": true,
         "run": "uv run --locked --no-default-groups --group pre-commit pre-commit run --show-diff-on-failure --color=always --all-files",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "mypy in strict mode reports no errors for src and tests/type_check.",
         "name": "typecheck",
+        "reuse": true,
         "run": "uv run --locked --no-default-groups --group dev tox run -e typing",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "The pytest suite in tests passes on Python 3.12 against the locked dependency versions, with every warning treated as an error; writes a JUnit XML report.",
         "name": "test",
+        "reuse": true,
         "run": "TOX_ENV=py3.12 uv run --locked --no-default-groups --group dev tox run -- --junitxml=.tox/reports/junit.xml",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "The sdist and wheel build into dist/.",
         "name": "build",
+        "reuse": true,
         "run": "uv build",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "The Sphinx documentation builds to docs/_build/dirhtml with warnings treated as errors.",
         "name": "docs",
+        "reuse": true,
         "run": "uv run --locked --no-default-groups --group dev tox run -e docs",
         "timeout": 1800
       }
@@ -895,6 +916,7 @@
       "kind": "auto",
       "maxDiffLines": 400,
       "maxRetries": 3,
+      "require": "all",
       "requireChecks": [
         "lint",
         "typecheck",

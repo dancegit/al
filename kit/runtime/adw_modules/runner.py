@@ -13,7 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import budget, checkenv, decide, delivery, envs, events, ir, models, nested_engine, notify, sandbox, skips
+from . import affected, budget, checkenv, decide, delivery, envs, events, ir, models, nested_engine, notify, sandbox
+from . import skips
 from . import state as state_module, steps
 from . import slots
 from .agents import CLASSES
@@ -254,9 +255,16 @@ def _resumed_state(layer: Any, adw_name: str, args: argparse.Namespace) -> state
 
 
 def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
-    checks = ", ".join(f"{name}={data['exit']}" + (f" ({skips.summary_text(data['skips'])})"
-                                                   if skips.summary_text(data.get("skips") or {}) else "")
+    def shown(data: dict[str, Any]) -> str:
+        # a check that was not run is never shown as its exit code: not affected or reused, with why
+        return (affected.summary_text(data) if data.get("outcome") in (affected.NOT_AFFECTED, affected.REUSED)
+                else str(data["exit"]))
+
+    checks = ", ".join(f"{name}={shown(data)}" + (f" ({skips.summary_text(data['skips'])})"
+                                                  if skips.summary_text(data.get("skips") or {}) else "")
                        for name, data in state.checks.items()) or "none"
+    gate = ", ".join(f"{row['check']}={affected.summary_text(row)}"
+                     for row in affected.rows(layer, state) if row["where"] == "gate")
     review = _review_line(state)
     ship = state.ship.get("action", "none")
     if state.ship.get("action"):
@@ -270,6 +278,7 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         *([f"tiers:     {_tiers_line(state)}"] if state.models else []),
         f"plan:      {state.plan or 'none'}",
         f"checks:    {checks}",
+        *([f"gate:      {gate}"] if gate else []),
         f"review:    {review}",
         f"cost:      {budget.summary(state)}",
         *([f"models:    {_models_line(state)}"] if state.agent_calls else []),
@@ -397,6 +406,7 @@ def _hand_off(layer: Any, state: state_module.ADWState, adw: dict[str, Any], sta
 
     try:
         ship.handoff(layer, state, adw, stack, failure)
+        affected.publish(layer, state)  # what each check proved, next to the handoff's text
     except Exception as exc:  # ship.handoff never raises by contract; this keeps the failure intact if it does
         state.ship["handoff_error"] = f"{type(exc).__name__}: {exc}"[:2000]
         print(f"[adw {state.adw_id}] warning: handoff failed: {type(exc).__name__}: {exc}")

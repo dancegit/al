@@ -126,7 +126,7 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "(check NAME #:cmd C …): a deterministic feedback loop. Runs a codebase command; on failure an agent resolves and the command re-runs.",
+                  "description": "(check NAME #:cmd C …): a deterministic feedback loop. Runs a codebase command; on failure an agent resolves and the command re-runs. (check NAME #:cmds affected …) stands for one check step per codebase cmd that declares #:covers, each named after its cmd, with #:when-affected #t and the other fields as written.",
                   "properties": {
                     "cmd": {
                       "description": "Codebase command.",
@@ -164,6 +164,10 @@
                     "retries": {
                       "description": "Resolve attempts.",
                       "type": "integer"
+                    },
+                    "whenAffected": {
+                      "description": "#t = the step runs its cmd only when the run's changed paths (against the run's base; in a review round, since the cmd last passed) touch the cmd's #:covers, or the cmd is #:always #t. Not run, it is recorded as not affected with the paths compared, never as passed. A layer change, a changed path no check of the workflow covers, and a changed file two #:always #f checks cover run it anyway.",
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -175,7 +179,8 @@
                     "maxSkipped",
                     "name",
                     "resolve",
-                    "retries"
+                    "retries",
+                    "whenAffected"
                   ],
                   "type": "object"
                 },
@@ -957,12 +962,27 @@
             "additionalProperties": false,
             "description": "A named shell command of the codebase: (cmd NAME \"shell\" …). Check steps and validation sections refer to these names.",
             "properties": {
+              "always": {
+                "description": "#t = the command runs for every change. #f = where affected checks are asked for (a check step with #:when-affected #t, a gate with #:require affected) it runs only when a changed path is under its #:covers, and is recorded as not affected otherwise; needs #:covers.",
+                "type": "boolean"
+              },
+              "covers": {
+                "description": "Paths this command proves something about, relative to the repository root: a directory (\"kit/dashboard\"), a file, or a glob (\"*.md\", \"docs/**\"). A cmd with #:covers is one of the layer's checks: (check NAME #:cmds affected) runs it, and `al verify` reports source paths no check covers.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "description": {
                 "description": "What the command proves.",
                 "type": "string"
               },
               "name": {
                 "type": "string"
+              },
+              "reuse": {
+                "description": "#t = a passing result is reused when the same command is asked for again on an identical tree in the same run (the gate after a passing check step, a review round that changed nothing). #f = it always runs again: for a command that is not deterministic.",
+                "type": "boolean"
               },
               "run": {
                 "description": "Shell command, run from the worktree root.",
@@ -974,8 +994,11 @@
               }
             },
             "required": [
+              "always",
+              "covers",
               "description",
               "name",
+              "reuse",
               "run",
               "timeout"
             ],
@@ -3030,6 +3053,14 @@
                 "description": "Patch-and-re-review attempts on blockers.",
                 "type": "integer"
               },
+              "require": {
+                "description": "all = every #:require-checks cmd has a passing result for the exact tree that ships (run at the gate, or reused from the same tree). affected = a required cmd with #:always #f whose #:covers no changed path touches is recorded as not affected instead; the compiler warns when this is combined with #:ship merge or deploy.",
+                "enum": [
+                  "all",
+                  "affected"
+                ],
+                "type": "string"
+              },
               "requireChecks": {
                 "description": "Codebase commands that must exit 0 in the final state (the deterministic gate).",
                 "items": {
@@ -3066,6 +3097,7 @@
               "kind",
               "maxDiffLines",
               "maxRetries",
+              "require",
               "requireChecks",
               "reviewers",
               "ship",

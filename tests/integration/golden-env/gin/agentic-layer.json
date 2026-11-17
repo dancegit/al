@@ -188,7 +188,8 @@
           "maxSkipped": -1,
           "name": "lint",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "test",
@@ -202,7 +203,8 @@
           "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "agent": "",
@@ -283,20 +285,29 @@
   "codebase": {
     "commands": [
       {
+        "always": true,
+        "covers": [],
         "description": "go vet reports nothing for all packages except /examples/",
         "name": "lint",
+        "reuse": true,
         "run": "make vet",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "rewrites every *.go file with gofmt -s -w; proves nothing, it changes files",
         "name": "format",
+        "reuse": true,
         "run": "make fmt",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "tests of packages gin, ginS, binding, render pass with go test -v -covermode=count; writes coverage.out",
         "name": "test",
+        "reuse": true,
         "run": "make test",
         "timeout": 1800
       }

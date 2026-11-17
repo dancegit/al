@@ -167,7 +167,8 @@
           "maxSkipped": -1,
           "name": "format",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "test",
@@ -180,7 +181,8 @@
           "maxSkipped": -1,
           "name": "test",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "e2e",
@@ -193,7 +195,8 @@
           "maxSkipped": -1,
           "name": "e2e",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "cmd": "docs",
@@ -206,7 +209,8 @@
           "maxSkipped": -1,
           "name": "docs",
           "resolve": "resolve-test",
-          "retries": 3
+          "retries": 3,
+          "whenAffected": false
         },
         {
           "agent": "",
@@ -291,32 +295,47 @@
   "codebase": {
     "commands": [
       {
+        "always": true,
+        "covers": [],
         "description": "every Rust file in the workspace is formatted as rustfmt.toml requires",
         "name": "format",
+        "reuse": true,
         "run": "cargo fmt --all --check",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "the rg binary and every workspace crate compile; produces target/debug/rg",
         "name": "build",
+        "reuse": true,
         "run": "cargo build --verbose --workspace",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "unit tests, doc tests and the integration target pass for every workspace crate, each integration test once on the default regex engine and once on PCRE2; builds target/debug/rg",
         "name": "test",
+        "reuse": true,
         "run": "cargo test --verbose --workspace --features pcre2",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "the options in crates/core/flags/complete/rg.zsh equal the options in rg --help; needs zsh and an existing target/release/rg or target/debug/rg, so it must run after build or test",
         "name": "e2e",
+        "reuse": true,
         "run": "ci/test-complete",
         "timeout": 1800
       },
       {
+        "always": true,
+        "covers": [],
         "description": "rustdoc for every workspace crate, private items included, builds with no warnings",
         "name": "docs",
+        "reuse": true,
         "run": "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --document-private-items --workspace",
         "timeout": 1800
       }

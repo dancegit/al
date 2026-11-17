@@ -2201,10 +2201,32 @@ invocation.
 
 Verify fails if the application checkout's HEAD, branch or index changed while it ran (only a git
 command does that). Files edited in the checkout meanwhile are listed as a note: verify runs every
-cmd in its own worktree, so it cannot tell them from your own work in progress."""
+cmd in its own worktree, so it cannot tell them from your own work in progress.
+
+Before the final `verify: N/M ok` line, `coverage:` lines say which checks declare no #:covers (they
+run for every change) and which source paths no check covers (a change there runs every check)."""
 
 VERIFY_SKIPPED = ("deploy", "start", "install")  # side effects or long-running: only when named with --cmd
 VERIFY_TAIL = 15
+
+
+def coverage_lines(layer: Path, workflow: str | None = None) -> list[str]:
+    """The `coverage:` lines of `al verify` and `al sandbox doctor`: checks that declare no #:covers
+    and source paths no check covers, from the layer's own runtime (adw_modules/affected.py, already
+    importable: both commands load the layer's runtime first). A layer generated before affected
+    checks has no such module and prints nothing."""
+    try:
+        from adw_modules import affected, ir as ir_module
+    except ImportError:
+        return []
+    report = getattr(affected, "coverage_report", None)
+    lines = getattr(affected, "coverage_lines", None)
+    if report is None or lines is None:
+        return []
+    try:
+        return list(lines(report(ir_module.load(layer), workflow)))
+    except Exception as exc:  # noqa: BLE001 — a report line never fails verify or doctor
+        return [f"coverage: not reported ({type(exc).__name__}: {exc})"]
 
 
 def app_fingerprint(app: Path) -> dict[str, str]:
@@ -3012,6 +3034,8 @@ def sandbox_cli(a: argparse.Namespace) -> int:
             print(f"doctor: workflow {adw['name'] if adw else '(none)'}, stack {' → '.join(env_ids)}, "
                   f"image {sandbox.image_ref(loaded)}")
             print(sandbox.format_table(checks))
+            for line in coverage_lines(layer, getattr(a, "workflow", None)):  # before the summary: that stays the last line
+                print(line)
             print(f"doctor: {sandbox.summary(checks)}")
             return 1 if any(c.status == "miss" for c in checks) else 0
         if a.action == "shell":
@@ -3596,6 +3620,8 @@ def main(argv: list[str] | None = None) -> int:
             failed = [r["name"] + (f" [{r['stack']}]" if several else "") for r in report if r["exit"] != 0]
             if a.json:
                 print(json.dumps(report, indent=2))
+            for line in coverage_lines(a.layer.resolve(), a.workflow):  # before the result: that stays the last line
+                say(line)
             say(f"verify: {len(report) - len(failed)}/{len(report)} ok" + (f"; failed: {', '.join(failed)}" if failed else "")
                 + f"; report {a.layer.resolve() / 'agents/verify/report.json'}")
             return 1 if failed else 0
