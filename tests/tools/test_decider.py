@@ -49,6 +49,56 @@ def test_al_decider_shows_sets_and_resets_the_mode(sibling) -> None:
     assert not (sibling / SETTING).exists()
 
 
+def test_al_decider_prints_scope_and_limits(sibling) -> None:
+    out = show(al("decider", sibling, env={"AL_DECIDER": ""}))
+    lines = out.splitlines()
+    assert lines[:4] == ["mode: off (default)",
+                         "scope: may resume; suggests restart, answer, integrate, settle, land, promote, retry-job",
+                         "limits: 2 actions per run, 12 per hour",
+                         "declared: not declared"]
+    out = show(al("decider", sibling, "--set", "auto", env={"AL_DECIDER": ""}))
+    assert out.splitlines()[0] == "mode: auto (local setting)" and "scope: may resume; suggests" in out
+
+
+def test_al_decider_may_and_pause(app, tmp_path) -> None:
+    from conftest import LAYER_TEMPLATE
+
+    layer = app.parent / "declared.al"
+    layer.mkdir()
+    clause = "(layer sibling)\n  (stand-in auto #:may (resume restart) #:never (promote) #:max-actions-per-run 4)"
+    (layer / "agentic.rkt").write_text(LAYER_TEMPLATE.format(root="../notes", placement=clause))
+    al("gen", layer)
+    env = {"AL_DECIDER": ""}
+    out = show(al("decider", layer, env=env))
+    assert out.splitlines()[:4] == [
+        "mode: auto (layer)",
+        "scope: may resume, restart; suggests answer, integrate, settle, land, retry-job; never promote",
+        "limits: 4 actions per run, 12 per hour",
+        "declared: (stand-in auto #:may (resume restart) #:never (promote))"]
+    assert not (layer / SETTING).exists()
+    out = show(al("decider", layer, "--may", "resume", env=env))
+    assert "scope: may resume; suggests restart, answer, integrate, settle, land, retry-job; never promote" in out
+    assert json.loads((layer / SETTING).read_text()) == {"may": ["resume"], "version": 1}
+    out = show(al("decider", layer, "--may", "resume,restart", env=env))
+    assert "scope: may resume, restart; suggests" in out
+    assert json.loads((layer / SETTING).read_text())["may"] == ["restart", "resume"]
+    refused = al("decider", layer, "--may", "resume,land", ok=False, env=env)
+    show(refused)
+    assert refused.returncode == 2 and "land is not in the layer's (stand-in … #:may)" in refused.stderr
+    assert al("decider", layer, "--may", "bless", ok=False, env=env).returncode == 2
+    assert json.loads((layer / SETTING).read_text())["may"] == ["restart", "resume"]
+    out = show(al("decider", layer, "--pause", env=env))
+    assert out.splitlines()[0] == "mode: auto (layer), paused"
+    assert json.loads((layer / SETTING).read_text()) == {"may": ["restart", "resume"], "paused": True, "version": 1}
+    out = show(al("decider", layer, "--unpause", env=env))
+    assert out.splitlines()[0] == "mode: auto (layer)" and "paused" not in json.loads((layer / SETTING).read_text())
+    assert al("decider", layer, "--pause", "--unpause", ok=False, env=env).returncode == 2
+    show(al("decider", layer, "--reset", env=env))
+    assert not (layer / SETTING).exists()
+    log = [json.loads(line) for line in (layer / "agents" / "stand-in" / "log.jsonl").read_text().splitlines()]
+    assert [entry["type"] for entry in log] == ["mode"] * 5 and {entry["via"] for entry in log} == {"cli"}
+
+
 def test_al_check_fails_when_the_decider_setting_is_tracked(in_repo, app) -> None:
     al("decider", in_repo, "--set", "auto")
     assert al("check", in_repo).returncode == 0

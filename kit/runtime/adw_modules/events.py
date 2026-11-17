@@ -44,6 +44,7 @@ TYPES = (
     "promotion.merged", "promotion.tagged", "promotion.deployed", "promotion.back-merge", "promotion.closed",
     "step.discipline",
     "decision", "decision.resume", "decision.answer",
+    "standin.decision", "standin.action",
 )
 
 

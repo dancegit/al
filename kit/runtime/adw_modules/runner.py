@@ -97,11 +97,14 @@ which model a tier means (first match wins):
 
 the stand-in decider (when a run stops and is handed to a person):
   --decider MODE         off, suggest or auto for this run. Environment: AL_DECIDER=MODE; else the layer's
-                         local setting (`al decider LAYER --set MODE`, agents/settings/decider.json), else off.
+                         local setting (`al decider LAYER --set MODE`, the dashboard's Stand-in panel,
+                         agents/settings/decider.json), else the layer's (stand-in KIND …) declaration, else off.
                          suggest: a strong model proposes resume, resume-with, abandon or ask-human in the
                          needs-human message; a person answers with `al answer LAYER RUN go|alter|explain|reject`,
-                         a reply to the message, or the webhook. auto: a resume starts at once, at most twice
-                         per run. It never merges or deploys: a resumed run passes every check and the gate again.
+                         on the dashboard, with a reply to the message, or the webhook. auto: a resume starts at
+                         once when `resume` is in its scope (the declaration's #:may; without a declaration:
+                         resume only), at most #:max-actions-per-run times per run (without a declaration:
+                         twice). It never merges or deploys: a resumed run passes every check and the gate again.
 
 notifications: a --dry-run sends none of the layer's (notify …) messages unless --notify is given.
 
@@ -173,7 +176,7 @@ def _new_state(adw_name: str, adw: dict[str, Any], args: argparse.Namespace, req
         adw_id=args.adw_id or state_module.new_adw_id(), adw=adw_name, prompt=request.prompt,
         source=request.source, klass=initial, class_fixed=fixed is not None, dry_run=args.dry_run,
         model_set=request.model_set or "", fanout_parent=fanout_parent(),
-        replaces=getattr(args, "replaces", None) or "",
+        replaces=getattr(args, "replaces", None) or "", decider=getattr(args, "decider", None) or "",
     )
 
 

@@ -196,6 +196,7 @@ record them all again with `uv run tools/showcase/make.py`.
 | A promotion in the page | <img src="docs/showcase/09-promotion-pack.gif" width="320" alt="The open promotion of a layer, its card with accept and refuse per change, and the presentation pack"> | The open promotion of a layer, its card with accept/refuse per change, and the presentation pack. | [clip](docs/showcase/09-promotion-pack.mp4) · [guide](docs/GUIDE.md#decide) |
 | Deploy to a host | <img src="docs/showcase/08-deploy-remote.gif" width="320" alt="al deploy --dry-run against a fake host, then al dashboard --remote opening and closing an ssh tunnel"> | A dry-run deploy to a host, then the dashboard of a deployed layer through an ssh tunnel. | [clip](docs/showcase/08-deploy-remote.mp4) · [notes](docs/showcase/README.md#08-deploy-remote) · [guide](docs/GUIDE.md#running-a-layer-on-another-machine) |
 | Notifications | | `al notify-test` sends one marked test message through the layer's notifiers. | [design](docs/DESIGN.md#telling-a-person) |
+| A stand-in for routine decisions | | Switch it on in the dashboard's Stand-in panel or with `al decider`; it proposes what to do with a stopped run (Go ahead · Yes, with this change · No, I decide) or takes the decisions you declared, inside hard limits. | [guide](docs/GUIDE.md#let-a-stand-in-decide-when-a-run-stops) |
 | Models and cost | | Claude Opus 5.5 by default, Claude Fable 5.2 opt-in for heavy work; tiers per step, per-run overrides, `(budget limits …)`. | [guide](docs/GUIDE.md#choose-models-and-limit-spending) |
 | A review that says no | <img src="docs/showcase/04-review-says-no.gif" width="320" alt="A review rejected in three rounds with its reasons; the run handed over to a person"> | A rejected review with its three rounds and reasons; the run is handed over, not counted as passed. | [clip](docs/showcase/04-review-says-no.mp4) · [guide](docs/GUIDE.md#step-12--let-small-things-ship-by-themselves) |
 
@@ -279,7 +280,7 @@ To change the layer, edit `agentic.rkt` and run `al gen` again. The whole langua
 - **Shipping without a human needs everything to agree:** all checks green, the checks re-run on the final result, the reviewer finds no blocker, the task is a kind you allowed, the change is small, and no protected file was touched. Otherwise it becomes a pull request for a person.
 - **The compiler enforces the dangerous combinations.** A workflow that ships by itself must run in a container. An agent with all permissions must itself be inside one.
 - **A server is set up only after you have seen the plan.** `al deploy --provision` prints every privileged command before it asks and before it runs, and a host uses a sandbox image only when its recipe hash equals the layer's.
-- **A stand-in decider can only send work round again, never ship it.** When a run stops, a strong model may propose the next step or, if you allow it, take it; its only power is to resume the run, and a resumed run passes every check, the review and the gate again.
+- **A stand-in decides only inside the scope you declare, and the gate still decides what ships.** When a run needs a person, a strong model may propose the next step or, for the decisions you listed in `(stand-in auto #:may (…))`, take it: resume or restart a run, answer a waiting one, settle a finished one. Hard limits no setting lifts: it never overrides a rejected review, never lands a change to a protected path or work with a failing required check, never approves its own work, never edits code, and never acts on a run you touched since it stopped. `land` and `promote` only ask the gate and the promotion's approval rule again; every decision is recorded with its reason.
 
 ## Status
 
@@ -309,8 +310,7 @@ rather than in it, PITER, ADWs and HOPs, templated engineering, one agent with o
 feedback loops, review on proof, zero-touch engineering and measuring the work. What al adds is the machinery that
 makes those ideas a checked artefact: a small language, a compiler whose errors teach, a deterministic generator, and
 a runtime with rules of its own (the shipping gate, the sandbox, step discipline). How each idea lands in this
-repository, and why a small language in Racket, is in
-[`docs/DESIGN.md`](docs/DESIGN.md#what-the-lessons-prescribe-and-where-it-lands).
+repository, and why a small language in Racket, is in [`docs/DESIGN.md`](docs/DESIGN.md#what-the-lessons-prescribe-and-where-it-lands).
 
 ## Repository map
 

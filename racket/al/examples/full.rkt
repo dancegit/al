@@ -24,6 +24,7 @@
   (agent claude-code #:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:effort high)))
   (agent codex #:id second-opinion)
   (budget limits #:run-usd 5 #:step-usd 2 #:day-usd 50 #:limit-stop-percent 90 #:on-limit wait #:limit-wait-minutes 120)
+  (stand-in suggest #:may (resume restart) #:max-per-hour 6)
   (notify email #:events (needs-human failed shipped))   ; addresses and the server: variables in local.env, never here
   (registry #:address-env "AL_REGISTRY" #:username-env "AL_REGISTRY_USER" #:password-env "AL_REGISTRY_PASSWORD")
   (notify command #:id desktop #:run "notify-send \"$AL_NOTIFY_SUBJECT\"" #:events (needs-human))

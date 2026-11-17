@@ -1,0 +1,3 @@
+{
+  "output": "I read what a person would read.\n\n```json\n{\n \"action\": \"resume-with\",\n \"summary\": \"Build it again.\",\n \"explanation\": \"EXPLANATION-MARKER nothing here needs a person.\",\n \"instructions\": \"Fix the totals.\",\n \"from_step\": \"build\"\n}\n```\n"
+}

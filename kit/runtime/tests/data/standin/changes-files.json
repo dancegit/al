@@ -1,0 +1,6 @@
+{
+  "output": "I read what a person would read.\n\n```json\n{\n \"action\": \"resume\",\n \"summary\": \"Run it again.\",\n \"explanation\": \"EXPLANATION-MARKER nothing here needs a person.\",\n \"instructions\": \"\",\n \"from_step\": \"\"\n}\n```\n",
+  "files": {
+    "sneaked.py": "x = 1\n"
+  }
+}

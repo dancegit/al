@@ -11,7 +11,8 @@ reads why the run stopped and what the agents asked a person to do, and answers 
 - `ask-human`    it cannot decide.
 
 Modes (`mode_for`; first match wins: `--decider MODE`, AL_DECIDER, the layer's local setting
-agents/settings/decider.json written by `al decider LAYER --set MODE`, else `off`):
+agents/settings/decider.json written by `al decider LAYER --set MODE` or the dashboard, the kind of
+the layer's `(stand-in KIND …)` declaration, else `off`):
 
 - `off`      nothing happens; state.json has no `decision` key (the runs of before);
 - `auto`     a resume starts at once (`after_run` spawns `--resume` once the run has written its
@@ -28,6 +29,16 @@ Never: a merge, a deploy, an approval or a way around the gate. Every action end
 resume, which goes through every check, the review and ship.py again, or with a person. Not for
 workflows with `#:changes layer`, runs a spending or usage limit stopped, waiting runs or fan-out
 candidates (`eligible`). A decider call that fails leaves the run and its hand-off as they were.
+
+The scope (standin.py). A layer may declare which decisions the stand-in takes alone
+(`(stand-in auto #:may (…))`); without a declaration that is `resume` only, the behaviour of before.
+In `auto` mode a resume starts only when `resume` is in that scope, the stand-in is not paused and
+no limit is reached; otherwise the decision is a suggestion. The decisions beyond a resume (restart,
+answer, integrate, land, settle, promote, retry-job: ALL_ACTIONS) are made outside the run by
+standin.consider and stored here in the same `state.decision`; `answer` is the one entry for a
+person's answer from every channel (cli, dashboard, mail, webhook) and hands a suggestion that is
+not a resume to standin.apply. Every decision and answer is one line in agents/<id>/decisions.jsonl
+and agents/stand-in/log.jsonl (standin.record).
 
 E-mail reasons are a fixed vocabulary that never holds a value (an address, a host, a password).
 """
@@ -55,7 +66,14 @@ from . import events, localenv, notify, state as state_module
 from .errors import LayerError, StepFailed
 
 MODES = ("off", "suggest", "auto")
-ACTIONS = ("resume", "resume-with", "abandon", "ask-human")
+ACTIONS = ("resume", "resume-with", "abandon", "ask-human")   # what the in-run prompt offers
+STOP_ACTIONS = ACTIONS
+# every action of the contract; the ones beyond STOP_ACTIONS are offered by standin.consider only
+ALL_ACTIONS = ("resume", "resume-with", "restart", "answer", "integrate", "land", "settle", "promote", "retry-job",
+               "abandon", "ask-human")
+SETTLE_AS = ("landed", "superseded", "abandoned")
+PROMOTE = ("approve", "refuse")
+KEEP: Any = object()   # write_setting: leave this key as it is
 ANSWERS = ("go", "alter", "explain", "reject")
 SETTINGS_FILE = Path("agents") / "settings" / "decider.json"   # the layer's local mode, never committed
 ENV_MODE = "AL_DECIDER"
@@ -139,45 +157,86 @@ class MailError(Exception):
 
 # ---------------------------------------------------------------- settings and mode
 
-def render_setting(mode: str) -> str:
-    """The one format of agents/settings/decider.json."""
-    return json.dumps({"version": 1, "mode": mode}, indent=2, sort_keys=True) + "\n"
+def _checked_may(may: Any) -> list[str]:
+    from . import standin
+
+    kinds = [str(kind) for kind in may]
+    unknown = [kind for kind in kinds if kind not in standin.KINDS]
+    if unknown:
+        raise ValueError(f"unknown decision kind {unknown[0]!r}; use any of {', '.join(standin.KINDS)}")
+    return sorted(set(kinds))
 
 
-def read_mode(layer_dir: Path) -> str:
-    """The layer's local mode; "" when there is none. A broken file raises LayerError with its path."""
+def render_setting(mode: str, may: Any = None, paused: bool = False) -> str:
+    """The one format of agents/settings/decider.json. `may` (the kinds the stand-in may take alone
+    on this machine) and `paused` are written only when set, so a plain mode is the file of before."""
+    data: dict[str, Any] = {"version": 1}
+    if mode:
+        data["mode"] = mode
+    if may is not None:
+        data["may"] = _checked_may(may)
+    if paused:
+        data["paused"] = True
+    return json.dumps(data, indent=2, sort_keys=True) + "\n"
+
+
+def read_setting(layer_dir: Path) -> dict[str, Any]:
+    """The layer's local setting: {"mode": "" | off | suggest | auto, "may": [kind…] | None, "paused": bool};
+    mode "" and no keys when there is no file. A broken file raises LayerError with its path."""
     path = Path(layer_dir) / SETTINGS_FILE
+    fix = "fix or remove it (al decider LAYER --reset)"
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return ""
+        return {"mode": "", "may": None, "paused": False}
     except OSError as exc:
-        raise LayerError(f"{path}: cannot read it ({exc.strerror}); fix or remove it (al decider LAYER --reset)") from exc
+        raise LayerError(f"{path}: cannot read it ({exc.strerror}); {fix}") from exc
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise LayerError(f"{path}: not JSON ({exc.msg}); fix or remove it (al decider LAYER --reset)") from exc
+        raise LayerError(f"{path}: not JSON ({exc.msg}); {fix}") from exc
     mode = data.get("mode") if isinstance(data, dict) else None
-    if mode not in MODES:
-        raise LayerError(f'{path}: expected {{"version": 1, "mode": "{"|".join(MODES)}"}}, got mode {mode!r}; '
-                         "fix or remove it (al decider LAYER --reset)")
-    return str(mode)
+    more = isinstance(data, dict) and ("may" in data or "paused" in data)
+    if mode not in MODES and not (more and mode in (None, "")):
+        raise LayerError(f'{path}: expected {{"version": 1, "mode": "{"|".join(MODES)}"}}, got mode {mode!r}; {fix}')
+    may = data.get("may")
+    if may is not None:
+        try:
+            if not isinstance(may, list) or not all(isinstance(kind, str) for kind in may):
+                raise ValueError("not a list of names")
+            may = _checked_may(may)
+        except ValueError as exc:
+            raise LayerError(f'{path}: "may" must be a list of decision kinds ({exc}); {fix}') from exc
+    if not isinstance(data.get("paused", False), bool):
+        raise LayerError(f'{path}: "paused" must be true or false; {fix}')
+    return {"mode": str(mode or ""), "may": may, "paused": bool(data.get("paused", False))}
 
 
-def write_mode(layer_dir: Path, mode: str | None) -> Path:
-    """Write the local mode atomically; an empty mode removes the file."""
+def write_setting(layer_dir: Path, *, mode: Any = KEEP, may: Any = KEEP, paused: Any = KEEP) -> Path:
+    """Change the given keys of the local setting and write it atomically. An empty mode removes the
+    mode, `may=None` the local scope; a setting with no mode, no scope and not paused removes the file."""
     path = Path(layer_dir) / SETTINGS_FILE
-    if not mode:
+    try:
+        current = read_setting(layer_dir)
+    except LayerError:
+        current = {"mode": "", "may": None, "paused": False}   # a broken file is replaced
+    if mode is not KEEP:
+        if mode and mode not in MODES:
+            raise ValueError(f"unknown decider mode {mode!r}; use one of {', '.join(MODES)}")
+        current["mode"] = str(mode or "")
+    if may is not KEEP:
+        current["may"] = None if may is None else _checked_may(may)
+    if paused is not KEEP:
+        current["paused"] = bool(paused)
+    if not current["mode"] and current["may"] is None and not current["paused"]:
         path.unlink(missing_ok=True)
         return path
-    if mode not in MODES:
-        raise ValueError(f"unknown decider mode {mode!r}; use one of {', '.join(MODES)}")
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False,
                                          prefix=".decider.", suffix=".tmp")
     try:
         with handle:
-            handle.write(render_setting(mode))
+            handle.write(render_setting(current["mode"], current["may"], current["paused"]))
         os.replace(handle.name, path)
     except BaseException:
         Path(handle.name).unlink(missing_ok=True)
@@ -185,8 +244,23 @@ def write_mode(layer_dir: Path, mode: str | None) -> Path:
     return path
 
 
+def read_mode(layer_dir: Path) -> str:
+    """The layer's local mode; "" when there is none. A broken file raises LayerError with its path."""
+    return read_setting(layer_dir)["mode"]
+
+
+def write_mode(layer_dir: Path, mode: str | None) -> Path:
+    """Write the local mode atomically; an empty mode removes the file (the reset of `al decider`)."""
+    if not mode:
+        path = Path(layer_dir) / SETTINGS_FILE
+        path.unlink(missing_ok=True)
+        return path
+    return write_setting(layer_dir, mode=mode)
+
+
 def mode_for(layer: Any, flag: str | None) -> tuple[str, str]:
-    """(mode, where it comes from): `--decider` > AL_DECIDER > local setting > `off` (default)."""
+    """(mode, where it comes from): `--decider` > AL_DECIDER > local setting > the layer's
+    (stand-in KIND …) declaration > `off` (default)."""
     if flag:
         if flag not in MODES:
             raise LayerError(f"--decider: unknown mode {flag!r}; use one of {', '.join(MODES)}")
@@ -199,7 +273,19 @@ def mode_for(layer: Any, flag: str | None) -> tuple[str, str]:
     local = read_mode(Path(layer.layer_dir))
     if local:
         return local, "local setting"
+    kind = ((getattr(layer, "ir", None) or {}).get("standIn") or {}).get("kind")
+    if kind in ("suggest", "auto"):
+        return str(kind), "layer"
     return "off", "default"
+
+
+def per_run(layer: Any) -> int:
+    """Most actions the stand-in takes on one run: the declaration's #:max-actions-per-run, else MAX_AUTO_ROUNDS."""
+    declared = (getattr(layer, "ir", None) or {}).get("standIn") or {}
+    try:
+        return int(declared.get("maxActionsPerRun") or MAX_AUTO_ROUNDS)
+    except (TypeError, ValueError):
+        return MAX_AUTO_ROUNDS
 
 
 # ---------------------------------------------------------------- eligibility, prompt, contract
@@ -225,7 +311,7 @@ def eligible(layer: Any, state: Any, adw: dict[str, Any], mode: str | None = Non
         return "the hand-off failed"
     if ship.get("action") != "handoff":
         return "the run was not handed to a person"
-    if mode == "auto" and int((state.decision or {}).get("rounds", 0) or 0) >= MAX_AUTO_ROUNDS:
+    if mode == "auto" and int((state.decision or {}).get("rounds", 0) or 0) >= per_run(layer):
         return "auto rounds used up"
     return ""
 
@@ -241,7 +327,7 @@ def _stop_reason(state: Any) -> str:
     for record in state.steps or []:
         if record.get("status") == "failed":
             return str(record.get("detail") or "")
-    return str(state.error or "no step recorded a reason")
+    return str(getattr(state, "error", "") or "no step recorded a reason")
 
 
 def _asks(layer: Any, state: Any) -> str:
@@ -292,17 +378,18 @@ def render_prompt(layer: Any, state: Any, adw: dict[str, Any]) -> str:
         earlier=_earlier(state))
 
 
-def validate(obj: Any, names: list[str]) -> dict[str, str]:
-    """The decision contract; anything else raises StepFailed("decide", …)."""
+def validate(obj: Any, names: list[str], allowed: Any = STOP_ACTIONS) -> dict[str, Any]:
+    """The decision contract; anything else raises StepFailed("decide", …). `allowed` is what the
+    prompt offered: the in-run decider's four actions, or the actions of a situation (standin.py)."""
     def bad(why: str) -> StepFailed:
         return StepFailed(STEP, f"invalid decision: {why}")
 
     if not isinstance(obj, dict):
         raise bad("not a JSON object")
     action = obj.get("action")
-    if action not in ACTIONS:
-        raise bad(f"action must be one of {', '.join(ACTIONS)}, got {action!r}")
-    fields: dict[str, str] = {"action": str(action)}
+    if action not in tuple(allowed):
+        raise bad(f"action must be one of {', '.join(allowed)}, got {action!r}")
+    fields: dict[str, Any] = {"action": str(action)}
     for key in ("summary", "explanation", "instructions", "from_step"):
         value = obj.get(key, "")
         if not isinstance(value, str):
@@ -316,6 +403,23 @@ def validate(obj: Any, names: list[str]) -> dict[str, str]:
         raise bad("resume-with needs instructions")
     if fields["from_step"] and fields["from_step"] not in names:
         raise bad(f"from_step {fields['from_step']!r} is not a step of the workflow ({', '.join(names)})")
+    confidence = obj.get("confidence")
+    if confidence is not None:
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+            raise bad("confidence must be a number from 0 to 1")
+        confidence = float(confidence)
+    fields["confidence"] = confidence
+    if action == "settle":
+        if obj.get("settle_as") not in SETTLE_AS:
+            raise bad(f"settle needs settle_as, one of {', '.join(SETTLE_AS)}")
+        by = obj.get("settle_by") or ""
+        if not isinstance(by, str) or not re.fullmatch(r"(?:[0-9a-f]{8}|[0-9a-f]{7,40})?", by.strip()):
+            raise bad("settle_by is a run id (8 hexadecimal characters), a commit (7 to 40) or empty")
+        fields["settle_as"], fields["settle_by"] = str(obj["settle_as"]), by.strip()
+    if action == "promote":
+        if obj.get("promote") not in PROMOTE:
+            raise bad(f"promote needs promote, one of {', '.join(PROMOTE)}")
+        fields["promote"] = str(obj["promote"])
     return fields
 
 
@@ -326,7 +430,7 @@ def consider(layer: Any, state: Any, adw: dict[str, Any], stack: Any, args: Any)
     caller keeps the worktree; after_run starts the resume), else "". Never raises, and never
     changes the run's result or its hand-off."""
     try:
-        mode, source = mode_for(layer, getattr(args, "decider", None))
+        mode, source = mode_for(layer, getattr(args, "decider", None) or getattr(state, "decider", "") or None)
     except LayerError as exc:
         print(f"[adw {state.adw_id}] decider: not used: {exc}")
         return ""
@@ -350,11 +454,12 @@ def _save(layer: Any, state: Any) -> None:
 
 
 def _consider(layer: Any, state: Any, adw: dict[str, Any], stack: Any, mode: str, source: str) -> str:
-    from . import agents, steps
+    from . import agents, standin, steps
 
     previous = dict(state.decision or {})
     previous.pop("skipped", None)
-    why = eligible(layer, state, adw, mode)
+    scope = standin.scope(layer, mode)
+    why = eligible(layer, state, adw, mode) or ("the stand-in is paused" if scope["paused"] else "")
     if why:
         state.decision = {**previous, "skipped": why}
         events.say(f"[adw {state.adw_id}] decider: not used: {why}", "decision", mode=mode, status="skipped", reason=why)
@@ -365,7 +470,7 @@ def _consider(layer: Any, state: Any, adw: dict[str, Any], stack: Any, mode: str
     found: dict[str, Any] = {}
 
     def work() -> None:
-        output = agents.run_prompt(layer, state, STEP, COMMAND, prompt, "heavy", stack)
+        output = agents.run_prompt(layer, state, STEP, COMMAND, prompt, scope["model_set"], stack)
         found.update(validate(json.loads(output), names))
 
     try:
@@ -378,15 +483,38 @@ def _consider(layer: Any, state: Any, adw: dict[str, Any], stack: Any, mode: str
         return ""
     stopped = str((state.ship or {}).get("stopped_at") or "")
     rounds = int(previous.get("rounds", 0) or 0) + (1 if mode == "auto" else 0)
+    # what the prompt gave it to read, as the dashboard's suggestion card names it
+    target = str((state.ship or {}).get("target") or "")
+    read = ["why it stopped", *(["PR.md"] if target and not re.match(r"https?://", target) else []),
+            *(["the hand-off pull request"] if re.match(r"https?://", target) else []), *(["the plan"] if state.plan else [])]
     decision = {"mode": mode, "mode_from": source, **found, "from_step": found["from_step"] or stopped,
+                "kind": standin.KIND_OF.get(found["action"], ""), "situation": "stopped", "read": read, "by": "stand-in",
                 "stopped_at": stopped, "code": secrets.token_urlsafe(9), "rounds": rounds,
                 "answers": list(previous.get("answers") or []), "at": state_module.now(), "status": "suggested"}
     state.decision = decision
+    held = ""
     if mode == "auto" and decision["action"] in ("resume", "resume-with"):
-        prepare_resume(state, adw, decision, layer_dir=layer.layer_dir)
+        # alone only inside its scope, under its limits, and never past a hard limit: else a suggestion
+        held = ("resume is not in the stand-in's scope" if "resume" not in scope["may"] else
+                standin.hard_limit(layer, state, decision["action"], decision) or standin.limit_reached(layer, state, scope))
+        if held:
+            decision["held"] = held
+        else:
+            prepare_resume(state, adw, decision, layer_dir=layer.layer_dir)
     elif mode == "auto":
         decision["status"] = "decided"
     write_record(layer, state)
+    status = {"resuming": "acted", "decided": "escalated"}.get(decision["status"], "suggested")
+    entry = standin.record(layer, {
+        "type": "decision", "who": "stand-in", "via": "run", "run": state.adw_id, "mode": mode, "situation": "stopped",
+        "kind": standin.KIND_OF.get(decision["action"], ""), "action": decision["action"], "summary": decision["summary"],
+        "why": decision["explanation"], "confidence": decision.get("confidence"), "read": read, "status": status,
+        "auto": status == "acted", "stop": standin.fingerprint(state), "stopped_for": re.sub(r"\d+", "#", _stop_reason(state))[:300],
+        "from_step": decision["from_step"],
+        **({"instructions": decision["instructions"]} if decision.get("instructions") else {}),
+        **({"outcome": f"resuming from {decision['from_step'] or '?'}"} if status == "acted" else {}),
+        **({"reason": held} if held else {})}, state)
+    decision["entry_pending"] = entry["id"]   # its stop is known once the run has ended (after_run)
     events.say(f"[adw {state.adw_id}] decider ({mode}): {decision['action']} from {decision['from_step'] or '?'} "
                f"({decision['status']}): {decision['summary']}", "decision", mode=mode,
                action=decision["action"], from_step=decision["from_step"], status=decision["status"])
@@ -478,6 +606,15 @@ def _start(layer: Any, state: Any, say: bool = True) -> None:
 
 def after_run(layer: Any, state: Any) -> None:
     """Called by the runner after the run wrote its summary: start the resume the decider chose."""
+    pending = (state.decision or {}).pop("entry_pending", None)
+    if pending:
+        try:
+            from . import standin
+
+            standin.amend(layer, str(pending), stop=standin.fingerprint(state))
+        except Exception as exc:  # noqa: BLE001 — the record is a courtesy; the run has ended
+            print(f"[adw {state.adw_id}] decider: the record was not completed: {type(exc).__name__}: {exc}")
+        _save(layer, state)
     if (state.decision or {}).get("status") != "resuming":
         return
     try:
@@ -536,8 +673,11 @@ def _recipients(layer: Any) -> set[str]:
 
 def answer(layer: Any, adw_id: str, kind: str, text: str, via: str, code: str | None = None,
            sender: str | None = None) -> dict[str, str]:
-    """Apply a person's answer to a suggestion, from any channel (cli, mail, webhook).
-    {status, message} (+ reason when refused); a refusal changes nothing."""
+    """Apply a person's answer to a suggestion, from any channel (cli, dashboard, mail, webhook).
+    {status, message} (+ reason when refused); a refusal changes nothing. A suggestion that is not a
+    resume (restart, answer, integrate, land, settle, promote) is performed by standin.apply."""
+    from . import standin
+
     if isinstance(layer, (str, Path)):
         from . import ir
 
@@ -551,12 +691,14 @@ def answer(layer: Any, adw_id: str, kind: str, text: str, via: str, code: str | 
         return _refused("unknown-run", f"no run {adw_id} in this layer")
     if kind not in ANSWERS:
         return _refused("bad-answer", f"unknown answer {kind!r}; use one of {', '.join(ANSWERS)}")
+    if via == "stand-in" and kind in ("go", "alter"):
+        return _refused("own-work", standin.OWN_WORK)
     decision = state.decision or {}
     status = str(decision.get("status") or "")
     if status not in ANSWERABLE:
         return _refused("not-waiting", f"run {adw_id} has no suggestion waiting for an answer "
                                        f"(decision status: {status or 'none'})")
-    if via != "cli" and not hmac.compare_digest(str(code or ""), str(decision.get("code") or "")):
+    if via not in ("cli", "dashboard") and not hmac.compare_digest(str(code or ""), str(decision.get("code") or "")):
         return _refused("bad-code", "the answer's code does not match the run's suggestion")
     if via == "mail" and (sender or "").strip().lower() not in _recipients(layer):
         return _refused("bad-sender", "the sender is not a recipient of the layer's notifications")
@@ -564,8 +706,27 @@ def answer(layer: Any, adw_id: str, kind: str, text: str, via: str, code: str | 
     if kind == "alter" and not text:
         return _refused("bad-answer", "alter needs the changes as text")
     adw = state.definition or layer.adw(state.adw)
+    action = str(decision.get("action") or "")
+    beyond = standin.KIND_OF.get(action) not in (None, "resume")   # not a resume: standin.apply performs it
+    if beyond and kind == "alter" and action in ("land", "promote"):
+        return _refused("bad-answer", f"alter does not apply to {action}; answer go or reject")
     decision.setdefault("answers", []).append({"kind": kind, "text": text, "via": via, "at": state_module.now()})
     state.decision = decision
+    stop = standin.fingerprint(state)   # the stop the answer is about, before a resume resets its steps
+
+    def answered(status: str, **more: Any) -> None:
+        standin.record(layer, {"type": "answer", "who": "person", "via": via, "run": adw_id, "answer": kind,
+                               "kind": standin.KIND_OF.get(action, ""), "action": action, "status": status,
+                               "stop": stop, **more}, state)
+
+    if beyond and kind in ("go", "alter"):
+        answered("acted")
+        with events.recording(layer.layer_dir, adw_id):
+            events.emit("decision.answer", kind=kind, via=via, status="applying")
+        result = standin.apply(layer, state, decision, who="person", via=via, extra=text if kind == "alter" else "")
+        if result["status"] != "acted":
+            return _refused("not-applied", f"{action} was not applied: {result.get('reason') or result['status']}")
+        return {"status": str(decision.get("status") or "applied"), "message": str(result.get("outcome") or action)}
     if kind in ("go", "alter"):
         extra = ""
         if kind == "alter" and decision.get("action") in ("abandon", "ask-human"):
@@ -590,6 +751,8 @@ def answer(layer: Any, adw_id: str, kind: str, text: str, via: str, code: str | 
     write_record(layer, state)
     with events.recording(layer.layer_dir, adw_id):
         events.emit("decision.answer", kind=kind, via=via, status=decision["status"])
+    answered({"resuming": "acted", "rejected": "refused"}.get(decision["status"], "suggested"),
+             **({"outcome": message} if decision["status"] == "resuming" else {}))
     if decision["status"] == "resuming":
         _start(layer, state, say=False)   # the caller reports the answer's result
     return {"status": decision["status"], "message": message}

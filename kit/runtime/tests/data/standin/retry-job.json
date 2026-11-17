@@ -1,0 +1,3 @@
+{
+  "output": "I read what a person would read.\n\n```json\n{\n \"action\": \"retry-job\",\n \"summary\": \"The job failed on a timeout; retry it.\",\n \"explanation\": \"EXPLANATION-MARKER nothing here needs a person.\",\n \"instructions\": \"\",\n \"from_step\": \"\",\n \"confidence\": 0.8\n}\n```\n"
+}

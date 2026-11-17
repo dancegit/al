@@ -470,13 +470,19 @@ def run_agent(layer: Any, state: Any, step_name: str, command_name: str, args: l
 
 
 def run_prompt(layer: Any, state: Any, step_name: str, command: dict[str, Any], prompt: str, model_set: str,
-               env_stack: Any, agent_id: str = "", tier_from: str = "command", args: list[str] | None = None) -> str:
+               env_stack: Any, agent_id: str = "", tier_from: str = "command", args: list[str] | None = None,
+               directory: Path | None = None) -> str:
     """Run an already rendered `prompt` on the ADW's agent (mock when dry-run) and return the
     processed output. `command` gives the output type and the template (a declared command, or one
     the runtime holds itself, such as the decider's: see decide.py). Budget, usage, events and the
-    transcript are exactly those of run_agent."""
+    transcript are exactly those of run_agent. `directory` is where prompt.md, raw.jsonl and
+    output.txt go (default: the step's directory in the run), for a call that has no run."""
     args = list(args or [])
-    directory = step_dir(layer, state, step_name)
+    if directory is None:
+        directory = step_dir(layer, state, step_name)
+    else:
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
     (directory / "prompt.md").write_text(prompt, encoding="utf-8")
     raw_path = directory / "raw.jsonl"
     # A step may name its own agent (`#:agent`), e.g. a cheaper model for a commit step or a

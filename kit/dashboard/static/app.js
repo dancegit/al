@@ -376,6 +376,258 @@
     return el;
   }
 
+  // ------------------------------------------------------------------------- the stand-in
+  const STANDIN_KINDS = ["resume", "restart", "answer", "integrate", "settle", "land", "promote", "retry-job"];
+  const STANDIN_MODES = [["off", "a person reads every hand-over"], ["suggest", "it proposes, you answer"],
+    ["auto", "it takes the decisions ticked below and proposes the others"]];
+  const ASK_STATUSES = ["failed", "died", "handed-over", "waiting"];
+  const standinNotes = new Map();    // layer key -> {text, error}: the last answer, kept when the block is rebuilt
+  const standinAsked = new Map();    // layer key -> Set of run ids "Handle the items already waiting" asked about
+
+  /** What a decision does, in a few words: "resume from build", "settle as abandoned", "promote: approve". */
+  function actionText(d) {
+    if (!d || !d.action) return "";
+    if (d.action === "resume" || d.action === "resume-with") return `${d.action}${d.from_step ? ` from ${d.from_step}` : ""}`;
+    if (d.action === "settle") return `settle as ${d.settle_as || "?"}`;
+    if (d.action === "promote") return `promote: ${d.promote || "?"}`;
+    if (d.action === "retry-job") return `retry${d.from_step ? ` from ${d.from_step}` : ""}`;
+    return d.action;
+  }
+
+  /** May the stand-in be asked about this run? A failed, died, handed-over or waiting run that needs a
+   * person and has no suggestion waiting. */
+  function askable(run) {
+    return run.bucket === "needs-you" && ASK_STATUSES.includes(run.status) && !run.suggestion;
+  }
+
+  /** The runs of a layer that waited already when the stand-in was switched on (the loop leaves them). */
+  function waitingBefore(layer) {
+    const view = layer.standin || {};
+    const since = view.since ? Date.parse(view.since) / 1000 : 0;
+    return store.runList().filter((r) => r.layer === layer.key && r.bucket === "needs-you" && ASK_STATUSES.includes(r.status)
+      && !r.standin_last && (!since || (r.ended || r.last_seen || r.mtime || 0) <= since));
+  }
+
+  /** One layer's block of the "Stand-in" panel: its mode, its scope as check boxes, its limits, a pause
+   * button, the items that waited already, and its live log. Every change is a POST /api/decider. */
+  function standinPanel(layer) {
+    const v = layer.standin || { available: false, why: "" };
+    const last = standinNotes.get(layer.key);
+    const note = h("div", { class: `standin-note faint${last && last.error ? " error" : ""}`, role: "status", text: last ? last.text : "" });
+    const el = h("div", { class: "standin-panel", dataset: { layer: layer.key, mode: v.mode || "off" } },
+      h("div", { class: "name" }, h("a", { href: `#/layer/${enc(layer.key)}`, text: layer.name || layer.key }),
+        v.available && v.paused ? h("span", { class: "badge warn", text: "paused" }) : null));
+    if (!v.available) {
+      el.appendChild(h("div", { class: "why", text: v.why || "the stand-in is not available for this layer" }));
+      return el;
+    }
+    const show = (text, error) => {
+      standinNotes.set(layer.key, { text, error });
+      const live = [...document.querySelectorAll(".standin-panel .standin-note")]
+        .filter((n) => n.closest(".standin-panel").dataset.layer === layer.key);
+      for (const n of new Set([note, ...live])) { n.textContent = text; n.classList.toggle("error", error); }
+    };
+    const send = async (path, body, done) => {
+      try {
+        const answer = await api.post(path, { layer: layer.key, ...body });
+        show(done(answer), false);
+      } catch (err) {
+        show(String(err.message || err), true);
+      }
+    };
+    const can = !!v.writable;
+    // the mode
+    const modes = h("div", { class: "standin-modes", role: "radiogroup", "aria-label": "mode of the stand-in" });
+    for (const [mode, line] of STANDIN_MODES) {
+      const radio = h("input", { type: "radio", name: `standin-mode-${layer.key}`, value: mode, checked: v.mode === mode, disabled: !can });
+      radio.addEventListener("change", () => send("/api/decider", { mode }, () => `switched to ${mode}; applies to what stops from now on`));
+      modes.appendChild(h("label", { class: `mode-row${v.mode === mode ? " on" : ""}`, dataset: { mode } }, radio,
+        h("b", { text: mode }), h("span", { text: ` — ${line}` })));
+    }
+    const reset = v.source === "local setting" ? h("button", { type: "button", class: "btn reset", text: "Reset", disabled: !can,
+      title: "drop the local mode: the layer's declaration applies, else off",
+      onclick: () => send("/api/decider", { reset: true }, () => "the local mode is dropped") }) : null;
+    el.appendChild(h("div", { class: "standin-row" }, modes,
+      h("div", { class: "source faint" }, `from: ${v.source || "default"}`, reset)));
+    // the scope
+    const offered = v.offered || [], may = v.may || [], never = v.never || [];
+    const boxes = [];
+    const scope = h("div", { class: "standin-scope" }, h("div", { class: "label faint", text: "alone it may (the others it proposes):" }));
+    for (const kind of STANDIN_KINDS.filter((k) => offered.includes(k) || (v.suggests || []).includes(k))) {
+      const box = h("input", { type: "checkbox", value: kind, checked: may.includes(kind), disabled: !can || !offered.includes(kind) });
+      if (offered.includes(kind)) boxes.push(box);
+      box.addEventListener("change", () => send("/api/decider", { may: boxes.filter((b) => b.checked).map((b) => b.value) },
+        (answer) => `alone it may: ${((answer.standin || {}).may || []).join(", ") || "nothing"}`));
+      scope.appendChild(h("label", { class: "kind-row", dataset: { kind }, title: offered.includes(kind) ? "" : "not in the layer's #:may" }, box,
+        h("b", { text: kind }), h("span", { class: "faint", text: ` — ${(v.kinds || {})[kind] || ""}` })));
+    }
+    if (never.length) scope.appendChild(h("div", { class: "never faint", text: `never (neither taken nor proposed): ${never.join(", ")}` }));
+    el.appendChild(scope);
+    // limits, pause, counts
+    const counts = v.counts || {};
+    const pause = h("button", { type: "button", class: "btn pause", text: v.paused ? "Continue" : "Pause", disabled: !can,
+      onclick: () => send("/api/decider", { paused: !v.paused }, () => (v.paused ? "it continues" : "paused: it neither acts nor proposes")) });
+    el.appendChild(h("div", { class: "standin-row limits" },
+      h("span", { class: "limits-text", text: `at most ${v.per_run} actions per run · ${v.per_hour} per hour` }), pause,
+      h("span", { class: "counts", text: `handled today ${counts.today || 0} · waiting on you ${counts.waiting || 0}` })));
+    if (v.error) el.appendChild(h("div", { class: "why error", text: v.error }));
+    if (!can && v.why) el.appendChild(h("div", { class: "why", text: v.why }));
+    if (v.loop && v.loop !== "on") el.appendChild(h("div", { class: "why faint", text: `its loop does not run in this dashboard (${v.loop})` }));
+    // the items that waited already when it was switched on: first what it would do, then "Do these"
+    if (v.mode !== "off" && can) {
+      const asked = standinAsked.get(layer.key) || new Set();
+      const before = waitingBefore(layer);
+      const proposals = store.runList().filter((r) => r.layer === layer.key && asked.has(r.id) && r.suggestion);
+      if (before.length || proposals.length) {
+        const box = h("div", { class: "standin-existing" });
+        const open = before.filter((r) => !r.suggestion);
+        if (open.length) {
+          box.appendChild(h("button", { type: "button", class: "btn handle-existing",
+            text: `Handle the ${open.length} item${open.length === 1 ? "" : "s"} already waiting`,
+            title: "the stand-in first says what it would do with each; nothing is done until you say so",
+            onclick: () => {
+              standinAsked.set(layer.key, new Set([...asked, ...open.map((r) => r.id)]));
+              send("/api/standin", { runs: open.map((r) => r.id).slice(0, 200) }, (answer) => `asked about ${answer.queued} run(s); its proposals appear here`);
+            } }));
+        }
+        if (proposals.length) {
+          const doable = proposals.filter((r) => may.includes(r.suggestion.kind));
+          box.appendChild(h("ul", { class: "proposals" }, proposals.map((r) => h("li", { dataset: { run: r.id } },
+            h("a", { class: "mono", href: `#/run/${enc(r.layer)}/${enc(r.id)}`, text: r.id }), " ",
+            h("b", { text: actionText(r.suggestion) }), ` — ${r.suggestion.summary || ""}`,
+            may.includes(r.suggestion.kind) ? null : h("span", { class: "faint", text: " (yours to answer: not in its scope)" })))));
+          if (doable.length) {
+            box.appendChild(h("button", { type: "button", class: "btn primary do-these", text: `Do these ${doable.length}`,
+              onclick: () => send("/api/standin", { apply: doable.map((r) => r.id).slice(0, 200) }, (answer) => `${answer.queued} action(s) queued`) }));
+          }
+        }
+        el.appendChild(box);
+      }
+    }
+    // the live log, newest first
+    const log = [...(v.log || [])].reverse();
+    const rows = log.map((e) => h("tr", { dataset: { status: e.status || e.type } },
+      h("td", { class: "num faint", title: e.at || "", text: e.at ? fmt.clock(Date.parse(e.at) / 1000) : "" }),
+      h("td", { text: e.who || "" }),
+      h("td", { text: e.type === "mode" ? `mode: ${e.mode}${e.paused ? ", paused" : ""}` : (e.type === "answer" ? `answer: ${e.answer || ""}` : actionText(e) || e.type) }),
+      h("td", {}, e.run ? h("a", { class: "mono", href: `#/run/${enc(layer.key)}/${enc(e.run)}`, text: e.run }) : (e.job ? h("a", { class: "mono", href: `#/job/${enc(e.job)}`, text: `job ${e.job}` }) : "")),
+      h("td", {}, e.status ? h("span", { class: `badge st-${e.status}${e.auto ? " auto" : ""}`, text: e.auto ? `${e.status} · automatic` : e.status }) : null),
+      h("td", { class: "outcome", text: e.outcome || e.reason || "" })));
+    el.appendChild(h("div", { class: "standin-log" }, h("div", { class: "label faint", text: "log (newest first)" }),
+      rows.length ? h("table", {}, h("tbody", {}, rows)) : h("div", { class: "empty", text: "nothing yet" })));
+    el.appendChild(note);
+    el.appendChild(h("div", { class: "faint foot",
+      text: "A local setting of this machine (the file `al decider` writes). It never overrides a rejected review, never lands a protected-path change or a failing check, and never approves its own work." }));
+    return el;
+  }
+
+  /** "proposes: resume from build — the check looks flaky" for a run that waits on a suggestion. */
+  function proposalText(run) {
+    const sg = run.suggestion;
+    return sg ? `proposes: ${actionText(sg)} — ${sg.summary || ""}` : "";
+  }
+
+  /** The stand-in's suggestion for a run with its three answers: Go ahead, Yes with this change, No I decide.
+   * Each is a POST /api/decision (the layer's own entry for an answer, as `al answer`). */
+  function suggestionCard(detail, layerKey, reload) {
+    const sm = detail.summary, sg = sm.suggestion, dc = detail.decision || {};
+    const note = h("div", { class: "suggestion-note", role: "status" });
+    const el = h("div", { class: "card suggestion-card", dataset: { run: sm.id, kind: sg.kind || "" } });
+    const answer = async (kind, text, button) => {
+      button.disabled = true;
+      try {
+        const done = await api.post("/api/decision", { layer: layerKey, run: sm.id, answer: kind, ...(text ? { text } : {}) });
+        replace(note, h("span", { class: "badge ok", text: done.message || done.status }));
+        if (kind === "reject") el.remove();   // the card closes; the run's normal actions stay
+        reload();
+      } catch (err) {
+        replace(note, h("span", { class: "badge warn", text: String(err.message || err) }));
+      } finally {
+        button.disabled = false;
+      }
+    };
+    const change = h("textarea", { class: "suggestion-change", rows: 2, maxlength: 4000, placeholder: "what to do differently", "aria-label": "your change", hidden: true });
+    const go = h("button", { type: "button", class: "btn primary go-ahead", text: "Go ahead", onclick: () => answer("go", "", go) });
+    const canAlter = !["land", "promote"].includes(sg.action);
+    const alter = canAlter ? h("button", { type: "button", class: "btn with-change", text: "Yes, with this change", onclick: () => {
+      if (change.hidden) { change.hidden = false; change.focus(); return; }
+      if (!change.value.trim()) { replace(note, h("span", { class: "badge warn", text: "write the change first" })); change.focus(); return; }
+      answer("alter", change.value.trim(), alter);
+    } }) : null;
+    const no = h("button", { type: "button", class: "btn i-decide", text: "No, I decide", onclick: () => answer("reject", "", no) });
+    const explain = dc.status === "suggested" ? h("button", { type: "button", class: "toggle explain", text: "send me the full explanation",
+      title: "through the layer's notifiers", onclick: () => answer("explain", "", explain) }) : null;
+    const confidence = sg.confidence === null || sg.confidence === undefined ? null
+      : h("span", { class: "badge confidence", text: `${Math.round(sg.confidence * 100)}% sure` });
+    appendAll(el, [
+      h("div", { class: "card-head" }, h("h2", { text: "The stand-in proposes" }), h("span", { class: "badge decision", text: sg.kind || sg.action }), confidence,
+        h("span", { class: "spacer" }), h("span", { class: "faint", text: "nothing happens until you answer" })),
+      h("div", { class: "suggestion-action", text: actionText(sg) }),
+      sg.instructions ? h("div", { class: "suggestion-instructions" }, h("span", { class: "faint", text: "instruction: " }), sg.instructions) : null,
+      h("div", { class: "suggestion-reason" }, h("div", { class: "summary", text: sg.summary || "" }),
+        dc.explanation ? h("div", { class: "explanation", text: dc.explanation }) : null),
+      sg.held ? h("div", { class: "why", text: `not taken by itself: ${sg.held}` }) : null,
+      (sg.read || []).length ? h("div", { class: "suggestion-read faint", text: `it read: ${sg.read.join(", ")}` }) : null,
+      change, h("div", { class: "buttons" }, go, alter, no, explain, note)]);
+    return el;
+  }
+
+  /** "Ask the stand-in" for a failed, died, handed-over or waiting run without a suggestion: it proposes
+   * what to do (a suggestion, whatever the layer's mode) and changes nothing else. */
+  function askStandinButton(summary) {
+    const layer = store.layer(summary.layer);
+    if (!askable(summary) || !layer || !(layer.standin || {}).available || !(layer.standin || {}).writable) return null;
+    const button = h("button", { type: "button", class: "btn ask-standin", text: "Ask the stand-in",
+      title: "it reads what you would read and proposes what to do; nothing else changes" });
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await api.post("/api/standin", { layer: summary.layer, run: summary.id });
+        button.textContent = "The stand-in is reading…";
+      } catch (err) {
+        button.disabled = false;
+        button.textContent = `Ask the stand-in: ${err.message || err}`;
+      }
+    });
+    return button;
+  }
+
+  /** The Decisions card of a run: who decided what, why, and what happened next. */
+  function decisionsCard(detail) {
+    const entries = detail.decisions || [];
+    if (!entries.length) return null;
+    const rows = entries.map((e) => h("tr", { dataset: { who: e.who || "", status: e.status || "" } },
+      h("td", { class: "num faint", title: e.at || "", text: e.at ? fmt.time(Date.parse(e.at) / 1000) : "" }),
+      h("td", {}, h("span", { class: `who ${e.who === "person" ? "person" : "standin"}`, text: e.who || "" }),
+        e.auto ? h("span", { class: "badge auto", text: "automatic" }) : null,
+        e.via ? h("span", { class: "faint", text: ` via ${e.via}` }) : null),
+      h("td", {}, h("b", { text: e.type === "answer" ? `answer: ${e.answer || ""}` : actionText(e) || e.type }),
+        e.status ? h("span", { class: `badge st-${e.status}`, text: e.status }) : null),
+      h("td", { class: "why-cell" }, e.summary ? h("div", { text: e.summary }) : null, e.why ? h("div", { class: "faint", text: e.why }) : null,
+        e.reason ? h("div", { class: "reason", text: e.reason }) : null,
+        (e.read || []).length ? h("div", { class: "faint", text: `it read: ${e.read.join(", ")}` }) : null),
+      h("td", { class: "outcome", text: e.outcome || "" })));
+    return h("div", { class: "card decisions-card" },
+      h("div", { class: "card-head" }, h("h2", { text: "Decisions" }), h("span", { class: "spacer" }),
+        h("span", { class: "faint", text: "who decided what, why, and what happened next" })),
+      h("div", { class: "table-wrap" }, h("table", {},
+        h("thead", {}, h("tr", {}, ["when", "who", "what", "why", "what happened next"].map((label) => h("th", { text: label })))),
+        h("tbody", {}, rows))));
+  }
+
+  /** "the stand-in proposes: retry from STEP — SUMMARY" for a job, from the layers' logs. */
+  function jobProposal(job) {
+    for (const layer of store.layers) {
+      const found = [...((layer.standin || {}).log || [])].reverse().find((e) => e.job === job.id && e.type === "decision" && e.action);
+      if (found) {
+        const verb = found.status === "acted" ? "the stand-in did" : found.status === "suggested" ? "the stand-in proposes" : `the stand-in (${found.status})`;
+        return h("div", { class: "job-proposal", dataset: { status: found.status || "" },
+          text: `${verb}: ${actionText(found)} — ${found.summary || found.reason || ""}` });
+      }
+    }
+    return null;
+  }
+
   /** "heavy claude-fable-5-2 (local setting) · base claude-opus-5-5 (built-in default)" for a run's state.models. */
   function runModelsText(models) {
     return Object.entries(models || {}).map(([tier, spec]) => `${tier} ${(spec && spec.model) || "?"} (${(spec && spec.source) || "?"})`).join(" · ");
@@ -518,13 +770,21 @@
   /** The count on the Runs link: the runs that need someone, over every layer (layers[].needs_you). */
   function updateNavCount() {
     const total = (store.layers || []).reduce((sum, l) => sum + (l.needs_you || 0), 0);
+    const waiting = store.runList().filter((r) => r.bucket === "needs-you" && r.suggestion).length;
     for (const el of document.querySelectorAll('[data-count="needs-you"]')) {
       el.textContent = total ? String(total) : "";
       el.hidden = !total;
-      el.title = `${total} run${total === 1 ? "" : "s"} need${total === 1 ? "s" : ""} you`;
+      el.title = `${total} run${total === 1 ? "" : "s"} need${total === 1 ? "s" : ""} you`
+        + (waiting ? ` (${waiting} with a suggestion of the stand-in)` : "");
+    }
+    const handled = (store.layers || []).reduce((sum, l) => sum + (((l.standin || {}).counts || {}).today || 0), 0);
+    for (const el of document.querySelectorAll('[data-count="stand-in"]')) {
+      el.textContent = handled ? String(handled) : "";
+      el.hidden = !handled;
+      el.title = `${handled} handled by the stand-in today`;
     }
   }
-  store.on((kind) => { if (kind === "snapshot" || kind === "layers") updateNavCount(); });
+  store.on((kind) => { if (kind === "snapshot" || kind === "layers" || kind === "run") updateNavCount(); });
 
   function router() {
     const route = parseRoute();
@@ -704,6 +964,15 @@
           text: `${fmt.dur(duration)}${bar.cost ? ` ${fmt.cost(bar.cost)}` : ""}` }) : null);
       svg.appendChild(row);
     });
+    // the decisions of the stand-in and of people: one line each, inside the run's span (a later one sits at its end)
+    for (const mark of timeline.marks || []) {
+      if (!mark.at || mark.at < t0) continue;
+      const x = labelW + (Math.min(mark.at, tEnd) - t0) * k;
+      svg.appendChild(s("g", { class: `tl-mark ${mark.who === "person" ? "person" : "standin"}${mark.auto ? " auto" : ""}` },
+        s("title", { text: `${mark.who}${mark.auto ? " (automatic)" : ""}: ${mark.action || "decision"} · ${fmt.time(mark.at)}` }),
+        s("line", { x1: x, x2: x, y1: top - 6, y2: height }),
+        s("circle", { cx: x, cy: top - 6, r: 3 })));
+    }
     return svg;
   }
 
@@ -1243,6 +1512,7 @@
     const pools = h("div", { class: "pools" });
     const usage = h("div", { class: "usage" });
     const modelsBox = h("div", { class: "models" });
+    const standinBox = h("div", { class: "standins" });
     const recent = h("div", { class: "table-wrap" });
     const containerNote = h("span", { class: "faint" });
     main.append(strip,
@@ -1251,12 +1521,16 @@
         h("span", { class: "faint", text: "what the agent CLI last reported; not a live meter" })), usage,
       h("div", { class: "card-head" }, h("h2", { text: "Models" }), h("span", { class: "spacer" }),
         h("span", { class: "faint", text: "which model each tier uses; a local setting of this machine" })), modelsBox,
+      h("div", { class: "card-head" }, h("h2", { text: "Stand-in" }), h("span", { class: "spacer" }),
+        h("span", { class: "faint", text: "a strong model that proposes, or takes, the routine decisions a run waits on you for" })), standinBox,
       h("div", { class: "card-head", style: null }, h("h2", { text: "Slots and ports" })), pools,
       h("div", { class: "card-head" }, h("h2", { text: "Recently finished" })), recent);
     grid.style.marginBottom = "18px";
     pools.style.marginBottom = "18px";
     usage.style.marginBottom = "18px";
     modelsBox.style.marginBottom = "18px";
+    standinBox.style.marginBottom = "18px";
+    const standinBlocks = new Map();
     const modelBlocks = new Map();   // layer key -> {sig, el}: a block is rebuilt only when its data changes
     const cards = new Map();
     let selected = -1;
@@ -1335,6 +1609,7 @@
       containerNote.textContent = info.available ? `containers: ${info.note}` : (info.note || "");
       renderUsage();
       renderModels();
+      renderStandins();
       renderPools();
       renderRecent(runs);
     }
@@ -1355,6 +1630,22 @@
       });
       for (const key of [...modelBlocks.keys()]) if (!store.layers.some((l) => l.key === key)) modelBlocks.delete(key);
       if (blocks.length !== modelsBox.children.length || blocks.some((el, i) => modelsBox.children[i] !== el)) replace(modelsBox, blocks);
+    }
+
+    function renderStandins() {
+      if (!store.layers.length) { standinBlocks.clear(); replace(standinBox, h("div", { class: "empty", text: "no layers yet" })); return; }
+      const blocks = store.layers.map((layer) => {
+        const asked = standinAsked.get(layer.key) || new Set();
+        const sig = JSON.stringify([layer.name, layer.standin, waitingBefore(layer).map((r) => [r.id, !!r.suggestion]),
+          store.runList().filter((r) => r.layer === layer.key && asked.has(r.id)).map((r) => [r.id, r.suggestion, r.bucket])]);
+        const known = standinBlocks.get(layer.key);
+        if (known && known.sig === sig) return known.el;
+        const el = standinPanel(layer);
+        standinBlocks.set(layer.key, { sig, el });
+        return el;
+      });
+      for (const key of [...standinBlocks.keys()]) if (!store.layers.some((l) => l.key === key)) standinBlocks.delete(key);
+      if (blocks.length !== standinBox.children.length || blocks.some((el, i) => standinBox.children[i] !== el)) replace(standinBox, blocks);
     }
 
     function renderPools() {
@@ -1454,7 +1745,7 @@
   const groupState = { open: new Set(), lines: [] };   // failure groups: expanded, and the last "Start all again" answers
 
   function RunsView(main, crumbs, route) {
-    const params = { view: "needs-you", layer: "", adw: "", status: "", klass: "", from: "", to: "", q: "", sort: "time", dir: "desc", ...route.params };
+    const params = { view: "needs-you", layer: "", adw: "", status: "", klass: "", from: "", to: "", q: "", sort: "time", dir: "desc", sug: "", ...route.params };
     if (!RUN_VIEWS.some(([v]) => v === params.view)) params.view = "needs-you";
     const selects = {};
     const select = (name, label, values) => {
@@ -1471,8 +1762,9 @@
     const chips = h("div", { class: "chips", role: "tablist", "aria-label": "which runs" });
     const totals = h("div", { class: "strip" });
     const report = h("div", { class: "start-report", role: "status" });   // what "Start all again" did, kept while rows change
+    const standinBar = h("div", { class: "standin-bar" });                // "Ask the stand-in for all N", for a selected layer
     const table = h("table");
-    main.append(chips, filters, totals, report, h("div", { class: "table-wrap" }, table));
+    main.append(chips, filters, totals, standinBar, report, h("div", { class: "table-wrap" }, table));
     const showReport = (lines) => {
       groupState.lines = lines;
       replace(report, lines.map((line) => h("div", { class: line.ok ? "ok" : "error", text: line.text })));
@@ -1489,7 +1781,8 @@
     }
 
     const bucketOf = (r) => r.bucket || (r.status === "running" || r.status === "unknown" ? "running" : "done");
-    const inView = (r) => params.view === "all" || bucketOf(r) === params.view;
+    const inView = (r) => (params.view === "all" || bucketOf(r) === params.view)
+      && !(params.view === "needs-you" && params.sug === "1" && !r.suggestion);
 
     function filtered(all) {
       const q = params.q.toLowerCase();
@@ -1523,8 +1816,37 @@
       replace(chips, RUN_VIEWS.map(([view, label]) => h("button", { type: "button", role: "tab", class: `chip${params.view === view ? " active" : ""}`,
         "aria-selected": params.view === view ? "true" : "false", dataset: { view },
         onclick: () => { params.view = view; update(); } }, label, " ", h("span", { class: "num", text: `(${count(view)})` }))));
-      const need = store.runList().filter((r) => r.bucket === "needs-you").length;
-      replace(crumbs, h("span", { class: "need-count", text: `${need} need${need === 1 ? "s" : ""} you` }));
+      const suggested = every.filter((r) => bucketOf(r) === "needs-you" && r.suggestion).length;
+      if (params.view === "needs-you" && (suggested || params.sug === "1")) {
+        chips.appendChild(h("button", { type: "button", class: `chip sug${params.sug === "1" ? " active" : ""}`, dataset: { view: "suggestion" },
+          title: "runs the stand-in has a proposal for", "aria-pressed": params.sug === "1" ? "true" : "false",
+          onclick: () => { params.sug = params.sug === "1" ? "" : "1"; update(); } }, "with a suggestion ", h("span", { class: "num", text: `(${suggested})` })));
+      }
+      const all = store.runList();
+      const need = all.filter((r) => r.bucket === "needs-you").length;
+      const waiting = all.filter((r) => r.bucket === "needs-you" && r.suggestion).length;
+      const handled = store.layers.reduce((sum, l) => sum + (((l.standin || {}).counts || {}).today || 0), 0);
+      replace(crumbs, h("span", { class: "need-count", text: `${need} need${need === 1 ? "s" : ""} you` }),
+        waiting || handled ? h("span", { class: "standin-count", text: ` · ${waiting} suggestion${waiting === 1 ? "" : "s"} · ${handled} handled by the stand-in today` }) : null);
+    }
+
+    function renderStandinBar() {
+      const layer = params.layer ? store.layer(params.layer) : null;
+      const view = (layer && layer.standin) || {};
+      const open = layer && view.available && view.writable && params.view === "needs-you" ? store.runList().filter((r) => r.layer === layer.key && askable(r)) : [];
+      if (!open.length) { clear(standinBar); return; }
+      const button = h("button", { type: "button", class: "btn ask-all", text: `Ask the stand-in for all ${open.length}`,
+        title: "it proposes what to do with each of these runs; nothing else changes", onclick: async () => {
+          button.disabled = true;
+          try {
+            const answer = await api.post("/api/standin", { layer: layer.key, runs: open.map((r) => r.id).slice(0, 200) });
+            button.textContent = `asked about ${answer.queued} run(s); the proposals appear in the rows`;
+          } catch (err) {
+            button.disabled = false;
+            button.textContent = `Ask the stand-in: ${err.message || err}`;
+          }
+        } });
+      replace(standinBar, button);
     }
 
     function groupRow(group, members, columns) {
@@ -1558,7 +1880,9 @@
       if (needs) {
         return h("tr", { "data-key": run.key, class: `${run.key === selectedKey ? "selected" : ""}${run.group ? " group-member" : ""}`, onclick: open },
           ...base, h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }),
-          h("td", { class: "reason" }, limitBadge(run) || budgetBadge(run), run.reason || ""), h("td", { class: "next mono", text: run.next || "" }));
+          h("td", { class: "reason" }, limitBadge(run) || budgetBadge(run), run.reason || "",
+            run.suggestion ? h("div", { class: "proposal", text: proposalText(run) }) : null),
+          h("td", { class: "next mono", text: run.next || "" }));
       }
       const bucket = bucketOf(run);
       const why = bucket === "landed" ? h("span", { class: "landing", text: landedText(run) })
@@ -1573,6 +1897,7 @@
 
     function render() {
       renderChips();
+      renderStandinBar();
       const runs = filtered();
       const finished = runs.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over");
       const passed = finished.filter((r) => r.status === "passed").length;
@@ -1860,14 +2185,32 @@
             sm.current ? h("span", { class: "badge info", text: `▶ ${sm.current.step}: ${sm.current.action}` }) : null,
             sm.bucket === "landed" ? h("span", { class: "badge good landing", text: landedText(sm) }) : null,
             sm.bucket === "settled" ? h("span", { class: "badge settled", text: settledText(sm) }) : null,
-            startAgainButton(sm),
+            sm.settled && sm.settled.via === "stand-in" ? undoButton(sm) : null,
+            startAgainButton(sm), askStandinButton(sm),
             h("button", { class: "toggle", type: "button", text: "copy link", title: "copy a deep link to this view", onclick: (e) => copyLink(e.target) })),
           prompt,
           sm.problem ? h("div", { class: "badge warn", text: sm.problem }) : null),
         h("div", { class: "figures" }, fig("time", elapsed), fig(costLabel(sm) ? "cost (API-equivalent)" : "cost", h("b", { text: fmt.cost(sm.cost_children ? (sm.cost || 0) + sm.cost_children : sm.cost) },
+          sm.cost_standin ? h("small", { class: "cost-standin", text: ` (stand-in ${fmt.cost(sm.cost_standin)})` }) : null,
           sm.cost_children ? h("small", { text: ` incl. ${fmt.cost(sm.cost_children)} candidates` }) : null,
           sm.budget && sm.budget.run !== null && sm.budget.run !== undefined ? h("small", { class: "budget-of", text: ` of ${fmt.cost(sm.budget.run)} run limit` }) : null)),
           fig("tokens out", h("b", { text: fmt.tokens(sm.tokens.out) })), fig("turns", h("b", { text: sm.turns || "—" }))));
+    }
+
+    /** "Undo" for a settlement the stand-in wrote: the run needs a person again (or its earlier settlement returns). */
+    function undoButton(sm) {
+      const button = h("button", { type: "button", class: "btn undo-settle", text: "Undo", title: "take the stand-in's settlement back" });
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          await api.post("/api/settle", { layer: layerKey, run: sm.id, undo: true });
+          load();
+        } catch (err) {
+          button.disabled = false;
+          button.textContent = `Undo: ${err.message || err}`;
+        }
+      });
+      return button;
     }
 
     function renderTabs() {
@@ -1893,8 +2236,9 @@
       for (const child of [...body.children]) if (child !== graphCard) child.remove();
       if (detail.promotion) body.appendChild(promotionCard(detail, layerKey, load));
       const sm = detail.summary;
+      if (sm.suggestion) body.appendChild(suggestionCard(detail, layerKey, load));
       if (!["running", "unknown"].includes(sm.status) && !sm.settled) body.appendChild(settleCard(detail, layerKey, load));
-      const grid = h("div", { class: "grid-2" }, h("div", { class: "stack" }, timelineCard(), costsCard()), h("div", { class: "stack" }, outcomeCard()));
+      const grid = h("div", { class: "grid-2" }, h("div", { class: "stack" }, timelineCard(), decisionsCard(detail), costsCard()), h("div", { class: "stack" }, outcomeCard()));
       body.appendChild(grid);
     }
 
@@ -1960,6 +2304,7 @@
           ["plan", detail.state.plan ? h("span", { class: "mono", text: detail.state.plan }) : ""], ["source", detail.state.source],
           ["ports", (detail.state.ports || []).join(", ")],
           ["models", runModelsText(detail.state.models)],
+          ["stand-in", detail.standin ? `${detail.standin.mode} (${detail.standin.from === "--decider" ? "--decider" : "layer default"})` : ""],
           ["replaces", sm.replaces ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(sm.replaces)}`, text: sm.replaces }) : ""],
           ["replaced by", sm.replaced_by ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(sm.replaced_by)}`, text: sm.replaced_by }) : ""],
           ["superseded by", sm.superseded_by ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(sm.superseded_by)}`, text: sm.superseded_by }) : ""],
@@ -2510,6 +2855,9 @@
         h("option", { value: "", text: "each step's own tier" }), (catalog.tiers || []).map((t) => h("option", { value: t, text: `every step on ${t}` })));
       const modelInputs = (catalog.tiers || []).map((t) => h("input", { type: "text", class: "mono start-model", dataset: { tier: t },
         placeholder: `${t}: model id (optional)`, "aria-label": `model id for tier ${t}` }));
+      const deciderInfo = catalog.decider || { modes: ["off", "suggest", "auto"], layer: "off" };
+      const decider = h("select", { class: "start-decider", "aria-label": "stand-in for this run" },
+        h("option", { value: "", text: `layer default (${deciderInfo.layer})` }), deciderInfo.modes.map((m) => h("option", { value: m, text: m })));
       const issue = h("select", { class: "start-issue", "aria-label": "log as an issue" });
       const issueRow = h("label", { class: "start-row", hidden: !catalog.issue.available }, h("span", { text: "issue" }), issue);
       const classRow = h("label", { class: "start-row" }, h("span", { text: "class" }), klass);
@@ -2603,6 +2951,7 @@
         for (const input of modelInputs) if (input.value.trim()) models[input.dataset.tier] = input.value.trim();
         const out = { layer: layer.key, request_key: key, issue: issue.value || "none", model_set: tier.value || null, models, ...extra };
         if (e.kind === "workflow" && klass.value) out.class = klass.value;
+        if (decider.value) out.decider = decider.value;
         if (typed() !== null) out.text = prompt.value;
         else { out.target = { kind: e.kind, name: e.name }; out.prompt = prompt.value; }
         return out;
@@ -2643,6 +2992,8 @@
           h("label", { class: "start-row" }, h("span", { text: "run" }), select),
           classRow,
           h("label", { class: "start-row" }, h("span", { text: "tier" }), tier),
+          h("label", { class: "start-row", title: "who decides when this run stops: the layer's stand-in mode, or one for this run only" },
+            h("span", { text: "stand-in" }), decider),
           issueRow),
         modelInputs.length ? h("div", { class: "start-models" }, modelInputs) : null,
         summary, unattended,
@@ -3027,7 +3378,7 @@
         data.jobs.length ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", { text: "Jobs" })),
           h("div", { class: "job-list" }, data.jobs.map((job) => h("a", { class: "job-row", href: `#/job/${enc(job.id)}` },
             pill(job.status), h("span", { class: "mono", text: job.id }), h("span", { text: job.action + (job.preview ? " (dry run)" : "") }),
-            h("span", { class: "faint", text: fmt.ago(job.created) }))))) : null,
+            h("span", { class: "faint", text: fmt.ago(job.created) }), jobProposal(job))))) : null,
         data.summary ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", { text: "Existing agent setup" })),
           h("div", { class: "md" }, renderMarkdown(data.summary))) : null);
     }
@@ -3192,6 +3543,7 @@
         h("div", { class: "outcome-reason", "data-role": "reason", text: o.reason }),
         h("div", { class: "outcome-actions" },
           job.retry_from && store.actions.enabled ? h("div", { class: "job-retry" }, retryButton(job)) : null,
+          jobProposal(job),
           o.log ? h("a", { class: "btn", href: fileUrl(`steps/${o.log}`), download: true, "data-role": "download-log", text: "Download log" }) : null),
         o.lines.length ? h("pre", { class: "outcome-lines", "data-role": "lines", text: o.lines.join("\n") }) : null);
     }

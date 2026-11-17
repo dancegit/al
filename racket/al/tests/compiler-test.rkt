@@ -624,7 +624,7 @@
 
 (define keys-before-delivery
   '(agents artefacts budget codebase commands concurrency dashboard description environments experts forge
-    hops hosts layer llmTxt name notifiers promptInputs registry reviews schemaVersion services storage triggers voice adws))
+    hops hosts layer llmTxt name notifiers promptInputs registry reviews schemaVersion services standIn storage triggers voice adws))
 
 (test-case "delivery: no stage declared = the IR of before"
   (for ([ir (list (compile-layer-datum (layer plan simple-adw))
@@ -1159,3 +1159,92 @@
   (check-equal? (hash-ref (check-step spec "build" "engine-test") 'in) "engine")
   (check-true (for/and ([o (in-list (hash-ref spec 'environments))] #:when (equal? (hash-ref o 'kind) "podman"))
                 (hash-ref o 'nestedEngine))))
+
+;; ---------------------------------------------------------------------------------------- stand-in
+
+(define stand-in-example
+  '(stand-in auto #:model-set heavy #:may (resume restart answer integrate settle)
+             #:never (land promote) #:max-actions-per-run 3 #:max-per-hour 12
+             #:escalate-to (dashboard notify)))
+
+(test-case "stand-in: absent = null; defaults per kind"
+  (define (stand-in-of . clauses) (hash-ref (compile-layer-datum (apply layer plan simple-adw clauses)) 'standIn))
+  (check-equal? (stand-in-of) 'null)
+  (define d (stand-in-of '(stand-in auto)))
+  (check-equal? (hash-ref d 'kind) "auto")
+  (check-equal? (hash-ref d 'may) '("resume"))
+  (check-equal? (hash-ref d 'never) '())
+  (check-equal? (hash-ref d 'maxActionsPerRun) 3)
+  (check-equal? (hash-ref d 'maxPerHour) 12)
+  (check-equal? (hash-ref d 'escalateTo) '("dashboard"))
+  (check-equal? (hash-ref d 'modelSet) "heavy")
+  (check-equal? (hash-ref d 'systemd) #f)
+  (for ([k '(off suggest)])
+    (define o (stand-in-of `(stand-in ,k)))
+    (check-equal? (hash-ref o 'kind) (symbol->string k))
+    (check-equal? (hash-ref o 'may) '("resume")))
+  ;; the example of the feature
+  (define e (stand-in-of stand-in-example '(notify email)))
+  (check-equal? (hash-ref e 'kind) "auto")
+  (check-equal? (hash-ref e 'may) '("resume" "restart" "answer" "integrate" "settle"))
+  (check-equal? (hash-ref e 'never) '("land" "promote"))
+  (check-equal? (hash-ref e 'escalateTo) '("dashboard" "notify"))
+  (check-equal? (list (hash-ref e 'maxActionsPerRun) (hash-ref e 'maxPerHour) (hash-ref e 'modelSet)) '(3 12 "heavy"))
+  (check-true (string? (json-pretty e)))
+  ;; suggest may leave #:may empty: it only proposes
+  (check-equal? (hash-ref (stand-in-of '(stand-in suggest #:may ())) 'may) '())
+  ;; the full example declares one
+  (define full (hash-ref (dynamic-require (build-path examples "full.rkt") 'layer-spec) 'standIn))
+  (check-equal? (list (hash-ref full 'kind) (hash-ref full 'may) (hash-ref full 'maxPerHour)) '("suggest" ("resume" "restart") 6))
+  ;; schema and reference name it
+  (define prop (hash-ref (hash-ref (layer-schema) 'properties) 'standIn))
+  (check-equal? (hash-ref (car (hash-ref prop 'oneOf)) 'type) "null")
+  (check-true (string-contains? (reference-text) "(stand-in off|suggest|auto …) is declared at most once")))
+
+(test-case "stand-in: rules"
+  (define (with . clauses) (apply layer plan simple-adw clauses))
+  (check-rejects (with '(stand-in suggest) '(stand-in auto #:id two)) #rx"only one stand-in may be declared")
+  (check-rejects (with '(stand-in suggest #:may (resume restart) #:never (restart)))
+                 #rx"\\(stand-in …\\): restart is in both #:may and #:never")
+  (check-rejects (with '(stand-in auto #:may ()))
+                 #rx"\\(stand-in auto\\): #:may is empty; list the decisions it may take, or use \\(stand-in suggest\\)")
+  (check-rejects (with '(stand-in suggest #:max-actions-per-run 0)) #rx"#:max-actions-per-run must be between 1 and 20 \\(got 0\\)")
+  (check-rejects (with '(stand-in suggest #:max-actions-per-run 21)) #rx"#:max-actions-per-run must be between 1 and 20 \\(got 21\\)")
+  (check-rejects (with '(stand-in suggest #:max-per-hour 0)) #rx"#:max-per-hour must be between 1 and 1000 \\(got 0\\)")
+  (check-rejects (with '(stand-in suggest #:max-per-hour 1001)) #rx"#:max-per-hour must be between 1 and 1000 \\(got 1001\\)")
+  (check-not-exn (lambda () (compile-layer-datum (with '(stand-in suggest #:max-actions-per-run 20 #:max-per-hour 1000)))))
+  (check-rejects (with '(stand-in suggest #:escalate-to ())) #rx"#:escalate-to is empty; list dashboard, notify or both")
+  (check-rejects (with '(stand-in suggest #:escalate-to (notify)))
+                 #rx"#:escalate-to notify needs a \\(notify …\\) that lists needs-human")
+  (check-rejects (with '(stand-in suggest #:escalate-to (notify)) '(notify email #:events (failed)))
+                 #rx"#:escalate-to notify needs a \\(notify …\\) that lists needs-human")
+  (check-not-exn (lambda () (compile-layer-datum (with '(stand-in suggest #:escalate-to (notify)) '(notify email)))))
+  (check-rejects (with '(stand-in suggest #:model-set fast))
+                 #rx"\\(stand-in …\\): #:model-set fast is not a tier of agent claude-code, which runs ADW a")
+  (check-not-exn (lambda () (compile-layer-datum
+                             (with '(stand-in suggest #:model-set fast) '(agent claude-code #:models ((fast "claude-haiku-5-5")))))))
+  (check-rejects (with '(stand-in suggest #:may (bless))) #rx"#:may")
+  (check-rejects (with '(stand-in maybe)) #rx"stand-in")
+  ;; land needs an automatic review that ships, used by an ADW with a (ship) step
+  (check-rejects (with '(stand-in auto #:may (land)))
+                 #rx"#:may land needs an automatic review that can pass: a \\(review auto … #:ship merge\\) used by an ADW with a \\(ship\\) step")
+  (check-rejects (apply layer (append zte-parts (list '(review auto #:id pr-only #:require-checks (test) #:ship pr)
+                                                      '(adw zte #:environment (worktree podman) #:review pr-only
+                                                            (steps (run plan #:command plan) (check t #:cmd test) (review) (ship)))
+                                                      '(stand-in auto #:may (land)))))
+                 #rx"#:may land needs an automatic review that can pass")
+  (check-not-exn (lambda () (compile-layer-datum (apply layer (append zte-parts (list (zte-adw) '(stand-in auto #:may (resume land))))))))
+  ;; a suggestion to land needs nothing: only #:may is checked
+  (check-not-exn (lambda () (compile-layer-datum (with '(stand-in suggest #:never (land))))))
+  (check-rejects (with '(stand-in auto #:may (promote))) #rx"\\(stand-in …\\): #:may promote needs declared stages")
+  (check-not-exn (lambda () (compile-layer-datum (promo-layer '(stand-in auto #:may (promote))))))
+  (check-rejects (with '(stand-in suggest #:systemd #t) '(dashboard none))
+                 #rx"#:systemd #t needs \\(dashboard local\\): the loop is the dashboard's")
+  (check-not-exn (lambda () (compile-layer-datum (with '(stand-in suggest #:systemd #t)))))
+  ;; the error of a layer file points at the (stand-in …) clause
+  (define dir (make-temporary-file "al-standin-~a" 'directory))
+  (call-with-output-file (build-path dir "agentic.rkt")
+    (lambda (o) (write-string "#lang al\n(agentic-layer #:name \"x\"\n  (codebase #:root \".\" #:languages (c) (cmd test \"make\"))\n  (command plan #:template plan-chore)\n  (stand-in auto\n            #:may ())\n  (adw a (steps (run plan #:command plan))))\n" o)))
+  (define msg (with-handlers ([exn:fail:syntax? exn-message]) (dynamic-require (build-path dir "agentic.rkt") #f) "no error"))
+  (check-regexp-match #rx"agentic.rkt:5:2.*#:may is empty" msg)
+  (delete-directory/files dir))

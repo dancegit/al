@@ -7,7 +7,7 @@
 
   dashboard.py --layer path/to/app.al [--layer …] [--scan DIR …] [--port 8765] [--bind 127.0.0.1]
                [--token T] [--open] [--read-only] [--no-start] [--workspace DIR …] [--workspace-depth N]
-               [--no-workspace] [--no-actions] [--jobs-dir DIR] [--al PATH]
+               [--no-workspace] [--no-actions] [--jobs-dir DIR] [--al PATH] [--no-stand-in | --stand-in-only]
 
 It watches each layer's `agents/` (run state, run.log, step transcripts, check logs, slot locks,
 port leases) and `artefacts/` by polling mtimes and sizes, and serves one page that updates over
@@ -21,6 +21,14 @@ It also lists the git repositories of a workspace (the folder holding each layer
 --workspace DIR) with their al state (layer / setup / none), read-only, and runs allow-listed `al`
 commands on one of them from the page (scout, create, adopt, gen, check, verify, explain) as recorded
 jobs in --jobs-dir.
+
+It is also the control room of the stand-in (kit/runtime/adw_modules/standin.py), always through the
+layer's own `adws/standin.py`, never by importing a layer's runtime: the Stand-in panel switches the
+mode, the scope and the pause (POST /api/decider, the file `al decider` writes), a suggestion is
+answered on the page (POST /api/decision, the entry of `al answer`), "Ask the stand-in" files a
+suggestion for an old hand-over or failure (POST /api/standin), and a loop hands each new item of
+"Needs you" to the stand-in, one at a time (Model.tick_standin). --no-stand-in keeps the loop out of
+this process; --stand-in-only runs the loop without the page (the generated systemd unit).
 
 --read-only turns every write off; --no-start and --no-actions each turn off their own.
 """
@@ -113,6 +121,23 @@ START_ISSUE = ("none", "start", "trigger")
 START_KEY = re.compile(r"^[A-Za-z0-9_-]{8,64}$")     # mirror of launch.KEY_RE
 COMMAND_PREFIX = "command:"       # a single-command run's ADW name (launch.single_command_adw)
 LAUNCHER = "adws/dispatch.py"
+# The stand-in (kit/runtime/adw_modules/standin.py), always asked through the layer's own script:
+STANDIN_SCRIPT = "adws/standin.py"
+STANDIN_EVERY = 5.0               # seconds between looks at the Needs you list for the stand-in
+STANDIN_TIMEOUT = 1800.0          # seconds one decision of the stand-in may take (an agent call)
+STANDIN_STATUS_TIMEOUT = 30.0     # seconds the layer's script may take to answer status, set, answer or note
+STANDIN_KINDS = ("resume", "restart", "answer", "integrate", "settle", "land", "promote", "retry-job")  # mirror of standin.KINDS
+DECIDER_MODES = ("off", "suggest", "auto")   # mirror of decide.MODES
+DECIDER_FILE = "agents/settings/decider.json"   # the stand-in's local setting (decide.SETTINGS_FILE)
+STANDIN_LOG = "agents/stand-in/log.jsonl"       # the layer's log of decisions (standin.LOG_FILE)
+DECISIONS_FILE = "decisions.jsonl"              # agents/<id>/decisions.jsonl: the decisions of one run
+STANDIN_KEYS = {"decider": {"layer", "mode", "reset", "may", "paused"},
+                "decision": {"layer", "run", "answer", "text"},
+                "standin": {"layer", "run", "runs", "apply"}}
+DECISION_ANSWERS = ("go", "alter", "reject", "explain")
+ASK_STATUSES = ("failed", "died", "handed-over", "waiting")   # what "Ask the stand-in" is offered for
+MAX_ASK_RUNS = 200
+MAX_DECISIONS = 200               # entries of a run's decisions.jsonl the run page carries
 LAUNCH_MODULE = "adws/adw_modules/launch.py"
 WINDOW_LABELS = {"five_hour": "5-hour", "seven_day": "weekly"}
 WINDOW_ORDER = ("five_hour", "seven_day")
@@ -1655,10 +1680,11 @@ def _issue_input(ir: dict[str, Any], adw: dict[str, Any]) -> str:
     return next((str(i) for i in adw.get("input") or [] if kinds.get(str(i)) == "issue"), "")
 
 
-def startables(layer: Layer) -> dict[str, Any]:
+def startables(layer: Layer, decider: str = "off") -> dict[str, Any]:
     """Everything a person may start in this layer, from the compiled IR (adopted workflows and
     prompts included, nothing else is consulted): its workflows, and its commands and hops (each one
-    a single-command run that never ships)."""
+    a single-command run that never ships). `decider` is the layer's stand-in mode now (what a start
+    without its own `decider` runs with)."""
     ir = layer.ir
     forge_kind = str((ir.get("forge") or {}).get("kind") or "none") if isinstance(ir.get("forge"), dict) else "none"
     workflows = []
@@ -1694,6 +1720,7 @@ def startables(layer: Layer) -> dict[str, Any]:
             "issue": {"available": forge_kind != "none",
                       "trigger": [w["name"] for w in workflows if w["issue_trigger"]]},
             "tiers": declared_tiers(ir), "classes": list(START_CLASSES),
+            "decider": {"modes": list(DECIDER_MODES), "layer": decider if decider in DECIDER_MODES else "off"},
             "collisions": sorted(c["name"] for c in commands if c["name"] in names)}
 
 
@@ -1835,6 +1862,78 @@ def promotion_view(layer: Layer, run_id: str, state: dict[str, Any], short: Call
     return view
 
 
+def standin_via_layer(layer: Layer, argv: list[str], stdin: Any = None,
+                      timeout: float = STANDIN_STATUS_TIMEOUT) -> tuple[int, dict[str, Any], str]:
+    """Run the layer's own `adws/standin.py ARGV` (status, set, consider, apply, answer, note; the
+    layer's runtime version): argv list, no shell, `stdin` (text, or a value sent as JSON) on its
+    standard input, the dashboard's token not passed on. → (exit code, the JSON of its last output
+    line, stderr tail)."""
+    command = [sys.executable, str(layer.path / STANDIN_SCRIPT), *argv]
+    env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
+    data = b"" if stdin is None else (stdin if isinstance(stdin, str) else json.dumps(stdin)).encode("utf-8")
+    try:
+        done = subprocess.run(command, input=data, capture_output=True, cwd=str(layer.path), env=env,
+                              timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        return -1, {}, f"the layer's standin.py took longer than {int(timeout)} s"
+    except OSError as exc:
+        return -1, {}, f"cannot run the layer's standin.py: {exc}"
+    tail = done.stderr.decode("utf-8", "replace")[-2000:]
+    lines = [line for line in done.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    try:
+        result = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        result = {}
+    return done.returncode, result if isinstance(result, dict) else {}, tail
+
+
+def read_decisions(path: Path, limit: int | None = MAX_DECISIONS) -> list[dict[str, Any]]:
+    """The entries of a decisions.jsonl or of the layer's log (standin.record), oldest first, each with
+    the notes that name it folded in (its outcome, its stop); bad lines are skipped."""
+    out: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for line in read_text(path, cap=4_000_000).splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(item, dict) or not item.get("id") or not isinstance(item.get("type"), str):
+            continue
+        if item["type"] == "note" and item.get("ref"):
+            target = by_id.get(str(item["ref"]))
+            if target is not None:
+                target.update({key: item[key] for key in ("outcome", "stop", "reason") if key in item})
+            continue
+        out.append(item)
+        by_id[str(item["id"])] = item
+    return out[-limit:] if limit else out
+
+
+def run_fingerprint(state: dict[str, Any]) -> str:
+    """What identifies one stop of a run (mirror of standin.fingerprint): status, end, failed step."""
+    failed = next((str(r.get("name")) for r in state.get("steps") or []
+                   if isinstance(r, dict) and r.get("status") == "failed"), "")
+    return f"{state.get('status')}:{state.get('ended') or ''}:{failed}"
+
+
+_ENTRY_TEXT = ("id", "at", "type", "who", "via", "mode", "situation", "kind", "action", "answer", "summary", "why",
+               "status", "reason", "outcome", "from_step", "instructions", "settle_as", "promote", "run", "job")
+
+
+def entry_view(entry: dict[str, Any], short: Callable[[str], str], limit: int = 2000) -> dict[str, Any]:
+    """One entry of the stand-in's record as the page gets it: known keys only, every string shortened and clipped."""
+    view: dict[str, Any] = {key: clip(short(str(entry[key])), limit) for key in _ENTRY_TEXT
+                            if isinstance(entry.get(key), (str, int, float)) and not isinstance(entry.get(key), bool)}
+    view["auto"] = entry.get("auto") is True
+    confidence = entry.get("confidence")
+    view["confidence"] = float(confidence) if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) else None
+    view["read"] = [clip(short(str(x)), 200) for x in entry.get("read") or [] if isinstance(x, str)][:20] \
+        if isinstance(entry.get("read"), list) else []
+    cost = entry.get("cost")
+    view["cost"] = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
+    return view
+
+
 def start_via_layer(layer: Layer, request: dict[str, Any], timeout: float = START_TIMEOUT) -> tuple[int, dict[str, Any], str]:
     """Run the layer's own launcher (`adws/dispatch.py --start --json`, the layer's runtime version):
     argv list, prompt on stdin, no shell. It reserves the run and launches it detached in its own
@@ -1850,6 +1949,7 @@ def start_via_layer(layer: Layer, request: dict[str, Any], timeout: float = STAR
     argv += ["--confirm-duplicate"] if request.get("confirm_duplicate") else []
     argv += ["--confirm-ships"] if request.get("confirm_ships") else []
     argv += ["--replaces", request["replaces"]] if request.get("replaces") else []
+    argv += ["--decider", request["decider"]] if request.get("decider") else []
     env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
     try:
         done = subprocess.run(argv, input=request["prompt"].encode("utf-8"), capture_output=True, cwd=str(layer.path),
@@ -1983,6 +2083,25 @@ def write_settlement(layer_dir: Path, run_id: str, *, as_: str, by: str = "", no
             record["pruned"] = previous["pruned"]
     _write_record(Path(layer_dir) / "agents" / run_id / SETTLEMENT_FILE, record)
     return record
+
+
+def remove_settlement(layer_dir: Path, run_id: str) -> dict[str, Any] | None:
+    """Undo the last settlement of a run: the record kept under `previous` comes back when there is
+    one, else the file goes. Returns what is left (None: the run is not settled any more). SettleError
+    (missing) for a run without a settlement."""
+    path = Path(layer_dir) / "agents" / run_id / SETTLEMENT_FILE
+    if not RUN_ID.match(run_id or "") or read_settlement(layer_dir, run_id) is None:
+        raise SettleError(f"run {run_id} has no settlement", "missing")
+    current = read_settlement(layer_dir, run_id) or {}
+    previous = current.get("previous")
+    if isinstance(previous, dict) and previous.get("as") in SETTLE_AS:
+        record = {k: v for k, v in previous.items() if k not in ("previous", "pruned")}
+        if current.get("pruned"):
+            record["pruned"] = current["pruned"]
+        _write_record(path, record)
+        return record
+    path.unlink()
+    return None
 
 
 def add_pruned(layer_dir: Path, run_id: str, pruned: dict[str, Any], landing: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2488,7 +2607,8 @@ class RunFiles:
 
     def signature(self, deep: bool) -> tuple:
         items: list[Any] = [stat_sig(self.dir / "state.json"), stat_sig(self.dir / "run.log"), mtime(self.dir),
-                            stat_sig(self.dir / EVENTS_FILE), stat_sig(self.dir / SETTLEMENT_FILE)]
+                            stat_sig(self.dir / EVENTS_FILE), stat_sig(self.dir / SETTLEMENT_FILE),
+                            stat_sig(self.dir / DECISIONS_FILE)]
         if deep:
             items.append(stat_sig(self.dir / "PR.md"))
             items.append(stat_sig(self.layer.path / "artefacts" / self.id / "manifest.json"))
@@ -3199,6 +3319,7 @@ class RunModel:
         parent = state.get("fanout_parent") if isinstance(state.get("fanout_parent"), dict) else {}
         pr = ship.get("pr") if isinstance(ship.get("pr"), dict) else {}
         return {
+            **self._standin(state, agents),
             "key": f"{self.layer.key}/{self.id}", "layer": self.layer.key, "id": self.id, "adw": data["adw"].get("name"),
             "status": status, "problem": data["problem"],
             "klass": state.get("klass") or (facts["start"] or {}).get("klass") or "",
@@ -3246,6 +3367,36 @@ class RunModel:
             "mentions": prompt_mentions(prompt),
             **extras,
         }
+
+    def _standin(self, state: dict[str, Any], agents: list[dict[str, Any]]) -> dict[str, Any]:
+        """What the stand-in did with the run: the suggestion waiting for an answer, its last entry, the
+        stop it looked at last and what its calls cost. None / "" for a run it never saw."""
+        short = self._short(state)
+        recorded = state.get("decision") if isinstance(state.get("decision"), dict) else {}
+        suggestion = None
+        if recorded.get("status") in ("suggested", "explained") and recorded.get("action"):
+            action = str(recorded.get("action"))
+            suggestion = {key: clip(short(str(recorded.get(key) or "")), 600) for key in
+                          ("kind", "action", "summary", "instructions", "from_step", "settle_as", "promote", "at",
+                           "situation", "held")}
+            suggestion["kind"] = suggestion["kind"] or {"resume-with": "resume"}.get(action, action)
+            confidence = recorded.get("confidence")
+            suggestion["confidence"] = (float(confidence) if isinstance(confidence, (int, float))
+                                        and not isinstance(confidence, bool) else None)
+            suggestion["read"] = [clip(short(str(x)), 200) for x in recorded.get("read") or [] if isinstance(x, str)][:20] \
+                if isinstance(recorded.get("read"), list) else []
+        mine = [e for e in read_decisions(self.files.dir / DECISIONS_FILE) if e.get("who") == "stand-in"
+                and e.get("type") == "decision"]
+        last = mine[-1] if mine else None
+        costs = [a["cost"] for a in agents if a.get("dir") == "decide" and isinstance(a.get("cost"), (int, float))]
+        return {"decider": str(state.get("decider") or "") if state.get("decider") in DECIDER_MODES else "",
+                "suggestion": suggestion, "decision_status": clip(str(recorded.get("status") or ""), 40),
+                "standin_last": ({**{key: clip(short(str(last.get(key) or "")), 600) for key in
+                                     ("at", "action", "status", "outcome", "reason")}, "auto": last.get("auto") is True}
+                                 if last else None),
+                "standin_stop": str(last.get("stop") or "") if last else "",
+                "fingerprint": run_fingerprint(state) if state else "",
+                "cost_standin": round(sum(costs), 6) if costs else None}
 
     def _promotion_badge(self, state: dict[str, Any], status: str) -> dict[str, Any]:
         """A promotion run's badge for the run card and the runs list."""
@@ -3444,10 +3595,22 @@ class RunModel:
             decision = {key: short(str(recorded.get(key) or "")) for key in
                         ("mode", "action", "from_step", "stopped_at", "summary", "instructions", "status", "skipped",
                          "reason")}
+            decision.update({key: short(str(recorded.get(key) or "")) for key in ("kind", "situation", "settle_as",
+                                                                                 "promote", "held", "outcome")})
+            decision["explanation"] = clip(short(str(recorded.get("explanation") or "")), 4000)
+            confidence = recorded.get("confidence")
+            decision["confidence"] = (float(confidence) if isinstance(confidence, (int, float))
+                                      and not isinstance(confidence, bool) else None)
+            decision["read"] = [clip(short(str(x)), 200) for x in recorded.get("read") or [] if isinstance(x, str)][:20] \
+                if isinstance(recorded.get("read"), list) else []
             decision["rounds"] = recorded.get("rounds") if isinstance(recorded.get("rounds"), int) else 0
             decision["answer"] = ({key: short(str(last.get(key) or "")) for key in ("kind", "via", "at", "text")}
                                   if last else None)
             decision["file"] = "decision.md" if (self.files.dir / "decision.md").is_file() else ""
+        decisions = [entry_view(e, short) for e in read_decisions(self.files.dir / DECISIONS_FILE)]
+        timeline["marks"] = [{"at": parse_time(e.get("at")), "who": e.get("who", ""),
+                              "action": e.get("action") or e.get("answer") or "", "auto": e["auto"]}
+                             for e in decisions if e.get("type") in ("decision", "answer") and parse_time(e.get("at"))]
         review = state.get("review") or {}
         rounds = []
         for item in review.get("rounds") or []:
@@ -3517,7 +3680,8 @@ class RunModel:
             "review": {"mode": review.get("mode", ""), "success": (review.get("verdict") or {}).get("success"),
                        "summary": short((review.get("verdict") or {}).get("summary", "")), "rounds": rounds},
             "ship": {k: (short(v) if isinstance(v, str) else v) for k, v in ship.items() if k != "gate"},
-            "gate": gate, "handoff": handoff, "decision": decision, "fanout": fanout, "artefacts": artefacts,
+            "gate": gate, "handoff": handoff, "decision": decision, "decisions": decisions,
+            "fanout": fanout, "artefacts": artefacts,
             "documents": run_documents(self.layer, self.id, state),
             "budget": budget_view(state),
             "usage": usage_view(state),
@@ -3785,7 +3949,7 @@ class Model:
                  no_start: bool = False, allow_start: bool = False,
                  workspace: Workspace | None = None, jobs: Jobs | None = None, al: Path | None = None,
                  al_looked: list[str] | None = None, no_actions: bool = False,
-                 author_flags: list[str] | None = None) -> None:
+                 author_flags: list[str] | None = None, no_standin: bool = False) -> None:
         self.workspace = workspace
         self.jobs = jobs
         self.al = al
@@ -3830,6 +3994,17 @@ class Model:
         self.attention: dict[str, dict[str, Any]] = {}       # run key → attention() of its layer
         self.attention_pending: dict[str, int] = {}          # layer key → landed checks still waiting
         self.pr_answers: dict[tuple, tuple[float, dict[str, Any]]] = {}   # (run key, target heads) → (at, answer)
+        # the stand-in: its loop runs here unless nothing may be written, and one worker asks one layer script at a time
+        self.no_standin = no_standin
+        self.standin_on = not read_only and not in_container and not no_standin
+        self.started = time.time()
+        self.standin_views: dict[str, tuple[tuple, dict[str, Any]]] = {}   # layer key → (signature, status answer)
+        self.standin_sigs: dict[str, tuple] = {}
+        self.standin_queue: queue.Queue = queue.Queue()
+        self.standin_pending: set[str] = set()               # "layer/run" or "layer/job:ID" waiting for the worker
+        self.standin_done: dict[str, str] = {}               # item key → the stop this process handed over already
+        self.standin_tick = 0.0
+        self.standin_thread: threading.Thread | None = None
 
     # ---------------------------------------------------------------- discovery
     def discover(self) -> bool:
@@ -4096,7 +4271,7 @@ class Model:
                                 start_new_session=True, close_fds=True)
         threading.Thread(target=proc.wait, name=f"job-{directory.name}", daemon=True).start()   # no zombie runner
 
-    def retry_job(self, job_id: str, step: str) -> tuple[int, dict[str, Any]]:
+    def retry_job(self, job_id: str, step: str, by: str = "person") -> tuple[int, dict[str, Any]]:
         """Run a failed or interrupted job again from its first step that did not pass, in place: the
         passed steps, their times and the output log stay. A retried `author` gets --accept-existing.
         → (status, body)."""
@@ -4136,6 +4311,10 @@ class Model:
             write_json_atomic(directory / "job.json", job)
             self._launch(directory)
         self.hub.publish("job", job_summary(job))
+        if by == "person":
+            for layer in self.layers_of_repo(app):
+                self.standin_note(layer, {"job": job_id, "kind": "retry-job", "action": "retry-job",
+                                          "outcome": f"retried from {step}"})
         return 202, {"job": job_id, "from": step}
 
     @staticmethod
@@ -4196,8 +4375,246 @@ class Model:
                             "budget": self.layer_budget(layer, runs),
                             "usage": self.layer_usage(layer, time.time()),
                             "models": layer.models_view(self.read_only),
+                            "standin": self.standin_view(layer),
                             "start": start_status(layer, self)})
             return out
+
+    # ---------------------------------------------------------------- the stand-in
+    def standin_loop(self) -> str:
+        """Whether this process hands the Needs you list to the stand-in, and why not."""
+        if self.read_only:
+            return "off: --read-only"
+        if self.in_container:
+            return "off: in a container"
+        if self.no_standin:
+            return "off: --no-stand-in"
+        return "on"
+
+    def _standin_sig(self, layer: Layer) -> tuple:
+        return (stat_sig(layer.path / DECIDER_FILE), stat_sig(layer.path / STANDIN_LOG), layer.sig,
+                stat_sig(layer.path / STANDIN_SCRIPT), local_day(time.time()))
+
+    def standin_view(self, layer: Layer) -> dict[str, Any]:
+        """The Stand-in panel of one layer: the answer of its `adws/standin.py status` (mode, source,
+        scope, limits, counts, the end of the log), kept until the setting, the log or the layer changes,
+        plus whether the page may switch it and whether the loop runs here."""
+        base = {"loop": self.standin_loop()}
+        if not (layer.path / STANDIN_SCRIPT).is_file():
+            return {"available": False, "why": f"generated before the stand-in: run `al gen {layer.name}`",
+                    "mode": "off", "writable": False, **base}
+        sig = self._standin_sig(layer)
+        cached = self.standin_views.get(layer.key)
+        if cached is not None and cached[0] == sig:
+            view = cached[1]
+        else:
+            code, result, tail = standin_via_layer(layer, ["status", "--json"])
+            if code == 0 and result.get("mode") in DECIDER_MODES:
+                view = {"available": True, "why": "", **result}
+            else:
+                last = (tail.strip().splitlines() or ["no answer"])[-1]
+                view = {"available": False, "mode": "off",
+                        "why": f"the layer's stand-in did not answer: {clip(home_short(last), 300)}"}
+            self.standin_views[layer.key] = (sig, view)
+        writable, why = settings_writable(layer, self.read_only)
+        return {**view, "writable": bool(view.get("available")) and writable, "why": view.get("why") or why, **base}
+
+    def drop_standin_view(self, layer: Layer) -> None:
+        self.standin_views.pop(layer.key, None)
+
+    def standin_item(self, row: dict[str, Any]) -> dict[str, Any]:
+        """What the stand-in is told about one run of the Needs you list."""
+        landing = row.get("landing") if isinstance(row.get("landing"), dict) else {}
+        return {"run": row["id"], "status": row.get("status"), "reason": str(row.get("reason") or ""),
+                "next": str(row.get("next") or ""),
+                "landing": {"state": landing.get("state"), "differ": landing.get("differ"), "target": landing.get("target")},
+                "target_branch": str(row.get("target_branch") or ""), "replaced_by": str(row.get("replaced_by") or "")}
+
+    def standin_items(self, layer: Layer, view: dict[str, Any]) -> list[dict[str, Any]]:
+        """The items the loop hands to the stand-in, oldest first: runs of the layer that need a person,
+        are not running, stopped after the stand-in was switched on and whose stop it has not looked at;
+        and failed or interrupted jobs on the layer's repository it has not looked at."""
+        since = parse_time(view.get("since")) or self.started
+        with self.lock:
+            rows = [self._decorated(s) for s in self.summaries.values() if s["layer"] == layer.key]
+        items: list[dict[str, Any]] = []
+        for row in sorted(rows, key=lambda r: (r.get("ended") or r.get("started") or 0, r["id"])):
+            if row.get("bucket") != "needs-you" or row.get("status") in ("running", "unknown"):
+                continue
+            if row.get("decider") == "off":                      # the run's own --decider off
+                continue
+            if row.get("decision_status") == "resuming":         # a resume was started: not a new stop
+                continue
+            ended = parse_time(row.get("ended_at")) or row.get("ended") or row.get("last_seen") or row.get("mtime") or 0
+            if ended <= since:
+                continue
+            stop = str(row.get("fingerprint") or "")
+            if row.get("standin_stop") == stop or self.standin_done.get(row["key"]) == stop:
+                continue
+            items.append(self.standin_item(row))
+        if self.jobs is None or self.workspace is None or self.no_actions:
+            return items
+        repo = app_repo(layer.path, layer.ir)
+        seen = {str(e.get("stop") or "") for e in read_decisions(layer.path / STANDIN_LOG, limit=None) if e.get("job")}
+        for job_id in self.jobs.ids():
+            directory = self.jobs.dir(job_id)
+            job = self.jobs.read(job_id) if directory else None
+            if job is None or directory is None or repo is None:
+                continue
+            job = self.jobs.settle(job)
+            if job.get("preview") or job.get("status") not in ("failed", "interrupted"):
+                continue
+            if os.path.realpath(str(job.get("repo_path") or "")) != os.path.realpath(str(repo)):
+                continue
+            ended = parse_time(job.get("ended")) or 0
+            stop = f"job:{job_id}:{len(job.get('retries') or [])}"
+            if ended <= since or stop in seen or self.standin_done.get(f"{layer.key}/job:{job_id}") == stop:
+                continue
+            step = retry_from(job)
+            items.append({"job": {"id": job_id, "action": str(job.get("action") or ""), "failed_step": step,
+                                  "reason": clip(str(job.get("reason") or ""), 600),
+                                  "log": "\n".join(last_relevant_lines(directory, step)),
+                                  "retries": len(job.get("retries") or [])}})
+        return items
+
+    @staticmethod
+    def _standin_key(layer: Layer, item: dict[str, Any]) -> str:
+        job = item.get("job") if isinstance(item.get("job"), dict) else None
+        return f"{layer.key}/job:{job['id']}" if job else f"{layer.key}/{item.get('run')}"
+
+    def standin_enqueue(self, layer: Layer, verb: str, item: dict[str, Any]) -> bool:
+        """Queue one piece of work for the stand-in (consider, ask, apply); False when it is queued already."""
+        key = self._standin_key(layer, item)
+        with self.lock:
+            if key in self.standin_pending:
+                return False
+            self.standin_pending.add(key)
+            if self.standin_thread is None or not self.standin_thread.is_alive():
+                self.standin_thread = threading.Thread(target=self.standin_worker, name="stand-in", daemon=True)
+                self.standin_thread.start()
+        self.standin_queue.put((layer.key, verb, item))
+        return True
+
+    def tick_standin(self, now: float) -> None:
+        """Hand the first new item of each layer's Needs you list to the stand-in (one per layer and look)."""
+        if not self.standin_on or now - self.standin_tick < STANDIN_EVERY:
+            return
+        self.standin_tick = now
+        with self.lock:
+            layers = list(self.layers.values())
+        for layer in layers:
+            view = self.standin_view(layer)
+            if not view.get("available") or view.get("mode") not in ("suggest", "auto") or view.get("paused") \
+                    or view.get("error"):
+                continue
+            for item in self.standin_items(layer, view):
+                if self.standin_enqueue(layer, "consider", item):
+                    break
+
+    def standin_worker(self) -> None:
+        """One piece of stand-in work at a time, for every layer, until the dashboard stops."""
+        while not self.stop.is_set():
+            try:
+                layer_key, verb, item = self.standin_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            layer = self.layers.get(layer_key)
+            try:
+                if layer is not None:
+                    self.standin_handle(layer, verb, item)
+            except Exception as exc:  # noqa: BLE001 — one item must never stop the worker
+                print(f"[dashboard] stand-in error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            finally:
+                if layer is not None:
+                    with self.lock:
+                        self.standin_pending.discard(self._standin_key(layer, item))
+
+    def standin_handle(self, layer: Layer, verb: str, item: dict[str, Any]) -> dict[str, Any]:
+        """Do one piece of stand-in work through the layer's script and publish what changed. `verb`:
+        consider (the loop), ask ("Ask the stand-in": a suggestion whatever the mode) or apply (a stored
+        suggestion). A `retry-job` the stand-in decided is carried out here, where the jobs are."""
+        job = item.get("job") if isinstance(item.get("job"), dict) else None
+        if verb == "apply":
+            argv, stdin = ["apply", str(item.get("run")), "--via", "dashboard", "--json"], None
+        elif verb == "ask":
+            argv, stdin = ["consider", "--suggest-only", "--via", "asked", "--json"], item
+        else:
+            argv, stdin = ["consider", "--via", "loop", "--json"], item
+        _code, result, tail = standin_via_layer(layer, argv, stdin=stdin, timeout=STANDIN_TIMEOUT)
+        if not result:
+            result = {"status": "failed", "reason": clip(home_short((tail.strip().splitlines() or ["no answer"])[-1]), 300)}
+        if verb == "consider":
+            with self.lock:
+                row = self.summaries.get(f"{layer.key}/{item.get('run')}") if job is None else None
+            stop = f"job:{job['id']}:{int(job.get('retries') or 0)}" if job else str((row or {}).get("fingerprint") or "")
+            self.standin_done[self._standin_key(layer, item)] = stop
+        perform = result.get("perform") if isinstance(result.get("perform"), dict) else None
+        if perform and perform.get("kind") == "retry-job":
+            status, answer = self.retry_job(str(perform.get("job") or ""), str(perform.get("from") or ""), by="stand-in")
+            text = f"retried from {perform.get('from')}" if status == 202 else f"not retried: {answer.get('error', status)}"
+            entry = result.get("entry") if isinstance(result.get("entry"), dict) else {}
+            if entry.get("id"):
+                standin_via_layer(layer, ["note", "--json"], stdin={"ref": entry["id"], "outcome": text})
+        self.drop_standin_view(layer)
+        if job is None and RUN_ID.match(str(item.get("run") or "")):
+            self.refresh_run(layer, str(item["run"]))
+        self.hub.publish("layers", self.layer_list())
+        return result
+
+    def refresh_run(self, layer: Layer, run_id: str) -> None:
+        """Read one run again now and publish it (after the stand-in or a person changed its files)."""
+        key = f"{layer.key}/{run_id}"
+        if not (layer.path / "agents" / run_id).is_dir():
+            return
+        try:
+            fresh = RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary(
+                self._extras(layer, run_id))
+        except Exception:  # noqa: BLE001 — the watcher reads it again on its next tick
+            return
+        with self.lock:
+            self.summaries[key] = fresh
+            self.signatures[key] = RunFiles(layer, run_id).signature(deep=fresh["status"] in ("running", "unknown"))
+        self.hub.publish("run", self._decorated(fresh))
+        self.refresh_attention(layer)
+
+    def standin_note(self, layer: Layer, entry: dict[str, Any]) -> None:
+        """Record what a person did on the page (settled, undid, started again, retried) in the layer's
+        record of decisions, so the stand-in knows a person touched the item. Only for a layer that uses
+        the stand-in (it is switched on, or has a log already): nothing changes for one that does not.
+        Never fails the action."""
+        if self.read_only or not (layer.path / STANDIN_SCRIPT).is_file():
+            return
+        if not (layer.path / STANDIN_LOG).is_file() and self.standin_view(layer).get("mode") not in ("suggest", "auto"):
+            return
+        try:
+            standin_via_layer(layer, ["note", "--json"],
+                              stdin={"type": "decision", "who": "person", "via": "dashboard", "status": "acted", **entry})
+            self.drop_standin_view(layer)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[dashboard] stand-in note failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    def layers_of_repo(self, repo_path: str) -> list[Layer]:
+        real = os.path.realpath(repo_path) if repo_path else ""
+        with self.lock:
+            layers = list(self.layers.values())
+        return [l for l in layers if real and (repo := app_repo(l.path, l.ir)) is not None
+                and os.path.realpath(str(repo)) == real]
+
+    def unsettle(self, layer_key: str, run_id: str) -> tuple[int, dict[str, Any]]:
+        """Undo the last settlement of a run (the page's Undo) → (HTTP status, answer)."""
+        layer = self.layers.get(layer_key)
+        if layer is None:
+            return 404, {"error": "unknown layer"}
+        if not isinstance(run_id, str) or not RUN_ID.match(run_id) or not (layer.path / "agents" / run_id).is_dir():
+            return 404, {"error": "unknown run"}
+        try:
+            record = remove_settlement(layer.path, run_id)
+        except SettleError as exc:
+            return 404, {"error": str(exc)}
+        except OSError as exc:
+            return 409, {"error": f"cannot change {SETTLEMENT_FILE}: {exc.strerror or exc}"}
+        self.standin_note(layer, {"run": run_id, "kind": "settle", "action": "undo", "outcome": "settlement undone"})
+        self.refresh_run(layer, run_id)
+        return 200, {"status": "undone", "record": record}
 
     def needs_you(self, layer_key: str) -> int:
         """How many runs of the layer are in the needs-you bucket (what the Runs link counts)."""
@@ -4271,6 +4688,8 @@ class Model:
             self.signatures[key] = RunFiles(layer, run_id).signature(deep=False)
         self.hub.publish("run", self._decorated(fresh))
         self.refresh_attention(layer)
+        self.standin_note(layer, {"run": run_id, "kind": "settle", "action": "settle",
+                                  "outcome": f"settled as {record['as']}"})
         return 200, {"status": "settled", "record": record}
 
     def again_request(self, layer: Layer, run_id: str, request_key: str = "") -> tuple[dict[str, Any] | None, int, str]:
@@ -4399,6 +4818,14 @@ class Model:
             elif self.settings_sigs[layer.key] != sig:
                 self.settings_sigs[layer.key] = sig
                 usage_changed = True
+            both = self._standin_sig(layer)              # the stand-in's setting and its log: the same
+            if layer.key not in self.standin_sigs:
+                self.standin_sigs[layer.key] = both
+                self.standin_view(layer)                 # asked here, outside the lock, so layer_list() finds it
+            elif self.standin_sigs[layer.key] != both:
+                self.standin_sigs[layer.key] = both
+                self.standin_view(layer)
+                usage_changed = True
         if usage_changed:
             self.hub.publish("layers", self.layer_list())
         any_running = False
@@ -4466,6 +4893,7 @@ class Model:
                 if slots != self.slots.get(layer.key):
                     self.slots[layer.key] = slots
                     self.hub.publish("slots", {"layer": layer.key, **slots})
+        self.tick_standin(now)
         if self.probe.enabled and (any_running or self.hub.count()) and now - self.probe.last > (3 if any_running else 15):
             if self.probe.poll(want_stats=True):   # stats are only fetched for containers that are running
                 self.hub.publish("containers", self.containers())
@@ -4525,13 +4953,21 @@ class Model:
         key = f"{layer_key}/{run_id}"
         cached = self.detail_cache.get(key)
         if cached and cached[0] == sig and cached[1]["summary"]["status"] != "running":
-            return {**cached[1], "summary": self._decorated(cached[1]["summary"])}
+            return {**cached[1], "summary": self._decorated(cached[1]["summary"]),
+                    "standin": self.run_standin(layer, cached[1]["summary"])}
         detail = RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).detail()
         if len(self.detail_cache) > 64:
             self.detail_cache.clear()
         self.detail_cache[key] = (sig, detail)
         # decorated on every read: the bucket and landing change without the run's files changing
-        return {**detail, "summary": self._decorated(detail["summary"])}
+        return {**detail, "summary": self._decorated(detail["summary"]), "standin": self.run_standin(layer, detail["summary"])}
+
+    def run_standin(self, layer: Layer, summary: dict[str, Any]) -> dict[str, Any]:
+        """The stand-in's mode for one run: its own --decider, else the layer's mode now."""
+        if summary.get("decider"):
+            return {"mode": summary["decider"], "from": "--decider"}
+        view = self.standin_view(layer)
+        return {"mode": str(view.get("mode") or "off"), "from": str(view.get("source") or "default")}
 
     def layer_detail(self, layer_key: str) -> dict[str, Any] | None:
         layer = self.layers.get(layer_key)
@@ -6110,6 +6546,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._retry()
             if path == "/api/promotion":
                 return self._promotion()
+            if path == "/api/decider":
+                return self._decider()
+            if path == "/api/decision":
+                return self._decision()
+            if path == "/api/standin":
+                return self._standin()
         except (BrokenPipeError, ConnectionResetError):
             return None
         self._refuse()
@@ -6274,7 +6716,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _settle(self) -> None:
         """POST /api/settle {layer, run, as: landed|superseded|abandoned, by, note, who}: a person's record
-        that a finished run needs nothing more (agents/<id>/settlement.json), behind every write guard."""
+        that a finished run needs nothing more (agents/<id>/settlement.json), behind every write guard.
+        {layer, run, undo: true} takes the last settlement back (the one before it returns, if any)."""
         body = self._write_guard(MAX_WRITE_BODY)
         if body is None:
             return None
@@ -6283,6 +6726,12 @@ class Handler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, ValueError):
             return self._error(400, "expected a JSON object")
         keys = {"layer", "run", "as", "by", "note", "who"}
+        if isinstance(data, dict) and "undo" in data:   # {"layer", "run", "undo": true}: the settlement goes
+            if set(data) != {"layer", "run", "undo"} or data["undo"] is not True or not isinstance(data.get("layer"), str) \
+                    or not isinstance(data.get("run"), str):
+                return self._error(400, 'expected {"layer", "run", "undo": true}')
+            code, answer = self.server.model.unsettle(data["layer"], data["run"])
+            return self._json(answer, code)
         if not isinstance(data, dict) or not set(data) <= keys or not isinstance(data.get("layer"), str) \
                 or not isinstance(data.get("run"), str):
             return self._error(400, 'expected {"layer", "run", "as": landed|superseded|abandoned, "by", "note", "who"}')
@@ -6329,6 +6778,9 @@ class Handler(BaseHTTPRequestHandler):
         outcome = result.get("status")
         url = f"#/run/{layer.key}/{result.get('run_id')}" if result.get("run_id") else ""
         if outcome == "started":
+            if "again" in data and not result.get("existing"):
+                model_.standin_note(layer, {"run": str(data.get("again")), "kind": "restart", "action": "restart",
+                                            "outcome": f"started {result['run_id']}"})
             return self._json({"status": "started", "run_id": result["run_id"], "url": url,
                                "queued": result.get("queued") or "", "existing": bool(result.get("existing")),
                                "issue": result.get("issue")}, 202)
@@ -6346,6 +6798,156 @@ class Handler(BaseHTTPRequestHandler):
         tail = "\n".join(stderr.strip().splitlines()[-12:])
         return self._json({"error": str(result.get("error") or f"the layer's launcher failed (exit {code})"),
                            "stderr": tail}, 502)
+
+    def _standin_request(self, which: str, usage: str) -> tuple[dict[str, Any], Layer] | None:
+        """The checks the three stand-in writes share: every write guard, a JSON object with known keys,
+        a known layer that has the stand-in's script. Sends the refusal and returns None; else (body, layer)."""
+        body = self._write_guard(MAX_WRITE_BODY)
+        if body is None:
+            return None
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        if not isinstance(data, dict) or not set(data) <= STANDIN_KEYS[which] or not isinstance(data.get("layer"), str):
+            return self._error(400, usage)
+        model_ = self.server.model
+        with model_.lock:
+            layer = model_.layers.get(data["layer"])
+        if layer is None:
+            return self._error(404, "unknown layer")
+        if not (layer.path / STANDIN_SCRIPT).is_file():
+            return self._error(409, f"generated before the stand-in: run `al gen {layer.name}`")
+        return data, layer
+
+    def _decider(self) -> None:
+        """POST /api/decider {layer, mode: off|suggest|auto} | {layer, reset: true} | {layer, may: [KIND…]} |
+        {layer, paused: bool}: the stand-in's local setting of a layer (agents/settings/decider.json, the
+        file `al decider` writes), changed by the layer's own `adws/standin.py set`."""
+        usage = ('expected {"layer", "mode": off|suggest|auto}, {"layer", "reset": true}, {"layer", "may": [KIND…]} '
+                 'or {"layer", "paused": true|false}')
+        checked = self._standin_request("decider", usage)
+        if checked is None:
+            return None
+        data, layer = checked
+        model_ = self.server.model
+        given = [key for key in ("mode", "reset", "may", "paused") if key in data]
+        if len(given) != 1:
+            return self._error(400, usage)
+        view = model_.standin_view(layer)
+        if "mode" in data:
+            if data["mode"] not in DECIDER_MODES:
+                return self._error(400, f"mode: one of {', '.join(DECIDER_MODES)}")
+            argv = ["--mode", data["mode"]]
+        elif "reset" in data:
+            if data["reset"] is not True:
+                return self._error(400, usage)
+            argv = ["--reset"]
+        elif "may" in data:
+            kinds = data["may"]
+            if not isinstance(kinds, list) or not all(isinstance(k, str) for k in kinds) or len(kinds) > len(STANDIN_KINDS):
+                return self._error(400, usage)
+            for kind in kinds:
+                if kind not in STANDIN_KINDS:
+                    return self._error(400, f"may: {clip(kind, 40)!r} is not a decision kind ({', '.join(STANDIN_KINDS)})")
+                if kind not in (view.get("offered") or []):
+                    return self._error(400, f"{kind} is not in the layer's (stand-in … #:may)")
+            argv = ["--may", ",".join(kinds)]
+        else:
+            if not isinstance(data["paused"], bool):
+                return self._error(400, usage)
+            argv = ["--pause" if data["paused"] else "--unpause"]
+        if not view.get("available"):
+            return self._error(409, str(view.get("why") or "the layer's stand-in is not available"))
+        writable, why = settings_writable(layer, self.server.read_only)
+        if not writable:
+            return self._error(409, why.replace("al models LAYER --set TIER=ID", "al decider LAYER"))
+        code, result, tail = standin_via_layer(layer, ["set", *argv, "--via", "dashboard", "--json"])
+        if code != 0:
+            message = str(result.get("error") or (tail.strip().splitlines() or ["the layer's stand-in failed"])[-1])
+            return self._error(400 if code == 2 else 409, clip(home_short(message), 400))
+        model_.drop_standin_view(layer)
+        with model_.lock:
+            model_.standin_sigs[layer.key] = model_._standin_sig(layer)
+        fresh = model_.standin_view(layer)
+        model_.hub.publish("layers", model_.layer_list())
+        return self._json({"ok": True, "standin": fresh})
+
+    def _decision(self) -> None:
+        """POST /api/decision {layer, run, answer: go|alter|reject|explain, text}: a person's answer to the
+        stand-in's suggestion for a run, applied by the layer's own `adws/standin.py answer` (decide.answer,
+        the entry of `al answer`, mail and the webhook too). A go or alter resumes or starts work, so it is
+        off where starting work is."""
+        usage = 'expected {"layer", "run", "answer": go|alter|reject|explain, "text"}'
+        checked = self._standin_request("decision", usage)
+        if checked is None:
+            return None
+        data, layer = checked
+        run, answer, text = data.get("run"), data.get("answer"), data.get("text", "")
+        if not isinstance(run, str) or answer not in DECISION_ANSWERS or not isinstance(text, str):
+            return self._error(400, usage)
+        if not RUN_ID.match(run) or not (layer.path / "agents" / run / "state.json").is_file():
+            return self._error(404, "unknown run")
+        if answer == "alter" and not text.strip():
+            return self._error(400, "alter needs the change as text")
+        if answer in ("go", "alter"):
+            if self.server.no_start:
+                return self._error(403, "the dashboard was started with --no-start")
+            if self.server.model.in_container and not self.server.allow_start:
+                return self._error(403, "the dashboard runs in a container and cannot start runs")
+        code, result, tail = standin_via_layer(layer, ["answer", run, answer, "--via", "dashboard", "--json"],
+                                               stdin=text, timeout=START_TIMEOUT * 2)
+        model_ = self.server.model
+        model_.drop_standin_view(layer)
+        model_.refresh_run(layer, run)
+        model_.hub.publish("layers", model_.layer_list())
+        status = str(result.get("status") or "")
+        if not status or status == "invalid":
+            last = str(result.get("error") or (tail.strip().splitlines() or ["the layer's stand-in failed"])[-1])
+            return self._error(502, clip(home_short(last), 400))
+        if status == "refused":
+            reason = str(result.get("reason") or "")
+            return self._error(400 if reason == "bad-answer" else 404 if reason == "unknown-run" else 409,
+                               str(result.get("message") or reason or "refused"))
+        return self._json({"status": status, "message": str(result.get("message") or "")})
+
+    def _standin(self) -> None:
+        """POST /api/standin {layer, run} | {layer, runs: [ID…]}: ask the stand-in about failed, died,
+        handed-over or waiting runs (a suggestion each, whatever the mode); {layer, apply: [ID…]}: let it
+        take the suggestions stored for those runs (its scope and limits hold). Queued for the worker:
+        202 {"queued": n}; what it does arrives over the `run` events."""
+        usage = 'expected {"layer", "run": ID}, {"layer", "runs": [ID…]} or {"layer", "apply": [ID…]} (at most 200 runs)'
+        checked = self._standin_request("standin", usage)
+        if checked is None:
+            return None
+        data, layer = checked
+        given = [key for key in ("run", "runs", "apply") if key in data]
+        if len(given) != 1:
+            return self._error(400, usage)
+        ids = [data["run"]] if given[0] == "run" else data[given[0]]
+        if not isinstance(ids, list) or not ids or len(ids) > MAX_ASK_RUNS \
+                or not all(isinstance(i, str) and RUN_ID.match(i) for i in ids):
+            return self._error(400, usage)
+        model_ = self.server.model
+        verb = "apply" if given[0] == "apply" else "ask"
+        if verb == "apply":
+            if self.server.no_start:
+                return self._error(403, "the dashboard was started with --no-start")
+            if model_.in_container and not self.server.allow_start:
+                return self._error(403, "the dashboard runs in a container and cannot start runs")
+        items = []
+        for run_id in dict.fromkeys(ids):
+            with model_.lock:
+                row = model_.summaries.get(f"{layer.key}/{run_id}")
+            if row is None:
+                return self._error(404, f"unknown run {run_id}")
+            row = model_._decorated(row)
+            if verb == "ask" and row.get("status") not in ASK_STATUSES:
+                return self._error(400, f"run {run_id} is {row.get('status')}: the stand-in is asked about a failed, "
+                                        "died, handed-over or waiting run")
+            items.append(model_.standin_item(row) if verb == "ask" else {"run": run_id})
+        queued = sum(1 for item in items if model_.standin_enqueue(layer, verb, item))
+        return self._json({"queued": queued}, 202)
 
     def _promotion(self) -> None:
         """POST /api/promotion {layer, action: decide|start|continue, from, to, decision, changes, by, comment,
@@ -6434,6 +7036,9 @@ class Handler(BaseHTTPRequestHandler):
     def _start_request(self, layer: Layer, data: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
         """The body of POST /api/start, checked against the layer's startables → (request, "") or (None, why)."""
         catalog = startables(layer)
+        decider = data.get("decider") or ""
+        if decider not in ("", *DECIDER_MODES):
+            return None, f"decider: one of {', '.join(DECIDER_MODES)}"
         prompt = data.get("prompt", "")
         if not isinstance(prompt, str):
             return None, "prompt must be a string"
@@ -6482,7 +7087,7 @@ class Handler(BaseHTTPRequestHandler):
         if issue == "trigger" and (target["kind"] != "workflow" or target["name"] not in catalog["issue"]["trigger"]):
             return None, f"no cron or webhook trigger starts {target['name']} from an issue"
         return {"target": {"kind": target["kind"], "name": target["name"]}, "prompt": prompt, "request_key": key,
-                "class": klass, "model_set": model_set, "models": models, "issue": issue,
+                "class": klass, "model_set": model_set, "models": models, "issue": issue, "decider": decider,
                 "confirm_duplicate": data.get("confirm_duplicate") is True,
                 "confirm_ships": data.get("confirm_ships") is True}, ""
 
@@ -6490,7 +7095,8 @@ class Handler(BaseHTTPRequestHandler):
         layer = self.server.model.layers.get(self._q(query, "layer"))
         if layer is None:
             return self._error(404, "unknown layer")
-        return self._json({"layer": layer.key, **startables(layer), "start": start_status(layer, self.server.model)})
+        mode = str(self.server.model.standin_view(layer).get("mode") or "off")
+        return self._json({"layer": layer.key, **startables(layer, mode), "start": start_status(layer, self.server.model)})
 
     def do_HEAD(self) -> None:  # noqa: N802
         self.do_GET()
@@ -6525,7 +7131,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._layer(query)
             if path == "/api/startable":
                 return self._startable(query)
-            if path in ("/api/start", "/api/models", "/api/promotion", "/api/settle"):
+            if path in ("/api/start", "/api/models", "/api/promotion", "/api/settle", "/api/decider", "/api/decision",
+                        "/api/standin"):
                 return self._error(405, "POST only")
             if path == "/api/workspace":
                 return self._workspace(query)
@@ -7101,6 +7708,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help=f"how deep below a workspace folder repositories are looked for (default {WORKSPACE_DEPTH})")
     parser.add_argument("--no-workspace", action="store_true", help="list no repositories, only layers")
     parser.add_argument("--no-actions", action="store_true", help="run no al action from the page")
+    parser.add_argument("--no-stand-in", action="store_true",
+                        help="the stand-in's loop does not run in this process; the panel still shows and switches it")
+    parser.add_argument("--stand-in-only", action="store_true",
+                        help="run the stand-in's loop without the page: no HTTP server (what the generated "
+                             "systemd unit al-<name>-stand-in.service runs)")
     parser.add_argument("--jobs-dir", type=Path, default=None, metavar="DIR",
                         help="where actions are recorded (default $XDG_STATE_HOME/al/dashboard-jobs)")
     parser.add_argument("--al", type=Path, default=None, metavar="PATH",
@@ -7112,7 +7724,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if not args.layer and not args.scan and not args.workspace:
         parser.error("give at least one --layer DIR, --scan DIR or --workspace DIR")
-    if not is_loopback(args.bind) and not args.token:
+    if args.stand_in_only and (args.read_only or args.no_stand_in or args.in_container):
+        parser.error("--stand-in-only runs the stand-in's loop: it cannot be combined with --read-only, "
+                     "--no-stand-in or --in-container")
+    if not args.stand_in_only and not is_loopback(args.bind) and not args.token:
         parser.error(f"--bind {args.bind} is not a loopback address: refusing without --token")
     return args
 
@@ -7144,7 +7759,7 @@ def workspace_roots(args: argparse.Namespace) -> list[Path]:
     return list(dict.fromkeys(roots))
 
 
-def make_server(args: argparse.Namespace, static_dir: Path = STATIC_DIR) -> DashboardServer:
+def make_model(args: argparse.Namespace) -> Model:
     probe = ContainerProbe(args.podman_socket, enabled=not args.no_podman)
     roots = workspace_roots(args)
     al, looked = find_al_tool(args.al)
@@ -7159,10 +7774,16 @@ def make_server(args: argparse.Namespace, static_dir: Path = STATIC_DIR) -> Dash
     model = Model(args.layer, args.scan, poll=args.poll, scan_depth=args.scan_depth, probe=probe,
                   in_container=args.in_container, read_only=args.read_only, no_start=args.no_start,
                   allow_start=args.allow_start_in_container, workspace=workspace, jobs=jobs, al=al,
-                  al_looked=looked, no_actions=args.no_actions or args.in_container, author_flags=author_flags)
+                  al_looked=looked, no_actions=args.no_actions or args.in_container, author_flags=author_flags,
+                  no_standin=args.no_stand_in)
     model.discover()
     probe.poll(want_stats=True)   # so the first snapshot already knows the containers
     model.tick()
+    return model
+
+
+def make_server(args: argparse.Namespace, static_dir: Path = STATIC_DIR) -> DashboardServer:
+    model = make_model(args)
     return DashboardServer((args.bind, args.port), model, args.token, static_dir, read_only=args.read_only,
                            no_start=args.no_start, allow_start=args.allow_start_in_container)
 
@@ -7175,6 +7796,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return run_job(Path(raw[1]))
     args = parse_args(argv)
+    if args.stand_in_only:   # the stand-in's loop without the page: no HTTP server, until SIGTERM
+        model = make_model(args)
+        signal.signal(signal.SIGTERM, lambda *_args: model.stop.set())
+        signal.signal(signal.SIGINT, lambda *_args: model.stop.set())
+        print(f"stand-in loop for {len(model.layers)} layer(s)", flush=True)
+        model.run_forever()
+        return 0
     try:
         server = make_server(args)
     except OSError as exc:
@@ -7203,6 +7831,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"al dashboard {where}\n  watching: {layers}\n"
           f"  models: {'read-only' if args.read_only else 'switchable from the Now view'}\n"
           f"  start: {start_banner(args)}\n"
+          f"  stand-in: loop {server.model.standin_loop()}\n"
           f"  workspace: {workspace}\n"
           f"  actions: {'on (al: ' + home_short(str(server.model.al)) + ')' if actions['enabled'] else 'off: ' + actions['why']}\n"
           f"  containers: {server.model.probe.info()['note']}", flush=True)

@@ -51,6 +51,8 @@ pairs, e.g. `#:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:eff
 - (dashboard …) is declared at most once; omitted, it is (dashboard local) on 127.0.0.1:8765. A #:bind that is not a loopback address (127.x.x.x, ::1, localhost) needs #:token-env naming the environment variable that holds the access token; #:port is 1–65535 and #:poll-ms at least 100.
 - Model tiers: an agent's tiers are `base` and `heavy` (from #:model-base / #:model-heavy, which have defaults) plus every (TIER "MODEL") in its #:models; a tier given both ways, or twice, is an error, and `inherit` is not a tier name. Every tier a workflow can use must be declared on the agent that runs it: run steps (their #:model-set, else their command's) on the step's #:agent or the ADW's agent; check #:resolve commands and review #:patch / #:implement commands on the ADW's agent; the review command on the review option's #:agent, else the ADW's agent. The mock agent accepts every tier. #:effort is only available for claude-code and codex (codex: not `max`).
 - (budget limits …) is declared at most once; every limit given is greater than 0; #:limit-stop-percent is 0–100 (0 = off), #:on-limit wait needs a #:limit-stop-percent above 0, and #:limit-wait-minutes is at least 1.
+- (stand-in off|suggest|auto …) is declared at most once; omitted, the stand-in is off. #:may and #:never share no kind; kind auto needs a non-empty #:may; #:max-actions-per-run is 1–20 and #:max-per-hour 1–1000; #:escalate-to lists at least one of dashboard, notify, and notify needs a notifier that lists needs-human; #:model-set is a tier declared on the agent of every ADW.
+- #:may land needs a review option of kind auto with #:ship merge or deploy used by an ADW with a (ship) step; #:may promote needs declared stages; #:systemd #t needs (dashboard local).
 - (notify …): #:to-env, #:from-env and #:smtp-url-env of `email` take the NAME of an environment variable in capitals (A–Z, 0–9, _); a value that looks like an e-mail address, a URL or a host name is rejected, because the layer file is committed. #:events lists at least one event and #:timeout is 1–60. Two notifiers of the same kind need #:id.
 - A (script …) step needs a `worktree` environment in the ADW's stack, like check and ship. #:waiting-exit codes are 1–255; #:journal is a path relative to the worktree, without `..` or a leading `/`, whose only placeholder is `{adw_id}`.
 - (include "FILE") splices the clauses of FILE (plain s-expressions, no #lang line; a path relative to agentic.rkt) where it stands: at the top level of (agentic-layer …), or inside (codebase …) for cmd, paths and conditional-doc clauses. Errors point into FILE. An included file cannot include another. `al adopt` writes its declarations this way.
@@ -142,6 +144,38 @@ Declare at most one. Default when omitted: none.
   - `#:limit-stop-percent` (integer; default 0) — Subscription usage threshold, 1-100: once the agent CLI reports that this share of a usage window (Claude Code: the 5-hour or the weekly window) is used, no new agent step starts. 0 = off. Only applies when the CLI reports a share (a subscription login, not an API key).
   - `#:on-limit` (stop | wait; default stop) — What happens at the threshold: `stop` = the run is handed to a person, with the window and its reset time as the reason; `wait` = the run waits until the window resets and then continues, unless that is further away than #:limit-wait-minutes (then it is handed over).
   - `#:limit-wait-minutes` (integer; default 300) — Longest wait for a reset with #:on-limit wait, in minutes (at least 1).
+
+### `stand-in`
+
+A stand-in for the person a run waits for: a strong model reads what the person would read and decides, inside the scope declared here. Omitted: off, and a person may still switch it on for this machine with `al decider` or the dashboard, where it may then only resume a stopped run. It never overrides a rejected review, never lands work with a protected-path change or a failing required check, never approves its own work, never edits code and never acts on a run a person touched since it stopped; `land` and `promote` only ask the gate again.
+Declare at most one. Default when omitted: none.
+
+- **`(stand-in off …)`** — Declared, and off until a person switches it on on this machine.
+  - `#:model-set` (tier name: base | heavy | a tier from the agent's #:models; default heavy) — Model tier of the stand-in's calls: a tier declared on the agent of every ADW.
+  - `#:may` (list of resume | restart | answer | integrate | settle | land | promote | retry-job; default (resume)) — Decision kinds it may take alone (kind auto). Every other kind it may only suggest.
+  - `#:never` (list of resume | restart | answer | integrate | settle | land | promote | retry-job; default ()) — Decision kinds it neither takes nor suggests: those items go to a person as they are.
+  - `#:max-actions-per-run` (integer; default 3) — Most actions it takes on one run (and the runs that replace it), 1–20; after that the run goes to a person with the history.
+  - `#:max-per-hour` (integer; default 12) — Most actions it takes in this layer per hour, 1–1000.
+  - `#:escalate-to` (list of dashboard | notify; default (dashboard)) — Where an item goes when it hands it to a person: `dashboard` = the Needs you list; `notify` = also a message through the notifiers that list needs-human.
+  - `#:systemd` (boolean; default #f) — Also generate a systemd user unit (systemd/al-<name>-stand-in.service) that keeps its loop running without the page.
+
+- **`(stand-in suggest …)`** — It proposes; a person answers on the dashboard, with `al answer`, by mail or by webhook.
+  - `#:model-set` (tier name: base | heavy | a tier from the agent's #:models; default heavy) — Model tier of the stand-in's calls: a tier declared on the agent of every ADW.
+  - `#:may` (list of resume | restart | answer | integrate | settle | land | promote | retry-job; default (resume)) — Decision kinds it may take alone (kind auto). Every other kind it may only suggest.
+  - `#:never` (list of resume | restart | answer | integrate | settle | land | promote | retry-job; default ()) — Decision kinds it neither takes nor suggests: those items go to a person as they are.
+  - `#:max-actions-per-run` (integer; default 3) — Most actions it takes on one run (and the runs that replace it), 1–20; after that the run goes to a person with the history.
+  - `#:max-per-hour` (integer; default 12) — Most actions it takes in this layer per hour, 1–1000.
+  - `#:escalate-to` (list of dashboard | notify; default (dashboard)) — Where an item goes when it hands it to a person: `dashboard` = the Needs you list; `notify` = also a message through the notifiers that list needs-human.
+  - `#:systemd` (boolean; default #f) — Also generate a systemd user unit (systemd/al-<name>-stand-in.service) that keeps its loop running without the page.
+
+- **`(stand-in auto …)`** — It takes the decisions listed in #:may by itself and proposes the others.
+  - `#:model-set` (tier name: base | heavy | a tier from the agent's #:models; default heavy) — Model tier of the stand-in's calls: a tier declared on the agent of every ADW.
+  - `#:may` (list of resume | restart | answer | integrate | settle | land | promote | retry-job; default (resume)) — Decision kinds it may take alone (kind auto). Every other kind it may only suggest.
+  - `#:never` (list of resume | restart | answer | integrate | settle | land | promote | retry-job; default ()) — Decision kinds it neither takes nor suggests: those items go to a person as they are.
+  - `#:max-actions-per-run` (integer; default 3) — Most actions it takes on one run (and the runs that replace it), 1–20; after that the run goes to a person with the history.
+  - `#:max-per-hour` (integer; default 12) — Most actions it takes in this layer per hour, 1–1000.
+  - `#:escalate-to` (list of dashboard | notify; default (dashboard)) — Where an item goes when it hands it to a person: `dashboard` = the Needs you list; `notify` = also a message through the notifiers that list needs-human.
+  - `#:systemd` (boolean; default #f) — Also generate a systemd user unit (systemd/al-<name>-stand-in.service) that keeps its loop running without the page.
 
 ### `forge`
 
@@ -786,6 +820,7 @@ Expands to (defaults):
   (agent claude-code #:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:effort high)))
   (agent codex #:id second-opinion)
   (budget limits #:run-usd 5 #:step-usd 2 #:day-usd 50 #:limit-stop-percent 90 #:on-limit wait #:limit-wait-minutes 120)
+  (stand-in suggest #:may (resume restart) #:max-per-hour 6)
   (notify email #:events (needs-human failed shipped))   ; addresses and the server: variables in local.env, never here
   (registry #:address-env "AL_REGISTRY" #:username-env "AL_REGISTRY_USER" #:password-env "AL_REGISTRY_PASSWORD")
   (notify command #:id desktop #:run "notify-send \"$AL_NOTIFY_SUBJECT\"" #:events (needs-human))

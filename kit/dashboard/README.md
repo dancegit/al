@@ -200,6 +200,53 @@ Cost and tokens come from each agent's `result` event; while a step runs, tokens
 its messages and the cost shows as "so far" for the finished steps. Paths in agent output are
 shown relative to the run's worktree (`layer:` for the layer, `~` for the home directory).
 
+## The stand-in
+
+The dashboard is the control room of the stand-in (`kit/runtime/adw_modules/standin.py`): a strong
+model that proposes, or takes, the decisions a run waits on a person for, inside the scope the layer
+declares with `(stand-in off|suggest|auto #:may (…) …)`. The dashboard never imports a layer's
+runtime; everything below goes through the layer's own `adws/standin.py` (argv list, no shell, the
+dashboard's token not passed on), as starts go through `adws/dispatch.py`. A layer generated before
+the stand-in has no such script: its panel says "run `al gen`" and the three endpoints answer 409.
+
+- **The panel.** The Now view has a Stand-in block per layer, beside Models: the mode as three
+  choices (off: a person reads every hand-over; suggest: it proposes, you answer; auto: it takes the
+  decisions ticked below and proposes the others) with where it comes from, one check box per
+  decision kind (ticked: it may take it alone; disabled: the layer's `#:may` does not offer it; the
+  `#:never` kinds as text), the limits (`at most N actions per run · N per hour`), **Pause** /
+  **Continue**, `handled today N · waiting on you N`, and the last 30 lines of its log, newest first.
+  The view is the answer of `adws/standin.py status`, kept until `agents/settings/decider.json`, the
+  log or the layer changes. A broken setting is shown as an error and the loop does nothing.
+- **Suggestions.** A run whose `state.decision` waits for an answer carries `suggestion` in its
+  summary (kind, action, summary, instruction, confidence, what the stand-in read). The Needs you
+  row shows `proposes: ACTION — SUMMARY`, the chip **with a suggestion (M)** filters to those runs,
+  and the run page shows the proposal above the settle card with **Go ahead** (`go`), **Yes, with
+  this change** (`alter`, a text field) and **No, I decide** (`reject`; the card closes and the
+  normal actions stay). **Ask the stand-in** on a failed, died, handed-over or waiting run without a
+  suggestion, and **Ask the stand-in for all N** on the Runs view of one layer, file a suggestion
+  whatever the mode and change nothing else.
+- **Decisions.** The run page lists every entry of `agents/<id>/decisions.jsonl` in a Decisions card
+  (when, `stand-in` or `person`, the badge `automatic`, what, why, what happened next), draws a mark
+  per decision on the timeline, shows the stand-in's mode for the run in the Status block
+  (`suggest (layer default)` or `auto (--decider)`), and splits the cost (`$1.20 (stand-in $0.08)`).
+  A settlement the stand-in wrote has **Undo**. The header's second count on the Runs link is how
+  many items the stand-in handled today.
+- **The loop.** While the dashboard runs, `Model.tick_standin` looks every 5 s at each layer whose
+  mode is suggest or auto and that is not paused, and hands the first new item of its Needs you list
+  to one worker thread, which runs `adws/standin.py consider` (one decision at a time; an agent call
+  may take minutes). An item is new when the run is not running, stopped after the stand-in was
+  switched on, was not started with `decider: off`, and the stand-in has not looked at this stop
+  yet; failed or interrupted jobs on the layer's repository count too, and a `retry-job` the
+  stand-in decides is carried out here. Older items are left alone: the panel offers **Handle the N
+  items already waiting**, which first asks for a suggestion each and lists them, then **Do these M**
+  for those inside its scope. The loop is off with `--read-only`, in the podman container and with
+  `--no-stand-in` (the panel still shows and switches the mode, and says why the loop is off).
+  `--stand-in-only` runs the loop without the page (no HTTP server, until SIGTERM); with `#:systemd #t`
+  on the declaration `al gen` writes `systemd/al-<name>-stand-in.service` for it.
+- **What a person did** on the page (settled, undid, started again, retried a job) is noted in the
+  same record for a layer that uses the stand-in, so the stand-in never acts on a run a person
+  touched since it stopped.
+
 ## Promotions
 
 A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al promote`; see "Promote a stage" in
@@ -224,8 +271,8 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
 
 ## Safety
 
-- **Four writes, guarded.** Only GET and HEAD, plus `POST /api/models`, `POST /api/start`,
-  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions); every other method and path is 405 (GET on `/api/models`, `/api/start` or `/api/settle` is
+- **Four writes, guarded** (and the stand-in's three, below). Only GET and HEAD, plus `POST /api/models`, `POST /api/start`,
+  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions), and `POST /api/decider`, `POST /api/decision` and `POST /api/standin`; every other method and path is 405 (GET on `/api/models`, `/api/start` or `/api/settle` is
   405 too), and no endpoint stops a run or changes its records (a settlement is a file of its own). All four writes pass one guard
   (`Handler._write_guard`): the token as for every request, but from the `Authorization` header or
   the cookie only (a token in the query string is refused); a loopback `Host` when there is no
@@ -233,6 +280,21 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
   `X-AL-Dashboard: 1` header, which a plain HTML form cannot send; `Content-Type:
   application/json`; a body of at most 4 KiB (models, actions) or 64 KiB (start); and no
   `--read-only`.
+- **The stand-in's three writes** pass the same guard and take known keys only (400 otherwise); an
+  unknown layer is 404 and a layer without `adws/standin.py` 409.
+  `POST /api/decider` `{layer, mode: off|suggest|auto}`, `{layer, reset: true}`, `{layer, may: [KIND…]}` or
+  `{layer, paused: bool}` changes the layer's local setting `agents/settings/decider.json` through
+  `adws/standin.py set` (the file `al decider` writes, byte for byte); a kind the layer's `#:may`
+  does not offer is 400; it answers `{ok, standin}` with the new view.
+  `POST /api/decision` `{layer, run, answer: go|alter|reject|explain, text}` is a person's answer to a
+  suggestion, applied by `adws/standin.py answer` (the entry of `al answer`, a mail reply and the
+  webhook): 200 `{status, message}`, 400 for a bad answer, 404 for an unknown run, 409 when nothing
+  waits; `go` and `alter` resume or start work, so they are refused with `--no-start`.
+  `POST /api/standin` `{layer, run}` or `{layer, runs: [≤ 200 ids]}` asks the stand-in about failed, died,
+  handed-over or waiting runs, and `{layer, apply: [≤ 200 ids]}` lets it take the stored suggestions
+  inside its scope and limits (403 with `--no-start`); it answers 202 `{queued}` and the results
+  arrive over the `run` events. `POST /api/settle` `{layer, run, undo: true}` takes the last
+  settlement back (the one before it returns, if any; 404 when there is none).
 - **The model setting.** `POST /api/models` sets or resets one tier of a layer's local model setting
   (`agents/settings/models.json`). The tier and model id are validated like `al models` (a declared
   tier; a non-empty id without whitespace or control characters; an unknown id gets a note), and the
@@ -475,6 +537,9 @@ head with a counting `safe_git`, and that refs, HEAD and the index are unchanged
 `tests/test_settle_model.py` the settlement record, the buckets of the scenario, replacement,
 supersession, failure groups, `normalise_reason`, `needs_you` and the 8 checks per tick;
 `tests/test_settle_http.py` `POST /api/settle` behind every guard, its refusals and the snapshot's counts;
+`tests/test_standin_model.py` the Stand-in panel's view, the suggestion in a run's summary, the decisions, timeline marks and cost split of its detail, which items the loop takes, and the undo of a settlement;
+`tests/test_standin_http.py` `POST /api/decider`, `/api/decision` and `/api/standin` behind every guard and under `--read-only`, each answer, "Ask the stand-in", the loop, the undo and `--stand-in-only`, on real layers with the mock agent;
+`tests/test_browser_standin.py` (Chrome) the panel in each mode, a suggestion and its three answers, the Decisions card, the log and the header counts, and the items that waited already; with `AL_DASHBOARD_SHOTS=DIR` it saves `standin-panel-off.png`, `standin-panel-suggest.png`, `standin-panel-auto.png`, `standin-suggestion.png`, `standin-timeline.png`, `standin-log.png` and `standin-existing-items.png`;
 `tests/test_start.py` "Start again" (`again`); `tests/test_browser_runs_settle.py` (Chrome) the chips and
 counts, landed and settled rows, a failure group's **Start all again** and the settle form; with
 `AL_DASHBOARD_SHOTS=DIR` it saves `runs-needs-you-1280.png`, `runs-needs-you-390.png`,
