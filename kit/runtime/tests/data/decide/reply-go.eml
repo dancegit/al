@@ -1,0 +1,16 @@
+From: Ops <ops@example.org>
+To: al@example.org
+Subject: Re: [al] test-layer: needs a person — chore: Add a pay band to each worker [decide {RUN}-{CODE}]
+Date: Mon, 16 Nov 2026 10:04:12 +0000
+Message-ID: <reply-1@example.org>
+In-Reply-To: <notify-1@example.org>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Go ahead.
+
+On Mon, 16 Nov 2026 at 10:00, al@example.org wrote:
+> Workflow: demo
+> Run: {RUN}
+> reject

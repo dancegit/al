@@ -106,6 +106,14 @@ the landing result in its Status block, a **Start again** button on a failed or 
 replaces, and, on a finished run nobody settled, a **Settle this run** card: landed, superseded or
 abandoned, an optional run or commit (`by`), a note, and your name (kept in the browser like the
 promotion card's).
+When the layer's stand-in decider looked at a stopped run (`al decider`, `agents/<id>/decision.md`),
+the run's outcome shows a **Decision** block after "Why this stopped": a badge (`auto`, `suggested`,
+`answered: go` …, `not used`, `failed`), the decider's one-line summary, its mode, action, the step it
+resumes from, its instructions, the status, the last answer (kind, channel, time, text), why it was
+not used or failed, and a link to `decision.md`. Every value is text, never markup, and the answer code
+is not shown. The block is read-only, like the rest of the run page: answers are given with
+`al answer LAYER RUN go|alter|explain|reject`, by replying to the notification e-mail, or with the
+webhook's `decision` payload.
 
 A run whose `script` step exited with a code the step declares as waiting (`#:waiting-exit (75)`)
 ended **waiting**: it is neither failed nor passed, its worktree is kept, and nobody is notified.

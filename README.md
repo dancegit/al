@@ -398,6 +398,7 @@ Every workflow makes four choices, known as **PITER**. The language offers sever
 - **The container cannot reach into your git repository.** It can read the history but cannot move branches or plant hooks; only the host does that, after checking nothing was tampered with.
 - **Shipping without a human needs everything to agree:** all checks green, the checks re-run on the final result, the reviewer finds no blocker, the task is a kind you allowed, the change is small, and no protected file was touched. Otherwise it becomes a pull request for a person.
 - **A check that needs a container engine gets one of its own inside the sandbox**, isolated from the host's; tests that were skipped are counted and can fail the check (`#:nested-engine`, `#:max-skipped`, `#:forbid-skip-reason`).
+- **A stand-in decider can only send work round again, never ship it.** When a run stops, a strong model may propose (or, if you allow it, take) the next step, but its only power is to resume the run, and a resumed run passes every check, the review and the gate again.
 - **The compiler enforces the dangerous combinations.** A workflow that ships by itself must run in a container. An agent with all permissions must itself be inside one.
 - **A server is set up only after you have seen the plan.** `al deploy --provision` prints every privileged command before it asks and before it runs, and a host uses a sandbox image only when its recipe hash equals the layer's.
 

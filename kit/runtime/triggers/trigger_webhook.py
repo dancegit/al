@@ -11,6 +11,12 @@ GET /health -> 200. POST <path> -> signature check (when the secret env var is
 set), then `decide()` maps the request to (adw, source); accepted requests get
 202 at once and the ADW runs in a background subprocess. --once serves until
 one run has been accepted and finished, then exits with its status.
+
+A payload whose top level is {"decision": {"run": ID, "code": CODE, "answer": "go"}} (with
+`payload` events enabled) answers the stand-in decider's suggestion for run ID: `answer` is go,
+alter, explain or reject, or a free-text line such as "alter: keep the seed data small"; CODE is
+the one in the suggestion's subject `[decide ID-CODE]`. The reply is 200 when it was applied, 409
+when it was refused (wrong code, nothing waiting) and 400 for a bad payload.
 """
 from __future__ import annotations
 
@@ -30,7 +36,7 @@ from typing import Any, Mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from adw_modules import inputs  # noqa: E402
+from adw_modules import decide as decider, inputs  # noqa: E402
 from adw_modules.forge import DEFAULT_BOT_MARKER, as_layer  # noqa: E402
 
 DEFAULT_LAYER = Path(__file__).resolve().parent.parent.parent
@@ -91,6 +97,10 @@ def decide(ir: Mapping[str, Any], trigger: Mapping[str, Any], headers: Mapping[s
     except ValueError:
         return Decision(400, "body is not JSON")
     events = set(trigger.get("events") or ["issue-opened", "issue-comment"])
+    if isinstance(data, dict) and isinstance(data.get("decision"), dict):  # an answer to the stand-in decider
+        if "payload" not in events:
+            return Decision(200, "generic payloads not enabled")
+        return Decision(202, "answer", payload=data["decision"])
     adws = inputs.adws_for_trigger(ir, trigger["id"])
     forge_event = next((h[k] for k in EVENT_HEADERS if h.get(k)), None)
     action = str(data.get("action") or "") if isinstance(data, dict) else ""
@@ -144,6 +154,20 @@ def decide(ir: Mapping[str, Any], trigger: Mapping[str, Any], headers: Mapping[s
     if not adw:
         return Decision(200, f"no ADW on this trigger for workflow {workflow!r}")
     return Decision(202, "payload", adw=adw, payload=data, input_id=option["id"])
+
+
+def apply_answer(layer: Any, payload: Mapping[str, Any]) -> tuple[int, dict]:
+    """(HTTP status, reply) for a `decision` payload: decide.answer with via="webhook" and its code."""
+    run, code, text = payload.get("run"), payload.get("code"), payload.get("answer")
+    if not all(isinstance(value, str) and value for value in (run, code, text)):
+        return 400, {"error": "a decision payload needs the strings run, code and answer"}
+    kind, extra = (text, str(payload.get("text") or "")) if text in decider.ANSWERS else decider.parse_answer(text)
+    if not kind:
+        return 400, {"error": "answer must be go, alter, explain or reject"}
+    result = decider.answer(layer, run, kind, extra, via="webhook", code=code)
+    if result["status"] == "refused":
+        return (400 if result["reason"] in ("unknown-run", "bad-answer") else 409), {"error": result["message"]}
+    return 200, {"status": result["status"], "message": result["message"]}
 
 
 def save_payload(layer_dir: Path, data: Any) -> Path:
@@ -204,6 +228,11 @@ class App:
                     return
                 body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 d = decide(app.layer.ir, app.trigger, dict(self.headers.items()), body, os.environ)
+                if d.run and d.reason == "answer" and d.adw is None:
+                    code, reply = apply_answer(app.layer, d.payload)
+                    say(f"{code} decision answer: {reply.get('status') or reply.get('error')}")
+                    self._reply(code, reply)
+                    return
                 if not d.run:
                     say(f"{d.status} {d.reason}")
                     self._reply(d.status, {"ignored" if d.status == 200 else "error": d.reason})

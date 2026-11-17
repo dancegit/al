@@ -1,0 +1,3 @@
+{
+  "output": "This cannot be finished by an agent.\n\n```json\n{\n  \"action\": \"abandon\",\n  \"summary\": \"The request needs a schema change under a protected path; stop here.\",\n  \"explanation\": \"The plan asks for a migration in a protected path, which no agent may write.\",\n  \"instructions\": \"\",\n  \"from_step\": \"\"\n}\n```\n"
+}

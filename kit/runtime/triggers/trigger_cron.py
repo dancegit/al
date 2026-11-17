@@ -14,6 +14,9 @@ each item, and launch at most `maxConcurrent` ADW subprocesses.
 
 --once: one poll, wait for the children, exit 1 if any child failed.
 --dry-run: claim nothing, pass --dry-run to the ADWs.
+
+Every poll also reads replies to the stand-in decider's suggestions over IMAP when
+AL_DECIDE_IMAP_URL is set (local.env or the environment; see adw_modules/decide.py).
 """
 from __future__ import annotations
 
@@ -85,6 +88,7 @@ class Scheduler:
         """Launch what fits; return the number of runs started."""
         self.reap()
         started = 0
+        self.poll_answers()
         refused = self.day_limit_reached()
         if refused:
             if refused != getattr(self, "_refused", None):
@@ -114,6 +118,14 @@ class Scheduler:
             started += 1
             self.out(f"start {cand.adw} <- {cand.source} ({cand.label}) log {log}")
         return started
+
+    def poll_answers(self) -> None:
+        """Replies to the stand-in decider's suggestions (does nothing without AL_DECIDE_IMAP_URL)."""
+        from adw_modules import decide
+        try:
+            decide.poll_mail(self.layer, out=self.out)
+        except Exception as exc:  # noqa: BLE001 — poll_mail never raises; a mailbox never stops the poller
+            self.out(f"decide mail: {type(exc).__name__}")
 
     def reap(self) -> None:
         still = []
