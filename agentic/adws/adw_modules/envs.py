@@ -8,6 +8,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterator
@@ -16,6 +17,7 @@ from . import events, gitsafe, slots
 from .errors import LayerError, StepFailed
 
 PODMAN_BUILD_TIMEOUT = 3600
+CREDENTIAL_FOLLOW_SECONDS = 5.0   # how often a run's credential copy is compared with the host's file
 IMPROVE_DIR = ".al-improve"  # run state of `al improve` inside a layer: never visible to an ordinary run
 
 
@@ -598,8 +600,23 @@ class EnvStack:
         """argv that runs an agent CLI: inside the container when the podman option says so
         (the agent itself is then sandboxed), else under the nix dev shell, else on the host."""
         if self.agent_inside:
-            for name in (self.podman_option or {}).get("credentials", []):
+            names = list((self.podman_option or {}).get("credentials", []))
+            for name in names:
                 self._sync_credential(name)
+            if names and getattr(self, "_credential_follower", None) is None:
+                # an agent call can last hours and the host's login can be renewed in the middle of it:
+                # the CLI in the container reads the file again when its login is refused, so the copy
+                # has to follow the host's file during the call too, not only before it
+                def follow() -> None:
+                    while not self._credential_stop.wait(CREDENTIAL_FOLLOW_SECONDS):
+                        for name in names:
+                            try:
+                                self._sync_credential(name)
+                            except StepFailed:
+                                pass
+                self._credential_stop = threading.Event()
+                self._credential_follower = threading.Thread(target=follow, name="al-credentials", daemon=True)
+                self._credential_follower.start()
             return self._podman_argv(argv, interactive=True)
         if self.nix_option:
             return [*self._nix_argv(), *argv]
@@ -637,6 +654,9 @@ class EnvStack:
     # ------------------------------------------------------------------ teardown / cleanup
 
     def teardown(self, success: bool) -> None:
+        if getattr(self, "_credential_follower", None) is not None:
+            self._credential_stop.set()
+            self._credential_follower = None
         if self._container:
             subprocess.run(["podman", "rm", "-f", "-t", "0", self._container], capture_output=True, text=True,
                            timeout=120, check=False)

@@ -113,6 +113,9 @@ def _claude_env(env_stack: Any) -> dict[str, str]:
     return env
 
 
+LOGIN_REFUSED = ("authentication_error", "OAuth token revoked", '"api_error_status":401')
+LOGIN_RETRY_SECONDS = 15.0
+
 def claude_argv(layer: Any, agent: dict[str, Any], choice: models.Choice, cap: float | None) -> list[str]:
     """The `claude -p` command line. --effort and --max-budget-usd are the CLI's own flags."""
     argv = ["claude", "-p", "--output-format", "stream-json", "--verbose"]
@@ -136,9 +139,22 @@ def _run_claude(layer: Any, agent: dict[str, Any], prompt: str, choice: models.C
     # The prompt goes in on stdin: templates start with `---` front matter, which the CLI would
     # parse as an option, and long prompts would hit the argv size limit.
     argv = claude_argv(layer, agent, choice, cap)
-    stdout = _run_process(env_stack.wrap_agent(argv), cwd=cwd, env=_claude_env(env_stack), stdin_text=prompt,
-                          timeout=int(agent["timeout"]), step=step, raw_path=raw_path)
-    return parse_stream_json_result(stdout, step)
+    for attempt in (1, 2):
+        try:
+            stdout = _run_process(env_stack.wrap_agent(argv), cwd=cwd, env=_claude_env(env_stack), stdin_text=prompt,
+                                  timeout=int(agent["timeout"]), step=step, raw_path=raw_path)
+            return parse_stream_json_result(stdout, step)
+        except StepFailed as exc:
+            # the login was renewed elsewhere while this call ran: the work is not wrong, the login is
+            # stale. One more attempt with the renewed login, then fail with the reason in plain words.
+            if not any(mark in str(exc) for mark in LOGIN_REFUSED):
+                raise
+            if attempt == 2:
+                raise StepFailed(step, "the agent's login was refused twice (authentication error): log in again "
+                                       "on this machine with the agent CLI, then resume the run") from exc
+            print(f"[agent] {step}: the agent's login was refused; trying once more with the current login", flush=True)
+            time.sleep(LOGIN_RETRY_SECONDS)
+    raise AssertionError("unreachable")
 
 
 def codex_argv(agent: dict[str, Any], choice: models.Choice, cwd: Path) -> list[str]:

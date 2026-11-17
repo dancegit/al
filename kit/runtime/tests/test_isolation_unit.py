@@ -503,3 +503,70 @@ def test_the_container_gets_a_credential_copy_that_follows_the_hosts_renewals(ma
     stack.wrap_agent(["claude", "-p", "third"])
     assert copy.read_text() == '{"t": 1}'                        # a shorter file leaves no tail behind
     stack.teardown(success=True)
+
+
+def test_the_credential_copy_follows_the_host_during_an_agent_call(make_layer, monkeypatch, tmp_path) -> None:
+    """A call can last hours; the host's login may be renewed in the middle of it."""
+    import time
+
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    host = home / ".claude" / ".credentials.json"
+    host.write_text("first")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(envs, "CREDENTIAL_FOLLOW_SECONDS", 0.02)
+    layer = _layer(make_layer, podman={"agentInside": True, "credentials": ["claude"]})
+    FakePodman(monkeypatch)
+    _state, stack = _stack(layer)
+    stack.setup()
+    stack.wrap_agent(["claude", "-p", "hi"])                     # the call starts; nothing calls wrap_agent again
+    copy = Path(layer.layer_dir) / "agents" / ADW_ID / "credentials" / "claude.json"
+    host.write_text("renewed")
+    deadline = time.monotonic() + 5
+    while copy.read_text() != "renewed" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert copy.read_text() == "renewed"
+    stack.teardown(success=True)
+    host.write_text("after the run")
+    time.sleep(0.2)
+    assert copy.read_text() == "renewed"                         # the follower stopped with the run
+
+
+def test_a_refused_login_is_tried_once_more_and_then_named(monkeypatch, tmp_path) -> None:
+    from adw_modules import agents, models
+
+    monkeypatch.setattr(agents, "LOGIN_RETRY_SECONDS", 0)
+    monkeypatch.setattr(agents, "claude_argv", lambda *a, **k: ["claude"])
+    monkeypatch.setattr(agents, "_claude_env", lambda stack: {})
+    monkeypatch.setattr(agents, "parse_stream_json_result", lambda out, step: out)
+    stack = SimpleNamespace(wrap_agent=lambda argv: argv)
+    agent = {"timeout": 5}
+    calls: list[int] = []
+
+    def refused_once(*_a, **_k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise StepFailed("build", 'agent exited 1: "api_error_type":"authentication_error" OAuth token revoked')
+        return "done"
+
+    monkeypatch.setattr(agents, "_run_process", refused_once)
+    choice = models.Choice.__new__(models.Choice)
+    assert agents._run_claude(None, agent, "p", choice, tmp_path, stack, "build", tmp_path / "raw") == "done"
+    assert len(calls) == 2
+
+    def always(*_a, **_k):
+        raise StepFailed("build", "agent exited 1: OAuth token revoked")
+
+    monkeypatch.setattr(agents, "_run_process", always)
+    with pytest.raises(StepFailed, match="login was refused twice"):
+        agents._run_claude(None, agent, "p", choice, tmp_path, stack, "build", tmp_path / "raw")
+
+    def other(*_a, **_k):
+        calls.append(1)
+        raise StepFailed("build", "agent exited 1: something else")
+
+    calls.clear()
+    monkeypatch.setattr(agents, "_run_process", other)
+    with pytest.raises(StepFailed, match="something else"):
+        agents._run_claude(None, agent, "p", choice, tmp_path, stack, "build", tmp_path / "raw")
+    assert len(calls) == 1                                       # any other failure is not retried
