@@ -1,0 +1,31 @@
+# A clean machine for tests/quickstart/run.sh: Debian with only what the README's quick start asks
+# for (racket, uv, git). No Python, no Node and no container engine are installed: uv brings the
+# Python the scripts need. uv is the release archive pinned in kit/host/pins.json, checksum verified
+# (tests/tools/test_publish_ready.py compares the version and the checksums below with that file).
+FROM docker.io/library/debian:12-slim
+
+ARG UV_VERSION=0.13.8
+ARG UV_SHA256_X86_64=5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91
+ARG UV_SHA256_AARCH64=74f2f5c6024d397481db228db8fc25eed420db192243f88438c118e7e013e585
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends racket git ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN set -eu; arch="$(uname -m)"; \
+    case "$arch" in \
+      x86_64) sum="$UV_SHA256_X86_64" ;; \
+      aarch64) sum="$UV_SHA256_AARCH64" ;; \
+      *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/uv.tar.gz "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${arch}-unknown-linux-gnu.tar.gz"; \
+    echo "${sum}  /tmp/uv.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/uv.tar.gz -C /usr/local/bin --strip-components=1 "uv-${arch}-unknown-linux-gnu/uv"; \
+    rm /tmp/uv.tar.gz; uv --version
+
+RUN useradd --create-home --shell /bin/bash reader
+COPY --chown=reader:reader . /al
+# the rehearsal needs the files of a checkout, not its history
+RUN rm -rf /al/.git /al/media /al/agentic/trees /al/agentic/agents
+USER reader
+WORKDIR /al

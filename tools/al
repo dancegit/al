@@ -62,6 +62,9 @@
   al runs    LAYER prune --landed --older-than DAYS [--dry-run]
                                    remove the worktrees, containers and local branches of landed or settled runs;
                                    their records (agents/<id>, artefacts/<id>) are kept
+  al kpis    LAYER [--since YYYY-MM-DD] [--json|--md]
+                                   numbers from the layer's run records: runs by outcome and why, attempts per step,
+                                   review rounds, how often a person acted, time and cost; no names, paths or prompts
   al settle  LAYER RUN --as landed|superseded|abandoned [--by RUN|COMMIT] [--note T] [--who NAME]
                                    record that a finished run needs nothing more (agents/<id>/settlement.json)
   al cycle  LAYER status|start|close [--name N] [--version V] [--push] [--json]
@@ -402,6 +405,15 @@ def runs_module():
         sys.path.insert(0, str(ROOT / "tools"))
     import al_runs
     return al_runs
+
+
+def al_kpis_module():
+    """tools/al_kpis.py: `al kpis`, numbers from a layer's run records (outcomes, attempts, review
+    rounds, how often a person acted, time and cost), on the run model of al_runs."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_kpis
+    return al_kpis
 
 
 def suite_module():
@@ -3325,6 +3337,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--landed", action="store_true", help="prune: only runs in the landed or settled bucket (required)")
     p.add_argument("--older-than", type=float, metavar="DAYS", help="prune: runs that ended more than DAYS ago")
     p.add_argument("--dry-run", action="store_true", help="prune: print what would be removed; change nothing")
+    p = sub.add_parser("kpis", help="numbers from a layer's run records: outcomes, attempts, review rounds, how often a "
+                       "person acted, time and cost",
+                       description="Count LAYER's runs by outcome (and why they were handed over or failed), attempts "
+                       "per step, review rounds, how often a person had to act, time and cost per workflow and class, "
+                       "and the changes that are on the default branch. Read from the run records and from git, never "
+                       "fetched. The output holds no run id, title, prompt, branch, address or path. Exit 2 on bad use.")
+    p.add_argument("layer", type=Path)
+    p.add_argument("--since", metavar="YYYY-MM-DD", help="only runs that started on or after this day (UTC)")
+    p.add_argument("--json", action="store_true", help="print the numbers as JSON")
+    p.add_argument("--md", action="store_true", help="print a Markdown document (for docs/KPIS.md)")
+    p.add_argument("--sample", action="store_true", help=argparse.SUPPRESS)
     p = sub.add_parser("settle", help="record that a finished run needs nothing more (agents/<id>/settlement.json)",
                        description="Write LAYER's run RUN a settlement: landed, superseded or abandoned, with the run "
                        "or commit that did it and a note. Nothing else of the run is touched. Exit 0 written, 2 bad "
@@ -3583,6 +3606,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_cli(a)
         elif a.cmd in ("runs", "settle"):
             return runs_module().main(a, sys.modules[__name__])
+        elif a.cmd == "kpis":
+            return al_kpis_module().main(a, sys.modules[__name__])
         elif a.cmd == "deploy":
             return deploy_module().main(a, sys.modules[__name__])
         elif a.cmd in IMPROVE_COMMANDS:

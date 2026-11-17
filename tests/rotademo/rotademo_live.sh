@@ -26,6 +26,8 @@ export LC_ALL=C.UTF-8
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HERE="$ROOT/tests/rotademo"
 OUT_FINAL="${AL_ROTADEMO_OUT:-$ROOT/docs/demo/rotademo}"
+# videos are not kept in the tree: they go to the ignored media folder under their release asset names (docs/media.json)
+MEDIA="${AL_MEDIA_DIR:-$ROOT/media/media-v1}"
 ONLY="${AL_ROTADEMO_ONLY:-abc}"
 DRY="${AL_ROTADEMO_DRY:-0}"
 NAME="al-rotademo-forgejo"; IMAGE="codeberg.org/forgejo/forgejo:11"
@@ -125,20 +127,22 @@ run_adw() { local letter="$1" layer="$2" adw="$3" klass="$4" issue="$5" started
 file_issue() { api POST "/repos/$1/issues" -d "$(jq -n --arg t "$2" --arg b "$3" '{title: $t, body: $b}')" | jq -r .number; }
 pr_has_proof() { api GET "/repos/$1/issues/$2/comments" | jq -e '[.[] | select(.body | contains("Proof from run")
     and test("!\\[[^]]*\\]\\(http[^)]*/attachments/"))] | length == 1' >/dev/null; }
-# Video outputs for a run: <letter>-<name>.mp4 (H.264 yuv420p) and .gif (800 px, <= 1.5 MB), keyframes sheet.
+# Video outputs for a run: demo-rotademo-<letter>-<name>.mp4 (H.264 yuv420p) in the media folder; <letter>-<name>.gif
+# (800 px, <= 1.5 MB) and the keyframes sheet in $OUT.
 video_outputs() { local letter="$1" name="$2" layer="$3" id="$4" video frames dur
   video="$layer/artefacts/$id/recording/e2e-results/session.webm"
   frames=("$layer/artefacts/$id/recording/e2e-results/session.keyframes/"*.png)
   [ "${#frames[@]}" = 8 ] && [ -s "${frames[0]}" ] && ok "8 keyframes extracted from the session video" || bad "keyframes: ${#frames[@]}"
   if [ -s "$video" ]; then
-    ffmpeg -loglevel error -y -i "$video" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -crf 28 "$OUT/$letter-$name.mp4"
+    mkdir -p "$MEDIA"
+    ffmpeg -loglevel error -y -i "$video" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -crf 28 "$MEDIA/demo-rotademo-$letter-$name.mp4"
     for try in 6:96 5:64 4:64 3:48 2:48; do   # fps:colours, until the GIF fits in 1.5 MB
       ffmpeg -loglevel error -y -i "$video" -vf "fps=${try%:*},scale=800:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=${try#*:}:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" "$OUT/$letter-$name.gif"
       [ "$(stat -c %s "$OUT/$letter-$name.gif")" -le 1572864 ] && break
     done
-    dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUT/$letter-$name.mp4")"
-    [ "$(stat -c %s "$OUT/$letter-$name.gif")" -le 1572864 ] && [ "$(stat -c %s "$OUT/$letter-$name.mp4")" -le 1572864 ] \
-      && ok "video: $(printf '%.1f' "$dur")s; mp4 $(du -k "$OUT/$letter-$name.mp4" | cut -f1) KB, gif $(du -k "$OUT/$letter-$name.gif" | cut -f1) KB (each <= 1.5 MB)" \
+    dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$MEDIA/demo-rotademo-$letter-$name.mp4")"
+    [ "$(stat -c %s "$OUT/$letter-$name.gif")" -le 1572864 ] && [ "$(stat -c %s "$MEDIA/demo-rotademo-$letter-$name.mp4")" -le 1572864 ] \
+      && ok "video: $(printf '%.1f' "$dur")s; mp4 $(du -k "$MEDIA/demo-rotademo-$letter-$name.mp4" | cut -f1) KB, gif $(du -k "$OUT/$letter-$name.gif" | cut -f1) KB (each <= 1.5 MB)" \
       || bad "video outputs larger than 1.5 MB"
   else bad "no session video in artefacts/$id"; fi
   [ "${#frames[@]}" -gt 0 ] && pillow "$HERE/helpers/sheet.py" "$OUT/$letter-keyframes-sheet.png" "${frames[@]}" >/dev/null \
@@ -168,7 +172,8 @@ podman run -d --name "$NAME" -p "127.0.0.1:$PORT:3000" \
   -e FORGEJO__server__ROOT_URL="$BASE/" -e FORGEJO__log__LEVEL=Warn "$IMAGE" >/dev/null || { echo "forgejo did not start"; exit 2; }
 for _ in $(seq 1 60); do curl -fsS "$BASE/api/v1/version" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS "$BASE/api/v1/version" >/dev/null || { echo "forgejo not reachable"; exit 2; }
-podman exec -u git "$NAME" forgejo admin user create --username adw --password 'adw-Passw0rd!' --email adw@example.org --admin --must-change-password=false >/dev/null
+# throwaway account in a container that is deleted at exit; the password is fake by design
+podman exec -u git "$NAME" forgejo admin user create --username adw --password 'fake-Passw0rd-1!' --email adw@example.org --admin --must-change-password=false >/dev/null
 TOKEN="$(podman exec -u git "$NAME" forgejo admin user generate-access-token --username adw --token-name al --scopes all --raw | tail -1)"
 [ -n "$TOKEN" ] || { echo "no token"; exit 2; }
 for repo in rota rota-c; do

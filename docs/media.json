@@ -1,0 +1,221 @@
+{
+  "release": "media-v1",
+  "repository": "dancegit/al",
+  "base": "https://github.com/dancegit/al/releases/download/media-v1/",
+  "tour": {
+    "placeholder": "https://example.org/replace-with-the-tour-video-link",
+    "asset": "demo-tour.mp4"
+  },
+  "files": [
+    {
+      "name": "demo-01-layer.mp4",
+      "was": "docs/demo/01-layer.mp4",
+      "bytes": 1288571,
+      "sha256": "0012ad4acc21a3d4f57e6aacbfde82b15fba453d61fad258ded5d5ff6b38fe7a"
+    },
+    {
+      "name": "demo-02-compiler.mp4",
+      "was": "docs/demo/02-compiler.mp4",
+      "bytes": 69620,
+      "sha256": "1f014d475c51fccbfcbe5ce185927ad7efc77626b0affde874b5182ea929a7a6"
+    },
+    {
+      "name": "demo-03-five-codebases.mp4",
+      "was": "docs/demo/03-five-codebases.mp4",
+      "bytes": 428196,
+      "sha256": "975f9d03651e676e64943d4685ddca0f7d7fca336c28df60cdb740f40569868e"
+    },
+    {
+      "name": "demo-04-tasklist.mp4",
+      "was": "docs/demo/04-tasklist.mp4",
+      "bytes": 83230,
+      "sha256": "7b2b2aefa917b344348c6c41c372182aa33fd468d3e5f9b17c675d1a0b2fc0e2"
+    },
+    {
+      "name": "demo-05-zero-touch-opus.mp4",
+      "was": "docs/demo/05-zero-touch-opus.mp4",
+      "bytes": 618669,
+      "sha256": "2104dd6e99b15ea257b6db6db38d262ff86bc3be8d8b8e310bbd097af6b04794"
+    },
+    {
+      "name": "demo-05b-ui-change-human.mp4",
+      "was": "docs/demo/05b-ui-change-human.mp4",
+      "bytes": 367654,
+      "sha256": "34133498700843d40f8e37a5f7f2c3e05a3332293dbf47e1e585acd42810aecf"
+    },
+    {
+      "name": "demo-05c-feature-agents.mp4",
+      "was": "docs/demo/05c-feature-agents.mp4",
+      "bytes": 526774,
+      "sha256": "7e4db113138d3bb0af9a4626f32c58ebe64d570d670a3a808eb90057aa815268"
+    },
+    {
+      "name": "demo-05d-rota-feature.mp4",
+      "was": "docs/demo/05d-rota-feature.mp4",
+      "bytes": 799660,
+      "sha256": "00dbc46002fbe0f3c04f15f09f4698d923127b5d0e794f715ffe75224b1f2003"
+    },
+    {
+      "name": "demo-05e-rota-defect.mp4",
+      "was": "docs/demo/05e-rota-defect.mp4",
+      "bytes": 715450,
+      "sha256": "5f1a05f54d96c7245c1e15e15353885ef7fe7d7036ce0b758a26e8080fce7644"
+    },
+    {
+      "name": "demo-05f-rota-handoff.mp4",
+      "was": "docs/demo/05f-rota-handoff.mp4",
+      "bytes": 193328,
+      "sha256": "c92f617ea4df0254c9b1f95d0506ecf0a15b41cdbb54614f52ba6a5f1f6ba6b6"
+    },
+    {
+      "name": "demo-05g-layer-change.mp4",
+      "was": "docs/demo/05g-layer-change.mp4",
+      "bytes": 723005,
+      "sha256": "6aa101edd125344525ab6ecfff6622631db7c9925641e8c2f334616fbd4fb602"
+    },
+    {
+      "name": "demo-06-scaling.mp4",
+      "was": "docs/demo/06-scaling.mp4",
+      "bytes": 368953,
+      "sha256": "8e50abc383587793a295fb8b6e9c8a8901139714a6fb732030faacbf6f17f37c"
+    },
+    {
+      "name": "demo-06b-fan-out.mp4",
+      "was": "docs/demo/06b-fan-out.mp4",
+      "bytes": 86123,
+      "sha256": "025fe686595052faa90b4d6c918dbae35f1707364825346cd6f621d167d1b592"
+    },
+    {
+      "name": "demo-06c-verify.mp4",
+      "was": "docs/demo/06c-verify.mp4",
+      "bytes": 41320,
+      "sha256": "e5b6d51fa2c24167b61ce4526f2a4fb3c9e06f7d46dc613a8d9c3da9abe2ee29"
+    },
+    {
+      "name": "demo-06d-dashboard.mp4",
+      "was": "docs/demo/06d-dashboard.mp4",
+      "bytes": 605953,
+      "sha256": "d60597de23772e2f3ad96235f4cf3becfa7cb2e3e97bad02632b917344e26432"
+    },
+    {
+      "name": "demo-06e-al-for-al.mp4",
+      "was": "docs/demo/06e-al-for-al.mp4",
+      "bytes": 436957,
+      "sha256": "91fb45cf3524d17de3b3c6c5ca441be12832f59540f39181871a4128b10fa50c"
+    },
+    {
+      "name": "demo-07-forgejo.mp4",
+      "was": "docs/demo/07-forgejo.mp4",
+      "bytes": 65552,
+      "sha256": "66625268c7d498aa87cb3ab9540a7ac8b30d8b7a96d494424aee0d05876866f2"
+    },
+    {
+      "name": "demo-08-voice.mp4",
+      "was": "docs/demo/08-voice.mp4",
+      "bytes": 33202,
+      "sha256": "723ab3a97314e901a7a90397f339fbeeddd306786c8316c69eb3b14725913f77"
+    },
+    {
+      "name": "demo-09-tests.mp4",
+      "was": "docs/demo/09-tests.mp4",
+      "bytes": 50306,
+      "sha256": "0fa73c1289f5cdbb0bd0288269648abde766eb0473c638c2debc6561af624eaf"
+    },
+    {
+      "name": "demo-al-for-al-dashboard-live.mp4",
+      "was": "docs/demo/al-for-al/dashboard-live.mp4",
+      "bytes": 691036,
+      "sha256": "d4c387d6d8dd81849af56f1f792e8dcfcdeb92cf81ff5ad51c3038c26f178201"
+    },
+    {
+      "name": "demo-dashboard-live.mp4",
+      "was": "docs/demo/dashboard/live.mp4",
+      "bytes": 612367,
+      "sha256": "690199128d8247fbfb817b76769cf482be3f8377a2a08f22b2841ba47d5655cd"
+    },
+    {
+      "name": "demo-rotademo-a-rest-rule.mp4",
+      "was": "docs/demo/rotademo/a-rest-rule.mp4",
+      "bytes": 209596,
+      "sha256": "67d4c09eb2b40f2ee065c5689ac875d702d01d8d23301c2f67083ce1c81e167f"
+    },
+    {
+      "name": "demo-rotademo-c-expired-badge.mp4",
+      "was": "docs/demo/rotademo/c-expired-badge.mp4",
+      "bytes": 175694,
+      "sha256": "aa274c5d54506c1306674079f77e17fb63e6df8367da982c0971e69b47c873e8"
+    },
+    {
+      "name": "demo-tour.mp4",
+      "was": "docs/demo/tour.mp4",
+      "bytes": 8863219,
+      "sha256": "4f2624c439670b9d42603c184a29b0d0334ef10036d7a588e78058dd9b6bad23"
+    },
+    {
+      "name": "demo-webdemo-b-feature.mp4",
+      "was": "docs/demo/webdemo/b-feature.mp4",
+      "bytes": 83565,
+      "sha256": "1761ab26f38df6ba92555ffe82fb0a5c9301db77cf1ea04587be2a96513a9896"
+    },
+    {
+      "name": "demo-webdemo-b-feature.webm",
+      "was": "docs/demo/webdemo/b-feature.webm",
+      "bytes": 710094,
+      "sha256": "0b87b8eb8d188e5da349313fcfb4091de9bc8d7a87c7b5e8ffab12f188ac0b05"
+    },
+    {
+      "name": "showcase-01-start-work.mp4",
+      "was": "docs/showcase/01-start-work.mp4",
+      "bytes": 141354,
+      "sha256": "3bc7e1da490195692f67b5804491be680148cbf5b99c3cfe2495af50c9f962cd"
+    },
+    {
+      "name": "showcase-02-repos.mp4",
+      "was": "docs/showcase/02-repos.mp4",
+      "bytes": 358551,
+      "sha256": "e4e4c6cc29776b054e0403097829f1cf290db834eae128ccb58658fa6a044600"
+    },
+    {
+      "name": "showcase-03-run-documents.mp4",
+      "was": "docs/showcase/03-run-documents.mp4",
+      "bytes": 266798,
+      "sha256": "260daa728c5cab2b143ce7a5f5e6a7ee4a6c579a82a003a8d96415cd54b20ea9"
+    },
+    {
+      "name": "showcase-04-review-says-no.mp4",
+      "was": "docs/showcase/04-review-says-no.mp4",
+      "bytes": 293284,
+      "sha256": "8aea9c8f25856f427eb041d513e0954ee354a557a1e2a506224acb79a22b5243"
+    },
+    {
+      "name": "showcase-05-delivery.mp4",
+      "was": "docs/showcase/05-delivery.mp4",
+      "bytes": 2645985,
+      "sha256": "e32507acdfa3bc5d4c41ef1d95f6d69513cac4fabf898028d1a654be7c3e62d8"
+    },
+    {
+      "name": "showcase-06-sandbox.mp4",
+      "was": "docs/showcase/06-sandbox.mp4",
+      "bytes": 755354,
+      "sha256": "345325e996f1cad9473543bcd78aabf4672e6a87dc809e34e7d1c4c11287469c"
+    },
+    {
+      "name": "showcase-07-adopt.mp4",
+      "was": "docs/showcase/07-adopt.mp4",
+      "bytes": 1212882,
+      "sha256": "2f40fe4cdd85c42f885b32284dd07ec18adee69bc83d8698e214127049e9bd9b"
+    },
+    {
+      "name": "showcase-08-deploy-remote.mp4",
+      "was": "docs/showcase/08-deploy-remote.mp4",
+      "bytes": 1433294,
+      "sha256": "0bbd5af515b4deb0841251dcdd9c5525a6f7cb5e834ff6a6b5f2c5f1e076ba73"
+    },
+    {
+      "name": "showcase-09-promotion-pack.mp4",
+      "was": "docs/showcase/09-promotion-pack.mp4",
+      "bytes": 275824,
+      "sha256": "3b0416b18fc573b050879e1047218ac196b45b50ed279ab0bea06095923242fc"
+    }
+  ]
+}

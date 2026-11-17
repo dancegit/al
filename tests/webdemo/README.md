@@ -78,8 +78,8 @@ $1.78.
 | `a-after.png` | Scenario A: the same screen after the agent's change, from the run's e2e screenshots |
 | `a-pr-page.png` | Scenario A: the pull request page in real Chrome: before picture, run summary, Proof comment |
 | `a-run.log` | Scenario A: the run's log |
-| `b-feature.webm` | Scenario B: the video the e2e capture recorded (what the reviewers' keyframes come from) |
-| `b-feature.mp4` | The same video as H.264/yuv420p for players that cannot play WebM |
+| [`demo-webdemo-b-feature.webm`](https://github.com/dancegit/al/releases/download/media-v1/demo-webdemo-b-feature.webm) | Scenario B: the video the e2e capture recorded (what the reviewers' keyframes come from). Not in the tree: a release asset (`docs/media.json`), written to `media/media-v1/` |
+| [`demo-webdemo-b-feature.mp4`](https://github.com/dancegit/al/releases/download/media-v1/demo-webdemo-b-feature.mp4) | The same video as H.264/yuv420p for players that cannot play WebM; a release asset as well |
 | `b-feature.gif` | The same video as an 800 px GIF (≤ 1.5 MB) |
 | `b-keyframes/*.png` | The 8 keyframes the runtime extracted and both reviewers read |
 | `b-verdicts.json` | The two reviewers' verdicts (summary, issues, artefacts_reviewed) and the gate decision |

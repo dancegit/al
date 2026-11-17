@@ -285,25 +285,34 @@ def _plan_path(layer: Any, plan: str) -> Path | None:
 
 
 def criteria(layer: Any, plan: str, prompt: str = "") -> list[str]:
-    """The bullets under `## Acceptance Criteria` of the run's plan (up to the next `## `); without
-    that heading, the request itself."""
+    """What a person can check about the run's change, from its plan. In this order: the bullets under
+    a `Checkable results` heading (level 2 to 4, usually `### Checkable results` under `## How it is
+    proven`), up to the next heading of any level; else, for a plan in the earlier layout, the bullets
+    under `## Acceptance Criteria` (up to the next `## `); else the request itself."""
     path = _plan_path(layer, plan)
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path else []
+    found = (_bullets_under(lines, r"^#{2,4}\s+checkable results\s*$", r"^#{1,6}\s")
+             or _bullets_under(lines, r"^##\s+acceptance criteria\s*$", r"^## "))
+    return found or [f"The request: {first_line(prompt)}"]
+
+
+def _bullets_under(lines: list[str], heading: str, end: str) -> list[str]:
+    """The list items after the first line matching `heading` (case-insensitive), up to the first line
+    matching `end`; an indented line continues the item before it."""
     found: list[str] = []
     inside = False
     for line in lines:
-        if re.match(r"^##\s+acceptance criteria\s*$", line.strip(), re.IGNORECASE):
-            inside = True
+        if not inside:
+            inside = bool(re.match(heading, line.strip(), re.IGNORECASE))
             continue
-        if inside and line.startswith("## "):
+        if re.match(end, line):
             break
-        if inside:
-            item = re.match(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)", line)
-            if item:
-                found.append(item.group(1).strip())
-            elif found and line.startswith((" ", "\t")) and line.strip():
-                found[-1] += " " + line.strip()
-    return found or [f"The request: {first_line(prompt)}"]
+        item = re.match(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)", line)
+        if item:
+            found.append(item.group(1).strip())
+        elif found and line.startswith((" ", "\t")) and line.strip():
+            found[-1] += " " + line.strip()
+    return found
 
 
 def _what_was_done(layer: Any, plan: str) -> str:

@@ -16,8 +16,8 @@ from pathlib import Path
 
 def plan(title: str, change: str) -> dict:
     text = (f"# Layer change: {title}\n\n## Request\n{title}\n\n## Summary\n{title} (rehearsal).\n\n"
-            f"## What changes for you\n{change}\n\n## How\nScripted.\n\n## Step by Step Tasks\n### Change\n- scripted\n\n"
-            "## Validation Commands\n- definition\n\n## Notes\nnone\n")
+            f"## What changes for you\n{change}\n\n## How\nScripted.\n\n## The change, step by step\n### Change\n- scripted\n\n"
+            "## How it is proven\n- definition\n\n## What is left out\nnone\n")
     return {"layer_files": {"specs/layer-change.md": text}, "output": "specs/layer-change.md"}
 
 
@@ -34,7 +34,7 @@ def main() -> int:
     (out / "1" / "plan.json").write_text(json.dumps(plan("queue work in a text file", "- Write tasks in `agentic/tasks.md`.")))
     (out / "1" / "implement.json").write_text(json.dumps({"files": {"agentic/agentic.rkt": changed}}))
     template = (kit / "templates/commands/plan-chore.md").read_text()
-    edited = template.replace("## Notes\n<tests added", "## Rollback\n<exactly how to undo the change>\n\n## Notes\n<tests added")
+    edited = template.replace("## What is left out\n<tests not added", "## Rollback\n<exactly how to undo the change>\n\n## What is left out\n<tests not added")
     assert edited != template
     sha = hashlib.sha256((kit / "templates/commands/plan-chore.md").read_bytes()).hexdigest()
     (out / "2").mkdir(parents=True, exist_ok=True)

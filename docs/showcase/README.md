@@ -13,8 +13,13 @@ test suite's stand-in and says so on its opening card.
 ```sh
 uv run tools/showcase/make.py                # all nine clips, the contact sheet, the logs
 uv run tools/showcase/make.py 05 adopt       # some: by number, name or stem (05-delivery)
-uv run tools/showcase/make.py --out /tmp/x   # elsewhere; --keep-work keeps each clip's temporary folder
+uv run tools/showcase/make.py --out /tmp/x --media /tmp/x/media   # elsewhere; --keep-work keeps each clip's temporary folder
 ```
+
+No video is kept in the tree. Each MP4 is written to `media/media-v1/` (ignored by git) under the name it
+has as a release asset, `showcase-NN-name.mp4`, and its size and sha256 are recorded in
+[`docs/media.json`](../media.json); a person uploads the folder with `tools/release_media.sh`, which lists
+the files and prints the `gh release` commands without running them.
 
 It needs uv, `ffmpeg` and `ffprobe`, the DejaVu Sans Mono font (`fonts-dejavu-core`, or a monospace TTF in
 `AL_SHOWCASE_FONT`) and, for the browser clips, Chrome or Chromium (found on PATH, or `AL_DASHBOARD_CHROME`).
@@ -34,8 +39,9 @@ global git identity, any `/home/…` or `/Users/…` path other than the neutral
 page error, a console error, or a command that exits other than as the clip expects stops the recording:
 nothing that failed by accident is ever recorded.
 
-What `make.py` writes per clip: `NN-name.mp4` (H.264, 1280×720, 15 fps, 10–40 s, under 3 MB: a one-line
-caption card, then the clip with a caption per step, sped up to fit 38 s when longer), `NN-name.gif` (a
+What `make.py` writes per clip: `showcase-NN-name.mp4` in the media folder (H.264, 1280×720, 15 fps, 10–40 s,
+under 3 MB: a one-line caption card, then the clip with a caption per step, sped up to fit 38 s when
+longer), and in `docs/showcase`: `NN-name.gif` (a
 smaller preview for the README, under 2 MB), `NN-name.png` (the last frame) and, for terminal clips,
 `logs/NN-name.txt` (the captured output, as shown). Then `contact-sheet.png` from every poster. It exits 1
 when a file breaks a limit. `tests/tools/test_showcase.py` checks the renderer, the privacy rules, that

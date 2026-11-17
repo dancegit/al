@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import filecmp
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -182,7 +183,14 @@ def test_sandbox_doctor_prints_the_coverage_lines(app, podman) -> None:  # noqa:
             "AL-DOCTOR\tinit\tok\tcatatonit\nAL-DOCTOR\tdisk\tok\t90000 MB free\n")
     data["doctor_output"] = "AL-DOCTOR\tcommand:test\tok\t./test.sh\n" + rest
     podman["state"].write_text(json.dumps(data))
-    cp = al("sandbox", layer, "doctor", env=podman["env"])
+    # the doctor also looks for the agent CLI on this machine; a stand-in on PATH keeps this test about
+    # the coverage lines on a machine without one (continuous integration has none)
+    agent_bin = app.parent / "agent-bin"
+    agent_bin.mkdir()
+    (agent_bin / "claude").write_text("#!/bin/sh\necho 0.0.0\n")
+    (agent_bin / "claude").chmod(0o755)
+    env = dict(podman["env"], PATH=f"{agent_bin}{os.pathsep}{podman['env'].get('PATH', os.environ['PATH'])}")
+    cp = al("sandbox", layer, "doctor", env=env)
     lines = cp.stdout.splitlines()
     assert lines[-1].startswith("doctor: ") and "0 missed" in lines[-1]     # the summary stays the last line
     assert lines[-3:-1] == [
@@ -191,6 +199,6 @@ def test_sandbox_doctor_prints_the_coverage_lines(app, podman) -> None:  # noqa:
     # the exit code is the doctor's alone: a miss still fails it, with the coverage lines printed
     data["doctor_output"] = "AL-DOCTOR\tcommand:test\tmiss\t./test.sh is not an executable file\n" + rest
     podman["state"].write_text(json.dumps(data))
-    missed = al("sandbox", layer, "doctor", env=podman["env"], ok=False)
+    missed = al("sandbox", layer, "doctor", env=env, ok=False)
     assert missed.returncode == 1 and "1 missed" in missed.stdout.splitlines()[-1]
     assert missed.stdout.splitlines()[-2].startswith("coverage: source path lib")

@@ -116,10 +116,10 @@ subtitle = "Replay of real run d8c03973: 2 min 14 s, $0.69, one attempt — the 
 gap = 0.5
 hold = 2.5
 explain = [
-  "A real run with Claude Opus 5.5: no human between the prompt and the shipped change",
+  "A real run with Claude Opus 5.5: no human between the prompt and the gate's decision",
   "The agent plans, writes the test and commits, inside a container",
   "flask's own lint, type check and test suite must pass; then a second agent reviews the evidence",
-  "Only if every gate holds is the change merged",
+  "Every gate held. Here main was checked out in the app, so the result waited on a branch for one fast-forward",
 ]
 steps = [
   { run = "while IFS= read -r l; do printf '%s\\n' \"$l\" | cut -c1-108; sleep 0.3; done < docs/demo/logs/flask-zte-opus-inside-container-d8c03973.log", show = "uv run flask.al/adws/adw_zte.py \"Add a test asserting that Flask.testing is False on a newly created app\" --class chore", note = "REPLAY of the saved log of a real run (docs/demo/logs/flask-zte-opus-inside-container-d8c03973.log)", caption = "Replay of the real log. Follow the order: plan, build, three real checks, commit, review, gate, ship, clean up." },

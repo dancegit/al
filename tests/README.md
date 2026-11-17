@@ -5,6 +5,10 @@
 | Compiler | `racket/al/tests` | `raco test racket/al/tests` | racket |
 | Runtime units | `kit/runtime/tests` | `(cd kit/runtime && uv run --with pytest pytest -q)` | uv |
 | Integration | `tests/integration` | see below | racket, uv, git; podman / nix / network per marker |
+| Public readiness | `tests/tools/test_publish_ready.py` | `uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_publish_ready.py -q` | uv, git: the licence, the CI workflow, no tracked video and the media manifest, the tree size, the wording of `docs/DESIGN.md`, the flask sentence against its saved log, the README's box and Numbers section, the quick-start script, fake credentials and the allow-list, the spelling PITER |
+| `al kpis` | `tests/tools/test_al_kpis.py` | `uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_al_kpis.py -q` | racket, uv, git: the numbers of `al kpis` on fixture run records, and that `docs/KPIS.md` is the marked sample or real numbers |
+| Pre-publish scan | `tests/tools/test_prepublish_check.py` | `uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_prepublish_check.py -q` | uv, git: `tools/prepublish_check.sh` on small repositories built for the test (secrets, addresses, home paths, hosts, large files, the allow-list) |
+| Quick start on a clean machine | `tests/quickstart/run.sh` | `tests/quickstart/run.sh` (not part of a suite; exits 3 without an engine) | podman or docker, network: the README's quick start in a container with only racket, uv and git; the log is `tests/quickstart/run.log` |
 
 ### Runtime tests against real podman
 

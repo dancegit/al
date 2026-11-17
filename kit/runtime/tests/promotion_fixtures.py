@@ -3,6 +3,7 @@ and promotion, data/delivery-sprint.json), real delivered runs (runner.main with
 a fake Forgejo that records pull requests, reviews, comments, assets and merges."""
 from __future__ import annotations
 
+import base64
 import contextlib
 import copy
 import io
@@ -109,7 +110,8 @@ def script(layer: Path, step: str, data: dict[str, Any], adw: str = "") -> Path:
 def plan_text(prompt: str, criteria: list[str] | None, done: str = "") -> str:
     lines = [f"# Plan: {prompt}", "", done or f"Adds what was asked: {prompt}.", ""]
     if criteria is not None:
-        lines += ["## Acceptance Criteria", "", *[f"- {c}" for c in criteria], "", "## Notes", "", "- not a criterion"]
+        lines += ["## How it is proven", "", "### Checkable results", "", *[f"- {c}" for c in criteria], "",
+                  "## What is left out", "", "- not a criterion"]
     return "\n".join(lines) + "\n"
 
 
@@ -144,7 +146,7 @@ def deliver(layer: Path, app: Path, adw_id: str, files: dict[str, str], *, promp
         if video:
             target = root / "recordings" / video
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(DATA / "tiny.webm", target)
+            target.write_bytes(base64.b64decode((DATA / "tiny.webm.b64").read_text()))
             frames = []
             for index in (1, 2):
                 frame = root / "recordings" / f"{Path(video).stem}.keyframes" / f"frame-{index}.png"

@@ -21,6 +21,7 @@ Runs in demo-shop.al (ADW, what it covers):
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -304,7 +305,7 @@ def build(root: Path) -> dict[str, Path]:
     arts = layer / "artefacts" / rid
     write(arts / "log" / "test.1.log", "2 passed\n", 150)
     write(arts / "screenshots" / "e2e" / "01-cart.png", (DATA / "tiny.png").read_bytes(), 150)
-    write(arts / "recording" / "e2e" / "session.webm", (DATA / "tiny.webm").read_bytes(), 150)
+    write(arts / "recording" / "e2e" / "session.webm", base64.b64decode((DATA / "tiny.webm.b64").read_text()), 150)
     write(arts / "recording" / "e2e" / "session.keyframes" / "session-01.png", (DATA / "tiny.png").read_bytes(), 150)
     artefacts = [
         {"id": "log", "type": "log", "step": "review", "path": f"artefacts/{rid}/log/test.1.log", "bytes": 9, "sha256": "0" * 64,

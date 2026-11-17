@@ -1,0 +1,50 @@
+# The allow-list of the pre-publish scan (tools/prepublish_check.sh) and of gitleaks, when a person
+# has it installed. Every entry says why: an entry without a description is refused by the scan.
+# An entry applies when the finding's path matches one of `paths` and its line matches one of
+# `regexes`; an entry with only one of the two is decided by that one.
+title = "al: values that look private and are not"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Live demo scripts create a throwaway Forgejo account in a container that is deleted at exit; its password and webhook secret carry the prefix fake- by design."
+paths = ['''^tests/(forge|rotademo|selfdemo|webdemo)/[a-z_]+_live\.sh$''']
+regexes = ['''fake-Passw0rd-1!''', '''fake-hook-secret-''']
+
+[[allowlists]]
+description = "Unit tests of the dashboard server, the voice service, the registry login and al create pass an invented token (s3cret…, secret-…, test-…) and assert that it is required or never printed."
+paths = [
+  '''^kit/dashboard/tests/test_(server|voice_server)\.py$''',
+  '''^kit/runtime/tests/test_(selfrun|voice_service)\.py$''',
+  '''^tests/tools/test_(create|dashboard_gen)\.py$''',
+]
+
+[[allowlists]]
+description = "The scout identity tests feed invented remote URLs with credentials in them: stripping those credentials is the behaviour under test."
+paths = ['''^tests/tools/test_scout_identity\.py$''']
+
+[[allowlists]]
+description = "The deploy and sandbox-image tests plant sentinel values (sentinel-value-…) as secrets and assert that no output or written file contains them."
+paths = ['''^tests/tools/test_(deploy|sandbox_images)\.py$''']
+regexes = ['''sentinel''']
+
+[[allowlists]]
+description = "Recorded agent transcripts for the usage tests: apiKeySource holds the name of an environment variable, never a key (see the README in that folder)."
+paths = ['''^kit/runtime/tests/data/usage/''']
+
+[[allowlists]]
+description = "Placeholder home folders in the guide and in tests: /home/you, /home/someone, /home/user and /home/u are invented names, not a person's folder."
+regexes = ['''/home/(you|someone|user|u)\b''']
+
+[[allowlists]]
+description = "The privacy tests of the showcase recorder feed it an invented home folder, host name and address to prove that it refuses to record them."
+paths = ['''^tests/tools/test_showcase\.py$''']
+
+[[allowlists]]
+description = "Invented addresses in tests: a private-range address a container must not reach, a public resolver used as an unreachable target, and an address in a compiler error example."
+paths = [
+  '''^kit/runtime/tests/test_(isolation|sandbox)_podman\.py$''',
+  '''^racket/al/tests/compiler-test\.rkt$''',
+]
+regexes = ['''\b(10\.\d+\.\d+\.\d+|1\.1\.1\.1|192\.168\.\d+\.\d+)\b''']

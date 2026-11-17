@@ -78,7 +78,8 @@ podman run -d --name "$NAME" -p "127.0.0.1:$PORT:3000" \
   -e FORGEJO__server__ROOT_URL="$BASE/" -e FORGEJO__log__LEVEL=Warn "$IMAGE" >/dev/null || { echo "forgejo did not start"; exit 2; }
 for _ in $(seq 1 60); do curl -fsS "$BASE/api/v1/version" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS "$BASE/api/v1/version" >/dev/null || { echo "forgejo not reachable"; exit 2; }
-podman exec -u git "$NAME" forgejo admin user create --username adw --password 'adw-Passw0rd!' --email adw@example.org --admin --must-change-password=false >/dev/null
+# throwaway account in a container that is deleted at exit; the password is fake by design
+podman exec -u git "$NAME" forgejo admin user create --username adw --password 'fake-Passw0rd-1!' --email adw@example.org --admin --must-change-password=false >/dev/null
 TOKEN="$(podman exec -u git "$NAME" forgejo admin user generate-access-token --username adw --token-name al --scopes all --raw | tail -1)"
 [ -n "$TOKEN" ] || { echo "no token"; exit 2; }
 export AL_WEBDEMO_FORGEJO_TOKEN="$TOKEN"

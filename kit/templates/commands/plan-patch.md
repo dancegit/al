@@ -22,10 +22,10 @@ PATCH_FILE: ${specs_dir}/patch-${adw_id}-<descriptive-name>.md
 - Read ORIGINAL_PLAN when it is given: it defines what was asked for. The patch closes the gap between that and what exists; it does not reopen the design.
 - Read `git diff {{default_branch}}...HEAD` and any uncommitted changes to see what was built, then locate the exact lines CHANGE_REQUEST is about.
 - Think hard about the minimal edit. One issue, one fix. No refactoring, no extras, no changes outside the issue's blast radius.
-- If CHANGE_REQUEST cites an artefact (screenshot, video frame, report, log), open it and describe what it shows in Issue Summary.
-- If CHANGE_REQUEST contradicts ORIGINAL_PLAN, follow CHANGE_REQUEST and record the contradiction in Issue Summary.
+- If CHANGE_REQUEST cites an artefact (screenshot, video frame, report, log), open it and describe what it shows under What is asked and why.
+- If CHANGE_REQUEST contradicts ORIGINAL_PLAN, follow CHANGE_REQUEST and record the contradiction under What is asked and why.
 - If the fix affects behaviour covered by a test, plan the test change; if nothing covers it, plan the smallest test that would have caught the issue.
-- Never plan a change under a protected path; if unavoidable, write a line starting `REQUIRES HUMAN` in Solution naming the path and the reason, and plan nothing under it.
+- Never plan a change under a protected path; if unavoidable, write a line starting `REQUIRES HUMAN` under What is left out naming the path and the reason, and plan nothing under it.
 - A plan covers building and validating only: no step commits, merges, pushes, tags, releases or opens a pull request; delivery is the workflow's. Integration work (bringing in another branch or patch) is planned as 'apply onto the worktree, uncommitted', e.g. `git merge --no-commit --squash <ref>`, `git checkout <ref> -- <path>` or `git apply`.
 - Write PATCH_FILE in the Plan Format (unless a codebase-specific instruction below says otherwise). `<descriptive-name>` is 3-6 lowercase hyphenated words.
 
@@ -46,24 +46,26 @@ Codebase-specific instructions below take precedence over the defaults in this s
 ```md
 # Patch: <patch name>
 
-## Issue Summary
+## What is asked and why
 <the issue in one or two sentences; original plan path; evidence (file:line, artefact path)>
 
-## Solution
-<the minimal change and why it resolves the issue>
-
-## Steps
+## The change, step by step
 IMPORTANT: execute every step in order, top to bottom.
+
+<the minimal change and why it resolves the issue>
 
 1. <file, symbol, exact change>
 2. <test added or updated, with path>
-3. Run every command under Validation and fix until all pass.
+3. Run every command under How it is proven and fix until all pass.
 
-## Validation
+## How it is proven
 Execute every command from the worktree root; all must exit 0.
 
 {{validation_commands}}
 <the one command or check that shows this specific issue is gone>
+
+## What is left out
+<REQUIRES HUMAN lines; anything the change request touches that this patch does not do; "Nothing" if none>
 ```
 
 ## Codebase-specific instructions

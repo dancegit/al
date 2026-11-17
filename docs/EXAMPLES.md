@@ -59,13 +59,14 @@ flask.al/
 ```
 
 And this is a real run of that workflow with Claude Opus 5.5. The prompt was *"Add a test asserting that
-Flask.testing is False on a newly created app"*. Nobody touched anything after that:
+Flask.testing is False on a newly created app"*. Nobody touched anything until the gate had decided:
 
 ![A real zero-touch run on flask](demo/05-zero-touch-opus.gif)
 
 Opus planned the change, wrote the test and committed it; flask's own lint, type check and test suite ran
 in a container; a second Opus pass reviewed the result against the plan with the logs and test report as
-proof; the rules passed; the change was merged. It took 2 minutes 14 seconds and cost $0.69.
+proof; every rule of the gate held. `main` was checked out in the application, so the result waited on the
+branch `al/ship/main` for one manual fast-forward. It took 2 minutes 14 seconds and cost $0.69.
 [The saved log](demo/logs/flask-zte-opus-inside-container-d8c03973.log) is in the repository.
 
 ## A web application, end to end: who reviews, and on what proof
@@ -103,7 +104,7 @@ browser scenario so that the run's **video** demonstrates the feature. This is t
 
 ![The recorded proof: the search box filtering notes](demo/webdemo/b-feature.gif)
 
-Play the original recording: [`b-feature.mp4`](demo/webdemo/b-feature.mp4). A human reviewer gets this
+Play the original recording: [`b-feature.mp4`](https://github.com/dancegit/al/releases/download/media-v1/demo-webdemo-b-feature.mp4). A human reviewer gets this
 file; the frames further down are only for the reviewer agents, who cannot watch a video.
 
 Reviewers cannot watch a video, so the run cuts it into frames. Two independent reviewer agents each
@@ -358,6 +359,20 @@ tests/forge/proof_video_live.sh                              # the recording is 
 tests/selfdemo/selfdemo_live.sh                              # two layer changes through al improve with a real agent (about $2)
 tests/webdemo/webdemo_live.sh                                # the Notes web app scenarios with a real agent (about $1.80)
 tests/rotademo/rotademo_live.sh                              # the healthcare staffing scenarios with a real agent (about $6.50)
+# tests/quickstart/run.sh                                    # the README's quick start in a clean container (needs podman or docker)
+# tools/prepublish_check.sh                                  # before publishing: secrets, addresses, private paths and large files, tree and history
+# tools/release_media.sh                                     # lists the videos of the release and prints the upload commands; uploads nothing
+```
+
+The fast suites (what CI runs; no container engine, no browser, no agent), exactly as
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs them:
+
+```bash
+PLTCOLLECTS="$PWD/racket:" raco test racket/al/tests
+(cd kit/runtime && uv run --with pytest pytest -q)
+(cd kit/dashboard && uv run --with pytest pytest -q tests)
+uv run --with pytest --with pytest-xdist --with pyyaml --with jsonschema pytest tests/tools -q -n 4 -m "not podman and not browser and not slow"
+uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_readme.py tests/tools/test_generated_references.py tests/tools/test_publish_ready.py -q
 ```
 
 The integration tests never work in your checkouts. Each session makes its own copy of every example

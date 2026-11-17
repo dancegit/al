@@ -23,8 +23,10 @@ from conftest import AL, ROOT
 SHOWCASE = ROOT / "tools" / "showcase"
 DOCS = ROOT / "docs" / "showcase"
 sys.path.insert(0, str(SHOWCASE))
+sys.path.insert(0, str(ROOT / "tools"))
 
 import clips  # noqa: E402
+import media  # noqa: E402
 import privacy  # noqa: E402
 
 
@@ -185,10 +187,17 @@ def _png_size(path: Path) -> tuple[int, int]:
 
 
 def test_every_clip_has_its_three_files_within_limits():
+    # the GIF and the poster are tracked in docs/showcase; the MP4 is a release asset, known by the
+    # manifest (docs/media.json) and written by make.py into the media folder (its --media default)
+    assert 'default_media = media.media_dir()' in (SHOWCASE / "make.py").read_text(encoding="utf-8")
+    recorded = {f["name"]: f for f in media.load()["files"]}
     for c in clips.CLIPS:
-        mp4, gif, png = (DOCS / f"{c.stem}{s}" for s in (".mp4", ".gif", ".png"))
-        assert mp4.is_file() and gif.is_file() and png.is_file(), c.stem
-        assert mp4.stat().st_size < clips.MAX_MP4 and gif.stat().st_size < clips.MAX_GIF, c.stem
+        gif, png = (DOCS / f"{c.stem}{s}" for s in (".gif", ".png"))
+        assert gif.is_file() and png.is_file(), c.stem
+        assert not (DOCS / f"{c.stem}.mp4").exists(), f"{c.stem}.mp4 belongs in the media folder, not in the tree"
+        asset = recorded.get(f"showcase-{c.stem}.mp4")
+        assert asset and asset["was"] == f"docs/showcase/{c.stem}.mp4" and 0 < asset["bytes"] < clips.MAX_MP4, c.stem
+        assert gif.stat().st_size < clips.MAX_GIF, c.stem
         assert _png_size(png) == clips.SIZE, c.stem
         if c.kind == "terminal":
             assert (DOCS / "logs" / f"{c.stem}.txt").is_file(), c.stem
@@ -200,10 +209,13 @@ def test_every_clip_has_its_three_files_within_limits():
 def test_clips_are_h264_720p_and_10_to_40_seconds():
     if not shutil.which("ffprobe"):
         pytest.skip("no ffprobe")
-    for c in clips.CLIPS:
+    videos = [media.media_dir() / f"showcase-{c.stem}.mp4" for c in clips.CLIPS]
+    if not all(v.is_file() for v in videos):
+        pytest.skip(f"the showcase videos are release assets and are not in {media.media_dir()} (a fresh clone has none)")
+    for c, video in zip(clips.CLIPS, videos):
         cp = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                              "stream=codec_name,width,height,pix_fmt:format=duration", "-of", "default=noprint_wrappers=1",
-                             str(DOCS / f"{c.stem}.mp4")], capture_output=True, text=True, check=True)
+                             str(video)], capture_output=True, text=True, check=True)
         info = dict(line.split("=", 1) for line in cp.stdout.splitlines() if "=" in line)
         assert (info["codec_name"], info["width"], info["height"], info["pix_fmt"]) == ("h264", "1280", "720", "yuv420p"), c.stem
         assert clips.MIN_SECONDS <= float(info["duration"]) <= clips.MAX_SECONDS, (c.stem, info["duration"])
@@ -215,7 +227,7 @@ def test_readme_capabilities_list_every_clip():
     assert headings[headings.index("The principles, and what al does about each") + 1] == "What you can do with it today"
     section = _readme_section()
     for c in clips.CLIPS:
-        assert f"docs/showcase/{c.stem}.gif" in section and f"docs/showcase/{c.stem}.mp4" in section, c.stem
+        assert f"docs/showcase/{c.stem}.gif" in section and media.url(f"showcase-{c.stem}.mp4") in section, c.stem
     showcase = (DOCS / "README.md").read_text(encoding="utf-8")
     for c in clips.CLIPS:
         assert re.search(rf"^### {re.escape(c.stem)}$", showcase, re.M), c.stem
@@ -230,12 +242,15 @@ def test_recording_one_terminal_clip(tmp_path):
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         pytest.skip("no ffmpeg")
     pytest.importorskip("PIL")
-    out = tmp_path / "out"
+    out, videos = tmp_path / "out", tmp_path / "media"
     env = {k: v for k, v in os.environ.items() if k != "AL_APP_ROOT"}
-    cp = subprocess.run(["uv", "run", str(SHOWCASE / "make.py"), "07-adopt", "--out", str(out)], capture_output=True,
-                        text=True, env=env, timeout=1800)
+    manifest = media.MANIFEST.read_bytes()
+    cp = subprocess.run(["uv", "run", str(SHOWCASE / "make.py"), "07-adopt", "--out", str(out), "--media", str(videos)],
+                        capture_output=True, text=True, env=env, timeout=1800)
     assert cp.returncode == 0, cp.stdout + cp.stderr
-    assert (out / "07-adopt.mp4").stat().st_size < clips.MAX_MP4
+    assert (videos / "showcase-07-adopt.mp4").stat().st_size < clips.MAX_MP4
+    assert not list(out.rglob("*.mp4")), "the video goes to the media folder, not beside the GIF"
+    assert media.MANIFEST.read_bytes() == manifest, "a recording outside the media folder does not touch the manifest"
     assert (out / "07-adopt.gif").stat().st_size < clips.MAX_GIF
     assert _png_size(out / "07-adopt.png") == clips.SIZE
     assert (out / "logs" / "07-adopt.txt").read_text().startswith("~/work $ al init larder")

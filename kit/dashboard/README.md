@@ -12,7 +12,7 @@ each confirmed first when it writes (see Safety, "Actions").
 
 ![Three runs started while the page is open; the third waits for a run slot](../../docs/demo/dashboard/live.gif)
 
-[live.mp4](../../docs/demo/dashboard/live.mp4) (52 s): three runs of a demo layer, two at a time;
+[live.mp4](https://github.com/dancegit/al/releases/download/media-v1/demo-dashboard-live.mp4) (52 s): three runs of a demo layer, two at a time;
 the Now view fills, the third run waits for a slot, the graph colours in, a transcript streams,
 a test fails and its resolve agent fixes it. More: [run detail](../../docs/demo/dashboard/run-detail.png) ·
 [transcript, filtered](../../docs/demo/dashboard/step-transcript.png) ·
@@ -536,7 +536,7 @@ and both features' GET routes and banner states are there.
 
 | Script | Does |
 |---|---|
-| `live_demo.py` | builds a tiny app and its layer in a temp directory, starts the dashboard and three runs, records Chrome with Playwright and writes `live.mp4` / `live.gif`. Planning, commit and review use the mock agent; the build step uses `replay_agent.py`, a scripted stand-in CLI agent that streams a Claude-format transcript while it really edits the worktree (no LLM, $0). Checks run for real in podman |
+| `live_demo.py` | builds a tiny app and its layer in a temp directory, starts the dashboard and three runs, records Chrome with Playwright and writes `live.gif` into `--out` and the video into the ignored media folder as `demo-dashboard-live.mp4` (a release asset, `docs/media.json`). Planning, commit and review use the mock agent; the build step uses `replay_agent.py`, a scripted stand-in CLI agent that streams a Claude-format transcript while it really edits the worktree (no LLM, $0). Checks run for real in podman |
 | `screenshots.py` | screenshots of real local runs; refuses to write one whose page text contains the home directory, `/home/`, `~/` or the user name |
 | `gif.py` | GIF encoder with the dashboard's own colours as palette, so status colours survive a small file |
 | `perf.py` | the dashboard's own CPU use, idle and with busy runs |

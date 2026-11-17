@@ -6,12 +6,15 @@
 """Record the showcase clips again: every frame is real output of this repository on fixtures with
 invented names (tools/showcase/clips.py lists them).
 
-  uv run tools/showcase/make.py [NAME …] [--out DIR] [--keep-work]
+  uv run tools/showcase/make.py [NAME …] [--out DIR] [--media DIR] [--keep-work]
 
-NAME: a clip's number, name or stem (default: all). Per clip, in DIR (default docs/showcase):
-NN-name.mp4 (H.264, 1280×720), NN-name.gif (preview), NN-name.png (poster: the last frame) and, for
-terminal clips, logs/NN-name.txt (the captured output). Then contact-sheet.png from every poster
-present. Exit 1 when a file breaks a limit of clips.py.
+NAME: a clip's number, name or stem (default: all). Per clip, in --out (default docs/showcase):
+NN-name.gif (preview), NN-name.png (poster: the last frame) and, for terminal clips,
+logs/NN-name.txt (the captured output); then contact-sheet.png from every poster present. The video
+itself (H.264, 1280×720) is not kept in the tree: it goes to --media (default: the ignored folder
+media/<release>/, tools/media.py) as showcase-NN-name.mp4, the name it has as a release asset, and
+its size and sha256 are recorded in docs/media.json when --media is that default folder. A person
+uploads the folder with tools/release_media.sh. Exit 1 when a file breaks a limit of clips.py.
 
 Needs ffmpeg and ffprobe, DejaVu Sans Mono (or AL_SHOWCASE_FONT), and for browser clips Chrome or
 Chromium (AL_DASHBOARD_CHROME); nothing is downloaded but uv's packages. Each clip runs in its own
@@ -36,6 +39,13 @@ import clips  # noqa: E402
 import privacy  # noqa: E402
 
 ROOT = HERE.parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+import media  # noqa: E402  (tools/media.py: where the videos are)
+
+
+def video_path(media_dir: Path, clip: clips.Clip) -> Path:
+    """Where a clip's MP4 is written: the media folder, under its release asset name."""
+    return media_dir / media.asset_name(f"docs/showcase/{clip.stem}.mp4")
 W, H = clips.SIZE
 FIT_MAX = clips.MAX_SECONDS - 2          # aim inside the limits, not at them
 FIT_MIN = clips.MIN_SECONDS + 2
@@ -174,11 +184,11 @@ def fit(seconds: float) -> str:
     return f"fps={clips.FPS}"
 
 
-def encode(clip: clips.Clip, body: Path, scratch: Path, out: Path) -> Path:
+def encode(clip: clips.Clip, body: Path, scratch: Path, media_dir: Path) -> Path:
     import term
     card = scratch / "card.png"
     term.caption_card(clip.card).save(card)
-    target = out / f"{clip.stem}.mp4"
+    target = video_path(media_dir, clip)
     graph = (f"[0:v]fps={clips.FPS},format=yuv420p,setsar=1[c];[1:v]{fit(duration(body))},scale={W}:{H},"
              f"format=yuv420p,setsar=1[b];[c][b]concat=n=2:v=1:a=0,scale=out_range=tv,format=yuv420p[v]")
     crf = 26
@@ -194,14 +204,16 @@ def encode(clip: clips.Clip, body: Path, scratch: Path, out: Path) -> Path:
             raise RuntimeError(f"{target.name} stays over {clips.MAX_MP4} bytes even at CRF 40")
 
 
-def poster(mp4: Path) -> Path:
-    path = mp4.with_suffix(".png")
+def poster(mp4: Path, target: Path) -> Path:
+    """The last frame of `mp4` as `target` (docs/showcase/NN-name.png)."""
+    path = target
     ffmpeg("-sseof", "-0.2", "-i", str(mp4), "-frames:v", "1", "-update", "1", str(path))
     return path
 
 
-def gif(mp4: Path) -> Path:
-    path = mp4.with_suffix(".gif")
+def gif(mp4: Path, target: Path) -> Path:
+    """A smaller preview of `mp4` as `target` (docs/showcase/NN-name.gif)."""
+    path = target
     for width, fps in ((640, 8), (560, 6), (480, 5)):
         ffmpeg("-i", str(mp4), "-vf", f"fps={fps},scale={width}:-1:flags=lanczos,split[a][b];"
                "[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle",
@@ -233,13 +245,14 @@ def contact_sheet(out: Path) -> Path | None:
 
 # ------------------------------------------------------------------------------------------ limits
 
-def report(out: Path) -> bool:
-    """Print every file with its size (and duration); False when a limit is broken."""
+def report(out: Path, media_dir: Path) -> bool:
+    """Print every file with its size (and duration); False when a limit is broken. The MP4 is looked
+    for in the media folder, the GIF and the poster in `out`."""
     ok = True
     total = 0
     for clip in clips.CLIPS:
         for suffix, limit in ((".mp4", clips.MAX_MP4), (".gif", clips.MAX_GIF), (".png", None)):
-            path = out / f"{clip.stem}{suffix}"
+            path = video_path(media_dir, clip) if suffix == ".mp4" else out / f"{clip.stem}{suffix}"
             if not path.is_file():
                 continue
             size = path.stat().st_size
@@ -251,7 +264,7 @@ def report(out: Path) -> bool:
                     ok, extra = False, extra + f"  (outside {clips.MIN_SECONDS}–{clips.MAX_SECONDS} s)"
             if limit and size >= limit:
                 ok, extra = False, extra + f"  (over {limit} bytes)"
-            say(f"  {path.relative_to(out)}  {size / 1e6:6.2f} MB{extra}")
+            say(f"  {path.name}  {size / 1e6:6.2f} MB{extra}")
     for path in sorted(out.rglob("*")):
         if path.is_file():
             total += path.stat().st_size
@@ -270,6 +283,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Record the showcase clips again.")
     ap.add_argument("names", nargs="*", metavar="NAME")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "showcase")
+    ap.add_argument("--media", type=Path, default=None, help="where the MP4 files go, as showcase-NN-name.mp4 "
+                    "(default: the ignored media folder, whose files docs/media.json records)")
     ap.add_argument("--keep-work", action="store_true", help="keep each clip's temporary folder and say where")
     a = ap.parse_args(argv)
     for tool in ("ffmpeg", "ffprobe"):
@@ -283,6 +298,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     out = a.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
+    default_media = media.media_dir().resolve()                 # before the environment changes
+    media_dir = (a.media or default_media).resolve()
+    media_dir.mkdir(parents=True, exist_ok=True)
     forbidden = privacy.forbidden_values(Path.home())          # before HOME changes
     original = dict(os.environ)
     import browser_clips
@@ -298,9 +316,11 @@ def main(argv: list[str] | None = None) -> int:
             scratch = root / "scratch"
             scratch.mkdir()
             body = record(clip, work, scratch, out)
-            mp4 = encode(clip, body, scratch, out)
-            poster(mp4)
-            gif(mp4)
+            mp4 = encode(clip, body, scratch, media_dir)
+            poster(mp4, out / f"{clip.stem}.png")
+            gif(mp4, out / f"{clip.stem}.gif")
+            if media_dir == default_media:          # a recording elsewhere is a rehearsal: the manifest is not touched
+                media.record(mp4, was=f"docs/showcase/{clip.stem}.mp4")
         finally:
             os.environ.clear()
             os.environ.update(original)
@@ -309,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 shutil.rmtree(root, ignore_errors=True)
     contact_sheet(out)
-    return 0 if report(out) else 1
+    return 0 if report(out, media_dir) else 1
 
 
 if __name__ == "__main__":
