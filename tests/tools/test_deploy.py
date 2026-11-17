@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -416,6 +417,9 @@ def test_update_fast_forwards_an_existing_deployment(deployable, tmp_path, trans
     assert sum("restart" in line for line in host.log("systemctl")) == restarts + 1
     assert state.read_text() == '{"adw_id": "abcd1234", "status": "running"}'      # run state is not source: untouched
     assert (host.root / "al/notes.git").exists() == (transport == "push")
+    assert not (checkout / ".git/al-deploy-incoming").exists()                     # the update's temporary repository is gone
+    if transport == "clone":
+        assert git(checkout, "rev-parse", "origin/main") == new
 
     git(checkout, "-c", "user.name=h", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "made on the host")
     (app / "app.py").write_text("NOTES = ['diverged']\n")
@@ -424,6 +428,48 @@ def test_update_fast_forwards_an_existing_deployment(deployable, tmp_path, trans
         git(app, "push", "-q", "origin", "main")
     cp = deploy(deployable, host, ok=False)
     assert cp.returncode == 1 and "the deployment has commits that are not on main: resolve on the host" in cp.stderr
+
+
+@pytest.mark.parametrize("transport", ["clone", "push"])
+def test_deploy_succeeds_while_a_run_with_its_own_commits_is_in_flight(deployable, tmp_path, transport):
+    app, host = deployable.parent, prepared(tmp_path)
+    if transport == "clone":
+        with_origin(app, tmp_path)
+    deploy(deployable, host)
+    checkout = host.root / "al/notes"
+    tree, objects = checkout / "agentic/trees/abcd1234", checkout / "agentic/agents/abcd1234/objects"
+    git(checkout, "worktree", "add", "-q", "--detach", str(tree), "HEAD")
+    objects.mkdir(parents=True)
+    (tree / "app.py").write_text("NOTES = ['made by the run']\n")
+    quarantine = {**os.environ, "GIT_OBJECT_DIRECTORY": str(objects), "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(checkout / ".git/objects")}
+    for argv in (["add", "app.py"], ["-c", "user.name=r", "-c", "user.email=r@r", "commit", "-qm", "the run's own commit"]):
+        cp = sh(["git", "-C", tree, *argv], env=quarantine)
+        assert cp.returncode == 0, cp.stderr
+    run_head = sh(["git", "-C", tree, "rev-parse", "HEAD"], env=quarantine).stdout.strip()
+    run_objects = sorted(str(p.relative_to(objects)) for p in objects.rglob("*") if p.is_file())
+    assert run_objects and sh(["git", "-C", checkout, "cat-file", "-e", run_head]).returncode != 0   # only in the quarantine
+
+    (app / "README.md").write_text("more\n")
+    commit(app, "more while a run is in flight")
+    new = git(app, "rev-parse", "main")
+    if transport == "clone":
+        git(app, "push", "-q", "origin", "main")
+    cp = deploy(deployable, host)
+    assert git(checkout, "rev-parse", "HEAD") == new and (checkout / "README.md").read_text() == "more\n"
+    assert sh(["git", "-C", tree, "rev-parse", "HEAD"], env=quarantine).stdout.strip() == run_head
+    assert (tree / "app.py").read_text() == "NOTES = ['made by the run']\n"
+    assert sorted(str(p.relative_to(objects)) for p in objects.rglob("*") if p.is_file()) == run_objects
+    assert not (checkout / ".git/al-deploy-incoming").exists()
+
+    # the regression is real: the old update, a fetch inside the checkout, fails on this setup
+    (app / "README.md").write_text("even more\n")
+    commit(app, "even more")
+    source = str(tmp_path / "remote/notes.git") if transport == "clone" else str(host.root / "al/notes.git")
+    git(app, "push", "-q", source, "main")
+    old = sh(["git", "-C", checkout, "fetch", source, "main"])
+    if old.returncode == 0:
+        pytest.skip("this git version does not walk the worktrees' HEADs after a fetch; the old failure does not reproduce")
+    assert "did not send all necessary objects" in old.stderr
 
 
 def test_update_stops_on_local_changes_on_the_host(deployable, tmp_path):
@@ -561,7 +607,9 @@ def test_dry_run_prints_every_command_and_changes_nothing(deployable, tmp_path, 
     before = host.snapshot()
     announced = would_run(deploy(deployable, host, "--dry-run").stdout)
     assert host.snapshot() == before and not any("enable-linger" in line for line in announced)
-    assert any("--ff-only" in line for line in announced)
+    update = [line for line in announced if "--ff-only" in line]
+    assert len(update) == 1 and f"{checkout}/.git/al-deploy-incoming" in update[0] and "index-pack --stdin --strict" in update[0]
+    assert "fetch origin" not in update[0] and "pull --ff-only" not in update[0]     # never a fetch inside the checkout
     trace.unlink()
     deploy(deployable, host, env={"AL_DEPLOY_TRACE": str(trace)})
     assert trace.read_text().splitlines() == announced
@@ -656,11 +704,27 @@ def test_a_deploy_through_the_ssh_transport_uses_only_the_persons_ssh(deployable
     assert bad.returncode == 1 and "not a host" in bad.stderr and len(log.read_text().splitlines()) == len(records) + 2      # nothing was run for it
 
 
-def test_nothing_of_either_machine_reaches_a_tracked_file(deployable, tmp_path):
-    app, host, label = deployable.parent, prepared(tmp_path), "deploy-test-host.invalid"
+@pytest.mark.parametrize("kind", ["deployable", "home-manager", "nixos"])
+def test_nothing_of_either_machine_reaches_a_tracked_file(request, tmp_path, kind):
+    label = "deploy-test-host.invalid"
+    if kind == "deployable":
+        deployable, host, args, env = request.getfixturevalue("deployable"), prepared(tmp_path), [], {}
+    else:
+        deployable = request.getfixturevalue("provisionable")
+        if kind == "nixos":
+            text = (deployable / "agentic.rkt").read_text().replace("#:provision home-manager", "#:provision nixos")
+            (deployable / "agentic.rkt").write_text(text)
+            al("gen", deployable, env={"AL_HOST_PINS": str(tmp_path / "pins" / "pins.json")})
+            commit(deployable.parent, "nixos", "agentic")
+        env, _ = builder(tmp_path, tmp_path / "registry")
+        host, args = provision_host(tmp_path, tmp_path / "registry", family=None, bare=False), ["--as", "nix"]
+    app = deployable.parent
     tracked = git(app, "ls-files")
-    deploy(deployable, host, label=label)
-    deploy(deployable, host, "--status", label=label)
+    deploy(deployable, host, *args, *(["--provision", "--yes"] if kind != "deployable" else []), label=label, env=env)
+    deploy(deployable, host, "--status", *args, label=label, env=env)
+    if kind != "deployable":
+        wrapper = host.root / ".config/al/notes" / ("home.nix" if kind == "home-manager" else "nixos.nix")
+        assert wrapper.is_file() and str(host.root / "al/notes") in wrapper.read_text()
     assert status(app) == "" and git(app, "ls-files") == tracked
     checkout = host.root / "al/notes"
     assert status(checkout) == "" and git(checkout, "ls-files") == tracked
@@ -764,3 +828,290 @@ def test_status_reports_a_tool_that_moved_or_vanished(deployable, tmp_path):
     assert f"drift: claude vanished: was {host.bin / 'claude'}" in cp.stdout
     assert re.search(r"claude\s+not found\s+" + re.escape(str(host.bin / "claude")), cp.stdout), cp.stdout
     assert host.snapshot() == before and changes(host) == logged
+# --- host declarations, provisioning and the sandbox image ----------------------------------------
+
+from conftest import PROVISION_LAYER, gen_provision_layer  # noqa: E402
+from deploy_host import DOWNLOADS, al_provision, fake_podman, test_pins  # noqa: E402
+
+REGISTRY_ADDRESS = "registry-sentinel.test/team"
+
+
+def provision_host(tmp_path: Path, registry: Path, family: str | None = "debian", bare: bool = True) -> Host:
+    """A host for PROVISION_LAYER: agent login, the secrets and the registry address in its env file,
+    the stateful fake podman (sharing `registry`). With `family`, its package manager; `bare` takes
+    away podman, uv and claude (the provisioning has something to do)."""
+    host = make_host(tmp_path)
+    host.login("claude-code")
+    host.set_env_file("notes", FORGEJO_TOKEN="x", ADW_WEBHOOK_SECRET="y", AL_REGISTRY=REGISTRY_ADDRESS)
+    host.podman(registry)
+    host.serve_downloads(DOWNLOADS)
+    if family:
+        host.family(family, have=("git", "curl", "ca-certificates") if bare else ("git", "curl", "ca-certificates", "podman", "uidmap", "slirp4netns"))
+    if bare:
+        host.remove("uv")
+        host.remove("claude")
+    return host
+
+
+def builder(tmp_path: Path, registry: Path) -> tuple[dict, Path]:
+    """This machine's podman (the fake), sharing the registry directory: (env for al, its state)."""
+    bin_dir, state = tmp_path / "local-bin", tmp_path / "local-podman"
+    bin_dir.mkdir(exist_ok=True)
+    fake_podman.install(bin_dir, state, registry)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "AL_REGISTRY": REGISTRY_ADDRESS}, state
+
+
+def recipe_of(layer: Path) -> str:
+    """The recipe hash the layer's own runtime gives its sandbox image (adw_modules/sandbox.py), in a
+    child process so this one keeps its imports."""
+    code = "import sys; from adw_modules import ir, sandbox; print(sandbox.recipe_hash(ir.load(sys.argv[1])))"
+    done = subprocess.run([sys.executable, "-c", code, str(layer)], cwd=layer / "adws", capture_output=True, text=True, check=True)
+    return done.stdout.strip()
+
+
+def variant(app: Path, tmp_path: Path, old: str, new: str) -> Path:
+    pins = tmp_path / "pins"
+    pins.mkdir(exist_ok=True)
+    assert old in PROVISION_LAYER
+    return gen_provision_layer(app, test_pins(pins), PROVISION_LAYER.replace(old, new))
+
+
+def test_deploy_pulls_the_image_and_checks_its_recipe(provisionable, tmp_path):
+    registry = tmp_path / "registry"
+    local, _ = builder(tmp_path, registry)
+    al("sandbox", provisionable, "push", env=local)
+    host = provision_host(tmp_path, registry, family=None, bare=False)
+    cp = deploy(provisionable, host, "--as", "server", env=local)
+    h = recipe_of(provisionable)
+    ref = f"{REGISTRY_ADDRESS}/notes:recipe-{h}"
+    calls = fake_podman.calls(host.root / ".podman")
+    assert any(c[0] == "pull" and c[-1] == ref for c in calls)
+    image = next(i for i in fake_podman.images(host.root / ".podman") if "al-notes:latest" in i["tags"])
+    assert f"al-notes:{h}" in image["tags"] and image["labels"]["al.recipe"] == h
+    assert f"image: pulled notes:recipe-{h}, recipe {h} checked, tagged al-notes:{h} and al-notes:latest" in cp.stdout
+    assert REGISTRY_ADDRESS not in cp.stdout + cp.stderr
+    assert not any(c[0] == "build" for c in calls)
+
+
+def test_pulled_image_is_the_one_the_runtime_asks_for(provisionable, tmp_path):
+    registry = tmp_path / "registry"
+    local, _ = builder(tmp_path, registry)
+    al("sandbox", provisionable, "push", env=local)
+    host = provision_host(tmp_path, registry, family=None, bare=False)
+    deploy(provisionable, host, "--as", "server", env=local)
+    h = recipe_of(provisionable)
+    assert len(h) == 12
+    store = fake_podman.images(host.root / ".podman")
+    for tag in (f"al-notes:{h}", "al-notes:latest"):
+        image = next((i for i in store if tag in i["tags"]), None)
+        assert image is not None, (tag, store)
+        assert image["labels"]["al.recipe"] == h
+
+
+def test_deploy_loads_the_image_over_the_connection(provisionable, tmp_path):
+    registry = tmp_path / "registry"
+    local, local_state = builder(tmp_path, registry)
+    host = provision_host(tmp_path, registry, family=None, bare=False)
+    cp = deploy(provisionable, host, "--as", "nix", env=local)
+    h = recipe_of(provisionable)
+    local_calls = fake_podman.calls(local_state)
+    assert [c[0] for c in local_calls].count("build") == 1 and any(c[:2] == ["image", "save"] for c in local_calls)
+    local_id = next(i["id"] for i in fake_podman.images(local_state) if "al-notes:latest" in i["tags"])
+    host_image = next(i for i in fake_podman.images(host.root / ".podman") if "al-notes:latest" in i["tags"])
+    assert f"al-notes:{h}" in host_image["tags"]
+    assert host_image["id"] == local_id and host_image["labels"]["al.recipe"] == h
+    assert any(c[0] == "load" for c in fake_podman.calls(host.root / ".podman"))
+    assert (f"image: al-notes:{h} and al-notes:latest on the host are built from this recipe ({h}), loaded over the connection"
+            in cp.stdout)
+    assert not list(registry.glob("*")) if registry.exists() else True                        # nothing went through a registry
+
+
+def test_deploy_falls_back_to_building_when_the_recipe_differs(provisionable, tmp_path):
+    registry = tmp_path / "registry"
+    h, other = recipe_of(provisionable), "e" * 12
+    registry.mkdir()
+    (registry / (fake_podman.norm(f"{REGISTRY_ADDRESS}/notes:recipe-{h}").replace("/", "__") + ".json")).write_text(
+        json.dumps({"id": "other", "labels": {"al.recipe": other}}))
+    host = provision_host(tmp_path, registry, family=None, bare=False)
+    fake_podman.add_image(host.root / ".podman", "al-notes:latest", {"al.recipe": "d" * 12})
+    cp = deploy(provisionable, host, "--as", "server")
+    assert (f"image: recipe {other} on the host, {h} in the layer: it will be built on the host at the first run"
+            in cp.stdout)
+    assert not any("al-notes:latest" in i["tags"] or f"al-notes:{h}" in i["tags"] for i in fake_podman.images(host.root / ".podman"))
+    assert ["untag", "al-notes:latest"] in fake_podman.calls(host.root / ".podman")
+    assert re.search(r"al-notes-cron.service\s+enabled\s+active", cp.stdout)                 # the deploy went on
+
+
+def test_deploy_stops_on_a_recipe_mismatch_without_fallback(app, tmp_path):
+    layer = variant(app, tmp_path, "#:dashboard-port 8770 #:images pull)", "#:dashboard-port 8770 #:images pull #:fallback-build #f)")
+    registry = tmp_path / "registry"
+    h = recipe_of(layer)
+    registry.mkdir()
+    (registry / (fake_podman.norm(f"{REGISTRY_ADDRESS}/notes:recipe-{h}").replace("/", "__") + ".json")).write_text(
+        json.dumps({"id": "other", "labels": {"al.recipe": "e" * 12}}))
+    host = provision_host(tmp_path, registry, family=None, bare=False)
+    cp = deploy(layer, host, "--as", "server", ok=False)
+    assert cp.returncode == 1 and "#:fallback-build #f" in cp.stderr and f"{h} in the layer" in cp.stderr
+    assert not (host.root / ".config/systemd/user").exists()                                  # it stopped before the units
+
+
+def test_as_picks_a_host_and_the_only_host_is_the_default(provisionable, tmp_path):
+    host = provision_host(tmp_path, tmp_path / "registry", family=None, bare=False)
+    before = host.snapshot()
+    cp = deploy(provisionable, host, ok=False)
+    assert cp.returncode == 1 and "the layer declares several hosts (server, nix): say which one this is with --as ID" in cp.stderr
+    cp = deploy(provisionable, host, "--as", "laptop", ok=False)
+    assert cp.returncode == 1 and "--as laptop: the layer declares no (host #:id laptop …); declared: server, nix" in cp.stderr
+    assert host.snapshot() == before
+    ir = json.loads((provisionable / "agentic-layer.json").read_text())
+    server = al_deploy.host_decl(ir, "server")
+    assert al_deploy.host_decl(ir, "nix")["provision"] == "home-manager"
+    assert al_deploy.host_decl({"hosts": [server]}, None) is server and al_deploy.host_decl({"hosts": []}, None) is None
+    facts = al_deploy.Facts(Path("/x"), ir, Path("/x"), "notes", "agentic", "main", "c" * 40, "", "notes", decl=server)
+    units = al_deploy.host_units(facts, al_deploy.HostFacts({"home": "/home/u", "path": "/usr/bin"}), "/home/u/al/notes", al_tools)
+    assert sorted(units) == ["al-notes-cron.service", "al-notes-dashboard.service"]           # no webhook on this host
+    assert "dashboard.py --bind 127.0.0.1 --port 8770\n" in units["al-notes-dashboard.service"]
+    assert "127.0.0.1:8770" in units["al-notes-dashboard.service"]
+
+
+def test_without_provision_deploy_changes_no_software_and_prints_the_command(provisionable, tmp_path):
+    registry = tmp_path / "registry"
+    host = provision_host(tmp_path, registry)
+    before = host.snapshot()
+    cp = deploy(provisionable, host, "--as", "server", ok=False)
+    assert cp.returncode == 1
+    assert f"al deploy {provisionable} --to {LABEL} --as server --provision" in cp.stdout
+    assert host.log("sudo") == [] and host.log("apt-get") == [] and host.log("curl") == []
+    assert host.snapshot() == before
+
+
+def provisioned_deploy(layer: Path, host: Host, *extra: str, env: dict | None = None, ok: bool = True):
+    return deploy(layer, host, "--as", "server", "--provision", "--yes", *extra, env=env, ok=ok)
+
+
+def test_provision_on_a_fake_debian_host_installs_what_was_missing_then_changes_nothing(provisionable, tmp_path):
+    registry = tmp_path / "registry"
+    local, _ = builder(tmp_path, registry)
+    al("sandbox", provisionable, "push", env=local)
+    host = provision_host(tmp_path, registry)
+    cp = provisioned_deploy(provisionable, host)
+    out = cp.stdout
+    assert "packages (debian): missing podman uidmap slirp4netns" in out and "privileged: sudo -n apt-get install" in out
+    assert out.index("privileged: sudo -n apt-get install") < out.index("+ sudo -n apt-get install")
+    assert {"podman", "uidmap", "slirp4netns"} <= set((host.root / ".pkgs").read_text().split())
+    assert (host.root / ".local/bin/uv").is_file() and (host.root / ".local/bin/claude").is_file()
+    assert "preflight after provisioning:" in out
+    for unit in ("al-notes-cron.service", "al-notes-dashboard.service"):
+        assert re.search(rf"{re.escape(unit)}\s+enabled\s+active", out), out
+    assert not (host.root / ".config/systemd/user/al-notes-webhook.service").exists()
+    calls = (len(host.log("sudo")), len(host.log("apt-get")), len(host.log("curl")))
+    again = provisioned_deploy(provisionable, host)
+    assert "provisioning: nothing to do" in again.stdout
+    assert (len(host.log("sudo")), len(host.log("apt-get")), len(host.log("curl"))) == calls
+
+
+def test_provisioned_units_path_comes_from_the_tools_found_after_provisioning(provisionable, tmp_path):
+    registry = tmp_path / "registry"
+    local, _ = builder(tmp_path, registry)
+    al("sandbox", provisionable, "push", env=local)
+    host = provision_host(tmp_path, registry, bare=True)
+    provisioned_deploy(provisionable, host, env=local)
+    local_bin = str(host.root / ".local" / "bin")
+    units = sorted((host.root / ".config/systemd/user").glob("al-notes-*.service"))
+    assert units
+    for unit in units:
+        folders = unit_path(unit.read_text())
+        assert folders[0] == local_bin, (unit.name, folders)
+    record = json.loads((host.root / ".config/al/notes-tools.json").read_text())
+    assert record["uv"] == f"{local_bin}/uv" and record["claude"] == f"{local_bin}/claude"
+
+
+def test_provision_asks_once_and_refuses_without_a_terminal(provisionable, tmp_path):
+    host = provision_host(tmp_path, tmp_path / "registry")
+    before = host.snapshot()
+    env = {k: v for k, v in os.environ.items() if k != "AL_APP_ROOT"}
+    env.update(host.env())
+    cp = subprocess.run([str(AL), "deploy", str(provisionable), "--to", LABEL, "--as", "server", "--provision"],
+                        env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=600)
+    assert cp.returncode == 4, cp.stdout + cp.stderr
+    assert "needs --yes" in cp.stderr
+    assert "privileged: sudo -n apt-get install" in cp.stdout                                  # the plan came first
+    assert host.log("sudo") == [] and host.log("apt-get") == [] and host.snapshot() == before
+
+
+def test_provision_with_a_host_that_refuses_privilege(provisionable, tmp_path):
+    host = provision_host(tmp_path, tmp_path / "registry")
+    (host.root / ".sudo-denied").write_text("")
+    cp = provisioned_deploy(provisionable, host, ok=False)
+    assert cp.returncode == 1
+    assert "privilege was refused" in cp.stderr
+    assert "  sudo apt-get install -y --no-install-recommends podman uidmap slirp4netns" in cp.stdout
+    assert f"  sudo loginctl enable-linger {HOST_USER}" in cp.stdout
+    assert not (host.root / ".config/systemd/user").exists() and not (host.root / "al/notes").exists()
+    assert host.log("apt-get") == []
+
+
+def test_provision_dry_run_shows_the_plan_and_changes_nothing(provisionable, tmp_path):
+    host = provision_host(tmp_path, tmp_path / "registry")
+    before = host.snapshot()
+    cp = provisioned_deploy(provisionable, host, "--dry-run", ok=False)
+    assert "privileged: sudo -n apt-get install" in cp.stdout and "[would run] host$ sh -s -- --yes" in cp.stdout
+    assert host.snapshot() == before and host.log("sudo") == [] and host.log("apt-get") == []
+
+
+def test_provision_home_manager_writes_the_host_local_wrapper_and_switches(provisionable, tmp_path):
+    registry = tmp_path / "registry"
+    local, _ = builder(tmp_path, registry)
+    host = provision_host(tmp_path, registry, family=None, bare=False)
+    cp = deploy(provisionable, host, "--as", "nix", "--provision", "--yes", env=local)
+    checkout = host.root / "al/notes"
+    wrapper = host.root / ".config/al/notes/home.nix"
+    text = wrapper.read_text()
+    assert f'(/. + "{checkout}/agentic/env/hosts/nix/home-manager.nix")' in text
+    assert f'services."al-notes".checkout = "{checkout}";' in text
+    assert host.log("home-manager") == ["switch"]
+    assert not (host.root / ".config/systemd/user").exists()                                  # the module owns the units
+    assert any("--user restart" in line for line in host.log("systemctl"))
+    assert status(checkout) == "" and not str(wrapper).startswith(str(checkout))
+    assert "provisioning plan (home-manager):" in cp.stdout
+
+
+def test_provision_nixos_shows_the_privileged_rebuild_first(app, tmp_path):
+    layer = variant(app, tmp_path, "(host #:id nix #:provision home-manager #:images load)",
+                    "(host #:id nix #:provision nixos #:images load)")
+    registry = tmp_path / "registry"
+    local, _ = builder(tmp_path, registry)
+    host = provision_host(tmp_path, registry, family=None, bare=False)
+    cp = deploy(layer, host, "--as", "nix", "--provision", "--yes", env=local)
+    out = cp.stdout
+    assert out.index("privileged: sudo -n nixos-rebuild switch") < out.index("+ sudo -n nixos-rebuild switch")
+    assert host.log("sudo") == ["-n nixos-rebuild switch"] and host.log("nixos-rebuild") == ["switch"]
+    wrapper = (host.root / ".config/al/notes/nixos.nix").read_text()
+    assert f'services."al-notes-host".user = "{HOST_USER}";' in wrapper
+    assert (host.root / ".config/systemd/user/al-notes-cron.service").is_file()
+
+
+def test_status_shows_provisioning_drift(provisionable, tmp_path):
+    registry = tmp_path / "registry"
+    local, _ = builder(tmp_path, registry)
+    al("sandbox", provisionable, "push", env=local)
+    host = provision_host(tmp_path, registry)
+    provisioned_deploy(provisionable, host)
+    before = host.snapshot()
+    cp = deploy(provisionable, host, "--status", "--as", "server")
+    drift = cp.stdout.split("provisioning (host server, #:provision script):\n")[1].splitlines()
+    rows = {re.split(r"\s{2,}", line.strip())[0]: re.split(r"\s{2,}", line.strip()) for line in drift[1:] if line.strip()
+            and "fact(s) drifted" not in line}
+    assert drift[0].split() == ["fact", "wanted", "on", "host"]
+    assert set(rows) == {"podman rootless", "subids", "uv", "claude", "linger", "units", "image recipe"}
+    assert all(r[-1] == "ok" for r in rows.values()), drift
+    assert rows["uv"][1] == "9.9.1" and rows["image recipe"][1] == recipe_of(provisionable)
+    assert host.snapshot() == before
+
+    (host.root / ".linger").unlink()
+    cp = deploy(provisionable, host, "--status", "--as", "server")
+    assert re.search(r"linger\s+yes\s+no\s+drift", cp.stdout)
+    assert f"al deploy {provisionable} --to {LABEL} --as server --provision" in cp.stdout
+    for extra in ("--provision", "--yes"):
+        bad = deploy(provisionable, host, "--status", "--as", "server", extra, ok=False)
+        assert bad.returncode == 1 and "--status only reads" in bad.stderr

@@ -1,0 +1,38 @@
+{
+  "uv": {
+    "version": "0.13.8",
+    "bin": "uv",
+    "assets": {
+      "x86_64": {"url": "https://github.com/astral-sh/uv/releases/download/0.13.8/uv-x86_64-unknown-linux-gnu.tar.gz",
+                 "sha256": "5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91",
+                 "member": "uv-x86_64-unknown-linux-gnu/uv"},
+      "aarch64": {"url": "https://github.com/astral-sh/uv/releases/download/0.13.8/uv-aarch64-unknown-linux-gnu.tar.gz",
+                  "sha256": "74f2f5c6024d397481db228db8fc25eed420db192243f88438c118e7e013e585",
+                  "member": "uv-aarch64-unknown-linux-gnu/uv"}
+    }
+  },
+  "claude": {
+    "version": "2.1.311",
+    "bin": "claude",
+    "assets": {
+      "x86_64": {"url": "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.311/linux-x64/claude",
+                 "sha256": "86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada",
+                 "member": ""},
+      "aarch64": {"url": "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.311/linux-arm64/claude",
+                  "sha256": "2e2496c9a8065df93acb0fca2d341f59a6b8777649b2e025ab8c9bcd5eef61f3",
+                  "member": ""}
+    }
+  },
+  "codex": {
+    "version": "0.169.0",
+    "bin": "codex",
+    "assets": {
+      "x86_64": {"url": "https://github.com/openai/codex/releases/download/rust-v0.169.0/codex-x86_64-unknown-linux-musl.tar.gz",
+                 "sha256": "9af4d751fce183faedea629437d5252dbf458eeb04130cf4f97be844621ea985",
+                 "member": "codex-x86_64-unknown-linux-musl"},
+      "aarch64": {"url": "https://github.com/openai/codex/releases/download/rust-v0.169.0/codex-aarch64-unknown-linux-musl.tar.gz",
+                  "sha256": "97b97d87eea075c5cb7709c7f6156a451622a7667953ecda40e0276637196f3f",
+                  "member": "codex-aarch64-unknown-linux-musl"}
+    }
+  }
+}

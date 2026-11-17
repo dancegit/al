@@ -1120,6 +1120,7 @@
       "template": "meta-adw"
     }
   ],
+  "hosts": [],
   "layer": {
     "dir": "",
     "git": true,
@@ -1187,6 +1188,12 @@
       "status": "stable"
     }
   ],
+  "registry": {
+    "addressEnv": "AL_REGISTRY",
+    "passwordEnv": "AL_REGISTRY_PASSWORD",
+    "tlsVerify": true,
+    "usernameEnv": "AL_REGISTRY_USER"
+  },
   "reviews": [
     {
       "bodyCmd": "",

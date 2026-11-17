@@ -200,6 +200,21 @@ inside their worktree. Every ADW that is not a layer-change workflow treats `age
 path, whatever its review option says: the runtime's gate adds `protected-path:` reasons, so an agent
 cannot quietly rewrite its own rules.
 
+`(host #:id ID …)` says what a machine that runs an in-repo layer must have. From that one fact set
+the generator writes three provisioning styles under `env/hosts/<id>/`: a Home Manager module, a
+NixOS module and a POSIX shell script. The three share one list of wanted facts
+(`tools/al_provision.py: wanted()`) and one source of unit text (`unit_spec()` in `tools/al`, also
+behind `systemd_unit()`), so they cannot drift apart. They are committed and machine-neutral: a
+host's paths and user name appear only as module options, set by a host-local wrapper that
+`al deploy` writes under `~/.config/al/<name>/` on that host and nowhere else, or as `$HOME` in the
+script. Privilege is used only after the plan has been printed with every privileged command, and
+only through `sudo -n`. Sandbox images are matched by recipe hash, the runtime's recipe hash
+(`adw_modules/sandbox.py: recipe_hash`: the Containerfile, the files it copies from `env/`, the base
+image) carried as the label `al.recipe`. A tag or an image id says where an image came
+from, not what it was built from. The hash makes "the image that was tested" and "the image this
+layer asks for" the same question on every machine, whether the image was pulled, streamed over ssh
+or built there.
+
 ## Changing a layer
 
 A layer has two kinds of source: `agentic.rkt` and layer-local templates under `templates/`, which

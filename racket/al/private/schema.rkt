@@ -69,6 +69,8 @@
                    'commands (array-of (rec 'command #:extra name-prop))
                    'hops (array-of (rec 'hop #:extra name-prop))
                    'experts (array-of (rec 'expert #:extra name-prop))
+                   'hosts (array-of (rec 'host))
+                   'registry (hasheq 'oneOf (list (rec 'registry) (hasheq 'type "null")))
                    'adws
                    (array-of
                     (rec 'adw

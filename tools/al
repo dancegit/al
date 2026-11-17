@@ -48,9 +48,15 @@
                                    agents/settings/models.json, never committed); applies to runs started afterwards
   al dashboard --remote HOST [--port N] [--remote-port N] [--open]
                                    watch a deployed layer through an ssh tunnel (loopback on both ends)
-  al deploy  LAYER --to HOST [--path DIR] [--dry-run] [--no-enable] | --status
+  al deploy  LAYER --to HOST [--path DIR] [--as ID] [--provision [--yes]] [--dry-run] [--no-enable] | --status
                                    put an in-repo layer on another machine over ssh (your own ssh config),
-                                   check it can run there, keep its poller, webhook and dashboard running
+                                   check it can run there, keep its poller, webhook and dashboard running;
+                                   --as picks a (host …) declaration, --provision shows its plan, asks once
+                                   and installs what is missing; --status also lists provisioning drift
+  al sandbox LAYER build|doctor|shell|prune|status|push|pull
+                                   the layer's podman sandbox image al-<layer>:<recipe hash>: build, check, open,
+                                   prune or list it; push builds it if needed and pushes it to the declared
+                                   (registry …), pull fetches the image of this recipe and checks it
   al verify  LAYER [--cmd NAME …] [--timeout S] [--json]
                                    run the layer's codebase cmds on a throwaway worktree, in the ADWs' environment
   al notify-test LAYER [--event needs-human|failed|passed|shipped]
@@ -351,6 +357,22 @@ def tools_module():
         sys.path.insert(0, str(ROOT / "tools"))
     import al_tools
     return al_tools
+
+
+def provision_module():
+    """tools/al_provision.py: the provisioning files of a (host …) declaration."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_provision
+    return al_provision
+
+
+def sandbox_module():
+    """tools/al_sandbox.py: `al sandbox LAYER push|pull` and the sandbox image on a deploy."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_sandbox
+    return al_sandbox
 
 
 def kit_template_names() -> list[str]:
@@ -704,60 +726,51 @@ def dashboard_url_of(d: dict) -> str:
     return f"http://{'[' + host + ']' if ':' in host else host}:{d['port']}/"
 
 
+def unit_spec(kind: str, name: str, ir: dict) -> dict[str, str]:
+    """The facts of one unit (kind: cron | webhook | dashboard), shared by systemd_unit() and the Home
+    Manager module of a (host …) (tools/al_provision.py), so the two cannot drift apart:
+    description, the layer-relative script ExecStart runs, Restart, RestartSec ("" = none) and the
+    token env-file lines (comment and EnvironmentFile=, "" = none)."""
+    if kind == "cron":
+        return {"description": f"Agentic layer cron trigger for {name}", "script": "adws/triggers/trigger_cron.py",
+                "restart": "on-failure", "restart_sec": "10", "env_file": ""}
+    if kind == "webhook":
+        t = next(t for t in ir["triggers"] if t["kind"] == "webhook")
+        return {"description": f"Agentic layer webhook trigger for {name} ({t['bind']}:{t['port']}{t['path']})",
+                "script": "adws/triggers/trigger_webhook.py", "restart": "on-failure", "restart_sec": "", "env_file": ""}
+    if kind == "dashboard":
+        d = ir.get("dashboard") or DEFAULT_DASHBOARD
+        env_file = (f"# The access token: put {d['tokenEnv']}=… in this file (chmod 600), or remove the line.\n"
+                    f"EnvironmentFile=-%h/.config/al/{name}-dashboard.env\n") if d["tokenEnv"] else ""
+        return {"description": f"Work dashboard of the {name} agentic layer ({dashboard_url_of(d)})",
+                "script": "adws/dashboard.py", "restart": "on-failure", "restart_sec": "5", "env_file": env_file}
+    raise AlError(f"no systemd unit for {kind!r}")
+
+
 def systemd_unit(kind: str, name: str, layer: Path | str, ir: dict, *, header: str | None = None,
                  path_env: str = "", env_file: str = "", extra_args: str = "") -> str:
     """The text of one systemd user unit (kind: cron | webhook | dashboard) that keeps a part of the
-    layer at `layer` running. The one source of unit text: `al gen` calls it with the defaults (the
-    unit names this machine's paths, so it is never committed), `al deploy` with the paths of the
-    host it deploys to (header, the host's login PATH, an EnvironmentFile for secrets, extra
-    arguments for ExecStart) and writes the result only on that host."""
+    layer at `layer` running, built from unit_spec(). The one source of unit text: `al gen` calls it
+    with the defaults (the unit names this machine's paths, so it is never committed), `al deploy`
+    with the paths of the host it deploys to (header, the host's login PATH, an EnvironmentFile for
+    secrets, extra arguments for ExecStart) and writes the result only on that host."""
+    spec = unit_spec(kind, name, ir)
     first = header if header is not None else (
         f"# Generated by al. Install: cp to ~/.config/systemd/user/ && systemctl --user enable --now al-{name}-{kind}")
     service = (f"Environment=PATH={path_env}\n" if path_env else "") + (f"EnvironmentFile=-{env_file}\n" if env_file else "")
     args = f" {extra_args}" if extra_args else ""
-    if kind == "cron":
-        return f"""{first}
+    restart_sec = f"RestartSec={spec['restart_sec']}\n" if spec["restart_sec"] else ""
+    return f"""{first}
 [Unit]
-Description=Agentic layer cron trigger for {name}
+Description={spec['description']}
 
 [Service]
-{service}ExecStart=/usr/bin/env uv run {layer}/adws/triggers/trigger_cron.py{args}
-Restart=on-failure
-RestartSec=10
-
+{service}ExecStart=/usr/bin/env uv run {layer}/{spec['script']}{args}
+{spec['env_file']}Restart={spec['restart']}
+{restart_sec}
 [Install]
 WantedBy=default.target
 """
-    if kind == "webhook":
-        t = next(t for t in ir["triggers"] if t["kind"] == "webhook")
-        return f"""{first}
-[Unit]
-Description=Agentic layer webhook trigger for {name} ({t['bind']}:{t['port']}{t['path']})
-
-[Service]
-{service}ExecStart=/usr/bin/env uv run {layer}/adws/triggers/trigger_webhook.py{args}
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-"""
-    if kind == "dashboard":
-        d = ir.get("dashboard") or DEFAULT_DASHBOARD
-        env_line = (f"# The access token: put {d['tokenEnv']}=… in this file (chmod 600), or remove the line.\n"
-                    f"EnvironmentFile=-%h/.config/al/{name}-dashboard.env\n") if d["tokenEnv"] else ""
-        return f"""{first}
-[Unit]
-Description=Work dashboard of the {name} agentic layer ({dashboard_url_of(d)})
-
-[Service]
-{service}ExecStart=/usr/bin/env uv run {layer}/adws/dashboard.py{args}
-{env_line}Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-"""
-    raise AlError(f"no systemd unit for {kind!r}")
 
 
 def runs_in(adw: dict, environments: dict) -> tuple[str, str]:
@@ -958,42 +971,8 @@ if __name__ == "__main__":
         if "home-manager" in envs:
             e = envs["home-manager"]
             mod = e["moduleName"]
-            cron = next((t for t in self.ir["triggers"] if t["kind"] == "cron"), None)
-            service = f'''
-    systemd.user.services."al-{name}-cron" = {{
-      Unit.Description = "Agentic layer cron trigger for {name}";
-      Service.ExecStart = "${{pkgs.uv}}/bin/uv run ${{cfg.layerDir}}/adws/triggers/trigger_cron.py";
-      Service.Restart = "on-failure";
-      Install.WantedBy = [ "default.target" ];
-    }};''' if cron else ""
-            self.write("env/home-manager.nix", f'''# Generated by al from agentic.rkt — do not edit.
-# Import from your Home Manager configuration:
-#   imports = [ {self.layer}/env/home-manager.nix ];
-#   programs.{mod}.enable = true;
-{{ config, lib, pkgs, ... }}:
-let
-  cfg = config.programs."{mod}";
-  adw = pkgs.writeShellScriptBin "al-{name}" \'\'
-    # al-{name} <adw> [args…]   run an ADW of the {name} agentic layer
-    if [ $# -lt 1 ]; then ls "${{cfg.layerDir}}/adws" | sed -n 's/^adw_\\(.*\\)\\.py$/\\1/p'; exit 0; fi
-    exec ${{pkgs.uv}}/bin/uv run "${{cfg.layerDir}}/adws/adw_$1.py" "''${{@:2}}"
-  \'\';
-in {{
-  options.programs."{mod}" = {{
-    enable = lib.mkEnableOption "the agentic layer for {name}";
-    layerDir = lib.mkOption {{
-      type = lib.types.str;
-      default = "{self.layer}";
-      description = "Directory of the generated agentic layer.";
-    }};
-  }};
-
-  config = lib.mkIf cfg.enable {{
-    home.packages = (with pkgs; [ {' '.join(e['packages'])} uv git ]) ++ [ adw ];
-    home.sessionVariables.AL_{re.sub(r'[^A-Z0-9]', '_', name.upper())}_LAYER = cfg.layerDir;{service}
-  }};
-}}
-''', local=True)
+            self.write("env/home-manager.nix", provision_module().home_manager_module(
+                self.ir, name, mod, e["packages"], layer_default=str(self.layer)), local=True)
             self.write("env/home.example.nix", f'''# Standalone Home Manager example using the generated module.
 {{ pkgs, ... }}: {{
   imports = [ ./home-manager.nix ];
@@ -1010,6 +989,23 @@ in {{
             lines += [f"RUN {s}" for s in e["setup"]]
             lines += ["ENV HOME=/tmp/home", "RUN mkdir -p /tmp/home && chmod 1777 /tmp/home", "WORKDIR /work", ""]
             self.write("env/Containerfile", "\n".join(lines))
+
+    def hosts(self) -> None:
+        """env/hosts/<id>/{home-manager.nix,nixos.nix,provision.sh} of each (host …): committed, they
+        name no host, user, path or secret (tools/al_provision.py)."""
+        hosts = self.ir.get("hosts") or []
+        if not hosts:
+            return
+        prov = provision_module()
+        pins = prov.load_pins()
+        name = self.ir["name"]
+        for h in hosts:
+            ir = prov.with_host_port(self.ir, h)
+            units = [(kind, unit_spec(kind, name, ir)) for kind in prov.host_units(self.ir, h)]
+            base = f"env/hosts/{h['id']}"
+            self.write(f"{base}/home-manager.nix", prov.home_manager_module(self.ir, name, f"al-{name}", [], units=units, host=h))
+            self.write(f"{base}/nixos.nix", prov.nixos_module(self.ir, h))
+            self.write(f"{base}/provision.sh", prov.provision_script(self.ir, h, pins), 0o755)
 
     def triggers_and_forge(self) -> None:
         name, forge = self.ir["name"], self.ir["forge"]
@@ -1404,6 +1400,7 @@ Not committed (`.gitignore`, written by `al gen`): {ignored}.
         self.experts()
         self.adws()
         self.environments()
+        self.hosts()
         self.triggers_and_forge()
         self.dashboard()
         self.scaffolding()
@@ -1534,6 +1531,7 @@ def check_layer(layer: Path) -> list[str]:
     need += [f"adws/adw_{a['name']}.py" for a in ir["adws"]] + ["adws/adw_modules/runner.py", "adws/dispatch.py", "AL-DSL.llms.txt"]
     kinds = {e["kind"] for e in ir["environments"]}
     need += [f for k, f in (("nix-devshell", "env/flake.nix"), ("home-manager", "env/home-manager.nix"), ("podman", "env/Containerfile")) if k in kinds]
+    need += [f"env/hosts/{h['id']}/{f}" for h in ir.get("hosts") or [] for f in ("home-manager.nix", "nixos.nix", "provision.sh")]
     for c in ir["commands"]:
         need += [f"fabric/{p}/system.md" for p in c["fabric"]]
     dash = (ir.get("dashboard") or {}).get("kind", "none")
@@ -2242,7 +2240,7 @@ class SandboxUsage(AlError):
 
 
 def sandbox_cli(a: argparse.Namespace) -> int:
-    """al sandbox LAYER build|doctor|shell|prune|status."""
+    """al sandbox LAYER build|doctor|shell|prune|status|push|pull."""
     layer = a.layer.resolve()
     sandbox, ir_module, errors, envs = layer_sandbox_module(layer)
     say = lambda line: print(line, flush=True)  # noqa: E731
@@ -2250,6 +2248,8 @@ def sandbox_cli(a: argparse.Namespace) -> int:
         loaded = ir_module.load(layer)
     except errors.LayerError as exc:
         raise AlError(str(exc)) from exc
+    if a.action in ("push", "pull"):
+        return sandbox_module().main(a, sys.modules[__name__])
     try:
         option, adw, env_ids = _sandbox_stack(loaded, getattr(a, "env", None),
                                               getattr(a, "workflow", None))
@@ -2582,6 +2582,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="print every command it would run on HOST; change nothing")
     p.add_argument("--no-enable", action="store_true", help="write the units without enabling or starting them")
     p.add_argument("--status", action="store_true", help="show what is deployed on HOST and what it is doing; changes nothing")
+    p.add_argument("--as", dest="as_id", metavar="ID", help="the (host #:id ID …) declaration HOST is (default: the only one)")
+    p.add_argument("--provision", action="store_true",
+                   help="show the provisioning plan of the host declaration, ask once, then install what is missing")
+    p.add_argument("--yes", action="store_true", help="with --provision: apply the plan without asking")
     p = sub.add_parser("adopt", help="bring the codebase's existing agent setup (rules, prompts, workflow scripts) into a layer")
     p.add_argument("layer", type=Path)
     p.add_argument("--app", type=Path, help="the application checkout (needed before the layer has an agentic.rkt)")
@@ -2629,6 +2633,11 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--env", metavar="ID", help="the podman environment (default: the first)")
     actions.add_parser("prune", help="remove every old image of this layer that no run or container uses")
     actions.add_parser("status", help="the recipe hash and image of every podman environment, and the old images")
+    q = actions.add_parser("push", help="build the image of the current recipe if needed and push it to the declared "
+                           "(registry …)")
+    q.add_argument("--dry-run", action="store_true", help="say what it would do; change nothing")
+    q = actions.add_parser("pull", help="pull the image of this recipe from the registry, check its al.recipe label, tag it")
+    q.add_argument("--dry-run", action="store_true", help="say what it would do; change nothing")
     p = sub.add_parser("notify-test", help="send one marked test message through every notifier of a layer")
     p.add_argument("layer", type=Path)
     p.add_argument("--event", default="needs-human", choices=("needs-human", "failed", "passed", "shipped"))

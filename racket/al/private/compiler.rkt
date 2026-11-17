@@ -238,6 +238,14 @@
   (compile-fields (rec-fields record-name) kws who
                   #:init (hasheq 'name (symbol->string (cadr datum)))))
 
+;; --- keyword-only records: host, registry -----------------------------------------------
+
+(define (compile-keyword-record record-name datum)
+  (define who (format "(~a …)" record-name))
+  (define-values (pos kws) (split-kwargs (cdr datum) who))
+  (unless (null? pos) (fail "~a: unexpected ~s; fields are given as #:keyword value" who (car pos)))
+  (compile-fields (rec-fields record-name) kws who #:extra '()))
+
 ;; --- adw --------------------------------------------------------------------------------
 
 (define step-kinds "run, check, script, review, ship, compose, fan-out")
@@ -469,8 +477,10 @@
     (define adw-clauses '())
     (define layer-clause #f)
     (define stages '())
+    (define hosts '())
+    (define registry #f)
     (define clause-heads
-      (append (map family-name (all-families)) '(codebase command hop expert adw stage delivery include)))
+      (append (map family-name (all-families)) '(codebase command hop expert adw stage delivery host registry include)))
 
     (for ([c (in-list clauses)])
       (parameterize ([current-clause (car c)])
@@ -516,6 +526,16 @@
              (fail "(stage ~a): declared twice" (hash-ref st 'name)))
            (hash-set! clause-of (cons 'stage (hash-ref st 'name)) (car c))
            (set! stages (cons st stages))]
+          [(eq? (car d) 'host)
+           (define h (compile-keyword-record 'host d))
+           (when (findf (lambda (x) (equal? (hash-ref x 'id) (hash-ref h 'id))) hosts)
+             (fail "(host …): id ~a already used; give each (host …) its own #:id" (hash-ref h 'id)))
+           (hash-set! clause-of (cons 'host (hash-ref h 'id)) (car c))
+           (set! hosts (cons h hosts))]
+          [(eq? (car d) 'registry)
+           (when registry (fail "(registry …): only one (registry …) may be declared"))
+           (hash-set! clause-of 'registry-clause (car c))
+           (set! registry (compile-keyword-record 'registry d))]
           [(eq? (car d) 'adw) (set! adw-clauses (cons c adw-clauses))]
           [(eq? (car d) 'include) (fail include-unexpanded)]
           [else (fail "unknown clause (~a …); clauses are: ~a" (car d) (names clause-heads))])))
@@ -613,6 +633,47 @@
             (when looks
               (fail "~a: ~a takes the NAME of an environment variable in capitals, e.g. \"AL_NOTIFY_TO\", but the value given ~a. agentic.rkt is committed, so it must hold no private data: put the value itself in local.env in the layer directory (never committed) or in the environment, and write only the variable's name here"
                     who kw looks))))))
+    (when registry
+      (parameterize ([current-clause (hash-ref clause-of 'registry-clause #f)])
+        (for ([k '(addressEnv usernameEnv passwordEnv)] [kw '("#:address-env" "#:username-env" "#:password-env")])
+          (define v (hash-ref registry k))
+          (define looks (and (not (and (string=? v "") (not (eq? k 'addressEnv)))) (private-looking v)))
+          (when looks
+            (fail "(registry …): ~a takes the NAME of an environment variable in capitals, e.g. \"AL_REGISTRY\", but the value given ~a. agentic.rkt is committed, so it must hold no private data: put the value in local.env in the layer directory (never committed) or in the environment, and write only the variable's name here"
+                  kw looks)))
+        (unless (eq? (string=? (hash-ref registry 'usernameEnv) "") (string=? (hash-ref registry 'passwordEnv) ""))
+          (fail "(registry …): #:username-env and #:password-env are given both or neither (a login needs a user and a password)"))))
+    (let* ([placement (car (opts 'layer))]
+           [declared-units
+            (append (filter (lambda (k) (for/or ([t (in-list (opts 'trigger))]) (equal? (hash-ref t 'kind) k)))
+                            '("cron" "webhook"))
+                    (if (equal? (hash-ref (car (opts 'dashboard)) 'kind) "none") '() '("dashboard")))]
+           [podman? (for/or ([e (in-list (opts 'environment))]) (equal? (hash-ref e 'kind) "podman"))])
+      (for ([h (in-list (reverse hosts))])
+        (parameterize ([current-clause (hash-ref clause-of (cons 'host (hash-ref h 'id)) #f)])
+          (define id (hash-ref h 'id))
+          (define who (format "(host #:id ~a)" id))
+          (when (regexp-match? #rx"[.]" id)
+            (fail "(host …): #:id ~s looks like a host name; an id names a kind of machine, not a host (lowercase letters, digits and dashes, e.g. server); the host itself is given to al deploy --to" id))
+          (unless (regexp-match? tier-rx id)
+            (fail "(host …): #:id must be lowercase letters, digits and dashes, starting with a letter (got ~s)" id))
+          (unless (equal? (hash-ref placement 'kind) "in-repo")
+            (fail "~a needs (layer in-repo …): a host runs the layer that is committed with its repository" who))
+          (for ([u (in-list (hash-ref h 'units))])
+            (unless (member u declared-units)
+              (fail "~a #:units: `~a` is not declared by the layer; it declares: ~a" who u
+                    (if (null? declared-units) "(none)" (names declared-units)))))
+          (define port (hash-ref h 'dashboardPort))
+          (unless (<= 0 port 65535)
+            (fail "~a: #:dashboard-port must be 0 or 1–65535 (got ~a); 0 = the dashboard's own #:port" who port))
+          (define units (if (null? (hash-ref h 'units)) declared-units (hash-ref h 'units)))
+          (when (and (> port 0) (not (member "dashboard" units)))
+            (fail "~a: #:dashboard-port ~a needs the dashboard unit; add dashboard to #:units or remove #:dashboard-port" who port))
+          (define images (hash-ref h 'images))
+          (when (and (equal? images "pull") (not registry))
+            (fail "~a: #:images pull needs a (registry #:address-env \"VARIABLE\") declaration" who))
+          (when (and (member images '("pull" "load")) (not podman?))
+            (fail "~a: #:images ~a needs a podman environment: there is no sandbox image without (environment podman …)" who images)))))
     (for ([ag (in-list (opts 'agent))] #:when (hash-has-key? ag 'models))
       (parameterize ([current-clause (hash-ref clause-of (cons 'agent (hash-ref ag 'id)) #f)])
         (define who (format "(agent ~a)" (hash-ref ag 'kind)))
@@ -926,6 +987,8 @@
                'commands (reverse commands)
                'hops (reverse hops)
                'experts (reverse experts)
+               'hosts (reverse hosts)
+               'registry (or registry 'null)
                'adws adws))
     ;; no stage: exactly the IR of before (no stages, cycle or delivery key, no deliverTo)
     (if (null? stage-list)

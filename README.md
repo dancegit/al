@@ -377,6 +377,7 @@ Every workflow makes four choices, known as **PITER**. The language offers sever
 - **The container cannot reach into your git repository.** It can read the history but cannot move branches or plant hooks; only the host does that, after checking nothing was tampered with.
 - **Shipping without a human needs everything to agree:** all checks green, the checks re-run on the final result, the reviewer finds no blocker, the task is a kind you allowed, the change is small, and no protected file was touched. Otherwise it becomes a pull request for a person.
 - **The compiler enforces the dangerous combinations.** A workflow that ships by itself must run in a container. An agent with all permissions must itself be inside one.
+- **A server is set up only after you have seen the plan.** `al deploy --provision` prints every privileged command before it asks and before it runs, and a host uses a sandbox image only when its recipe hash equals the layer's.
 
 ## See it
 
@@ -517,6 +518,9 @@ repository, and why a small language in Racket, is in [`docs/DESIGN.md`](docs/DE
 ```
 racket/al/        the language: vocabulary, compiler, schema and reference generators, tests
 tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard
+tools/al_provision.py   the provisioning files of a (host …): Home Manager, NixOS, shell script
+tools/al_sandbox.py     al sandbox LAYER push|pull and the sandbox image on deploy (the runtime's recipe hash)
+kit/host/pins.json      pinned versions and sha256 of uv and the agent CLIs a host installs
 kit/templates/    the prompts every layer starts from      kit/runtime/   what runs a workflow
 meta/             the prompts that guide an LLM through describing a codebase and writing its layer
 tests/            authored layers for the five repositories, integration tests, the live Forgejo test

@@ -47,3 +47,29 @@ def test_the_summary_is_a_sentence_and_the_rule_count_matches_the_list(app, tmp_
     assert "The `notes` layer: Agentic layer of a tiny test app." in text
     assert "8 of their instructions are specific to this codebase; the first 6:" in text
     assert text.count("Codebase-specific rule:") == 6
+
+
+def test_host_and_registry_are_explained_without_values() -> None:
+    import importlib.util
+    from conftest import ROOT
+    spec = importlib.util.spec_from_file_location("explain_for_hosts", ROOT / "tools" / "explain.py")
+    explain = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(explain)  # type: ignore[union-attr]
+    ir = {"hosts": [{"id": "server", "provision": "script", "units": ["cron", "dashboard"], "dashboardPort": 8770,
+                     "linger": True, "images": "pull", "fallbackBuild": True},
+                    {"id": "nix", "provision": "home-manager", "units": [], "dashboardPort": 0, "linger": True,
+                     "images": "load", "fallbackBuild": False}],
+          "registry": {"addressEnv": "AL_REGISTRY", "usernameEnv": "REG_USER", "passwordEnv": "REG_PASSWORD", "tlsVerify": True}}
+    title, text, bullets = explain.host_text(ir)
+    words = text + " ".join(bullets)
+    assert "`server`" in words and "`nix`" in words
+    assert "shell script for Debian/Ubuntu, Fedora or Arch" in words and "Home Manager module" in words
+    assert "cron and dashboard" in words and "port 8770" in words and "every unit the layer declares" in words
+    assert "pulls the tested sandbox image from the registry" in words and "over the ssh connection" in words
+    assert "the deploy stops" in words
+    title, text, bullets = explain.registry_text(ir)
+    words = text + " ".join(bullets)
+    assert "`AL_REGISTRY`" in words and "`REG_USER`" in words and "`REG_PASSWORD`" in words
+    assert "://" not in words and "@" not in words                         # names of variables only, never a value
+    assert explain.registry_text({"registry": None})[1].startswith("No registry")
+    assert explain.host_text({"hosts": []})[1].startswith("No machine")

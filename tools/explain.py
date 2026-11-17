@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 GROUPED = {"prompt-input", "trigger", "environment", "artefact", "review", "agent", "command", "hop", "expert", "service", "notify",
-           "stage"}
+           "stage", "host"}
 CLAUSE = re.compile(r"^  \(([a-z][a-z-]*)\b")
 INCLUDED_CLAUSE = re.compile(r"^\(([a-z][a-z-]*)\b")       # an included file's clauses start in column 0
 INCLUDE = re.compile(r'\(include\s+"([^"]+)"\s*\)')
@@ -241,6 +241,10 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         return budget_text(ir)
     if head == "notify":
         return notify_text(ir)
+    if head == "host":
+        return host_text(ir)
+    if head == "registry":
+        return registry_text(ir)
     if head == "include":
         return ("More of the definition, from another file", f"These clauses are in `{block.get('target', '?')}`"
                 + (", written by `al adopt` from the codebase's existing agent setup" if "adopted/" in block.get("target", "") else "")
@@ -505,6 +509,52 @@ def notify_text(ir: dict) -> tuple[str, str, list[str]]:
                 "beyond the title and no logs",
                 "`al notify-test` sends a test message through every notifier"]
     return "Telling a person", f"Notifications: a person is told when a run {phrases(union)}.", bullets
+
+
+PROVISION_WORDS = {"none": "al installs nothing there and only checks what it has",
+                   "home-manager": "a Home Manager module installs the tools and keeps the units running",
+                   "nixos": "a NixOS module sets up podman, the user's subuid/subgid ranges and lingering (a privileged rebuild)",
+                   "script": "a shell script for Debian/Ubuntu, Fedora or Arch installs what is missing"}
+IMAGE_WORDS = {"build": "the machine builds the sandbox image itself at the first run",
+               "pull": "the machine pulls the tested sandbox image from the registry",
+               "load": "`al deploy` sends the tested sandbox image over the ssh connection"}
+
+
+def host_text(ir: dict) -> tuple[str, str, list[str]]:
+    """The (host …) blocks in plain words: style, units and images. No host name, user or address is
+    in the layer, so none can be shown."""
+    hosts = [h for h in ir.get("hosts") or [] if isinstance(h, dict)]
+    if not hosts:
+        return ("Machines that run it", "No machine is declared: `al deploy` only checks a host.", [])
+    bullets = []
+    for h in hosts:
+        units = listing(h.get("units") or []) if h.get("units") else "every unit the layer declares"
+        port = f"; the dashboard on port {h['dashboardPort']}" if h.get("dashboardPort") else ""
+        linger = "; lingering on, so the units survive a logout" if h.get("linger", True) else ""
+        fallback = ("; when the image on the machine was built from another recipe, the machine builds this one"
+                    if h.get("fallbackBuild", True) else "; when the image on the machine was built from another recipe, the deploy stops")
+        bullets.append(f"`{h['id']}`: {PROVISION_WORDS.get(h.get('provision', 'none'), h.get('provision'))}; it keeps {units} running"
+                       f"{port}; {IMAGE_WORDS.get(h.get('images', 'build'), h.get('images'))}{fallback}{linger}")
+    bullets += [f"`al gen` writes `env/hosts/<id>/` (a Home Manager module, a NixOS module and a shell script); they name no "
+                "host, user, address or secret",
+                "`al deploy LAYER --to HOST --as ID --provision` shows the plan, with every privileged command, asks once, then "
+                "applies it; `al deploy … --status` lists what drifted"]
+    return ("Machines that run it", f"{len(hosts)} kind(s) of machine: " + listing([f"`{h['id']}`" for h in hosts]) + ".", bullets)
+
+
+def registry_text(ir: dict) -> tuple[str, str, list[str]]:
+    """The (registry …) block: only the names of the variables, never their values."""
+    r = ir.get("registry")
+    if not isinstance(r, dict):
+        return ("Where the sandbox image is shared", "No registry: every machine builds its own sandbox image.", [])
+    login = (f"; the login from `{r['usernameEnv']}` and `{r['passwordEnv']}`" if r.get("usernameEnv") else "; no login")
+    tls = "" if r.get("tlsVerify", True) else "; its TLS certificate is not verified"
+    return ("Where the sandbox image is shared",
+            f"`al sandbox push` builds the sandbox image once and pushes it to the registry named by the environment "
+            f"variable `{r['addressEnv']}`{login}{tls}; the machines use exactly that image.",
+            ["The values of those variables are not in this file: they come from the environment or from `local.env` "
+             "in the layer folder, which is never committed",
+             "The image carries the hash of `env/Containerfile` and is only used when it equals the layer's"])
 
 
 def budget_text(ir: dict) -> tuple[str, str, list[str]]:

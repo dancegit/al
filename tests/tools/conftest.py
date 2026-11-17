@@ -43,6 +43,16 @@ DEPLOY_LAYER = (LAYER_TEMPLATE
                          "    #:input (tasklist) #:trigger (cron webhook)"))
 assert DEPLOY_LAYER.count("(trigger ") == 2 and "#:trigger (cron webhook)" in DEPLOY_LAYER
 
+# DEPLOY_LAYER plus a podman environment, a registry and two kinds of host: `server` (provisioned by
+# the shell script, the image pulled from the registry) and `nix` (Home Manager, the image streamed).
+PROVISION_LAYER = DEPLOY_LAYER.replace(
+    "  (prompt-input tasklist)\n",
+    "  (prompt-input tasklist)\n  (environment worktree)\n  (environment podman)\n"
+    '  (registry #:address-env "AL_REGISTRY")\n'
+    "  (host #:id server #:provision script #:units (cron dashboard) #:dashboard-port 8770 #:images pull)\n"
+    "  (host #:id nix #:provision home-manager #:images load)\n")
+assert PROVISION_LAYER.count("(host ") == 2
+
 
 def sh(argv, cwd=None, env=None, timeout=900) -> subprocess.CompletedProcess:
     return subprocess.run([str(a) for a in argv], cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
@@ -109,6 +119,28 @@ def deployable(app: Path) -> Path:
     return layer
 
 
+def gen_provision_layer(app: Path, pins: Path, text: str = PROVISION_LAYER) -> Path:
+    """<app>/agentic with `text` (PROVISION_LAYER by default), generated with the pins file `pins`
+    and committed with the app."""
+    al("init", app, "--in-repo")
+    layer = app / "agentic"
+    (layer / "agentic.rkt").write_text(text.format(root="..", placement='(layer in-repo #:dir "agentic")'))
+    al("gen", layer, env={"AL_HOST_PINS": str(pins)})
+    commit(app, "the agentic layer", "agentic")
+    assert status(app) == ""
+    return layer
+
+
+@pytest.fixture
+def provisionable(app: Path, tmp_path: Path) -> Path:
+    """<app>/agentic: PROVISION_LAYER, generated with pins that match what the fake host's curl
+    serves (deploy_host.DOWNLOADS) and committed with the app."""
+    from deploy_host import test_pins
+    pins_dir = tmp_path / "pins"
+    pins_dir.mkdir(exist_ok=True)
+    return gen_provision_layer(app, test_pins(pins_dir))
+
+
 @pytest.fixture
 def sibling(app: Path) -> Path:
     """<app>.al: a sibling layer (its own git repository, nothing committed yet)."""
@@ -134,6 +166,7 @@ def mock_scripts(tmp_path: Path, scripts: dict[str, dict]) -> Path:
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "browser: drives the host's Chrome through Playwright (skipped without one)")
+    config.addinivalue_line("markers", "podman: uses the real podman and a registry on 127.0.0.1:5000 (skipped without them)")
 
 
 # A run's sandbox points git at the run's own object store through environment variables. Tests build
