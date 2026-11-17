@@ -255,7 +255,7 @@ and asks no agent; one that does not compile is reported with the repair hint be
 While the agent works, `al author` prints one line per message, tool call and error (`  · read LLM.txt`,
 `  ! Bash failed`, `  = 14 turns, 3m 04s, $0.42`), never the hooks' output, and at the end the agent's
 report once, followed by its **Decisions** and **Left out and why** lists. `al author … --raw` prints
-Claude Code's event stream itself, line by line. A dashboard job runs the author step with `--raw` and
+Claude Code's event stream itself, line by line. A dashboard job runs the author step (and the scout step) with `--raw` and
 shows the same condensed view on its page ("Work with several repositories from the dashboard" below).
 
 *If it goes wrong:* the error is always of the form `agentic.rkt:LINE:COL: … expected one of: …` or
