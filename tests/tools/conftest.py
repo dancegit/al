@@ -186,7 +186,14 @@ def pytest_configure(config: pytest.Config) -> None:
 
 # A run's sandbox points git at the run's own object store through environment variables. Tests build
 # their own repositories, so those variables must not reach them: clear them once, before any test.
+# SANDBOX_GIT keeps what was cleared, for the few tests that read the objects of this repository
+# itself (the blobs of its index); outside a run it is empty. The values travel on under another
+# name, because an xdist worker starts from the environment this process has already cleared.
 import os as _os
+SANDBOX_GIT: dict[str, str] = {}
 for _name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
               "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_QUARANTINE_PATH", "GIT_CEILING_DIRECTORIES"):
-    _os.environ.pop(_name, None)
+    if _name in _os.environ:
+        _os.environ["TESTS_SANDBOX_" + _name] = _os.environ.pop(_name)
+    if "TESTS_SANDBOX_" + _name in _os.environ:
+        SANDBOX_GIT[_name] = _os.environ["TESTS_SANDBOX_" + _name]

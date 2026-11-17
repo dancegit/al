@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, git
+from conftest import ROOT, SANDBOX_GIT, git
 from test_links import CODE, FENCE, documents, resolve, targets
 
 sys.path.insert(0, str(ROOT / "tools"))
@@ -31,7 +31,8 @@ import media  # noqa: E402  (tools/media.py)
 # 57 files, everything else 8.9 MB). The request's target is 30 MB; it cannot be met while every GIF
 # and poster is kept (re-encoding all GIFs at 3 fps, 560 px and 32 colours still leaves about 35 MB,
 # with clearly worse pictures), so the limit here is what the tree can keep. Lower it when a person
-# has decided what happens to the larger GIFs.
+# has decided what happens to the larger GIFs. The size is the sum of the index blobs, so a file
+# deleted on disk but still tracked counts.
 TREE_LIMIT = 60_000_000
 
 LIVE_SCRIPTS = ("tests/forge/forgejo_live.sh", "tests/forge/proof_video_live.sh", "tests/rotademo/rotademo_live.sh",
@@ -202,8 +203,38 @@ def test_manifest_entries_are_complete() -> None:
 
 
 def test_tracked_tree_is_under_the_size_limit() -> None:
-    total = sum((ROOT / p).stat().st_size for p in _tracked() if (ROOT / p).is_file())
+    entries = []
+    for line in git(ROOT, "ls-files", "-s").splitlines():          # <mode> <object> <stage>\t<path>
+        meta, path = line.split("\t", 1)
+        mode, obj, _stage = meta.split()
+        if mode != "160000":                                        # a submodule has no blob
+            entries.append((obj, path))
+    missing = [path for _obj, path in entries if not (ROOT / path).is_file() and not (ROOT / path).is_symlink()]
+    assert not missing, "tracked but not on disk (a deletion that is not in the index):\n  " + "\n  ".join(missing)
+    objects = [obj for obj, _path in entries]
+    # inside a run the newest blobs are in the run's own object store, which conftest.py hides from the tests
+    out = subprocess.run(["git", "-C", str(ROOT), "cat-file", "--batch-check=%(objectsize)"], input="\n".join(objects) + "\n",
+                         capture_output=True, text=True, check=True, env={**os.environ, **SANDBOX_GIT})
+    sizes = out.stdout.split()
+    assert len(sizes) == len(objects) and all(n.isdigit() for n in sizes), f"{len(objects)} index entries, sizes: {out.stdout[:300]}"
+    total = sum(int(n) for n in sizes)
     assert total < TREE_LIMIT, f"the tracked tree is {total / 1e6:.1f} MB; the limit is {TREE_LIMIT / 1e6:.0f} MB"
+
+
+VIDEO_IN_TREE = re.compile(r"(\$OUT|\$\{OUT\}|\$ROOT/docs|docs/(demo|showcase))[^\s\"']*\.(mp4|webm|mov|mkv|avi|m4v|ogv)\b", re.I)
+
+
+def test_live_scripts_write_no_video_into_the_tree() -> None:
+    wrong = [f"{path}:{number}: {line.strip()[:100]}" for path in LIVE_SCRIPTS
+             for number, line in enumerate(_read(path).splitlines(), 1) if VIDEO_IN_TREE.search(line)]
+    assert not wrong, "a live script names a video under its output folder or docs/:\n  " + "\n  ".join(wrong)
+    assert VIDEO_IN_TREE.search('cp "$WORK/b.webm" "$OUT/b-feature.webm"') and VIDEO_IN_TREE.search("ffmpeg -i x $ROOT/docs/demo/a.MP4")
+    assert not VIDEO_IN_TREE.search('cp "$WORK/b.webm" "$MEDIA/demo-webdemo-b-feature.webm"')
+    release = _manifest()["release"]
+    folder = "${AL_MEDIA_DIR:-$ROOT/media/" + release + "}"
+    for path in ("tests/webdemo/webdemo_live.sh", "tests/rotademo/rotademo_live.sh"):
+        assert f'MEDIA="{folder}"' in _read(path), f"{path}: MEDIA is the ignored media folder of the release"
+    assert folder + "/demo-webdemo-b-feature.webm" in _read("tests/forge/proof_video_live.sh")
 
 
 def test_release_media_lists_and_uploads_nothing(tmp_path: Path) -> None:
