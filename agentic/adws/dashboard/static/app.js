@@ -1995,6 +1995,20 @@
             ["reasons", ho.reasons && ho.reasons.length ? h("ul", { class: "issues" }, ho.reasons.map((r) => h("li", { text: r }))) : ""],
             ["handoff error", ho.error], ["no handoff", ho.skipped]])));
       }
+      if (detail.decision) {
+        // the stand-in decider (decide.py); read-only: answers go through `al answer`, e-mail or the webhook
+        const dc = detail.decision, ans = dc.answer;
+        const badge = ans ? `answered: ${ans.kind}` : dc.skipped ? "not used" : dc.status === "failed" ? "failed"
+          : dc.mode === "auto" ? "auto" : dc.status === "suggested" || dc.status === "explained" ? "suggested" : dc.status || dc.mode;
+        const file = dc.file ? h("a", { href: `/files/${enc(layerKey)}/agents/${enc(runId)}/decision.md`, text: "decision.md" }) : "";
+        blocks.push(h("div", { class: "outcome-block decision-block" }, h("div", { class: "card-head" }, h("h3", { text: "Decision" }),
+          h("span", { class: `badge decision ${dc.status === "failed" ? "bad" : ""}`, text: badge })),
+          dc.summary ? h("div", { class: "decision-summary", text: dc.summary }) : null,
+          kv([["mode", dc.mode], ["action", dc.action], ["from step", dc.action && dc.action.startsWith("resume") ? dc.from_step : ""],
+            ["instructions", dc.instructions], ["status", dc.status], ["auto round", dc.mode === "auto" && dc.rounds ? String(dc.rounds) : ""],
+            ["answer", ans ? `${ans.kind} via ${ans.via}${ans.at ? ` (${fmt.time(Date.parse(ans.at) / 1000)})` : ""}${ans.text ? `: ${ans.text}` : ""}` : ""],
+            ["not used", dc.skipped], ["decider failed", dc.reason], ["record", file]])));
+      }
       if (detail.gate || (detail.ship && detail.ship.action)) {
         const gate = detail.gate || {}, ship = detail.ship || {};
         const url = ship.url || (ship.pr && ship.pr.url) || "";
