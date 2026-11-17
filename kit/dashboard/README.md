@@ -333,6 +333,9 @@ path mapping, view, download, zip, refusals (all 404), the token and a new docum
 event stream. `tests/test_browser_documents.py` (Chrome) checks the Documents tab, the rendered and raw
 view, the download, an inert `<script>` in a plan, live appearance and the step panel's link; with
 `AL_DASHBOARD_SHOTS=DIR` it saves `run-documents.png` and `run-documents-step-link.png` to DIR.
+`tests/test_browser_discipline.py` (Chrome) opens a build step that stayed in its step and one that
+left it, and with `AL_DASHBOARD_SHOTS=DIR` saves `step-discipline-ok.png` and
+`step-discipline-violation.png` to DIR.
 `tests/test_start.py` starts work through the real server and the layer's own launcher
 (`tests/start_layer.py` builds a git app and runnable layers the way `al gen` lays them out, with the
 mock agent): the catalog, a workflow and a `/plan-chore` single-command run with its plan as a

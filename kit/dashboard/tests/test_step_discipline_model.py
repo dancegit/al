@@ -10,18 +10,23 @@ import fixtures
 from fixtures import rec, state, write
 
 RID = "d15c0001"
+OK = {"ok": True, "violations": [], "restored": [], "not_restored": []}
+VIOLATION = {"ok": False, "violations": ["committed"],
+             "texts": ["the build step committed: HEAD moved from 1111111 to 2222222"],
+             "restored": ["HEAD reset to 1111111; the changes stay in the worktree, uncommitted"],
+             "not_restored": ["refs/heads/side was created and left in place"]}
 
 
-def _run(layer: Path, discipline: dict | None) -> None:
-    run = layer / "agents" / RID
+def _run(layer: Path, discipline: dict | None, *, rid: str = RID) -> None:
+    run = layer / "agents" / rid
     records, t = fixtures.plan_records(30000)
     build = rec("build", "run", "passed" if discipline is None or discipline["ok"] else "failed", t, t + 30, "built")
     if discipline is not None:
         build["discipline"] = discipline
     records.append(build)
-    write(run / "state.json", json.dumps(state(RID, "zte", "Discipline case", build["status"], 30000, t + 30, records)),
+    write(run / "state.json", json.dumps(state(rid, "zte", "Discipline case", build["status"], 30000, t + 30, records)),
           t + 30)
-    write(run / "run.log", f"[adw {RID}] zte start: class=chore dry_run=False\n", t + 30)
+    write(run / "run.log", f"[adw {rid}] zte start: class=chore dry_run=False\n", t + 30)
 
 
 def _build_detail(layer: Path) -> dict:
@@ -32,19 +37,17 @@ def _build_detail(layer: Path) -> dict:
 
 
 def test_a_step_that_stayed_in_its_step_says_so(fx) -> None:
-    _run(fx["layer"], {"ok": True, "violations": [], "restored": [], "not_restored": []})
+    _run(fx["layer"], OK)
     assert _build_detail(fx["layer"])["discipline"] == {
         "ok": True, "text": "Stayed in its step: HEAD unchanged, no refs changed, nothing outside the worktree"}
 
 
 def test_a_violation_is_shown_with_what_was_restored(fx) -> None:
-    _run(fx["layer"], {"ok": False, "violations": ["committed"],
-                       "texts": ["the build step committed: HEAD moved from 1111111 to 2222222"],
-                       "restored": ["HEAD reset to 1111111; the changes stay in the worktree, uncommitted"],
-                       "not_restored": []})
+    _run(fx["layer"], VIOLATION)
     view = _build_detail(fx["layer"])["discipline"]
     assert view["ok"] is False and view["text"].startswith("Left its step:")
     assert "the build step committed" in view["text"] and "HEAD reset to 1111111" in view["text"]
+    assert "Not restored: refs/heads/side" in view["text"]
 
 
 def test_records_without_discipline_have_none(fx) -> None:

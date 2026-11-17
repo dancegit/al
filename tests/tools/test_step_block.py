@@ -4,6 +4,8 @@ worktree". At run time the block names the run's workflow and this step. `al che
 layer-local template without the block, and ignores a run's scratch directory."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import shutil
 
@@ -56,11 +58,32 @@ def test_al_check_notes_an_ejected_template_without_the_step_block(sibling) -> N
 
 
 def test_al_check_ignores_the_run_scratch_directory(in_repo) -> None:
+    """The layer's `.gitignore` no longer hides `agents/` here (a control file under it is reported),
+    so only `SCRATCH_PATH` keeps the run's scratch file from being reported."""
+    gitignore = in_repo / ".gitignore"
+    lines = gitignore.read_text().splitlines(keepends=True)
+    assert any(line.rstrip("\n") == "/agents/" for line in lines)
+    new_bytes = "".join(line for line in lines if line.rstrip("\n") != "/agents/").encode()
+    gitignore.write_bytes(new_bytes)
+    manifest_path = in_repo / ".al-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if manifest["files"].get(".gitignore") is not None:
+        manifest["files"][".gitignore"] = hashlib.sha256(new_bytes).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, indent=1) + "\n")   # as `al gen` writes it
+
+    control = in_repo / "agents" / "1234abcd" / "state.json"
+    control.parent.mkdir(parents=True)
+    control.write_text("{}\n")
+    cp = al("check", in_repo, ok=False)
+    assert "untracked file in the layer" in cp.stdout and "agents/1234abcd/state.json" in cp.stdout, cp.stdout
+    control.unlink()
+
     scratch = in_repo / "agents" / "1234abcd" / "scratch"
     scratch.mkdir(parents=True)
     (scratch / "validate.txt").write_text("notes of a run\n")
     cp = al("check", in_repo, ok=False)
     assert "PROBLEM" not in cp.stdout and cp.stdout.rstrip().endswith("check: ok"), cp.stdout
+    assert "scratch/validate.txt" not in cp.stdout, cp.stdout
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is not on PATH")
