@@ -1,0 +1,100 @@
+~/work $ al deploy notes/agentic --to deploy-host.example --dry-run
+# preflight: what the host has (versions, paths, yes/no; names of variables, never values)
+[read] host$ al_find() {
+        _v=$(env | sed -n "s/^$2=//p" | sed -n '$p')
+        _c="${XDG_CONFIG_HOME:-$HOME/.config}/al"
+        if test -z "$_v"; then
+          for _f in "$_c/tools.env" "$_c/${al_layer:-.none}.env"; do
+            if test -f "$_f"; then
+              _w=$(sed -n "s/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}$2[[:space:]]*=[[:space:]]*//p" "$_f" | sed -n '$p' | sed -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/")
+              if test -n "$_w"; then _v=$_w; fi
+            fi
+          done
+        fi
+        if test -n "$_v"; then
+          if test -f "$_v" && test -x "$_v"; then echo "$_v"; return 0; fi
+          return 1
+        fi
+        _p=$(command -v "$1" 2>/dev/null)
+        if test -n "$_p" && test "${_p#/}" != "$_p"; then echo "$_p"; return 0; fi
+        for _d in "$HOME/.nix-profile/bin" "$HOME/.local/state/nix/profile/bin" "/etc/profiles/per-user/$(id -un)/bin" "/nix/var/nix/profiles/default/bin" "$HOME/.local/bin" "$HOME/racket/bin" "/usr/local/racket/bin" "/opt/racket/bin"; do
+          if test -f "$_d/$1" && test -x "$_d/$1"; then echo "$_d/$1"; return 0; fi
+        done
+        return 1
+      }
+      echo "home=$HOME"
+      echo "path=$PATH"
+      al_layer=notes
+      if p=$(al_find git AL_GIT); then echo "git=$p $("$p" --version 2>/dev/null | head -n 1)"; else echo "git="; fi
+      if p=$(al_find uv AL_UV); then echo "uv=$p $("$p" --version 2>/dev/null | head -n 1)"; else echo "uv="; fi
+      if p=$(al_find racket AL_RACKET); then echo "racket=$p $("$p" --version 2>/dev/null | head -n 1)"; else echo "racket="; fi
+      if p=$(al_find al AL_TOOL); then echo "al=$p"; else echo "al="; fi
+      if p=$(al_find claude AL_CLAUDE); then echo "agent.claude=$p $("$p" --version 2>/dev/null | head -n 1)"; else echo "agent.claude="; fi
+      if command -v podman >/dev/null 2>&1; then echo "podman=$(command -v podman) $(podman --version 2>/dev/null | head -n 1)"; else echo "podman="; fi
+      echo "rootless=$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)"
+      if test -s "$HOME/.claude/.credentials.json"; then echo "login.claude=yes"; else echo "login.claude=no"; fi
+      set -- $(df -Pk "$HOME" 2>/dev/null | sed -n 2p)
+      echo "disk_kb=$4"
+      if systemctl --user show-environment >/dev/null 2>&1; then echo systemd=yes; else echo systemd=no; fi
+      echo "linger=$(loginctl show-user "$(id -un)" --property=Linger 2>/dev/null | sed 's/^Linger=//')"
+      echo "envnames=$({ cat "$HOME/.config/al/notes.env" 2>/dev/null; echo; systemctl --user show-environment 2>/dev/null; } | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | tr '\n' ',')"
+      d="$HOME"/al/notes
+      echo "directory=$d"
+      if test -d "$d/.git"; then echo dir=git; echo "dirty=$(git -C "$d" status --porcelain 2>/dev/null | grep -c '')"; echo "head=$(git -C "$d" rev-parse HEAD 2>/dev/null)"; echo "dir_origin=$(git -C "$d" remote get-url origin 2>/dev/null)"
+      elif test -e "$d"; then echo dir=other
+      else echo dir=absent
+      fi
+host: deploy-host.example   directory: ~/fake-host/host-home/al/notes   layer: agentic   commit: e221f781e901
+generated here, committed, travels with the repository: agentic-layer.json, commands/, hops/, adws/ (the runtime), env/
+generated on the host, for the host's paths, never committed: ~/.config/systemd/user/al-notes-cron.service, ~/.config/systemd/user/al-notes-webhook.service, ~/.config/systemd/user/al-notes-dashboard.service
+not on the host, not needed to run: bin/al, .al-manifest.local.json, systemd/ in the layer
+racket on the host: needed only for the dashboard's actions (create, adopt, gen); not found
+preflight:
+  git                   ok          ~/fake-host/host-home/.hostbin/git git version 2.47.3
+  uv                    ok          ~/fake-host/host-home/.hostbin/uv uv 0.0.0-stub
+  podman                not needed  the layer declares no podman environment or dashboard
+  agent CLI claude      ok          ~/fake-host/host-home/.hostbin/claude 0.0.0 (stub)
+  agent login claude    ok          ~/.claude/.credentials.json
+  disk                  ok          50.0 GB free
+  systemd user session  ok
+  lingering             will fix    off: loginctl enable-linger, so the units survive logout
+  racket                not needed  the layer was compiled where you ran al gen; the host only runs it
+secrets (names only; al never reads or copies a value):
+  variable                                                                                   for                              on host
+  FORGEJO_TOKEN                                                                              forge token (forgejo)            set      required
+  ADW_WEBHOOK_SECRET                                                                         webhook signature secret         set      required
+  claude login (~/.claude/.credentials.json) or ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN  agent claude-code (claude-code)  set      required
+note: the host cannot reach the repository's remote: shipped work lands in ~/fake-host/host-home/al/notes.git on the host
+# a bare repository on the host that receives the push
+[would run] host$ git init --bare ~/fake-host/host-home/al/notes.git && git --git-dir ~/fake-host/host-home/al/notes.git symbolic-ref HEAD refs/heads/main
+# push main to the host over the ssh connection
+[would run] local$ git -C ~/work/notes push ~/fake-host/host-home/al/notes.git main:main
+# the checkout the layer runs in
+[would run] host$ git clone ~/fake-host/host-home/al/notes.git ~/fake-host/host-home/al/notes && git -C ~/fake-host/host-home/al/notes checkout main
+# the commit that is deployed now
+[would read] host$ git -C ~/fake-host/host-home/al/notes rev-parse HEAD
+# write ~/fake-host/host-home/.config/systemd/user/al-notes-cron.service
+[would run] host$ umask 077; mkdir -p "$(dirname ~/fake-host/host-home/.config/systemd/user/al-notes-cron.service)" && cat > ~/fake-host/host-home/.config/systemd/user/al-notes-cron.service && chmod 0644 ~/fake-host/host-home/.config/systemd/user/al-notes-cron.service
+# write ~/fake-host/host-home/.config/systemd/user/al-notes-webhook.service
+[would run] host$ umask 077; mkdir -p "$(dirname ~/fake-host/host-home/.config/systemd/user/al-notes-webhook.service)" && cat > ~/fake-host/host-home/.config/systemd/user/al-notes-webhook.service && chmod 0644 ~/fake-host/host-home/.config/systemd/user/al-notes-webhook.service
+# write ~/fake-host/host-home/.config/systemd/user/al-notes-dashboard.service
+[would run] host$ umask 077; mkdir -p "$(dirname ~/fake-host/host-home/.config/systemd/user/al-notes-dashboard.service)" && cat > ~/fake-host/host-home/.config/systemd/user/al-notes-dashboard.service && chmod 0644 ~/fake-host/host-home/.config/systemd/user/al-notes-dashboard.service
+# make systemd read the new units
+[would run] host$ systemctl --user daemon-reload
+# start the units with the user's session
+[would run] host$ systemctl --user enable al-notes-cron.service al-notes-webhook.service al-notes-dashboard.service
+# start them now (an update takes effect)
+[would run] host$ systemctl --user restart al-notes-cron.service al-notes-webhook.service al-notes-dashboard.service
+# keep the user's units running after logout
+[would run] host$ loginctl enable-linger
+# what the units are doing now
+[would read] host$ for u in al-notes-cron.service al-notes-webhook.service al-notes-dashboard.service; do echo "unit $u $(systemctl --user is-enabled "$u" 2>/dev/null | head -n 1) $(systemctl --user is-active "$u" 2>/dev/null | head -n 1)"; done
+      echo "linger=$(loginctl show-user "$(id -un)" --property=Linger 2>/dev/null | sed 's/^Linger=//')"
+# write ~/fake-host/host-home/.config/al/notes-tools.json
+[would run] host$ umask 077; mkdir -p "$(dirname ~/fake-host/host-home/.config/al/notes-tools.json)" && cat > ~/fake-host/host-home/.config/al/notes-tools.json && chmod 0600 ~/fake-host/host-home/.config/al/notes-tools.json
+dry run: nothing was changed on deploy-host.example
+
+~/work $ al dashboard notes/agentic --remote testhost.invalid --port 44371
+dashboard: http://127.0.0.1:44371/   (tunnel to testhost.invalid, Ctrl-C closes it)
+^C
+

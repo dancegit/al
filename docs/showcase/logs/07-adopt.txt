@@ -1,0 +1,59 @@
+~/work $ al init larder
+layer: ~/work/larder.al
+  LLM.txt          draft — complete it with meta/commands/scout-codebase.md
+  AL-DSL.llms.txt  language reference
+next: author ~/work/larder.al/agentic.rkt (meta/commands/author-layer.md), then `al gen ~/work/larder.al`
+codebase root to use in agentic.rkt: ../larder
+
+~/work $ al adopt larder.al --app larder --dry-run
+al adopt: 17 piece(s) of existing agent material found (dry run: nothing is written)
+  rules:     5 file(s) → (conditional-doc …) + adopted/RULES.md
+  prompts:   3 → commands from templates/custom/
+             team-commit: renamed `commit` → `team-commit`: `commit` is a kit template
+             frontend-component: 2 `{{…}}` placeholder(s) ({{name}}, {{props}}) kept literally (written as `{{open_braces}}name}}`): al fills `{{…}}` itself
+             frontend-component: Claude Code's !`command` (run a shell command while loading the prompt) is not run: the agent sees the text (`!`git status --short``)
+             frontend-component: Claude Code's @file reference is not expanded: the agent sees the path and must read it (`@docs/ui.md`)
+             frontend-component: front matter `model: claude-sonnet-5-5` is not honoured: the layer's agent options decide
+             review-pr: front matter `allowed-tools: Bash(gh pr view:*), Read` is not honoured: the layer's agent options decide
+  workflows: 2 script(s) → PROPOSED (cmd legacy-…) + one-step ADW with human review
+  decide:    3 conflict(s), 6 prohibiting rule(s) to review (adopted/REPORT.md, "For a person to decide")
+  skipped:   4 (adopted/REPORT.md, "Not adopted")
+  would write: adopted/REPORT.md, adopted/RULES.md, adopted/codebase.rkt, adopted/layer.rkt, templates/custom/frontend-component.md, templates/custom/review-pr.md, templates/custom/team-commit.md
+  agentic.rkt does not exist yet: when you author it, put (include "adopted/codebase.rkt") inside (codebase …) and (include "adopted/layer.rkt") at the top level (meta/commands/author-layer.md says so), then run `al adopt` again: it then fits the proposals to the options the layer declares
+
+~/work $ al adopt larder.al --app larder
+al adopt: 17 piece(s) of existing agent material found
+  rules:     5 file(s) → (conditional-doc …) + adopted/RULES.md
+  prompts:   3 → commands from templates/custom/
+             team-commit: renamed `commit` → `team-commit`: `commit` is a kit template
+             frontend-component: 2 `{{…}}` placeholder(s) ({{name}}, {{props}}) kept literally (written as `{{open_braces}}name}}`): al fills `{{…}}` itself
+             frontend-component: Claude Code's !`command` (run a shell command while loading the prompt) is not run: the agent sees the text (`!`git status --short``)
+             frontend-component: Claude Code's @file reference is not expanded: the agent sees the path and must read it (`@docs/ui.md`)
+             frontend-component: front matter `model: claude-sonnet-5-5` is not honoured: the layer's agent options decide
+             review-pr: front matter `allowed-tools: Bash(gh pr view:*), Read` is not honoured: the layer's agent options decide
+  workflows: 2 script(s) → PROPOSED (cmd legacy-…) + one-step ADW with human review
+  decide:    3 conflict(s), 6 prohibiting rule(s) to review (adopted/REPORT.md, "For a person to decide")
+  skipped:   4 (adopted/REPORT.md, "Not adopted")
+  wrote: adopted/REPORT.md, adopted/RULES.md, adopted/codebase.rkt, adopted/layer.rkt, templates/custom/frontend-component.md, templates/custom/review-pr.md, templates/custom/team-commit.md
+  agentic.rkt does not exist yet: when you author it, put (include "adopted/codebase.rkt") inside (codebase …) and (include "adopted/layer.rkt") at the top level (meta/commands/author-layer.md says so), then run `al adopt` again: it then fits the proposals to the options the layer declares
+
+~/work $ head -n 16 larder.al/adopted/REPORT.md
+# What `al adopt` did
+
+Found 17 piece(s) of existing agent material. Nothing in the application was changed.
+
+## Rules
+
+- `.cursorrules`: 1 rule line(s); every prompt tells the agent to read it ((conditional-doc …) in adopted/codebase.rkt); digest in adopted/RULES.md
+- `.github/copilot-instructions.md`: 1 rule line(s); every prompt tells the agent to read it ((conditional-doc …) in adopted/codebase.rkt); digest in adopted/RULES.md
+- `AGENTS.md`: 3 rule line(s); every prompt tells the agent to read it ((conditional-doc …) in adopted/codebase.rkt); digest in adopted/RULES.md
+- `CLAUDE.md`: 5 rule line(s); every prompt tells the agent to read it ((conditional-doc …) in adopted/codebase.rkt); digest in adopted/RULES.md
+- `larder/api/AGENTS.md`: 2 rule line(s); every prompt tells the agent to read it ((conditional-doc …) in adopted/codebase.rkt); digest in adopted/RULES.md
+
+## Prompts adopted as commands
+
+- `.claude/commands/commit.md` → command `team-commit` (`templates/custom/team-commit.md`)
+  - renamed `commit` → `team-commit`: `commit` is a kit template
+
+~/work $ git -C larder status --short
+

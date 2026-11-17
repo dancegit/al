@@ -1,0 +1,166 @@
+~/work $ grep -n 'delivery\|stage\|promotion' notes.al/agentic.rkt
+7:  (delivery sprint)
+8:  (stage sprint #:branch "sprint/{cycle}" #:from main #:checks (test))
+9:  (promotion sprint -> main #:version (bump minor) #:tag "v{version}")
+
+~/work $ al cycle notes.al start
+cycle: sprint 2026-s47 opened: branch sprint/2026-s47 from main at a460a7c
+
+~/work $ al run notes.al /change 'Add a cart' --class feature --dry-run
+run 2964e53b started (layer: notes, workflow change)
+[adw 2964e53b] change start: class=feature dry_run=True models=base=claude-opus-5-5 (built-in default), heavy=claude-opus-5-5 (built-in default)
+[adw 2964e53b] step plan (run) start
+[adw 2964e53b] step plan (run) passed: ~/work/notes.al/specs/plan-2964e53b-plan.md
+[adw 2964e53b] step build (run) start
+[adw 2964e53b] step build (run) passed: mock: build ok
+[adw 2964e53b] step test (check) start
+[adw 2964e53b] step test (check) passed: exit 0, log agents/2964e53b/checks/test.1.log
+[adw 2964e53b] step commit (run) start
+[adw 2964e53b] step commit (run) passed: mock: commit ok
+[adw 2964e53b] step review (review) start
+[adw 2964e53b] step review (review) passed: ok
+[adw 2964e53b] step deliver (deliver) start
+[adw 2964e53b] step deliver (deliver) passed: ok
+[adw 2964e53b] step ship (ship) start
+[adw 2964e53b] gate: action pr
+[adw 2964e53b] ship: no forge; PR description written to agents/2964e53b/PR.md, branch feature/2964e53b-add-a-cart kept
+[adw 2964e53b] step ship (ship) passed: ok
+[adw 2964e53b] worktree removed: ~/work/notes.al/trees/2964e53b
+=== ADW summary ===
+adw:       change 2964e53b
+status:    passed
+branch:    feature/2964e53b-add-a-cart
+tiers:     base=claude-opus-5-5 (built-in default); heavy=claude-opus-5-5 (built-in default)
+plan:      ~/work/notes.al/specs/plan-2964e53b-plan.md
+checks:    test=0
+review:    pass (human)
+cost:      $0.00; reports no cost, counted as $0: claude-code (claude-code)
+models:    heavy=mock x2 (command); base=mock x1 (command)
+ship:      pr -> agents/2964e53b/PR.md (shipped=False)
+delivery:  sprint -> sprint/2026-s47 (merge; delivered=False)
+artefacts: 0
+state:     ~/work/notes.al/agents/2964e53b/state.json
+
+~/work $ git -C sprint merge --no-ff -q -m 'Merge the cart' 31bf5647523b
+
+~/work $ al run notes.al /change 'Add search' --class feature --dry-run
+run 311e2cd1 started (layer: notes, workflow change)
+[adw 311e2cd1] change start: class=feature dry_run=True models=base=claude-opus-5-5 (built-in default), heavy=claude-opus-5-5 (built-in default)
+[adw 311e2cd1] step plan (run) start
+[adw 311e2cd1] step plan (run) passed: ~/work/notes.al/specs/plan-311e2cd1-plan.md
+[adw 311e2cd1] step build (run) start
+[adw 311e2cd1] step build (run) passed: mock: build ok
+[adw 311e2cd1] step test (check) start
+[adw 311e2cd1] step test (check) passed: exit 0, log agents/311e2cd1/checks/test.1.log
+[adw 311e2cd1] step commit (run) start
+[adw 311e2cd1] step commit (run) passed: mock: commit ok
+[adw 311e2cd1] step review (review) start
+[adw 311e2cd1] step review (review) passed: ok
+[adw 311e2cd1] step deliver (deliver) start
+[adw 311e2cd1] step deliver (deliver) passed: ok
+[adw 311e2cd1] step ship (ship) start
+[adw 311e2cd1] gate: action pr
+[adw 311e2cd1] ship: no forge; PR description written to agents/311e2cd1/PR.md, branch feature/311e2cd1-add-search kept
+[adw 311e2cd1] step ship (ship) passed: ok
+[adw 311e2cd1] worktree removed: ~/work/notes.al/trees/311e2cd1
+=== ADW summary ===
+adw:       change 311e2cd1
+status:    passed
+branch:    feature/311e2cd1-add-search
+tiers:     base=claude-opus-5-5 (built-in default); heavy=claude-opus-5-5 (built-in default)
+plan:      ~/work/notes.al/specs/plan-311e2cd1-plan.md
+checks:    test=0
+review:    pass (human)
+cost:      $0.00; reports no cost, counted as $0: claude-code (claude-code)
+models:    heavy=mock x2 (command); base=mock x1 (command)
+ship:      pr -> agents/311e2cd1/PR.md (shipped=False)
+delivery:  sprint -> sprint/2026-s47 (merge; delivered=False)
+artefacts: 0
+state:     ~/work/notes.al/agents/311e2cd1/state.json
+
+~/work $ git -C sprint merge --no-ff -q -m 'Merge search' a75dde41b018
+
+~/work $ git -C notes log --oneline sprint/2026-s47
+58be4f4 Merge search
+a75dde4 feature: Add search [adw 311e2cd1]
+d2ceb0b Merge the cart
+31bf564 feature: Add a cart [adw 2964e53b]
+a460a7c release 0.1.0
+351dee0 the app
+
+~/work $ al promote notes.al sprint main
+[adw 61320bcf] promote-sprint-main start: class=chore dry_run=False models=base=claude-opus-5-5 (built-in default), heavy=claude-opus-5-5 (built-in default)
+[adw 61320bcf] step open (promote) start
+promotion 61320bcf: sprint/2026-s47 -> main (merge; 1 human approval)
+changes: 2 delivered since the cycle opened (2 to decide)
+[adw 61320bcf] step open (promote) passed: 2 change(s) pinned at 58be4f4
+[adw 61320bcf] step checks (promote) start
+checks on sprint/2026-s47 at 58be4f4: test=0
+[adw 61320bcf] step checks (promote) passed: test=0
+[adw 61320bcf] step pack (promote) start
+pack: artefacts/61320bcf/pack/index.html
+[adw 61320bcf] step pack (promote) passed: artefacts/61320bcf/pack/index.html
+[adw 61320bcf] step request (promote) start
+approval item: promotions/61320bcf/approval.md
+[adw 61320bcf] step request (promote) passed: ok
+[adw 61320bcf] step approval (promote) start
+waiting: 1 human approval missing; 2 changes undecided
+decide: al decide LAYER sprint main accept|refuse|approve [CHANGE …] --by NAME [--comment TEXT]
+then:   al promote LAYER sprint main
+[adw 61320bcf] step approval (promote) waiting: 1 human approval missing; 2 changes undecided
+[adw 61320bcf] run waiting at step approval (exit 75); resume: uv run adws/promote.py run sprint main --resume --adw-id 61320bcf
+=== ADW summary ===
+adw:       promote-sprint-main 61320bcf
+status:    waiting
+branch:    chore/61320bcf-promote-sprint2026s47-main
+tiers:     base=claude-opus-5-5 (built-in default); heavy=claude-opus-5-5 (built-in default)
+plan:      none
+checks:    check-test=0
+review:    none
+cost:      $0.00
+ship:      none
+delivery:  sprint -> sprint/2026-s47 (merge; delivered=None)
+promotion: sprint/2026-s47 -> main (merge; 2 changes; waiting at approval)
+artefacts: 5
+resume:    uv run adws/promote.py run sprint main --resume --adw-id 61320bcf
+state:     ~/work/notes.al/agents/61320bcf/state.json
+
+~/work $ al decide notes.al sprint main approve --by 'Ada Example'
+recorded: Ada Example approves all
+ready: run `al promote LAYER sprint main` to continue
+
+~/work $ al promote notes.al sprint main
+continuing promotion 61320bcf (opened 2026-11-17)
+[adw 61320bcf] promote-sprint-main start: class=chore dry_run=False models=base=claude-opus-5-5 (built-in default), heavy=claude-opus-5-5 (built-in default)
+[adw 61320bcf] step approval (promote) start
+approved: by Ada Example
+[adw 61320bcf] step approval (promote) passed: approved by Ada Example
+[adw 61320bcf] step version (promote) start
+version: 0.1.0 -> 0.2.0 (VERSION); CHANGELOG.md: keepachangelog entry with 2 changes
+[adw 61320bcf] step version (promote) passed: 0.1.0 -> 0.2.0
+[adw 61320bcf] step merge (promote) start
+merged: sprint/2026-s47 into main by merge at 6281a6a
+[adw 61320bcf] step merge (promote) passed: merge at 6281a6a
+[adw 61320bcf] step tag (promote) start
+tagged: v0.2.0
+[adw 61320bcf] step tag (promote) passed: ok
+[adw 61320bcf] step close (promote) start
+closed: cycle sprint 2026-s47 (accepted)
+[adw 61320bcf] step close (promote) passed: ok
+[adw 61320bcf] worktree removed: ~/work/notes.al/trees/61320bcf
+[adw 61320bcf] branch deleted (nothing unshipped on it): chore/61320bcf-promote-sprint2026s47-main
+=== ADW summary ===
+adw:       promote-sprint-main 61320bcf
+status:    passed
+branch:    chore/61320bcf-promote-sprint2026s47-main
+tiers:     base=claude-opus-5-5 (built-in default); heavy=claude-opus-5-5 (built-in default)
+plan:      none
+checks:    check-test=0
+review:    none
+cost:      $0.00
+ship:      none
+delivery:  sprint -> sprint/2026-s47 (merge; delivered=None)
+promotion: sprint/2026-s47 -> main (merge; 2 changes; tag v0.2.0; at 6281a6a)
+artefacts: 5
+state:     ~/work/notes.al/agents/61320bcf/state.json
+

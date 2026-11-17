@@ -315,6 +315,24 @@ Its **Repos** view lists the git repositories beside the layer's (`al dashboard 
 check, verify, explain), showing the exact command line of each; `--no-actions` (or `--read-only`) turns
 that off ([guide](docs/GUIDE.md#work-with-several-repositories-from-the-dashboard)).
 
+## More to see
+
+Short clips of newer features at work. Every frame is real output of this repository on test fixtures with
+invented names (the mock agent plays the model); [`docs/showcase/README.md`](docs/showcase/README.md) says
+what each one proves and how to record them all again with `uv run tools/showcase/make.py`.
+
+| Feature | Preview | What it shows | Watch / read |
+|---|---|---|---|
+| Start work from the page | <img src="docs/showcase/01-start-work.gif" width="320" alt="The Start form with a prompt, a workflow and a model; the run's graph fills in to passed"> | Start a workflow from the dashboard with a prompt and a model; the run's graph fills in live. | [clip](docs/showcase/01-start-work.mp4) · [guide](docs/GUIDE.md#start-work-from-the-dashboard-or-the-command-line) |
+| Repos and their jobs | <img src="docs/showcase/02-repos.gif" width="320" alt="The Repos view creates a layer for fern; the job stops for a missing racket and passes after Retry from"> | The Repos view: four repositories, a Create job with its command lines, a missing tool, Retry from. | [clip](docs/showcase/02-repos.mp4) · [guide](docs/GUIDE.md#work-with-several-repositories-from-the-dashboard) |
+| Run documents and models | <img src="docs/showcase/03-run-documents.gif" width="320" alt="A run's plan and review report rendered, its screenshots, and the heavy tier switched in the Models panel"> | Plans and reports rendered in the run page, screenshots as artefacts, the heavy tier switched to another model. | [clip](docs/showcase/03-run-documents.mp4) · [models](docs/GUIDE.md#choose-models-and-limit-spending) · [watch](docs/GUIDE.md#watch-the-work) |
+| A review that says no | <img src="docs/showcase/04-review-says-no.gif" width="320" alt="A review rejected in three rounds with its reasons; the run handed over to a person"> | A rejected review with its three rounds and reasons; the run is handed over, not counted as passed. | [clip](docs/showcase/04-review-says-no.mp4) · [guide](docs/GUIDE.md#step-12--let-small-things-ship-by-themselves) |
+| Sprint delivery and promotion | <img src="docs/showcase/05-delivery.gif" width="320" alt="Two runs delivered into a sprint branch; al promote waits for approval, then merges, versions and tags"> | Runs delivered into a sprint branch; al promote waits for a person, then merges, versions and tags. | [clip](docs/showcase/05-delivery.mp4) · [delivery](docs/GUIDE.md#how-work-is-delivered) · [promotion](docs/GUIDE.md#run-it) |
+| The sandbox and al doctor | <img src="docs/showcase/06-sandbox.gif" width="320" alt="al sandbox status and doctor, a run stopped by its preflight table, al doctor's tool list"> | al sandbox status and doctor, a run stopped by its preflight table, and al doctor's tool list. | [clip](docs/showcase/06-sandbox.mp4) · [sandbox](docs/GUIDE.md#the-container-al-sandbox) · [al doctor](docs/GUIDE.md#when-al-cannot-find-a-tool-al-doctor) |
+| Adopting an agent setup | <img src="docs/showcase/07-adopt.gif" width="320" alt="al adopt takes over rule files, prompts and scripts of an existing repository; the application is untouched"> | An existing agent setup (rule files, prompts, scripts) adopted into a new layer; the app is untouched. | [clip](docs/showcase/07-adopt.mp4) · [guide](docs/GUIDE.md#step-2--describe-the-codebase) |
+| Deploy and the remote dashboard | <img src="docs/showcase/08-deploy-remote.gif" width="320" alt="al deploy --dry-run against a fake host, then al dashboard --remote opening and closing an ssh tunnel"> | A dry-run deploy to a host, then the dashboard of a deployed layer through an ssh tunnel. | [clip](docs/showcase/08-deploy-remote.mp4) · [notes](docs/showcase/README.md#08-deploy-remote) |
+| A promotion in the page | <img src="docs/showcase/09-promotion-pack.gif" width="320" alt="The open promotion of a layer, its card with accept and refuse per change, and the presentation pack"> | The open promotion of a layer, its card with accept/refuse per change, and the presentation pack. | [clip](docs/showcase/09-promotion-pack.mp4) · [guide](docs/GUIDE.md#decide) |
+
 ## al, used on itself
 
 This repository has its own agentic layer, checked in as [`agentic/`](agentic). It was not written by
