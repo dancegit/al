@@ -537,7 +537,7 @@ def test_a_refused_login_is_tried_once_more_and_then_named(monkeypatch, tmp_path
 
     monkeypatch.setattr(agents, "LOGIN_RETRY_SECONDS", 0)
     monkeypatch.setattr(agents, "claude_argv", lambda *a, **k: ["claude"])
-    monkeypatch.setattr(agents, "_claude_env", lambda stack: {})
+    monkeypatch.setattr(agents, "_claude_env", lambda stack, directory=None: {})
     monkeypatch.setattr(agents, "parse_stream_json_result", lambda out, step: out)
     stack = SimpleNamespace(wrap_agent=lambda argv: argv)
     agent = {"timeout": 5}

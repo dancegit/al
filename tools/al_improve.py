@@ -273,6 +273,8 @@ def improve(a: argparse.Namespace, al: Any) -> int:
         + ("a person, in the pull request" if a.review == "human" else "an agent reviewer, then a person merges")
         + ("; DRY RUN: the mock agent does the work" if a.dry_run else ""))
     env = {k: v for k, v in os.environ.items() if k != "AL_APP_ROOT"}  # the workflow's own app root is its definition's
+    if not al_tools.personal_agent(layer):   # the workflow's agents run without the account's personal setup
+        env["AL_AGENT_ISOLATED"] = "1"
     argv = al_tools.argv(["uv", "run", "--quiet", str(self_dir / "adws" / "adw_improve.py"), a.request, "--adw-id", adw_id])
     if a.dry_run:
         argv.append("--dry-run")

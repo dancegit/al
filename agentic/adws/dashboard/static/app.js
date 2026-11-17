@@ -2581,23 +2581,78 @@
     }
   }
 
-  /** The confirmation of a writing action: its command lines, what it writes and (adopt) the dry run's diff. */
+  const CHOICE_LABEL = { forge: "forge", host: "forge host", repo: "repository", input: "work comes from", trigger: "started by",
+    environment: "environment", review: "review", delivery: "delivery preset" };
+
+  /** The detected choices of a create or adopt (choices.json of the preview job): one row per choice with
+   * its value (a select, or a text field for host and repository) and the fact that supports it. A row the
+   * person changes is marked "changed"; only changed choices are sent with the confirmation. */
+  function choicesForm(choices) {
+    const rows = [];
+    const form = h("div", { class: "choices" });
+    for (const [key, choice] of Object.entries(choices || {})) {
+      const options = choice.options || [];
+      const given = String(choice.value || "");
+      // a list in the options' order, as the checkboxes report it, so an untouched one is unchanged
+      const detected = choice.multi ? options.filter((o) => given.split(",").includes(o)).join(",") : given;
+      const mark = h("span", { class: "badge warn changed-mark", text: "changed", hidden: true });
+      let field;
+      if (!options.length) {
+        field = h("input", { type: "text", class: "mono", value: detected, placeholder: key === "host" ? "https://forge.example.org" : "owner/name",
+          "aria-label": CHOICE_LABEL[key] || key, dataset: { choice: key } });
+      } else if (choice.multi) {   // a list: one checkbox per option
+        const chosen = new Set(detected.split(","));
+        field = h("span", { class: "multi", role: "group", "aria-label": CHOICE_LABEL[key] || key, dataset: { choice: key } },
+          options.map((value) => h("label", {}, h("input", { type: "checkbox", value, checked: chosen.has(value) }), ` ${value}`)));
+      } else {
+        field = h("select", { "aria-label": CHOICE_LABEL[key] || key, dataset: { choice: key } },
+          options.map((value) => h("option", { value, text: value, selected: value === detected })));
+      }
+      const current = () => (choice.multi && options.length
+        ? Array.from(field.querySelectorAll("input:checked")).map((box) => box.value).join(",") : field.value.trim());
+      const row = h("div", { class: "choice", dataset: { key } },
+        h("label", { class: "choice-key", text: CHOICE_LABEL[key] || key }), field, mark,
+        h("div", { class: "fact", text: choice.fact || "" }));
+      const update = () => {
+        const changed = current() !== detected;
+        row.classList.toggle("changed", changed);
+        mark.hidden = !changed;
+      };
+      field.addEventListener("change", update);
+      field.addEventListener("input", update);
+      rows.push({ key, detected, current });
+      form.appendChild(row);
+    }
+    return { el: form, changed: () => Object.fromEntries(rows.filter((r) => r.current() !== r.detected).map((r) => [r.key, r.current()])) };
+  }
+
+  /** The confirmation of a writing action: its command lines, what it writes, (adopt) the dry run's diff and
+   * (create, adopt) the detected choices, each editable. */
   function confirmAction(repo, action, preview, done) {
     const overlay = document.getElementById("overlay");
     const close = () => { overlay.hidden = true; clear(overlay); };
     const status = h("div", { class: "dim", "data-role": "preview-status" });
     const diff = h("div", { class: "preview-diff" });
+    const diffPart = h("div", { hidden: true }, h("h4", { text: "What the dry run would write" }), diff);
+    const choicesSlot = h("div", { class: "choices-slot" });
+    const choicesPart = h("div", { hidden: true }, h("h4", { text: "Detected choices" }),
+      h("div", { class: "dim", text: "what al author will declare, each with the fact that supports it; change any before you confirm" }), choicesSlot);
+    let form = null;
     const confirm = h("button", { type: "button", class: "btn primary", "data-role": "confirm", text: "Confirm", disabled: !!preview.job });
     const cancel = h("button", { type: "button", class: "btn", "data-role": "cancel", text: "Cancel", onclick: close });
     confirm.addEventListener("click", async () => {
       confirm.disabled = true;
       try {
-        const answer = await api.post("/api/action", { repo: repo.key, action: action.name, confirm: preview.nonce });
+        const body = { repo: repo.key, action: action.name, confirm: preview.nonce };
+        const changed = form ? form.changed() : {};
+        if (Object.keys(changed).length) body.choices = changed;
+        const answer = await api.post("/api/action", body);
         close();
         done(answer.job);
       } catch (error) {
         status.className = "why error";
         status.textContent = error.message;
+        confirm.disabled = false;
       }
     });
     replace(overlay, h("div", { class: "panel action-confirm", onclick: (e) => e.stopPropagation() },
@@ -2605,24 +2660,54 @@
       h("div", { class: "dim", text: action.description }),
       h("h4", { text: "It runs" }), h("div", { class: "commands" }, preview.commands.map((line) => h("code", { class: "cmd", text: line }))),
       h("h4", { text: "It writes" }), h("ul", { class: "writes" }, (preview.writes.length ? preview.writes : ["nothing outside the jobs directory"]).map((path) => h("li", { class: "mono", text: path }))),
-      preview.job ? [h("h4", { text: "What the dry run would write" }), diff] : null,
+      choicesPart, diffPart,
       status, h("div", { class: "actions-row" }, confirm, cancel)));
     overlay.hidden = false;
     overlay.onclick = close;
     if (preview.job) {
-      status.textContent = "running the dry run…";
+      status.textContent = action.name === "adopt" ? "running the dry run and detecting choices…" : "detecting choices…";
       waitForJob(preview.job, (job) => job.status !== "running").then(async (job) => {
         if (job.status !== "passed") {
           status.className = "why error";
-          status.textContent = `the dry run ${job.status} (exit ${job.exit}); see job ${job.id}`;
+          status.textContent = `the preview ${job.status} (exit ${job.exit}); see job ${job.id}`;
           return;
         }
-        const doc = await api(`/api/job/doc?id=${enc(job.id)}&name=preview.diff.txt`);
-        replace(diff, renderDiff(doc.text));
+        const names = job.steps.map((step) => step.name);
+        if (names.includes("adopt-dry-run")) {
+          const doc = await api(`/api/job/doc?id=${enc(job.id)}&name=preview.diff.txt`);
+          replace(diff, renderDiff(doc.text));
+          diffPart.hidden = false;
+        }
+        if (names.includes("choices")) {
+          const doc = await api(`/api/job/doc?id=${enc(job.id)}&name=choices.json`);
+          form = choicesForm(JSON.parse(doc.text));
+          replace(choicesSlot, form.el);
+          choicesPart.hidden = false;
+        }
         status.textContent = "";
         confirm.disabled = false;
       }).catch((error) => { status.className = "why error"; status.textContent = error.message; });
     }
+  }
+
+  /** The rows of a create or adopt job's result card (result.json of its `result` step, read by the server
+   * and shown inside the passed outcome card): [label, data-role, value] for the forge, the workflows, what
+   * was adopted and left behind, the commands that failed or did not run, and the next steps. Its paths
+   * are already shown as the job shows them (the server shortens them). */
+  function resultRows(card) {
+    const forge = card.forge || {};
+    const adopted = card.adopted || {};
+    const workflows = card.workflows || [];
+    const unverified = card.unverified || [];
+    return {
+      forge: ["forge", "forge", h("code", { class: "mono", text: forge.clause || forge.kind || "(forge none)" })],
+      workflows: ["workflows", "workflows", workflows.length ? workflows.map((name) => h("span", { class: "badge", text: name })) : "none"],
+      adopted: ["adopted", "adopted", `${(adopted.rules || []).length} rule file(s), ${(adopted.commands || []).length} command(s), ${(adopted.suite || []).length} suite workflow(s)`],
+      leftBehind: ["left behind", "left-behind", (card.left_behind || []).length ? card.left_behind.join(", ") : "nothing"],
+      commands: ["unverified commands", "unverified-commands", unverified.length
+        ? h("ul", {}, unverified.map((u) => h("li", {}, h("span", { class: "mono", text: u.name }), ` ${u.result}`))) : "none"],
+      next: ["next", "next", h("ol", { class: "next" }, (card.next || []).map((step) => h("li", { class: "mono", text: step })))],
+    };
   }
 
   function ReposView(main, crumbs, route) {
@@ -2767,9 +2852,10 @@
   }
 
   /** A workspace action's job, in the order a person reads it: the header (status, duration, how many
-   * items need a person), the outcome once it ended (what was created, or which step failed, why, and
-   * "Retry from STEP"), the steps row (what the running step is doing right now), the selected step's
-   * activity (an agent step's condensed journal, a plain step's log), the author's Decisions and Left out,
+   * items need a person), the outcome once it ended (what was created, with a passed create's or adopt's
+   * result card inside it, or which step failed, why, and "Retry from STEP"), the steps row (what the
+   * running step is doing right now), the selected step's activity (an agent step's condensed journal, the
+   * last agent step by default; a plain step's log), the author's Decisions and Left out,
    * the changed files and documents, and last the full output (collapsed; open for a job from before
    * the steps/ files existed). */
   function JobView(main, crumbs, route) {
@@ -2797,12 +2883,13 @@
     output.addEventListener("toggle", () => { if (output.open && !log) log = new LogView(outputBody, { job: id, running: true, label: "job output" }); });
     main.append(head, outcome, steps, activityCard, reports, changed, docs, docView, output);
 
-    /** The step whose activity shows: the one picked, else the running one, else the failed one, else the agent step. */
+    /** The step whose activity shows: the one picked, else the running one, else the failed one, else the last
+     * agent step (author rather than scout), else the last step with activity. */
     function selected(job) {
       if (chosen && job.steps.some((s) => s.name === chosen)) return chosen;
       const failed = job.outcome && job.outcome.step;
       const pick = job.steps.find((s) => s.status === "running") || job.steps.find((s) => failed && s.name === failed && s.activity)
-        || job.steps.find((s) => s.stream === "agent" && s.activity) || [...job.steps].reverse().find((s) => s.activity);
+        || [...job.steps].reverse().find((s) => s.stream === "agent" && s.activity) || [...job.steps].reverse().find((s) => s.activity);
       return pick ? pick.name : "";
     }
 
@@ -2859,15 +2946,25 @@
         const c = o.created || {};
         const counts = [c.added ? `${c.added} added` : "", c.modified ? `${c.modified} changed` : "", c.removed ? `${c.removed} removed` : ""].filter(Boolean).join(", ");
         const made = job.action === "create" || job.action === "adopt";
-        return h("div", { class: "card job-outcome s-passed", "data-role": "outcome" },
-          h("div", { class: "outcome-title" }, pill("passed"), h("span", { text: made ? " the layer is written" : " done" })),
-          h("dl", { class: "kv" },
-            c.layer ? [h("dt", { text: made ? "created" : "layer" }), h("dd", { "data-role": "created" }, h("span", { class: "mono", text: c.layer }),
-              counts ? h("span", { class: "dim", text: ` · ${counts}` }) : null)] : null,
-            o.adopted ? [h("dt", { text: "adopted" }), h("dd", { "data-role": "adopted", text: `${o.adopted} file${o.adopted === 1 ? "" : "s"} under adopted/` })] : null,
-            job.report ? [h("dt", { text: "unverified" }), h("dd", { "data-role": "unverified" }, o.unverified.length
-              ? h("ul", { class: "plain-list" }, o.unverified.map((item) => h("li", {}, inlineMarkdown(item)))) : h("span", { class: "faint", text: "nothing" }))] : null,
-            o.next ? [h("dt", { text: "next" }), h("dd", { "data-role": "next" }, inlineMarkdown(o.next))] : null));
+        const card = o.card ? resultRows(o.card) : null;
+        const rows = [
+          c.layer ? [made ? "created" : "layer", "created", [h("span", { class: "mono", text: c.layer }), counts ? h("span", { class: "dim", text: ` · ${counts}` }) : null]] : null,
+          card ? card.forge : null,
+          card ? card.workflows : null,
+          card ? card.adopted : o.adopted ? ["adopted", "adopted", `${o.adopted} file${o.adopted === 1 ? "" : "s"} under adopted/`] : null,
+          card ? card.leftBehind : null,
+          job.report ? ["unverified", "unverified", o.unverified.length
+            ? h("ul", { class: "plain-list" }, o.unverified.map((item) => h("li", {}, inlineMarkdown(item)))) : h("span", { class: "faint", text: "nothing" })] : null,
+          card ? card.commands : null,
+          card ? card.next : o.next ? ["next", "next", inlineMarkdown(o.next)] : null,
+        ].filter(Boolean);
+        // with a result card, its rows (.result-card .card-row); else the plain key/value list
+        const body = card
+          ? rows.map(([label, role, value]) => h("div", { class: "card-row", "data-role": role },
+            h("span", { class: "card-key", text: label }), h("span", { class: "card-value" }, value)))
+          : h("dl", { class: "kv" }, rows.map(([label, role, value]) => [h("dt", { text: label }), h("dd", { "data-role": role }, value)]));
+        return h("div", { class: `card job-outcome${card ? " result-card" : ""} s-passed`, "data-role": "outcome" },
+          h("div", { class: "outcome-title" }, pill("passed"), h("span", { text: made ? " the layer is written" : " done" })), body);
       }
       return h("div", { class: `card job-outcome s-${o.status}`, "data-role": "outcome" },
         h("div", { class: "outcome-title" }, pill(o.status), h("span", { text: " at step " }), h("strong", { class: "mono", "data-role": "outcome-step", text: o.step || "?" })),

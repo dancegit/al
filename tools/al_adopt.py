@@ -11,7 +11,9 @@ Detection reads tracked files only and executes nothing. It classifies:
   docs       specs/, ai_docs/, app_docs/, conditional_docs.md
   layers     a directory with an agentic.rkt (an existing al layer)
 
-`al adopt LAYER` is deterministic and idempotent. It never touches the application. It writes:
+`al adopt LAYER` is deterministic and idempotent. It never touches the application. When there is nothing
+to adopt it prints `nothing to adopt: no existing agent setup found in APP` and writes nothing (no
+adopted/ folder). Otherwise it writes:
 
   adopted/codebase.rkt   (conditional-doc …) per rule file and (cmd legacy-… …) per workflow script,
                          included by agentic.rkt inside (codebase …)
@@ -752,7 +754,8 @@ def plan(al: Any, layer: Path, app: Path, only: set[str]) -> dict[str, Any]:
                LAYER_FILE: head + "".join("\n" + line + "\n" for line in layer_lines),
                **templates, **extra_files}
     outputs[f"{ADOPTED}/REPORT.md"] = render_report(report, items)
-    return {"items": items, "outputs": outputs, "report": report, "has_definition": has_definition}
+    return {"items": items, "outputs": outputs, "report": report, "has_definition": has_definition,
+            "suite_found": bool(suite)}
 
 
 def render_report(report: dict[str, Any], items: list[dict[str, Any]]) -> str:
@@ -885,6 +888,9 @@ def adopt(al: Any, layer: Path, app: Path | None, only: set[str], dry_run: bool,
         raise AdoptError(f"{app} is not a git checkout")
     before = al.app_fingerprint(app)
     result = plan(al, layer, app, only)
+    if not result["items"] and not result["suite_found"] and not load_record(layer).get("files"):
+        say(f"nothing to adopt: no existing agent setup found in {app}")
+        return 0
     record = load_record(layer)
     written = record.get("files") or {}
     edited = [rel for rel, digest in sorted(written.items())

@@ -77,10 +77,13 @@ def start(running: Running, repo: str, action: str) -> str:
     return body["job"]
 
 
-def confirmed(running: Running, repo: str, action: str) -> str:
+def confirmed(running: Running, repo: str, action: str, choices: dict | None = None) -> str:
     status, preview = post(running, {"repo": repo, "action": action})
     assert status == 200 and preview["nonce"], preview
-    status, body = post(running, {"repo": repo, "action": action, "confirm": preview["nonce"]})
+    if preview.get("job"):          # create and adopt: the preview job (choices, dry run) ends first
+        wait_job(running, preview["job"])
+    status, body = post(running, {"repo": repo, "action": action, "confirm": preview["nonce"],
+                                  **({"choices": choices} if choices is not None else {})})
     assert status == 202, body
     return body["job"]
 
@@ -223,13 +226,14 @@ def test_adopt_preview_is_a_read_only_dry_run_job(ws, al, tmp_path, workspace_se
     assert view["status"] == "passed" and view["preview"] is True
     record = job_file(tmp_path / "jobs", preview["job"])
     assert [s["argv"][1:] for s in record["steps"]] == [
-        ["adopt", real(ws) + "/comet.al", "--app", real(ws / "comet"), "--dry-run", "--diff"]]
-    assert [doc["name"] for doc in view["docs"]] == ["preview.diff.txt"]
+        ["adopt", real(ws) + "/comet.al", "--app", real(ws / "comet"), "--dry-run", "--diff"],
+        ["create", real(ws / "comet"), "--choices", "--json"]]
+    assert sorted(doc["name"] for doc in view["docs"]) == ["choices.json", "preview.diff.txt"]
     assert not (ws / "comet.al").exists()
     status, body = post(running, {"repo": "comet", "action": "adopt", "confirm": preview["nonce"]})
     assert status == 202
     steps = [s["name"] for s in wait_job(running, body["job"])["steps"]]
-    assert steps == ["init", "author", "adopt", "gen", "check"]
+    assert steps == ["init", "scout", "adopt", "author", "gen", "check", "result"]
 
 
 def test_one_action_per_repository_at_a_time(ws, tmp_path, workspace_server):
@@ -339,7 +343,7 @@ def test_job_records_changed_files(ws, tmp_path, workspace_server):
     assert view["status"] == "passed"
     assert view["changed"] == [{"path": "fern.al/LLM.txt", "change": "added"}]
     assert view["repo_unchanged"] is True and view["repo_changes"] == []
-    assert [c[0] for c in wf.calls(al)] == ["init", "author", "gen", "check"]
+    assert [c[0] for c in wf.calls(al)] == ["create", "init", "scout", "adopt", "author", "gen", "check", "result"]
 
 
 def test_job_documents_are_confined(ws, al, tmp_path, workspace_server):
@@ -364,6 +368,7 @@ def test_existing_layer_or_definition_is_never_overwritten(ws, al, workspace_ser
     running = workspace_server(ws, al=al)
     status, preview = post(running, {"repo": "fern", "action": "create"})
     assert status == 200
+    wait_job(running, preview["job"])                # the choices preview reads, never writes
     (ws / "fern.al").mkdir()
     (ws / "fern.al" / "agentic.rkt").write_text("#lang al\n")
     status, body = post(running, {"repo": "fern", "action": "create", "confirm": preview["nonce"]})
@@ -372,7 +377,7 @@ def test_existing_layer_or_definition_is_never_overwritten(ws, al, workspace_ser
     (ws / "quill" / "agentic" / "agentic.rkt").write_text("#lang al\n")
     status, body = post(running, {"repo": "quill", "action": "create"})
     assert status == 409 and "quill/agentic/agentic.rkt has uncommitted changes" in body["error"]
-    assert wf.calls(al) == []
+    assert wf.calls(al) == [["create", real(ws / "fern"), "--choices", "--json"]]
 
 
 def test_actions_say_when_al_is_missing(ws, tmp_path, monkeypatch, workspace_server):
@@ -393,7 +398,7 @@ RACKET_MISSING = "al: author: racket is missing: al looked at AL_RACKET (not set
 
 
 def adopt_job(running: Running) -> str:
-    """A confirmed adopt of quill (init, author, adopt, gen, check), after its preview job has ended."""
+    """A confirmed adopt of quill (init, scout, adopt, author, gen, check, result), after its preview job has ended."""
     status, preview = post(running, {"repo": "quill", "action": "adopt"})
     assert status == 200 and preview["nonce"], preview
     wait_job(running, preview["job"])
@@ -410,10 +415,12 @@ def test_a_missing_tool_is_the_failure_reason_of_its_step(ws, tmp_path, workspac
     steps = {s["name"]: s for s in view["steps"]}
     assert steps["init"]["status"] == "passed" and steps["author"]["status"] == "failed"
     assert steps["author"]["reason"].startswith("racket is missing: al looked at AL_RACKET")
-    assert [steps[n]["status"] for n in ("adopt", "gen", "check")] == ["skipped"] * 3
+    assert [steps[n]["status"] for n in ("scout", "adopt")] == ["passed"] * 2
+    assert [steps[n]["status"] for n in ("gen", "check", "result")] == ["skipped"] * 3
     assert view["reason"].startswith("author: racket is missing") and view["retry_from"] == "author"
     assert "Errno" not in json.dumps(view)
-    assert [c[0] for c in wf.calls(al)] == ["adopt", "init", "author"]     # the preview's dry run, then the job
+    # the preview's dry run and choices, then the job
+    assert [c[0] for c in wf.calls(al)] == ["adopt", "create", "init", "scout", "adopt", "author"]
 
 
 def test_preflight_stops_the_job_before_any_step(ws, tmp_path, workspace_server):
@@ -430,10 +437,10 @@ def test_preflight_stops_the_job_before_any_step(ws, tmp_path, workspace_server)
     doctor = wf.calls(al, preflight=True)[-1:]
     assert all(c[0] == "doctor" for c in wf.calls(al, preflight=True))
     assert doctor[0][1] == real(ws) + "/quill.al"                   # the layer that does not exist yet
-    assert doctor[0][doctor[0].index("--for") + 1] == "init,author,adopt,gen,check"
+    assert doctor[0][doctor[0].index("--for") + 1] == "init,scout,adopt,author,gen,check,result"
     steps = {s["name"]: s for s in view["steps"]}
     assert steps["init"]["status"] == "failed" and steps["init"]["reason"] == sentence
-    assert all(steps[n]["status"] == "skipped" for n in ("author", "adopt", "gen", "check"))
+    assert all(steps[n]["status"] == "skipped" for n in ("scout", "adopt", "author", "gen", "check", "result"))
     assert view["reason"] == f"init: {sentence}"
 
 
@@ -451,14 +458,14 @@ def test_retry_from_the_failed_step_runs_only_the_remaining_steps(ws, tmp_path, 
     view = wait_job(running, job_id)
     assert view["status"] == "passed", view
     after = wf.calls(al, preflight=True)[seen:]
-    assert [c[0] for c in after] == ["doctor", "author", "adopt", "gen", "check"]
+    assert [c[0] for c in after] == ["doctor", "author", "gen", "check", "result"]
     assert after[1][-2:] == ["--raw", "--accept-existing"]                # the agent's event stream, then the retry flag
     record = job_file(tmp_path / "jobs", job_id)
     assert record["steps"][0]["started"] == init_before["started"] and record["steps"][0]["ended"] == init_before["ended"]
     assert len(record["retries"]) == 1 and record["retries"][0]["from"] == "author"
     assert all(s["status"] == "passed" for s in record["steps"]) and view["retry_from"] == "" and view["reason"] == ""
     assert "--- retry from author" in (tmp_path / "jobs" / job_id / "output.log").read_text()
-    assert record["steps"][1]["display"].endswith("--accept-existing")
+    assert record["steps"][3]["name"] == "author" and record["steps"][3]["display"].endswith("--accept-existing")
 
 
 def test_retry_is_refused_unless_it_starts_at_the_first_step_that_did_not_pass(ws, tmp_path, workspace_server):
@@ -523,3 +530,72 @@ def test_jobs_run_with_the_tool_folders_on_path(ws, al, tmp_path, workspace_serv
     assert record["reason"].startswith("scout: uv is missing") and job(nowhere, job_id)["retry_from"] == "scout"
     time.sleep(0.5)
     assert len(wf.calls(al, preflight=True)) == calls
+
+
+# --- the start form's choices and the result card ---------------------------------------------------------
+
+def test_create_preview_detects_choices(ws, al, tmp_path, workspace_server):
+    running = workspace_server(ws, al=al)
+    status, preview = post(running, {"repo": "fern", "action": "create"})
+    assert status == 200 and preview["job"]
+    view = wait_job(running, preview["job"])
+    assert view["status"] == "passed" and view["preview"] is True
+    assert [(s["name"], s["doc"]) for s in view["steps"]] == [("choices", "choices.json")]
+    assert job_file(tmp_path / "jobs", preview["job"])["steps"][0]["argv"][1:] == [
+        "create", real(ws / "fern"), "--choices", "--json"]
+    choices = json.loads(running.json(f"/api/job/doc?id={preview['job']}&name=choices.json")["text"])
+    assert set(choices) == set(d.CHOICE_RULES) and choices["forge"]["value"] == "none"
+    assert not (ws / "fern.al").exists()
+
+
+def test_confirm_with_choices_reaches_the_author_step(ws, al, tmp_path, workspace_server):
+    running = workspace_server(ws, al=al)
+    job_id = confirmed(running, "fern", "create", {"repo": "acme/notes", "forge": "github"})
+    assert wait_job(running, job_id)["status"] == "passed"
+    record = job_file(tmp_path / "jobs", job_id)
+    author = next(s for s in record["steps"] if s["name"] == "author")
+    assert author["argv"][-4:] == ["--choice", "forge=github", "--choice", "repo=acme/notes"]
+    assert record["choices"] == {"repo": "acme/notes", "forge": "github"}
+    assert next(c for c in wf.calls(al) if c[0] == "author")[-4:] == author["argv"][-4:]
+
+
+@pytest.mark.parametrize("action, choices", [
+    ("create", {"colour": "red"}),
+    ("create", {"forge": "gitlab"}),
+    ("create", {"review": True}),
+    ("create", {"trigger": ["manual"]}),
+    ("gen", {"forge": "none"}),
+    ("create", {"host": "https://git.example.org --rm"}),
+    ("create", {"host": "https://git example.org"}),
+    ("create", ["forge=none"]),
+])
+def test_choices_are_validated(ws, al, tmp_path, workspace_server, action, choices):
+    running = workspace_server(ws, al=al)
+    repo = "pantry" if action == "gen" else "fern"
+    status, _answer = post(running, {"repo": repo, "action": action, "confirm": "x", "choices": choices})
+    assert status == 400
+    assert wf.calls(al) == [] and not list((tmp_path / "jobs").glob("*/job.json"))
+
+
+def test_create_and_adopt_jobs_run_the_new_order(ws, al, tmp_path, workspace_server):
+    running = workspace_server(ws, al=al)
+    for repo, action in (("fern", "create"), ("comet", "adopt")):
+        job_id = confirmed(running, repo, action)
+        view = wait_job(running, job_id)
+        assert [s["name"] for s in view["steps"]] == ["init", "scout", "adopt", "author", "gen", "check", "result"]
+        steps = {s["name"]: s["argv"][1:] for s in job_file(tmp_path / "jobs", job_id)["steps"]}
+        layer = real(ws) + f"/{repo}.al"
+        assert steps["adopt"] == ["adopt", layer, "--app", real(ws / repo)]
+        assert steps["scout"][:4] == ["scout", real(ws / repo), "--into", layer]
+        assert steps["result"] == ["result", layer, "--json"]
+
+
+def test_result_card_doc_is_served(ws, al, workspace_server):
+    running = workspace_server(ws, al=al)
+    job_id = confirmed(running, "fern", "create")
+    view = wait_job(running, job_id)
+    assert view["status"] == "passed"
+    assert next(s for s in view["steps"] if s["name"] == "result")["doc"] == "result.json"
+    card = json.loads(running.json(f"/api/job/doc?id={job_id}&name=result.json")["text"])
+    assert card["forge"]["kind"] == "forgejo" and card["next"][0].startswith("set FORGEJO_TOKEN")
+    assert card["layer"] == real(ws) + "/fern.al"

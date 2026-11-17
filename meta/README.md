@@ -8,9 +8,9 @@ Everything after that is deterministic. Arguments are plain positional (`$1`, `$
 
 | # | Step | Consumes | Produces |
 | --- | --- | --- | --- |
-| 1 | `tools/al scout` (deterministic) | an application checkout | a draft `LLM.txt` |
-| 2 | `commands/scout-codebase.md` | `$1` checkout path, `$2` draft `LLM.txt`; reads `LLM.txt.template.md` | the final `LLM.txt`: verified, every command evidenced, gaps marked `UNVERIFIED` |
-| 3 | `commands/author-layer.md` | `$1` `LLM.txt`, `$2` output path, `$3` PITER preferences (optional); reads `docs/AL-DSL.llms.txt` | an `agentic.rkt` that compiles |
+| 1 | `tools/al scout APP --into LAYER` (deterministic) | an application checkout | a draft `LLM.txt` and `scout.json` with each command's measured exit code and duration |
+| 2 | `commands/scout-codebase.md` | `$1` checkout path, `$2` draft `LLM.txt`, `$3` `scout.json` (optional); reads `LLM.txt.template.md` | the final `LLM.txt`: verified, every command evidenced, gaps marked `UNVERIFIED` |
+| 3 | `commands/author-layer.md` | `$1` `LLM.txt`, `$2` output path, `$3` preferences (`al author` builds them from `scout.json`); reads the layer's `AL-DSL.llms.txt` | an `agentic.rkt` that compiles |
 | 4 | `commands/repair-layer.md` (only on a compile error) | `$1` `agentic.rkt`, `$2` compiler error text | the same file with the reported clause fixed, recompiled |
 | 5 | `commands/review-layer.md` | `$1` `agentic.rkt`, `$2` `LLM.txt` | findings with severity and a pass/fail verdict |
 | 6 | compiler, then generator (deterministic) | `agentic.rkt` | JSON IR, then the layer instantiated from `kit/` |

@@ -109,9 +109,35 @@ def parse_stream_json_result(stdout: str, step: str) -> str:
     return result
 
 
-def _claude_env(env_stack: Any) -> dict[str, str]:
+ISOLATED_ENV = "AL_AGENT_ISOLATED"   # "1" (set by `al improve`): no personal settings, hooks, CLAUDE.md or plugins
+ISOLATED_ARGV = ["--setting-sources", "project", "--strict-mcp-config"]
+CREDENTIALS = ".credentials.json"
+
+
+def isolated() -> bool:
+    return os.environ.get(ISOLATED_ENV) == "1"
+
+
+def clean_config_dir(directory: Path) -> Path:
+    """`directory`/claude-config: an empty Claude Code configuration folder that holds only a link to the
+    account's credentials file (when there is one), so the CLI logs in but reads no personal setup."""
+    config = Path(directory) / "claude-config"
+    if config.is_symlink() or config.is_file():
+        config.unlink()
+    elif config.is_dir():
+        shutil.rmtree(config)
+    config.mkdir(parents=True)
+    credentials = Path.home() / ".claude" / CREDENTIALS
+    if credentials.is_file():
+        (config / CREDENTIALS).symlink_to(credentials)
+    return config
+
+
+def _claude_env(env_stack: Any, step_directory: Path | None = None) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if key not in _STRIPPED_ENV}
     env.update(env_stack.env)
+    if isolated() and step_directory is not None:
+        env["CLAUDE_CONFIG_DIR"] = str(clean_config_dir(step_directory))
     return env
 
 
@@ -119,7 +145,8 @@ LOGIN_REFUSED = ("authentication_error", "OAuth token revoked", '"api_error_stat
 LOGIN_RETRY_SECONDS = 15.0
 
 def claude_argv(layer: Any, agent: dict[str, Any], choice: models.Choice, cap: float | None) -> list[str]:
-    """The `claude -p` command line. --effort and --max-budget-usd are the CLI's own flags."""
+    """The `claude -p` command line. --effort and --max-budget-usd are the CLI's own flags. With
+    AL_AGENT_ISOLATED=1 the account's settings, hooks and MCP servers are not loaded."""
     argv = ["claude", "-p", "--output-format", "stream-json", "--verbose"]
     if choice.model:
         argv += ["--model", choice.model]
@@ -133,6 +160,8 @@ def claude_argv(layer: Any, agent: dict[str, Any], choice: models.Choice, cap: f
         argv += ["--allowedTools", ",".join(agent["allowedTools"])]
     if agent.get("safeMode"):
         argv.append("--safe-mode")
+    if isolated():
+        argv += ISOLATED_ARGV
     return argv
 
 
@@ -143,7 +172,8 @@ def _run_claude(layer: Any, agent: dict[str, Any], prompt: str, choice: models.C
     argv = claude_argv(layer, agent, choice, cap)
     for attempt in (1, 2):
         try:
-            stdout = _run_process(env_stack.wrap_agent(argv), cwd=cwd, env=_claude_env(env_stack), stdin_text=prompt,
+            stdout = _run_process(env_stack.wrap_agent(argv), cwd=cwd, env=_claude_env(env_stack, raw_path.parent),
+                                  stdin_text=prompt,
                                   timeout=int(agent["timeout"]), step=step, raw_path=raw_path)
             return parse_stream_json_result(stdout, step)
         except StepFailed as exc:

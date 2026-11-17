@@ -219,3 +219,29 @@ def test_a_changed_codebase_cmd_is_verified_for_real(in_repo, app, tmp_path) -> 
     assert "codebase cmds changed: al verify --cmd test" in log and "ok: al verify passes for test" in log
     assert "The codebase commands changed." in (run_dir(in_repo) / "PR.md").read_text()
     assert status(app) == ""
+
+
+UV_RECORDER = '''#!{python}
+"""Records whether AL_AGENT_ISOLATED reaches each uv call, then runs the real uv."""
+import json, os, sys
+with open({record!r}, "a") as handle:
+    handle.write(json.dumps({{"argv": sys.argv[1:], "isolated": os.environ.get("AL_AGENT_ISOLATED")}}) + "\\n")
+os.execv({uv!r}, [{uv!r}, *sys.argv[1:]])
+'''
+
+
+def test_improve_runs_its_agents_isolated(in_repo, app, tmp_path) -> None:
+    import shutil
+    import sys
+    record = tmp_path / "uv-calls.jsonl"
+    wrapper = tmp_path / "uv-recorder"
+    wrapper.write_text(UV_RECORDER.format(python=sys.executable, record=str(record), uv=shutil.which("uv")))
+    wrapper.chmod(0o755)
+    generated = (in_repo / "commands" / "plan.md").read_text() + "\n- Every plan ends with Rollback.\n"
+    scripts = mock_scripts(tmp_path, {"plan": plan("edit a prompt", "- plans end with Rollback"),
+                                      "implement": {"raw_files": {"agentic/commands/plan.md": generated}}})
+    al("improve", in_repo, "Every plan must end with a Rollback section", "--dry-run", "--adw-id", ADW,
+       "--mock-scripts", scripts, ok=False, timeout=1800, env={"AL_UV": str(wrapper)})
+    calls = [json.loads(line) for line in record.read_text().splitlines()]
+    runtime = [c for c in calls if any(arg.endswith("adw_improve.py") for arg in c["argv"])]
+    assert runtime and all(c["isolated"] == "1" for c in runtime)

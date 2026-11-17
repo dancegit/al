@@ -6,8 +6,8 @@ looked.
     uv run --with pytest --with playwright pytest kit/dashboard/tests/test_browser_workspace.py
 
 Skipped without Playwright or Chrome (nothing is downloaded). With AL_DASHBOARD_SHOTS=<directory> the
-tests save workspace-repos.png, workspace-adopt-preview.png, workspace-job.png, job-missing-tool.png and
-job-retried.png there."""
+tests save workspace-repos.png, workspace-adopt-preview.png, workspace-job.png, job-missing-tool.png,
+job-retried.png, start-form-choices.png and result-card.png there."""
 from __future__ import annotations
 
 import os
@@ -128,7 +128,8 @@ def test_adopt_preview_diff_and_confirm(tmp_path, workspace, tab):
         until(page, "document.querySelector('[data-role=\"activity\"]') && document.getElementById('main').textContent.includes('step output 2')", 20000)
         until(page, "document.querySelector('.run-head .pill') && document.querySelector('.run-head .pill').textContent === 'passed'", 30000)
         steps = page.locator(".job-step code.cmd").all_inner_texts()
-        assert steps[0] == "al init ws/comet" and steps[2] == "al adopt ws/comet.al"
+        assert steps[0] == "al init ws/comet" and steps[2] == "al adopt ws/comet.al --app ws/comet"
+        page.wait_for_selector(".result-card .card-row")                  # the card of the result step
         shot(page, "workspace-job.png")
         no_personal_paths(page)
     finally:
@@ -182,8 +183,64 @@ def test_a_failed_job_shows_its_reason_and_retry_button(tmp_path, workspace, tab
         wf.fake_al(al)                                  # the tool is there now
         button.click()
         until(page, "document.querySelector('.run-head .pill') && document.querySelector('.run-head .pill').textContent === 'passed'", 30000)
-        page.wait_for_function("document.querySelectorAll('.job-step.s-passed').length === 5", timeout=10000)
+        page.wait_for_function("document.querySelectorAll('.job-step.s-passed').length === 7", timeout=10000)
         assert page.locator(".job-retry").count() == 0 and page.locator(".job-step .why").count() == 0
         shot(page, "job-retried.png")
+    finally:
+        stop_server(running)
+
+
+def test_start_form_shows_detected_choices_and_a_change_reaches_the_job(tmp_path, workspace, tab):
+    import json
+    al = wf.fake_al(tmp_path / "bin" / "al", choices=wf.FORGEJO_CHOICES)
+    running = serve(tmp_path, workspace, al)
+    try:
+        page = tab(running)
+        open_(page, "/repo/fern")
+        page.locator('.al-panel [data-action="create"] button').click()
+        page.wait_for_selector('.action-confirm .choices select[data-choice="forge"]')
+        assert page.locator('.action-confirm select[data-choice="forge"]').input_value() == "forgejo"
+        forge_row = page.locator('.action-confirm .choice[data-key="forge"]')
+        assert ".forgejo/workflows" in forge_row.locator(".fact").inner_text()
+        assert page.locator('.action-confirm input[data-choice="host"]').input_value() == "https://git.example.org"
+        triggers = page.locator('.action-confirm [data-choice="trigger"] input:checked')
+        assert [triggers.nth(i).get_attribute("value") for i in range(triggers.count())] == ["manual", "webhook"]
+        assert page.locator(".action-confirm .choice.changed").count() == 0
+        page.select_option('.action-confirm select[data-choice="review"]', "agent")
+        review_row = page.locator('.action-confirm .choice[data-key="review"]')
+        assert "changed" in review_row.get_attribute("class") and review_row.locator(".changed-mark").is_visible()
+        review_row.scroll_into_view_if_needed()
+        shot(page, "start-form-choices.png")
+        no_personal_paths(page)
+        page.locator('.action-confirm [data-role="confirm"]').click()
+        until(page, "location.hash.startsWith('#/job/')")
+        job_id = page.evaluate("location.hash.split('/')[2]")
+        record = json.loads((tmp_path / "jobs" / job_id / "job.json").read_text())
+        author = next(s for s in record["steps"] if s["name"] == "author")
+        assert author["argv"][-2:] == ["--choice", "review=agent"] and "forge=forgejo" not in " ".join(author["argv"])
+        assert record["choices"] == {"review": "agent"}
+    finally:
+        stop_server(running)
+
+
+def test_job_shows_the_result_card(tmp_path, workspace, tab):
+    from test_actions import confirmed, wait_job
+    al = wf.fake_al(tmp_path / "bin" / "al")
+    running = serve(tmp_path, workspace, al)
+    try:
+        job_id = confirmed(running, "fern", "create")
+        assert wait_job(running, job_id)["status"] == "passed"
+        page = tab(running)
+        open_(page, f"/job/{job_id}")
+        page.wait_for_selector(".result-card .card-row")
+        text = page.locator(".result-card").inner_text()
+        assert '(forge forgejo #:host "https://git.example.org" #:repo "acme/larder")' in text
+        assert "set FORGEJO_TOKEN" in text and "npm install" not in text and "install" in text
+        assert page.locator('.result-card [data-role="workflows"] .badge').count() == 3
+        assert page.locator(".result-card").count() == 1                              # one card on top, not two
+        assert page.locator('[data-role="outcome"].result-card').count() == 1        # the result card is the outcome card
+        assert "al verify ws/fern.al" in text                     # the layer as the job shows it
+        no_personal_paths(page)
+        shot(page, "result-card.png")
     finally:
         stop_server(running)

@@ -76,15 +76,29 @@ def test_author_mock_paths_stay_inside_the_layer(app, tmp_path):
     assert sorted(p.name for p in layer.parent.iterdir()) == before
 
 
-def test_author_claude_argv_is_a_fixed_list(tmp_path):
-    argv = al_author.claude_argv(ROOT, tmp_path)
+def test_author_claude_argv_is_a_fixed_list(tmp_path, monkeypatch):
+    monkeypatch.delenv("AL_AGENT_PERSONAL", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))     # no personal tools.env
+    isolation = al_author.author_isolation(tmp_path)
+    try:
+        argv = al_author.claude_argv(ROOT, tmp_path, isolation=isolation)
+    finally:
+        isolation.cleanup()
     assert isinstance(argv, list) and all(isinstance(x, str) for x in argv)
     assert argv[:2] == ["claude", "-p"]
     assert argv[argv.index("--output-format") + 1] == "stream-json"
-    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert argv[argv.index("--setting-sources") + 1] == "project" and "--strict-mcp-config" in argv
+    assert "--add-dir" not in argv
+    tools = argv[argv.index("--allowedTools") + 1].split(",")
+    assert f"Edit(/{tmp_path.resolve()}/**)" in tools and f"Write(/{tmp_path.resolve()}/**)" in tools
+    assert f"Bash({ROOT}/tools/al compile:*)" in tools
+    assert not [t for t in tools if t.startswith(("Edit(", "Write(")) and str(tmp_path.resolve()) not in t]
     prompt = al_author.author_prompt(tmp_path, "some preferences")
     assert not any(prompt in x or "author-layer.md" in x for x in argv)   # the prompt goes on stdin
     assert "meta/commands/author-layer.md" in prompt and f"{tmp_path}/LLM.txt" in prompt
+    assert f"{tmp_path}/AL-DSL.llms.txt" in prompt and f"{ROOT}/tools/al compile {tmp_path}" in prompt
+    assert "## Decision Table" in prompt and "some preferences" in prompt   # the command itself is inlined
 
 
 def rendered_definition() -> str:

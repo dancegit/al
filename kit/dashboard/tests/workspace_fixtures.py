@@ -8,7 +8,8 @@
 and `fake_al`, a standard-library stand-in for the al tool that records its argv and prints, replays a
 recorded agent stream (data/job-streams/, through `job_stream`), sleeps, writes and exits as told (no
 Racket, no LLM). Its `doctor` (a job's prerequisite check) answers `ok` at
-once unless `fail` names it."""
+once unless `fail` names it; `create APP --choices --json` answers the start form's choices and
+`result LAYER --json` a result card."""
 from __future__ import annotations
 
 import json
@@ -116,6 +117,15 @@ if command in BEHAVIOUR.get("streams", {{}}):
 if command == "doctor":
     print("ok")
     sys.exit(0)
+if command == "create" and "--choices" in sys.argv:
+    print(json.dumps(BEHAVIOUR["choices"]), flush=True)
+    sys.exit(0)
+if command == "result":
+    layer = sys.argv[2] if len(sys.argv) > 2 else ""
+    card = dict(BEHAVIOUR["card"], layer=layer)
+    card["next"] = [step.replace("{{layer}}", layer) for step in card["next"]]
+    print(json.dumps(card), flush=True)
+    sys.exit(0)
 for path, text in BEHAVIOUR.get("writes", {{}}).get(command, {{}}).items():
     path = path.replace("{{arg2}}", sys.argv[2] if len(sys.argv) > 2 else "")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -134,22 +144,62 @@ sys.exit(BEHAVIOUR.get("exit", 0))
 '''
 
 
+def choice(value: str, options: list[str], fact: str, source: str = "fact", multi: bool = False) -> dict:
+    return {"value": value, "options": options, "multi": multi, "source": source, "fact": fact}
+
+
+# what `al create APP --choices --json` answers for a repository without a remote
+CHOICES = {
+    "forge": choice("none", ["none", "github", "forgejo"], "default: facts are silent", "default"),
+    "host": choice("", [], "default: no forge", "default"),
+    "repo": choice("", [], "default: no forge", "default"),
+    "input": choice("tasklist", ["tasklist", "issue"], "default: facts are silent", "default"),
+    "trigger": choice("cron,manual", ["manual", "cron", "webhook", "forge-actions"], "default: facts are silent", "default", True),
+    "environment": choice("worktree", ["worktree", "podman", "nix-devshell"], "default: facts are silent", "default", True),
+    "review": choice("human", ["human", "agent"], "default: facts are silent", "default"),
+    "delivery": choice("none", ["trunk", "sprint", "gitflow", "release-train", "phase-gate", "none"],
+                       "default: facts are silent", "default"),
+}
+# the same for a self-hosted Forgejo (git.example.org, acme/larder)
+FORGEJO_CHOICES = {**CHOICES,
+                   "forge": choice("forgejo", ["none", "github", "forgejo"],
+                                   "origin remote on git.example.org (acme/larder); `.forgejo/workflows/` is tracked"),
+                   "host": choice("https://git.example.org", [], "the origin remote's host is https://git.example.org"),
+                   "repo": choice("acme/larder", [], "the origin remote names acme/larder"),
+                   "input": choice("issue", ["tasklist", "issue"], "follows the forge (forgejo)"),
+                   "trigger": choice("webhook,manual", ["manual", "cron", "webhook", "forge-actions"],
+                                     "follows the forge (forgejo)", multi=True)}
+# what `al result LAYER --json` answers (its `layer` is the argument)
+CARD = {"forge": {"kind": "forgejo", "host": "https://git.example.org", "repo": "acme/larder",
+                  "clause": '(forge forgejo #:host "https://git.example.org" #:repo "acme/larder")'},
+        "workflows": ["plan-build", "sdlc", "legacy-adw-plan"],
+        "adopted": {"rules": ["CLAUDE.md", "AGENTS.md"], "commands": ["review"], "suite": ["legacy-adw-plan"]},
+        "left_behind": [".claude/settings.json"],
+        "unverified": [{"name": "install", "shell": "npm install", "result": "not run: needs network"}],
+        "next": ["set FORGEJO_TOKEN in the environment (or {layer}/local.env) so the layer can talk to the forge",
+                 "al verify {layer}"]}
+
+
 def fake_al(path: Path, *, sleep: float = 0, exit: int = 0, out: str = "", lines: list[str] | None = None,  # noqa: A002
             line_sleep: float = 0, writes: dict[str, dict[str, str]] | None = None,
             fail: dict[str, tuple[int, str]] | None = None, streams: dict[str, Path] | None = None,
-            hold: dict[str, float] | None = None) -> Path:
+            hold: dict[str, float] | None = None, choices: dict | None = None,
+            card: dict | None = None) -> Path:
     """An executable stand-in for `al` at `path`: appends its argv as one JSON line to `<path>.calls`,
     writes `writes[command]` (path → text), prints `lines` (each followed by `line_sleep` seconds) and
     `out`, sleeps `sleep` seconds and exits `exit`. `streams[command]`: that subcommand prints the file's
     lines byte for byte (each followed by `line_sleep` seconds) and nothing else, then fails or exits; `hold[command]`: that subcommand
     then sleeps that many seconds (which keeps its step running). `fail[command] = (code, text)`: that subcommand (argv[1]) then prints
     `text`, when there is one, on stderr (on stdout for `doctor`, like al doctor --for) and exits `code`.
-    `doctor` otherwise prints ok and exits 0 at once. It can be rewritten between runs."""
+    `doctor` otherwise prints ok and exits 0 at once; `create APP --choices --json` prints `choices`
+    (default CHOICES) and `result LAYER --json` prints `card` (default CARD), each at once. It can be
+    rewritten between runs."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     behaviour = {"sleep": sleep, "exit": exit, "out": out, "lines": lines or [], "line_sleep": line_sleep,
                  "writes": writes or {}, "fail": {k: list(v) for k, v in (fail or {}).items()},
-                 "streams": {k: str(v) for k, v in (streams or {}).items()}, "hold": dict(hold or {})}
+                 "streams": {k: str(v) for k, v in (streams or {}).items()}, "hold": dict(hold or {}),
+                 "choices": choices or CHOICES, "card": card or CARD}
     path.write_text(FAKE_AL.format(python=sys.executable, behaviour=repr(behaviour)))
     path.chmod(0o755)
     return path

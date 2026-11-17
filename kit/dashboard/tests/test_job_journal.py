@@ -150,7 +150,8 @@ def test_runner_writes_step_logs_and_an_agent_journal(ws, tmp_path, workspace_se
     job_id = create_job(running, al)
     assert wait_job(running, job_id)["status"] == "passed"
     steps = tmp_path / "jobs" / job_id / "steps"
-    assert sorted(p.name for p in steps.iterdir()) == ["author.journal.jsonl", "author.log", "check.log", "gen.log", "init.log"]
+    assert sorted(p.name for p in steps.iterdir()) == ["adopt.log", "author.journal.jsonl", "author.log", "check.log", "gen.log",
+                                                       "init.log", "result.log", "scout.journal.jsonl", "scout.log"]
     assert (steps / "author.log").read_bytes() == stream.read_bytes()
     assert (steps / "init.log").read_text() == "plain step output\n"
     events = lines_of(steps / "author.journal.jsonl")
@@ -159,8 +160,9 @@ def test_runner_writes_step_logs_and_an_agent_journal(ws, tmp_path, workspace_se
     assert all({"t", "kind", "text"} <= set(e) for e in events)
     assert oct((steps).stat().st_mode & 0o777) == oct(0o700)
     record = json.loads((tmp_path / "jobs" / job_id / "job.json").read_text())
-    assert [s.get("stream") for s in record["steps"]] == ["", "agent", "", ""]
-    assert record["steps"][1]["argv"][-1] == "--raw"
+    assert [s.get("stream") for s in record["steps"]] == ["", "agent", "", "agent", "", "", ""]
+    named = {s["name"]: s for s in record["steps"]}
+    assert named["author"]["argv"][-1] == "--raw" and named["scout"]["argv"][-1] == "--raw"
     assert str(Path.home()) not in (steps / "author.journal.jsonl").read_text()
 
 
@@ -174,7 +176,7 @@ def test_output_log_holds_condensed_lines_not_the_stream(ws, tmp_path, workspace
     assert not any(line.lstrip().startswith('{"type":') or '"type":' in line for line in output.splitlines())
     assert "  · read " in output and "plain step output" in output
     assert "  = 14 turns, 3m 04s, $0.42" in output and "fernhook-sentinel" not in output
-    assert output.count("plain step output") == 3                     # init, gen and check
+    assert output.count("plain step output") == 5                     # init, scout, adopt, gen and check
     assert len(output) < 20_000
 
 
@@ -225,15 +227,16 @@ def test_job_detail_running_step_says_what_it_does(ws, tmp_path, workspace_serve
     events = SSEReader(running.port, "/api/events")
     try:
         job_id = create_job(running, al)
-        view = wait_job(running, job_id, until=lambda j: j["steps"][1]["doing"] == "writing agentic.rkt")
-        author = view["steps"][1]
+        view = wait_job(running, job_id, until=lambda j: j["steps"][3]["doing"] == "writing agentic.rkt")
+        author = view["steps"][3]
+        assert author["name"] == "author"
         assert author["status"] == "running" and author["stream"] == "agent" and author["activity"] == "journal"
         assert author["raw"] is True and author["log_bytes"] > 50_000
         assert view["steps"][0]["status"] == "passed" and view["steps"][0]["doing"] == ""
         assert view["outcome"] is None and view["has_steps_dir"] is True
         data, _ = events.wait_for("job", lambda raw: json.loads(raw).get("doing") == "writing agentic.rkt", timeout=15)
         live = json.loads(data)
-        assert live["id"] == job_id and live["steps"][1]["doing"] == "writing agentic.rkt"
+        assert live["id"] == job_id and live["steps"][3]["doing"] == "writing agentic.rkt"
         assert str(tmp_path) not in json.dumps(view) and str(Path.home()) not in json.dumps(view)
     finally:
         events.close()
@@ -246,11 +249,12 @@ def test_job_detail_outcome_of_a_finished_job(ws, tmp_path, workspace_server):
     outcome = view["outcome"]
     assert outcome["status"] == "passed" and outcome["created"]["layer"] == "ws/fern.al"
     assert outcome["unverified"] == [i for i in view["report"]["left_out"] if "UNVERIFIED" in i] and len(outcome["unverified"]) == 1
-    assert outcome["next"] == "al gen ws/fern.al"
+    assert outcome["next"] == "set FORGEJO_TOKEN in the environment (or ws/fern.al/local.env) so the layer can talk to the forge"
+    assert outcome["card"]["next"][-1] == "al verify ws/fern.al"
     assert len(view["report"]["decisions"]) == 3 and len(view["report"]["left_out"]) == 2
     assert view["needs_person"] == 2 and view["output_bytes"] > 0
-    assert [s["activity"] for s in view["steps"]] == ["log", "journal", "log", "log"]
-    assert [s["raw"] for s in view["steps"]] == [False, True, False, False]
+    assert [s["activity"] for s in view["steps"]] == ["log", "journal", "log", "journal", "log", "log", "log"]
+    assert [s["raw"] for s in view["steps"]] == [False, True, False, True, False, False, False]
     assert str(tmp_path) not in json.dumps(view) and str(Path.home()) not in json.dumps(view)
 
 
@@ -259,7 +263,7 @@ def test_job_detail_outcome_of_a_failed_job(ws, tmp_path, workspace_server):
     assert view["status"] == "failed"
     outcome = view["outcome"]
     assert outcome["step"] == "author" and outcome["retry_from"] == "author" and outcome["log"] == "author.log"
-    assert view["steps"][1]["reason"] == "author exited 1; see the output"
+    assert next(s for s in view["steps"] if s["name"] == "author")["reason"] == "author exited 1; see the output"
     assert outcome["reason"].startswith("the agent ended with error_max_turns; its last error: agentic.rkt:14:5")
     assert "exited 1" not in outcome["reason"] and "\n" not in outcome["reason"]
     assert 0 < len(outcome["lines"]) <= 12 and any("unknown keyword" in line for line in outcome["lines"])
