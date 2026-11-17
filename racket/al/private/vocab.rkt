@@ -6,7 +6,7 @@
 
 (require racket/list "meta.rkt")
 (provide kit-command-templates kit-hop-templates artefact-types singleton-families semantic-rules
-         delivery-placeholders promotion-placeholders)
+         delivery-placeholders promotion-placeholders toolchain-features)
 
 ;; ---------------------------------------------------------------------------------------
 ;; Singletons
@@ -273,6 +273,17 @@
 ;; E — Environment
 ;; ---------------------------------------------------------------------------------------
 
+(define-family toolchain #:key "toolchains" #:letter "" #:default #f
+  "The tools a layer's environments provide, declared once and pinned with Nix: `(environment nix-devshell #:toolchain ID)`, `(environment podman #:toolchain ID …)` and `(environment home-manager #:toolchain ID)` all take exactly this set from one generated file, env/toolchain-<id>.nix. `al gen` pins nixpkgs in env/flake.lock (committed); `al sandbox LAYER update` re-pins it and `al sandbox LAYER build` builds the sandbox image when the lock or the declaration changed.")
+(define-kind toolchain nix
+  "A set of nixpkgs packages plus ready-made feature bundles, from one pinned nixpkgs. For a podman environment the image is built from it with Nix (on the host, or in a builder container pinned by digest when the host has no Nix)."
+  [packages (list-of string) () "nixpkgs attribute names, e.g. (\"python312\" \"uv\" \"git\")."]
+  [nixpkgs string "github:NixOS/nixpkgs/nixos-25.05" "nixpkgs flake reference; env/flake.lock pins its exact revision."]
+  [features (list-of (enum browser agent-cli video build-essentials docker-cli podman-cli)) ()
+   "Ready-made bundles; see `Toolchain features` below for what each adds."]
+  [env (list-of (record env-var)) () "Environment variables, e.g. ((\"PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD\" \"1\"))."]
+  [shell-hook string "" "Extra shell hook of the dev shell."])
+
 (define-family environment #:key "environments" #:letter "E" #:default worktree
   "PITER · Environment: where the agent works. An ADW lists one or more; they stack in order (worktree → nix → podman).")
 (define-kind environment host
@@ -290,19 +301,22 @@
   [delete-merged-branches boolean #t "When a run's worktree is removed, delete its branch if it holds nothing that is not already on the default or al/ship branch."])
 (define-kind environment nix-devshell
   "A Nix flake dev shell generated in the layer; every codebase command and the agent run inside `nix develop`."
-  [packages (list-of string) #:required "nixpkgs attribute names providing the toolchain (e.g. python312 uv)."]
-  [nixpkgs string "github:NixOS/nixpkgs/nixos-unstable" "nixpkgs flake reference."]
+  [packages (list-of string) () "nixpkgs attribute names providing the toolchain (e.g. python312 uv). Either this or #:toolchain."]
+  [toolchain (optional-ref toolchain) "" "A declared (toolchain nix …) that provides the packages; either this or #:packages."]
+  [nixpkgs string "github:NixOS/nixpkgs/nixos-unstable" "nixpkgs flake reference (with #:packages only; a toolchain has its own)."]
   [shell-hook string "" "Extra shell hook."]
   [pure boolean #f "Use `nix develop --ignore-environment` (keeps HOME, PATH is nix-only)."])
 (define-kind environment home-manager
   "A Home Manager module generated in the layer that installs the toolchain and the layer's helper commands for a user."
-  [packages (list-of string) #:required "nixpkgs attribute names."]
+  [packages (list-of string) () "nixpkgs attribute names. Either this or #:toolchain."]
+  [toolchain (optional-ref toolchain) "" "A declared (toolchain nix …) that provides the packages; either this or #:packages."]
   [module-name string "agentic-layer" "Option namespace: programs.<module-name>.enable."]
   [state-version string "25.05" "home.stateVersion used by the standalone example configuration."])
 (define-kind environment podman
   "A light rootless podman container; the worktree is bind-mounted, nothing else of the host is visible."
-  [base-image string "docker.io/library/debian:stable-slim" "Base image."]
+  [base-image string "docker.io/library/debian:stable-slim" "Base image (with #:packages; not with #:toolchain)."]
   [packages (list-of string) () "Distribution packages installed in the image (apt names for Debian bases)."]
+  [toolchain (optional-ref toolchain) "" "A declared (toolchain nix …): the image is built from it with Nix instead of from #:base-image and #:packages; #:setup lines are applied as a final layer."]
   [setup (list-of string) () "Extra RUN lines for the Containerfile."]
   [network (enum none host slirp) slirp "Network mode: `slirp` = podman's default rootless user-mode network, `none` = fully offline checks, `host` = host network."]
   [memory string "4g" "Memory limit."]
@@ -512,6 +526,11 @@
   [effort (enum default low medium high xhigh max) default
    "Reasoning effort for this tier: `default` leaves it to the CLI. Claude Code: passed as --effort (low…max). codex: passed as -c model_reasoning_effort=LEVEL (low…xhigh; codex has no flag of its own for it). Not available for custom agents."])
 
+(define-record env-var #:positional (name value)
+  "One environment variable of a toolchain, written (\"NAME\" \"VALUE\") inside #:env."
+  [name string #:required "Variable name: letters, digits and _, not starting with a digit."]
+  [value string #:required "Value."])
+
 (define-record step-run
   "(run NAME #:command C …): one agent, one prompt, one purpose."
   [command (ref command-or-hop) #:required "Command or HOP to execute."]
@@ -704,6 +723,17 @@
     "#:may-commit #t is rejected on a read-only template (review, classify, question, pull-request, branch-name, summarize): those steps never commit."
     "(host #:id ID …) is written with keywords only and may be declared several times, each with a unique #:id of lowercase letters, digits and dashes (no dots: an id is not a host name). It needs (layer in-repo …). Every name in #:units is a unit the layer declares (a cron or webhook trigger, a dashboard other than none); #:dashboard-port is 0 or 1–65535, and a non-zero port needs the dashboard unit. #:images pull needs a (registry …); #:images pull and load need a podman environment."
     "(registry …) is declared at most once. #:address-env, #:username-env and #:password-env take the NAME of an environment variable in capitals; a value that looks like a URL, an e-mail address or a host name is rejected. #:username-env and #:password-env are given both or neither."
+    "(toolchain nix …) is used by an environment with #:toolchain ID. An environment gives #:toolchain or #:packages, never both. With #:toolchain, a nix-devshell gives no #:nixpkgs and a podman gives no #:base-image and no #:nested-engine #t. A nix-devshell or home-manager gives one of the two. A toolchain lists at least one package or feature, and its #:env names are variable names. Feature agent-cli needs a workflow whose agent runs inside an environment using the toolchain (a nix-devshell, or podman with #:agent-inside #t); the agents of those workflows are claude-code, codex or mock."
     "Kinds marked planned compile but are refused by the generator."
     "A (check …) #:in names a podman or nix-devshell environment option; the check runs in the run's worktree inside it instead of the ADW's stack. A zero-touch ADW whose check runs #:in a nix-devshell option gets a warning: that check runs outside the sandbox."
     "(check …) #:max-skipped is -1 (no limit) or more."))
+
+;; What each toolchain feature adds (enum order of the `features` field of (toolchain nix …));
+;; printed in the reference and by `al explain`.
+(define toolchain-features
+  '((browser . "Chromium with fonts (DejaVu, Liberation, Noto) and the variables that make Playwright and Puppeteer use it instead of downloading a browser (CHROME_BIN, CHROME_PATH, PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, PUPPETEER_EXECUTABLE_PATH, PUPPETEER_SKIP_DOWNLOAD, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, FONTCONFIG_FILE); in the sandbox image it runs with --no-sandbox, because the container is the sandbox.")
+    (agent-cli . "The CLI of every agent kind whose workflows run inside an environment using the toolchain (claude for claude-code, codex for codex): the nixpkgs package when the pinned nixpkgs has a recent enough version, else the vendor's release pinned by hash.")
+    (video . "ffmpeg, for recordings and keyframes.")
+    (build-essentials . "A C compiler and build tools: gcc, gnumake, pkg-config.")
+    (docker-cli . "The docker client (talks to a daemon you provide).")
+    (podman-cli . "The podman CLI.")))

@@ -4,6 +4,7 @@
 ;; next to a human-reviewed one, model tiers, a second vendor as reviewer, spending limits, and a
 ;; script step that runs one of the team's own scripts, notifications when a run needs a person, and
 ;; delivery into a sprint branch (with a hotfix route a person merges).
+;; The sandbox is built from a pinned Nix toolchain; the dev shell keeps the older #:packages form.
 (agentic-layer #:name "webshop" #:description "Agentic layer for the webshop monorepo"
   (codebase #:root "../webshop" #:languages (typescript python) #:default-branch "main"
             #:description "Vue storefront + FastAPI backend" #:package-manager "bun add / uv add"
@@ -36,11 +37,10 @@
   (trigger voice)
   (trigger manual)
 
+  (toolchain nix #:id dev #:packages ("bun" "nodejs_22" "python312" "uv" "git" "curl") #:features (browser agent-cli video))
   (environment worktree #:copy-files (".env"))
   (environment nix-devshell #:packages ("bun" "nodejs_22" "python312" "uv" "ffmpeg"))
-  (environment podman #:id sandbox #:packages ("git" "curl" "nodejs" "npm" "python3" "ffmpeg")
-               #:setup ("npm install -g bun" "curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh")
-               #:network slirp #:caches ("npm" "uv"))
+  (environment podman #:id sandbox #:toolchain dev #:network slirp #:caches ("npm" "uv"))
 
   (artefact log)
   (artefact junit #:glob "reports/*.xml")

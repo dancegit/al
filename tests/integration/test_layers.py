@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 
 import jsonschema
@@ -74,5 +75,39 @@ def test_golden_commands(layer, bed, update_golden):
     assert golden.is_dir(), f"no snapshots for {bed}: run pytest with --update-golden"
     expected = {p.relative_to(golden).as_posix(): p.read_text() for p in sorted(golden.rglob("*.md"))}
     assert sorted(actual) == sorted(expected), "the set of rendered commands/hops changed (--update-golden to accept)"
+    for rel in actual:
+        assert actual[rel] == expected[rel], f"{bed}/{rel} differs from its snapshot (--update-golden to accept)"
+
+
+GOLDEN_ENV = alit.HERE / "golden-env"
+
+
+def ir_and_env(lay: alit.Layer) -> dict[str, str]:
+    """agentic-layer.json and every file under env/, with the paths and the name of this build replaced."""
+    files = [lay.dir / "agentic-layer.json"] + sorted(p for p in (lay.dir / "env").rglob("*") if p.is_file())
+    upper = re.sub(r"[^A-Z0-9]", "_", lay.name.upper())   # the name as in AL_<NAME>_LAYER
+    return {p.relative_to(lay.dir).as_posix(): forge_repo(alit.normalise(p.read_text(), lay).replace("<TESTBED>", "<APP>")
+            .replace(upper, "<NAME_VAR>")) for p in files}
+
+
+def forge_repo(text: str) -> str:
+    """The forge `repo` (owner/name) replaced, so no user name lands in a snapshot."""
+    return re.sub(r'("repo": )"[^"]*"', r'\1"<REPO>"', text)
+
+
+@pytest.mark.parametrize("bed", alit.BEDS)
+def test_golden_ir_and_env(layer, bed, update_golden):
+    """A layer without a toolchain generates no toolchain file and no `toolchains` key."""
+    lay = layer(bed)
+    actual = ir_and_env(lay)
+    golden = GOLDEN_ENV / bed
+    if update_golden:
+        shutil.rmtree(golden, ignore_errors=True)
+        for rel, text in actual.items():
+            (golden / rel).parent.mkdir(parents=True, exist_ok=True)
+            (golden / rel).write_text(text)
+    assert golden.is_dir(), f"no snapshots for {bed}: run pytest with --update-golden"
+    expected = {p.relative_to(golden).as_posix(): forge_repo(p.read_text()) for p in sorted(golden.rglob("*")) if p.is_file()}
+    assert sorted(actual) == sorted(expected), "the set of IR and env/ files changed (--update-golden to accept)"
     for rel in actual:
         assert actual[rel] == expected[rel], f"{bed}/{rel} differs from its snapshot (--update-golden to accept)"

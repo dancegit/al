@@ -1094,24 +1094,15 @@
       "memory": "4g",
       "nestedEngine": false,
       "network": "slirp",
-      "packages": [
-        "git",
-        "curl",
-        "nodejs",
-        "npm",
-        "python3",
-        "ffmpeg"
-      ],
+      "packages": [],
       "pidsLimit": 2048,
       "publish": [],
       "readOnlyRoot": false,
       "scope": "run",
       "services": [],
-      "setup": [
-        "npm install -g bun",
-        "curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh"
-      ],
-      "status": "stable"
+      "setup": [],
+      "status": "stable",
+      "toolchain": "dev"
     }
   ],
   "experts": [
@@ -1402,6 +1393,33 @@
     "secretKeyEnv": "AWS_SECRET_ACCESS_KEY",
     "status": "stable"
   },
+  "toolchains": [
+    {
+      "agentClis": [
+        "claude-code",
+        "codex"
+      ],
+      "env": [],
+      "features": [
+        "browser",
+        "agent-cli",
+        "video"
+      ],
+      "id": "dev",
+      "kind": "nix",
+      "nixpkgs": "github:NixOS/nixpkgs/nixos-25.05",
+      "packages": [
+        "bun",
+        "nodejs_22",
+        "python312",
+        "uv",
+        "git",
+        "curl"
+      ],
+      "shellHook": "",
+      "status": "stable"
+    }
+  ],
   "triggers": [
     {
       "bind": "127.0.0.1",

@@ -1,0 +1,933 @@
+{
+  "adws": [
+    {
+      "agent": "claude-code",
+      "changes": "codebase",
+      "classes": [],
+      "description": "Classify, plan by work class and implement the plan",
+      "environment": [
+        "worktree",
+        "nix-devshell"
+      ],
+      "input": [
+        "tasklist",
+        "cli"
+      ],
+      "name": "plan-build",
+      "review": "human",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "run-plan",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        }
+      ],
+      "trigger": [
+        "cron",
+        "manual"
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "changes": "codebase",
+      "classes": [],
+      "description": "Plan, build, lint, typecheck, test, document, commit; a human reviews the result",
+      "environment": [
+        "worktree",
+        "nix-devshell"
+      ],
+      "input": [
+        "tasklist",
+        "cli"
+      ],
+      "name": "sdlc",
+      "review": "human",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "run-plan",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "cmd": "lint",
+          "collect": [
+            "log"
+          ],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "lint",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "typecheck",
+          "collect": [
+            "log"
+          ],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "typecheck",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test",
+          "collect": [
+            "log",
+            "junit"
+          ],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "test",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "document",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "document",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [],
+          "command": "commit",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "commit",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "implement": "run-plan",
+          "kind": "review",
+          "name": "review",
+          "patch": "plan-patch"
+        },
+        {
+          "kind": "ship",
+          "message": "",
+          "name": "ship"
+        }
+      ],
+      "trigger": [
+        "cron",
+        "manual"
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "changes": "codebase",
+      "classes": [
+        "chore",
+        "bug"
+      ],
+      "description": "Zero-touch: merges chores and bugs when lint, typecheck and test all pass",
+      "environment": [
+        "worktree",
+        "nix-devshell",
+        "podman"
+      ],
+      "input": [
+        "tasklist",
+        "cli"
+      ],
+      "name": "zte",
+      "review": "zero-touch",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "run-plan",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "cmd": "lint",
+          "collect": [
+            "log"
+          ],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "lint",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "typecheck",
+          "collect": [
+            "log"
+          ],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "typecheck",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test",
+          "collect": [
+            "log",
+            "junit"
+          ],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "test",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "agent": "",
+          "args": [],
+          "command": "commit",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "commit",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "implement": "run-plan",
+          "kind": "review",
+          "name": "review",
+          "patch": "plan-patch"
+        },
+        {
+          "kind": "ship",
+          "message": "",
+          "name": "ship"
+        }
+      ],
+      "trigger": [
+        "cron",
+        "manual"
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "allowedTools": [
+        "Read",
+        "Glob",
+        "Grep",
+        "Edit",
+        "Write",
+        "Bash"
+      ],
+      "id": "claude-code",
+      "kind": "claude-code",
+      "maxTurns": 600,
+      "models": [
+        {
+          "effort": "default",
+          "model": "claude-opus-5-5",
+          "tier": "base"
+        },
+        {
+          "effort": "default",
+          "model": "claude-opus-5-5",
+          "tier": "heavy"
+        }
+      ],
+      "permissionMode": "acceptEdits",
+      "safeMode": true,
+      "status": "stable",
+      "timeout": 9000
+    }
+  ],
+  "artefacts": [
+    {
+      "id": "log",
+      "kind": "log",
+      "status": "stable",
+      "tailLines": 200
+    },
+    {
+      "glob": ".tox/reports/junit.xml",
+      "id": "junit",
+      "kind": "junit",
+      "status": "stable"
+    }
+  ],
+  "budget": null,
+  "codebase": {
+    "commands": [
+      {
+        "description": "Every pre-commit hook passes on all files: ruff lint rules B, E, F, I, UP, W; ruff format; uv.lock matches pyproject.toml; codespell; whitespace and end-of-file hooks. Hooks rewrite files in place and exit non-zero when they changed something.",
+        "name": "lint",
+        "run": "uv run --locked --no-default-groups --group pre-commit pre-commit run --show-diff-on-failure --color=always --all-files",
+        "timeout": 1800
+      },
+      {
+        "description": "mypy in strict mode reports no errors for src and tests/type_check.",
+        "name": "typecheck",
+        "run": "uv run --locked --no-default-groups --group dev tox run -e typing",
+        "timeout": 1800
+      },
+      {
+        "description": "The pytest suite in tests passes on Python 3.12 against the locked dependency versions, with every warning treated as an error; writes a JUnit XML report.",
+        "name": "test",
+        "run": "TOX_ENV=py3.12 uv run --locked --no-default-groups --group dev tox run -- --junitxml=.tox/reports/junit.xml",
+        "timeout": 1800
+      },
+      {
+        "description": "The sdist and wheel build into dist/.",
+        "name": "build",
+        "run": "uv build",
+        "timeout": 1800
+      },
+      {
+        "description": "The Sphinx documentation builds to docs/_build/dirhtml with warnings treated as errors.",
+        "name": "docs",
+        "run": "uv run --locked --no-default-groups --group dev tox run -e docs",
+        "timeout": 1800
+      }
+    ],
+    "conditionalDocs": [
+      {
+        "path": "src/flask/sansio/README.md",
+        "when": "When changing any file under src/flask/sansio"
+      },
+      {
+        "path": "docs/web-security.rst",
+        "when": "When changing session, cookie, JSON or response header handling"
+      },
+      {
+        "path": "docs/extensiondev.rst",
+        "when": "When changing an API that extensions hook into (Flask.extensions, init_app patterns, signals, teardown callbacks)"
+      },
+      {
+        "path": "docs/async-await.rst",
+        "when": "When changing async view support or ensure_sync"
+      },
+      {
+        "path": "docs/cli.rst",
+        "when": "When changing src/flask/cli.py"
+      },
+      {
+        "path": "docs/testing.rst",
+        "when": "When changing src/flask/testing.py"
+      },
+      {
+        "path": "docs/contributing.rst",
+        "when": "When preparing a pull request"
+      }
+    ],
+    "defaultBranch": "main",
+    "description": "Flask is a Python WSGI web application framework distributed as the Flask package (requires Python >=3.11). It is used as a library and through its flask command line entry point, is built on Werkzeug, Jinja, Click, ItsDangerous, MarkupSafe and Blinker, is managed with uv and tox, and ships to PyPI.",
+    "languages": [
+      "python"
+    ],
+    "packageManager": "",
+    "paths": {
+      "docs": [
+        "docs"
+      ],
+      "protected": [
+        ".github",
+        ".pre-commit-config.yaml",
+        ".readthedocs.yaml",
+        "uv.lock",
+        "LICENSE.txt",
+        "src/flask/sessions.py"
+      ],
+      "source": [
+        "src/flask"
+      ],
+      "tests": [
+        "tests"
+      ]
+    },
+    "readme": "README.md",
+    "root": "<APP>"
+  },
+  "commands": [
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "prime",
+      "output": "text",
+      "relevant": [],
+      "template": "prime",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "classify",
+      "output": "json",
+      "relevant": [],
+      "template": "classify",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "Dependencies are declared in pyproject.toml and locked in uv.lock; uv.lock is regenerated with uv, never edited by hand, and is a protected path.",
+        "When files under docs change, the plan also lists the docs cmd as a validation step.",
+        "A code change adds an entry to CHANGES.rst under the topmost (unreleased) version, as a '-   ' bullet ending with an :issue:`<number>` or :pr:`<number>` reference."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-chore",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-chore",
+      "validation": [
+        "lint",
+        "typecheck",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "The regression test goes into the existing tests/test_<area>.py module of the source file being fixed (src/flask/blueprints.py -> tests/test_blueprints.py, src/flask/json/tag.py -> tests/test_json_tag.py); a regression with no matching module goes into tests/test_regression.py.",
+        "The regression test must fail without the fix.",
+        "Add an entry to CHANGES.rst under the topmost (unreleased) version, as a '-   ' bullet ending with an :issue:`<number>` or :pr:`<number>` reference.",
+        "Code under src/flask/sansio does no IO and does not use the Flask globals."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-bug",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-bug",
+      "validation": [
+        "lint",
+        "typecheck",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "New tests go into the existing tests/test_<area>.py module of the source file being changed, as functions named test_<behaviour>; shared fixtures live in tests/conftest.py.",
+        "A feature adds a CHANGES.rst entry under the topmost (unreleased) version, '.. versionadded:: <version>' or '.. versionchanged:: <version>' entries in the docstrings of the changed code, and documentation under docs.",
+        "Code under src passes mypy with strict = true; every warning raised during the tests fails the suite.",
+        "Code under src/flask/sansio does no IO and does not use the Flask globals."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-feature",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-feature",
+      "validation": [
+        "lint",
+        "typecheck",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-patch",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-patch",
+      "validation": [
+        "lint",
+        "typecheck",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "The lint cmd's hooks rewrite files in place and exit non-zero when they changed something: keep the rewritten files and fix only what the hooks still report.",
+        "Every warning raised during the tests fails the suite (filterwarnings = error): fix the cause of the warning, do not add a filter.",
+        "Imports are one name per 'from ... import ...' line; maximum line length is 88."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "resolve-test",
+      "output": "text",
+      "relevant": [],
+      "template": "resolve-test",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "A code change must come with tests in tests/test_<area>.py that fail without the change; the junit report from the test cmd must list them as passed.",
+        "A code change must add a CHANGES.rst entry under the topmost (unreleased) version ending with an :issue: or :pr: reference.",
+        "A change to documented behaviour must add a '.. versionchanged::' or '.. versionadded::' docstring entry and update the relevant file under docs.",
+        "A feature is user-visible as a public API signature of the flask package, an HTTP response produced by a view under the test client, or flask CLI output; the junit report listing the new test cases as passed is its proof."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "review",
+      "output": "json",
+      "relevant": [],
+      "template": "review",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "Documentation is reStructuredText under docs; a change to documented behaviour also adds a '.. versionchanged:: <version>' or '.. versionadded:: <version>' entry in the docstring of the changed code."
+      ],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "document",
+      "output": "text",
+      "relevant": [],
+      "template": "document",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "A commit message is one lower-case imperative summary line without a type prefix, for example: add `versionchanged` for ctx signature change (#6176)."
+      ],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "commit",
+      "output": "text",
+      "relevant": [],
+      "template": "commit",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "The description links its issue with 'fixes #<issue number>'."
+      ],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "pull-request",
+      "output": "text",
+      "relevant": [],
+      "template": "pull-request",
+      "validation": []
+    }
+  ],
+  "concurrency": {
+    "id": "slots",
+    "kind": "slots",
+    "maxAgents": 2,
+    "maxChecks": 2,
+    "maxRuns": 4,
+    "status": "stable",
+    "waitSeconds": 3600
+  },
+  "dashboard": {
+    "also": [],
+    "bind": "127.0.0.1",
+    "id": "local",
+    "kind": "local",
+    "pollMs": 750,
+    "port": 8765,
+    "status": "stable",
+    "systemd": false,
+    "tokenEnv": ""
+  },
+  "description": "Agentic layer for the Flask WSGI web framework library",
+  "environments": [
+    {
+      "copyFiles": [],
+      "deleteMergedBranches": true,
+      "dir": "trees",
+      "gcDays": 7,
+      "id": "worktree",
+      "keep": "on-failure",
+      "kind": "worktree",
+      "portBase": 9100,
+      "portsPerRun": 2,
+      "sparse": [],
+      "status": "stable"
+    },
+    {
+      "id": "nix-devshell",
+      "kind": "nix-devshell",
+      "nixpkgs": "path:/nix/store/243rp6ap5vd4zhgh24fqhvd8m1k48yyi-nixpkgs/nixpkgs",
+      "packages": [
+        "python312",
+        "uv",
+        "git"
+      ],
+      "pure": false,
+      "shellHook": "",
+      "status": "stable"
+    },
+    {
+      "agentInside": true,
+      "baseImage": "docker.io/library/python:3.12-slim",
+      "caches": [
+        "uv",
+        "pre-commit"
+      ],
+      "cpus": "2",
+      "credentials": [],
+      "id": "podman",
+      "kind": "podman",
+      "memory": "4g",
+      "nestedEngine": false,
+      "network": "slirp",
+      "packages": [
+        "git"
+      ],
+      "pidsLimit": 2048,
+      "publish": [],
+      "readOnlyRoot": false,
+      "scope": "run",
+      "services": [],
+      "setup": [
+        "pip install --no-cache-dir uv"
+      ],
+      "status": "stable"
+    }
+  ],
+  "experts": [
+    {
+      "domain": "The sans-IO application, blueprint and scaffold base classes, which must not do IO and must not use the Flask globals",
+      "maxLines": 1000,
+      "name": "sansio",
+      "paths": [
+        "src/flask/sansio"
+      ]
+    }
+  ],
+  "forge": {
+    "id": "none",
+    "kind": "none",
+    "remote": "",
+    "status": "stable"
+  },
+  "hops": [
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "run-plan",
+      "produces": "changes",
+      "takes": "plan",
+      "template": "run-plan"
+    },
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "meta-command",
+      "produces": "command",
+      "takes": "prompt",
+      "template": "meta-command"
+    },
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "meta-adw",
+      "produces": "adw",
+      "takes": "prompt",
+      "template": "meta-adw"
+    }
+  ],
+  "hosts": [],
+  "layer": {
+    "dir": "",
+    "git": true,
+    "id": "sibling",
+    "kind": "sibling",
+    "status": "stable"
+  },
+  "llmTxt": "LLM.txt",
+  "name": "<NAME>",
+  "notifiers": [
+    {
+      "id": "none",
+      "kind": "none",
+      "status": "stable"
+    }
+  ],
+  "promptInputs": [
+    {
+      "blockedMarker": "[>]",
+      "doneMarker": "[x]",
+      "failedMarker": "[!]",
+      "id": "tasklist",
+      "kind": "tasklist",
+      "openMarker": "[ ]",
+      "path": "tasks.md",
+      "runningMarker": "[~]",
+      "status": "stable",
+      "tagSyntax": "braces"
+    },
+    {
+      "allowStdin": true,
+      "id": "cli",
+      "kind": "cli",
+      "status": "stable"
+    }
+  ],
+  "registry": null,
+  "reviews": [
+    {
+      "bodyCmd": "",
+      "draft": false,
+      "id": "human",
+      "kind": "human",
+      "reviewers": [],
+      "status": "stable"
+    },
+    {
+      "agent": "",
+      "allowedClasses": [
+        "chore",
+        "bug"
+      ],
+      "artefacts": [
+        "log",
+        "junit"
+      ],
+      "blockProtectedPaths": true,
+      "bodyCmd": "",
+      "command": "review",
+      "deployCmd": "",
+      "id": "zero-touch",
+      "kind": "auto",
+      "maxDiffLines": 400,
+      "maxRetries": 3,
+      "requireChecks": [
+        "lint",
+        "typecheck",
+        "test"
+      ],
+      "reviewers": 1,
+      "ship": "merge",
+      "status": "stable"
+    }
+  ],
+  "schemaVersion": "agentic-layer-v1",
+  "services": [],
+  "storage": {
+    "dir": "artefacts",
+    "id": "local",
+    "kind": "local",
+    "status": "stable"
+  },
+  "triggers": [
+    {
+      "id": "cron",
+      "intervalSeconds": 20,
+      "kind": "cron",
+      "maxConcurrent": 3,
+      "status": "stable",
+      "systemd": false
+    },
+    {
+      "confirm": false,
+      "id": "manual",
+      "kind": "manual",
+      "status": "stable"
+    }
+  ],
+  "voice": null
+}

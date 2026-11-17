@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from adw_modules import events, sandbox
+from adw_modules import events, images, sandbox
 from adw_modules.errors import LayerError, StepFailed
 from adw_modules.ir import load
 from adw_modules.runner import main
@@ -238,6 +238,114 @@ def test_build_failure_raises_with_the_last_lines(make_layer, monkeypatch) -> No
     assert "line 20" not in raised.value.reason and "line 59" in raised.value.reason
     end = events.read(events.path_for(layer.layer_dir, ADW_ID))[-1]
     assert end["type"] == "env.build.end" and end["status"] == "failed" and end["error"] == "exit 100"
+
+
+# ------------------------------------------------------------------ a recipe option with a toolchain
+
+TOOLCHAIN = {"id": "dev", "kind": "nix", "status": "stable", "packages": ["git"], "features": ["browser"], "env": [],
+             "nixpkgs": "github:NixOS/nixpkgs/nixos-unstable", "agentClis": []}
+
+
+def _toolchain_layer(make_layer, setup=("true",)):
+    """A layer whose recipe option uses toolchain `dev`, with the env files the toolchain key reads."""
+    option = _podman_option(toolchain="dev", setup=list(setup))
+    layer_dir = _layer(make_layer, "FROM localhost/al-test-layer-toolchain-dev:latest\nRUN true\n",
+                       envs_=[_worktree_option(), option], toolchains=[TOOLCHAIN])
+    for name, text in (("flake.nix", "{ }\n"), ("flake.lock", '{"nodes": {}, "rev": "aaaa"}\n'),
+                       ("toolchain-dev.nix", "{ pkgs }: { }\n"), ("features.nix", "{ }: { }\n"),
+                       ("agent-cli.json", "{}\n")):
+        (layer_dir / "env" / name).write_text(text, encoding="utf-8")
+    return layer_dir
+
+
+def test_recipe_hash_of_a_toolchain_follows_the_lock_and_the_setup_lines(make_layer) -> None:
+    layer_dir = _toolchain_layer(make_layer)
+    first = sandbox.recipe_hash(load(layer_dir))
+    assert sandbox.recipe_hash(load(layer_dir)) == first
+    (layer_dir / "env" / "flake.lock").write_text('{"nodes": {}, "rev": "bbbb"}\n', encoding="utf-8")
+    relocked = sandbox.recipe_hash(load(layer_dir))
+    assert relocked != first
+    layer = load(layer_dir)
+    sandbox.recipe_option(layer)["setup"] = ["true", "npm install -g typescript"]
+    assert sandbox.recipe_hash(layer) not in (first, relocked)
+
+
+def test_recipe_hash_without_a_toolchain_is_the_hash_of_before(make_layer) -> None:
+    import hashlib
+    text = "FROM debian:stable-slim\nRUN echo one\n"
+    layer = load(_layer(make_layer, text))
+    digest = hashlib.sha256(b"containerfile\0" + text.encode())
+    digest.update(b"base\0debian:stable-slim")
+    assert sandbox.recipe_hash(layer) == digest.hexdigest()[:12]
+    (layer.layer_dir / "env" / "flake.lock").write_text("{}\n", encoding="utf-8")   # no toolchain: the lock is not part of it
+    assert sandbox.recipe_hash(layer) == digest.hexdigest()[:12]
+
+
+def test_build_image_of_a_toolchain_goes_through_images_ensure(make_layer, monkeypatch) -> None:
+    layer = load(_toolchain_layer(make_layer))
+    fake = FakePodman(monkeypatch)
+    seen: list[dict] = []
+
+    def ensure(layer_dir, layer_name, option, image, say=print, labels=None, **kwargs):
+        seen.append({"layer_dir": layer_dir, "name": layer_name, "option": option, "image": image, "labels": labels})
+        fake.images[image] = {"Id": "id-toolchain".ljust(64, "0"), "Size": 700_000_000, "Created": time.time(),
+                              "Labels": dict(label.split("=", 1) for label in labels)}
+        return {"status": "built", "toolchain": option["toolchain"], "image": image}
+
+    monkeypatch.setattr(images, "ensure", ensure)
+    recipe = sandbox.recipe_hash(layer)
+    ref = f"al-test-layer:{recipe}"
+    with events.recording(layer.layer_dir, ADW_ID):
+        result = sandbox.build_image(layer, say=lambda line: None)
+    (call,) = seen
+    assert call["image"] == ref and call["name"] == "test-layer" and call["layer_dir"] == layer.layer_dir
+    assert call["labels"] == ["al.layer=test-layer", f"al.layer-dir={layer.layer_dir.resolve()}", f"al.recipe={recipe}"]
+    assert call["option"]["toolchain"] == "dev" and call["option"]["features"] == ["browser"]
+    assert fake.builds() == []                                    # no podman build of its own
+    assert ["podman", "tag", ref, "al-test-layer:latest"] in fake.calls
+    assert result["image"] == ref and result["recipe"] == recipe and result["built"] is True
+    assert result["size"] == 700_000_000 and result["report"]["status"] == "built"
+    found = [e for e in events.read(events.path_for(layer.layer_dir, ADW_ID)) if e["type"].startswith("env.build")]
+    assert [e["type"] for e in found] == ["env.build.start", "env.build.end"] and found[1]["status"] == "passed"
+    # an existing recipe image is not built again by ensure_image, and --no-cache builds it again
+    seen.clear()
+    assert sandbox.ensure_image(layer)["built"] is False and seen == []
+    sandbox.build_image(layer, no_cache=True, say=lambda line: None)
+    assert len(seen) == 1 and ["podman", "untag", ref] in fake.calls
+
+
+def test_a_toolchain_build_error_is_an_environment_setup_failure(make_layer, monkeypatch) -> None:
+    layer = load(_toolchain_layer(make_layer))
+    FakePodman(monkeypatch)
+
+    def ensure(*args, **kwargs):
+        raise images.BuildError("nix build #image-dev failed (exit 1):\nerror: attribute 'nope' missing")
+
+    monkeypatch.setattr(images, "ensure", ensure)
+    with events.recording(layer.layer_dir, ADW_ID):
+        with pytest.raises(StepFailed) as raised:
+            sandbox.build_image(layer, say=lambda line: None)
+    assert raised.value.step == "environment setup"
+    assert "toolchain `dev`" in raised.value.reason and "attribute 'nope' missing" in raised.value.reason
+    end = events.read(events.path_for(layer.layer_dir, ADW_ID))[-1]
+    assert end["type"] == "env.build.end" and end["status"] == "failed"
+
+
+def test_fix_names_the_toolchain_when_the_option_has_one() -> None:
+    option = _podman_option(toolchain="dev", agentInside=True)
+    cmds = {"test": {"name": "test", "run": "pytest -q"}}
+    fix = lambda name, detail="": sandbox._fix(sandbox.Check(name, "miss", detail), option, cmds, "/layer")  # noqa: E731
+    assert fix("command:test") == ("add the nixpkgs package that provides `pytest` to (toolchain nix #:id dev #:packages …), "
+                                   "or change (cmd test …)")
+    assert "(toolchain nix #:id dev #:packages …)" in fix("git") and "`git`" in fix("git")
+    assert fix("browser").startswith("add feature browser to (toolchain nix #:id dev #:features …)")
+    assert fix("agent", "`claude --version` failed").startswith("add feature agent-cli to (toolchain nix #:id dev #:features …)")
+    plain = _podman_option(agentInside=True)
+    old = lambda name, detail="": sandbox._fix(sandbox.Check(name, "miss", detail), plain, cmds, "/layer")  # noqa: E731
+    assert old("command:test").startswith("add the package that provides `pytest` to (environment podman #:id box #:packages …)")
+    assert old("git") == "add git to #:packages of (environment podman #:id box …)"
+    assert old("browser").startswith("add chromium to #:packages of (environment podman #:id box …)")
+    assert old("agent", "`claude --version` failed").startswith("add the agent CLI to the image with")
 
 
 def test_concurrent_ensure_builds_once(make_layer, monkeypatch) -> None:

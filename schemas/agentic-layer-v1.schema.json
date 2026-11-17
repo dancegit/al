@@ -1601,11 +1601,11 @@
                 "const": "nix-devshell"
               },
               "nixpkgs": {
-                "description": "nixpkgs flake reference.",
+                "description": "nixpkgs flake reference (with #:packages only; a toolchain has its own).",
                 "type": "string"
               },
               "packages": {
-                "description": "nixpkgs attribute names providing the toolchain (e.g. python312 uv).",
+                "description": "nixpkgs attribute names providing the toolchain (e.g. python312 uv). Either this or #:toolchain.",
                 "items": {
                   "type": "string"
                 },
@@ -1621,6 +1621,10 @@
               },
               "status": {
                 "const": "stable"
+              },
+              "toolchain": {
+                "description": "A declared (toolchain nix …) that provides the packages; either this or #:packages.",
+                "type": "string"
               }
             },
             "required": [
@@ -1649,7 +1653,7 @@
                 "type": "string"
               },
               "packages": {
-                "description": "nixpkgs attribute names.",
+                "description": "nixpkgs attribute names. Either this or #:toolchain.",
                 "items": {
                   "type": "string"
                 },
@@ -1661,6 +1665,10 @@
               },
               "status": {
                 "const": "stable"
+              },
+              "toolchain": {
+                "description": "A declared (toolchain nix …) that provides the packages; either this or #:packages.",
+                "type": "string"
               }
             },
             "required": [
@@ -1682,7 +1690,7 @@
                 "type": "boolean"
               },
               "baseImage": {
-                "description": "Base image.",
+                "description": "Base image (with #:packages; not with #:toolchain).",
                 "type": "string"
               },
               "caches": {
@@ -1776,6 +1784,10 @@
               },
               "status": {
                 "const": "stable"
+              },
+              "toolchain": {
+                "description": "A declared (toolchain nix …): the image is built from it with Nix instead of from #:base-image and #:packages; #:setup lines are applied as a final layer.",
+                "type": "string"
               }
             },
             "required": [
@@ -3313,6 +3325,101 @@
           "type": "object"
         }
       ]
+    },
+    "toolchains": {
+      "description": "The tools a layer's environments provide, declared once and pinned with Nix: `(environment nix-devshell #:toolchain ID)`, `(environment podman #:toolchain ID …)` and `(environment home-manager #:toolchain ID)` all take exactly this set from one generated file, env/toolchain-<id>.nix. `al gen` pins nixpkgs in env/flake.lock (committed); `al sandbox LAYER update` re-pins it and `al sandbox LAYER build` builds the sandbox image when the lock or the declaration changed.",
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "A set of nixpkgs packages plus ready-made feature bundles, from one pinned nixpkgs. For a podman environment the image is built from it with Nix (on the host, or in a builder container pinned by digest when the host has no Nix).",
+            "properties": {
+              "agentClis": {
+                "description": "Derived: the agent kinds (sorted, without mock) whose workflows run their agent inside an environment using this toolchain; feature agent-cli provides their CLIs.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "env": {
+                "description": "Environment variables, e.g. ((\"PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD\" \"1\")).",
+                "items": {
+                  "additionalProperties": false,
+                  "description": "One environment variable of a toolchain, written (\"NAME\" \"VALUE\") inside #:env.",
+                  "properties": {
+                    "name": {
+                      "description": "Variable name: letters, digits and _, not starting with a digit.",
+                      "type": "string"
+                    },
+                    "value": {
+                      "description": "Value.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "features": {
+                "description": "Ready-made bundles; see `Toolchain features` below for what each adds.",
+                "items": {
+                  "enum": [
+                    "browser",
+                    "agent-cli",
+                    "video",
+                    "build-essentials",
+                    "docker-cli",
+                    "podman-cli"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "nix"
+              },
+              "nixpkgs": {
+                "description": "nixpkgs flake reference; env/flake.lock pins its exact revision.",
+                "type": "string"
+              },
+              "packages": {
+                "description": "nixpkgs attribute names, e.g. (\"python312\" \"uv\" \"git\").",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "shellHook": {
+                "description": "Extra shell hook of the dev shell.",
+                "type": "string"
+              },
+              "status": {
+                "const": "stable"
+              }
+            },
+            "required": [
+              "agentClis",
+              "env",
+              "features",
+              "id",
+              "kind",
+              "nixpkgs",
+              "packages",
+              "shellHook",
+              "status"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "array"
     },
     "triggers": {
       "description": "PITER · Trigger: the event that starts a run.",

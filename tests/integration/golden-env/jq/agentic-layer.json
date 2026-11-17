@@ -1,0 +1,786 @@
+{
+  "adws": [
+    {
+      "agent": "claude-code",
+      "changes": "codebase",
+      "classes": [],
+      "description": "Classify, plan by class and implement the plan",
+      "environment": [
+        "worktree",
+        "podman"
+      ],
+      "input": [
+        "cli",
+        "spec-file"
+      ],
+      "name": "plan-build",
+      "review": "auto",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-patch",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-patch",
+          "retries": 0,
+          "when": "class-patch"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "implement",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "implement",
+          "retries": 0,
+          "when": "always"
+        }
+      ],
+      "trigger": [
+        "manual"
+      ]
+    },
+    {
+      "agent": "claude-code",
+      "changes": "codebase",
+      "classes": [],
+      "description": "Plan, build, test, document, commit, agent review with deterministic gates; opens a PR only",
+      "environment": [
+        "worktree",
+        "podman"
+      ],
+      "input": [
+        "cli",
+        "spec-file"
+      ],
+      "name": "sdlc",
+      "review": "auto",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-patch",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-patch",
+          "retries": 0,
+          "when": "class-patch"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "implement",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "implement",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "cmd": "install",
+          "collect": [],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "install",
+          "resolve": "",
+          "retries": 3
+        },
+        {
+          "cmd": "build",
+          "collect": [
+            "log"
+          ],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "build",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test",
+          "collect": [
+            "log",
+            "test-suite-log",
+            "test-logs"
+          ],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "test",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "document",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "document",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [],
+          "command": "commit",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "commit",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "implement": "implement",
+          "kind": "review",
+          "name": "review",
+          "patch": "plan-patch"
+        },
+        {
+          "kind": "ship",
+          "message": "",
+          "name": "ship"
+        }
+      ],
+      "trigger": [
+        "manual"
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "allowedTools": [
+        "Read",
+        "Glob",
+        "Grep",
+        "Edit",
+        "Write",
+        "Bash"
+      ],
+      "id": "claude-code",
+      "kind": "claude-code",
+      "maxTurns": 600,
+      "models": [
+        {
+          "effort": "default",
+          "model": "claude-opus-5-5",
+          "tier": "base"
+        },
+        {
+          "effort": "default",
+          "model": "claude-opus-5-5",
+          "tier": "heavy"
+        }
+      ],
+      "permissionMode": "acceptEdits",
+      "safeMode": true,
+      "status": "stable",
+      "timeout": 9000
+    }
+  ],
+  "artefacts": [
+    {
+      "id": "log",
+      "kind": "log",
+      "status": "stable",
+      "tailLines": 200
+    },
+    {
+      "glob": "test-suite.log",
+      "id": "test-suite-log",
+      "kind": "file",
+      "status": "stable"
+    },
+    {
+      "glob": "tests/*.log",
+      "id": "test-logs",
+      "kind": "file",
+      "status": "stable"
+    }
+  ],
+  "budget": null,
+  "codebase": {
+    "commands": [
+      {
+        "description": "The build system is generated and configured against the system Oniguruma (libonig-dev); the vendor/oniguruma submodule is not fetched, because a run's container mounts the repository's .git read-only and git submodule update cannot register it; must run once in a fresh checkout before build or test",
+        "name": "install",
+        "run": "autoreconf -i && ./configure --disable-docs --with-oniguruma=yes --enable-static",
+        "timeout": 1800
+      },
+      {
+        "description": "libjq and the jq binary compile and link with -Wextra -Wall",
+        "name": "build",
+        "run": "make -j\"$(nproc)\"",
+        "timeout": 1800
+      },
+      {
+        "description": "Every driver in TESTS of Makefile.am passes against the built ./jq; writes test-suite.log and tests/*.log",
+        "name": "test",
+        "run": "make check VERBOSE=yes",
+        "timeout": 1800
+      },
+      {
+        "description": "The website renders from docs/content into docs/output/",
+        "name": "docs",
+        "run": "(cd docs && pipenv sync && pipenv run python3 build_website.py)",
+        "timeout": 1800
+      }
+    ],
+    "conditionalDocs": [
+      {
+        "path": "docs/README.md",
+        "when": "When changing anything under docs/, or regenerating jq.1.prebuilt, tests/man.test or tests/manonig.test"
+      },
+      {
+        "path": "docs/content/manual/dev/manual.yml",
+        "when": "When adding or changing a builtin, operator or command-line option"
+      },
+      {
+        "path": "docs/manual_schema.yml",
+        "when": "When editing any manual.yml"
+      },
+      {
+        "path": "tests/setup",
+        "when": "When adding or changing a test driver script under tests/"
+      },
+      {
+        "path": ".github/workflows/ci.yml",
+        "when": "When changing configure options or cross-compilation behaviour"
+      },
+      {
+        "path": "NEWS.md",
+        "when": "When a change is user-visible and belongs in release notes"
+      },
+      {
+        "path": "SECURITY.md",
+        "when": "When the task concerns a security vulnerability"
+      }
+    ],
+    "defaultBranch": "master",
+    "description": "jq is a command-line JSON processor and the C library libjq, written in portable C with no runtime dependencies. It is built with GNU autotools (autoconf, automake, libtool) and optionally links the vendored Oniguruma regex library (git submodule). The manual and website are generated from YAML with Python.",
+    "languages": [
+      "c",
+      "shell",
+      "python"
+    ],
+    "packageManager": "",
+    "paths": {
+      "docs": [
+        "docs",
+        "README.md",
+        "NEWS.md"
+      ],
+      "protected": [
+        ".github",
+        "Dockerfile",
+        "COPYING",
+        "SECURITY.md",
+        "KEYS",
+        "sig",
+        "scripts/version",
+        "jq.spec",
+        "vendor",
+        ".gitmodules",
+        "src/lexer.c",
+        "src/lexer.h",
+        "src/parser.c",
+        "src/parser.h",
+        "tests/man.test",
+        "tests/manonig.test",
+        "jq.1.prebuilt",
+        "docs/Pipfile.lock",
+        "docs/public/CNAME"
+      ],
+      "source": [
+        "src",
+        "Makefile.am",
+        "configure.ac",
+        "config/m4",
+        "m4",
+        "scripts"
+      ],
+      "tests": [
+        "tests"
+      ]
+    },
+    "readme": "README.md",
+    "root": "<APP>"
+  },
+  "commands": [
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "prime",
+      "output": "text",
+      "relevant": [],
+      "template": "prime",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "classify",
+      "output": "json",
+      "relevant": [],
+      "template": "classify",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "A new C source or header file must be added to LIBJQ_SRC or LIBJQ_INCS in Makefile.am.",
+        "A new test driver script must be added to TESTS in Makefile.am, and every new test data file to EXTRA_DIST in Makefile.am.",
+        "Never hand-edit src/lexer.c, src/lexer.h, src/parser.c or src/parser.h; change src/lexer.l or src/parser.y instead."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-chore",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-chore",
+      "validation": [
+        "build",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "Add a regression test: language or builtin behaviour in tests/jq.test, regex behaviour in tests/onig.test, command-line or process behaviour in tests/shtest.",
+        "A test in tests/jq.test is three lines: jq program, input, expected output; blank lines and lines starting with # are ignored.",
+        "Never hand-edit src/lexer.c, src/lexer.h, src/parser.c or src/parser.h; change src/lexer.l or src/parser.y instead.",
+        "Building and running the tests must leave no change in tracked files."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-bug",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-bug",
+      "validation": [
+        "build",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "Builtins that can be written in jq go in src/builtin.jq; C builtins go in src/builtin.c.",
+        "Add tests in tests/jq.test (three lines: program, input, expected output), tests/onig.test for regex, or tests/shtest for command-line options.",
+        "Document every user-visible builtin or option in docs/content/manual/dev/manual.yml with examples entries; they are tests.",
+        "After changing docs/content/manual/dev/manual.yml, tests/man.test, tests/manonig.test and jq.1.prebuilt must be regenerated; they are protected paths, so say so in the plan.",
+        "A new C source or header file must be added to LIBJQ_SRC or LIBJQ_INCS in Makefile.am.",
+        "Public libjq symbols start with jq_ or jv_."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-feature",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-feature",
+      "validation": [
+        "build",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-patch",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-patch",
+      "validation": [
+        "build",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "C code must compile with -Wextra -Wall -Wno-unused-parameter -Wno-unused-function -Woverlength-strings -Wstrict-prototypes.",
+        "Failing test output is in test-suite.log and tests/*.log.",
+        "Never fix a failure by editing tests/man.test or tests/manonig.test; they are generated from docs/content/manual/dev/manual.yml."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "resolve-test",
+      "output": "text",
+      "relevant": [],
+      "template": "resolve-test",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "A user-visible change is jq CLI output (stdout, stderr, exit code) or the public API in src/jq.h and src/jv.h; require test-suite.log and tests/*.log showing the new test passing.",
+        "A bug fix must add a regression test to tests/jq.test, tests/onig.test or tests/shtest.",
+        "A new builtin or option must have an entry with examples in docs/content/manual/dev/manual.yml.",
+        "Reject hand edits to src/lexer.c, src/lexer.h, src/parser.c and src/parser.h.",
+        "New test drivers appear in TESTS and new test data files in EXTRA_DIST in Makefile.am."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "review",
+      "output": "json",
+      "relevant": [],
+      "template": "review",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "User-visible builtins and options are documented in docs/content/manual/dev/manual.yml, never in docs/content/manual/v*/manual.yml."
+      ],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "document",
+      "output": "text",
+      "relevant": [],
+      "template": "document",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "Text files use LF line endings.",
+        "Do not commit build output; building and testing must leave no change in tracked files."
+      ],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "commit",
+      "output": "text",
+      "relevant": [],
+      "template": "commit",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "pull-request",
+      "output": "text",
+      "relevant": [],
+      "template": "pull-request",
+      "validation": []
+    }
+  ],
+  "concurrency": {
+    "id": "slots",
+    "kind": "slots",
+    "maxAgents": 2,
+    "maxChecks": 2,
+    "maxRuns": 4,
+    "status": "stable",
+    "waitSeconds": 3600
+  },
+  "dashboard": {
+    "also": [],
+    "bind": "127.0.0.1",
+    "id": "local",
+    "kind": "local",
+    "pollMs": 750,
+    "port": 8765,
+    "status": "stable",
+    "systemd": false,
+    "tokenEnv": ""
+  },
+  "description": "Agentic layer for the jq command-line JSON processor and libjq",
+  "environments": [
+    {
+      "copyFiles": [],
+      "deleteMergedBranches": true,
+      "dir": "trees",
+      "gcDays": 7,
+      "id": "worktree",
+      "keep": "on-failure",
+      "kind": "worktree",
+      "portBase": 9100,
+      "portsPerRun": 2,
+      "sparse": [],
+      "status": "stable"
+    },
+    {
+      "agentInside": true,
+      "baseImage": "docker.io/library/debian:stable-slim",
+      "caches": [],
+      "cpus": "2",
+      "credentials": [],
+      "id": "podman",
+      "kind": "podman",
+      "memory": "4g",
+      "nestedEngine": false,
+      "network": "slirp",
+      "packages": [
+        "build-essential",
+        "autoconf",
+        "automake",
+        "libtool",
+        "git",
+        "libonig-dev"
+      ],
+      "pidsLimit": 2048,
+      "publish": [],
+      "readOnlyRoot": false,
+      "scope": "run",
+      "services": [],
+      "setup": [],
+      "status": "stable"
+    }
+  ],
+  "experts": [],
+  "forge": {
+    "id": "none",
+    "kind": "none",
+    "remote": "",
+    "status": "stable"
+  },
+  "hops": [
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "implement",
+      "produces": "changes",
+      "takes": "plan",
+      "template": "run-plan"
+    },
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "new-command",
+      "produces": "command",
+      "takes": "prompt",
+      "template": "meta-command"
+    },
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "new-adw",
+      "produces": "adw",
+      "takes": "prompt",
+      "template": "meta-adw"
+    }
+  ],
+  "hosts": [],
+  "layer": {
+    "dir": "",
+    "git": true,
+    "id": "sibling",
+    "kind": "sibling",
+    "status": "stable"
+  },
+  "llmTxt": "LLM.txt",
+  "name": "<NAME>",
+  "notifiers": [
+    {
+      "id": "none",
+      "kind": "none",
+      "status": "stable"
+    }
+  ],
+  "promptInputs": [
+    {
+      "allowStdin": true,
+      "id": "cli",
+      "kind": "cli",
+      "status": "stable"
+    },
+    {
+      "dir": "specs/inbox",
+      "id": "spec-file",
+      "kind": "spec-file",
+      "pattern": "*.md",
+      "status": "stable"
+    }
+  ],
+  "registry": null,
+  "reviews": [
+    {
+      "agent": "",
+      "allowedClasses": [
+        "chore",
+        "bug",
+        "feature",
+        "patch"
+      ],
+      "artefacts": [
+        "log",
+        "test-suite-log",
+        "test-logs"
+      ],
+      "blockProtectedPaths": true,
+      "bodyCmd": "",
+      "command": "review",
+      "deployCmd": "",
+      "id": "auto",
+      "kind": "auto",
+      "maxDiffLines": 400,
+      "maxRetries": 3,
+      "requireChecks": [
+        "build",
+        "test"
+      ],
+      "reviewers": 1,
+      "ship": "pr",
+      "status": "stable"
+    }
+  ],
+  "schemaVersion": "agentic-layer-v1",
+  "services": [],
+  "storage": {
+    "dir": "artefacts",
+    "id": "local",
+    "kind": "local",
+    "status": "stable"
+  },
+  "triggers": [
+    {
+      "confirm": false,
+      "id": "manual",
+      "kind": "manual",
+      "status": "stable"
+    }
+  ],
+  "voice": null
+}

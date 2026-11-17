@@ -1,0 +1,737 @@
+{
+  "adws": [
+    {
+      "agent": "codex",
+      "changes": "codebase",
+      "classes": [],
+      "description": "Classify the issue, plan by class, implement the plan",
+      "environment": [
+        "worktree"
+      ],
+      "input": [
+        "issue"
+      ],
+      "name": "plan-build",
+      "review": "human",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-patch",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-patch",
+          "retries": 0,
+          "when": "class-patch"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "run-plan",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        }
+      ],
+      "trigger": [
+        "forge-actions",
+        "manual"
+      ]
+    },
+    {
+      "agent": "codex",
+      "changes": "codebase",
+      "classes": [],
+      "description": "Plan, build, vet, test, document, commit; a human reviews the pull request",
+      "environment": [
+        "worktree",
+        "podman"
+      ],
+      "input": [
+        "issue"
+      ],
+      "name": "sdlc",
+      "review": "human",
+      "steps": [
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "classify",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "classify",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-chore",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-chore",
+          "retries": 0,
+          "when": "class-chore"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-bug",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-bug",
+          "retries": 0,
+          "when": "class-bug"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-feature",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-feature",
+          "retries": 0,
+          "when": "class-feature"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$prompt"
+          ],
+          "command": "plan-patch",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "plan-patch",
+          "retries": 0,
+          "when": "class-patch"
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "run-plan",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "build",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "cmd": "lint",
+          "collect": [],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "lint",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "cmd": "test",
+          "collect": [
+            "coverage",
+            "log"
+          ],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "test",
+          "resolve": "resolve-test",
+          "retries": 3
+        },
+        {
+          "agent": "",
+          "args": [
+            "$plan"
+          ],
+          "command": "document",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "document",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "agent": "",
+          "args": [],
+          "command": "commit",
+          "kind": "run",
+          "modelSet": "inherit",
+          "name": "commit",
+          "retries": 0,
+          "when": "always"
+        },
+        {
+          "implement": "",
+          "kind": "review",
+          "name": "review",
+          "patch": ""
+        },
+        {
+          "kind": "ship",
+          "message": "",
+          "name": "ship"
+        }
+      ],
+      "trigger": [
+        "forge-actions",
+        "manual"
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "id": "codex",
+      "kind": "codex",
+      "models": [
+        {
+          "effort": "default",
+          "model": "gpt-5.4-mini",
+          "tier": "base"
+        },
+        {
+          "effort": "default",
+          "model": "gpt-5.4",
+          "tier": "heavy"
+        }
+      ],
+      "sandbox": "workspace-write",
+      "status": "stable",
+      "timeout": 9000
+    }
+  ],
+  "artefacts": [
+    {
+      "id": "log",
+      "kind": "log",
+      "status": "stable",
+      "tailLines": 200
+    },
+    {
+      "glob": "coverage.out",
+      "id": "coverage",
+      "kind": "coverage",
+      "status": "stable"
+    }
+  ],
+  "budget": null,
+  "codebase": {
+    "commands": [
+      {
+        "description": "go vet reports nothing for all packages except /examples/",
+        "name": "lint",
+        "run": "make vet",
+        "timeout": 1800
+      },
+      {
+        "description": "rewrites every *.go file with gofmt -s -w; proves nothing, it changes files",
+        "name": "format",
+        "run": "make fmt",
+        "timeout": 1800
+      },
+      {
+        "description": "tests of packages gin, ginS, binding, render pass with go test -v -covermode=count; writes coverage.out",
+        "name": "test",
+        "run": "make test",
+        "timeout": 1800
+      }
+    ],
+    "conditionalDocs": [
+      {
+        "path": "docs/doc.md",
+        "when": "When adding or changing a feature (it must be documented there), or when working with the build tags jsoniter, go_json, sonic, nomsgpack"
+      },
+      {
+        "path": "CONTRIBUTING.md",
+        "when": "When preparing a pull request"
+      },
+      {
+        "path": ".github/PULL_REQUEST_TEMPLATE.md",
+        "when": "When writing a pull request description"
+      },
+      {
+        "path": "ginS/README.md",
+        "when": "When changing anything under ginS/"
+      },
+      {
+        "path": "BENCHMARKS.md",
+        "when": "When changing router performance in tree.go"
+      },
+      {
+        "path": "CHANGELOG.md",
+        "when": "When checking in which release a feature or fix shipped"
+      }
+    ],
+    "defaultBranch": "master",
+    "description": "Gin is an HTTP web framework written in Go, imported by other Go programs as the module github.com/gin-gonic/gin. Root package gin (router, context, middleware) plus sub-packages binding, render, codec/json, ginS and internal. Shipped by pushing a git tag, which runs GoReleaser in GitHub Actions.",
+    "languages": [
+      "go"
+    ],
+    "packageManager": "",
+    "paths": {
+      "docs": [
+        "docs"
+      ],
+      "protected": [
+        ".github",
+        ".goreleaser.yaml",
+        ".golangci.yml",
+        "codecov.yml",
+        "LICENSE",
+        "auth.go",
+        "testdata/certificate",
+        "testdata/protoexample/test.pb.go"
+      ],
+      "source": [
+        ".",
+        "binding",
+        "render",
+        "codec/json",
+        "internal/bytesconv",
+        "internal/fs",
+        "ginS"
+      ],
+      "tests": [
+        ".",
+        "binding",
+        "render",
+        "internal/bytesconv",
+        "internal/fs",
+        "ginS",
+        "testdata"
+      ]
+    },
+    "readme": "README.md",
+    "root": "<APP>"
+  },
+  "commands": [
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "prime",
+      "output": "text",
+      "relevant": [],
+      "template": "prime",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "classify",
+      "output": "json",
+      "relevant": [],
+      "template": "classify",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "A code change adds or modifies tests in <name>_test.go in the same directory as the changed <name>.go.",
+        "Use any, not interface{}."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-chore",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-chore",
+      "validation": [
+        "lint",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "The regression test goes in the <name>_test.go file beside the fixed <name>.go, using github.com/stretchr/testify assertions.",
+        "The fix must compile and pass under the CI build tag sets: none, -tags nomsgpack, -tags sonic with --ldflags=-checklinkname=0, -tags go_json, and -race.",
+        "Use any, not interface{}."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-bug",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-bug",
+      "validation": [
+        "lint",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "A feature is a new or changed exported function, method, type or option of package gin, binding or render; plan its tests in <name>_test.go beside the source, using github.com/stretchr/testify assertions.",
+        "Plan a section for the feature in docs/doc.md, not in README.md.",
+        "The change must compile and pass under the CI build tag sets: none, -tags nomsgpack, -tags sonic with --ldflags=-checklinkname=0, -tags go_json, and -race.",
+        "Use any, not interface{}."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-feature",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-feature",
+      "validation": [
+        "lint",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "A code change adds or modifies tests in <name>_test.go in the same directory as the changed <name>.go."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "plan-patch",
+      "output": "path",
+      "relevant": [],
+      "template": "plan-patch",
+      "validation": [
+        "lint",
+        "test"
+      ]
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "make test runs only packages gin, ginS, binding and render and writes coverage.out; do not edit files under testdata/certificate or testdata/protoexample/test.pb.go to make a test pass."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "resolve-test",
+      "output": "text",
+      "relevant": [],
+      "template": "resolve-test",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "Every code change has an added or modified test in the <name>_test.go beside the changed file.",
+        "A feature is proven by make test output and coverage.out, and has a section in docs/doc.md; coverage targets are 99% for the project and 99% for the patch.",
+        "Tests use github.com/stretchr/testify assertions; code uses any, not interface{}."
+      ],
+      "mayCommit": false,
+      "modelSet": "heavy",
+      "name": "review",
+      "output": "json",
+      "relevant": [],
+      "template": "review",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "Document a new feature in docs/doc.md, not in README.md."
+      ],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "document",
+      "output": "text",
+      "relevant": [],
+      "template": "document",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "Commit subject has the form <type>(<optional scope>): <subject> with type one of feat, fix, chore, refactor, build, ci, docs.",
+        "A pull request has at most two commits; squash otherwise."
+      ],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "commit",
+      "output": "text",
+      "relevant": [],
+      "template": "commit",
+      "validation": []
+    },
+    {
+      "description": "",
+      "fabric": [],
+      "file": "",
+      "focus": [
+        "Open the pull request against the master branch.",
+        "The description follows the checklist in .github/PULL_REQUEST_TEMPLATE.md.",
+        "A pull request has at most two commits."
+      ],
+      "mayCommit": false,
+      "modelSet": "base",
+      "name": "pull-request",
+      "output": "text",
+      "relevant": [],
+      "template": "pull-request",
+      "validation": []
+    }
+  ],
+  "concurrency": {
+    "id": "slots",
+    "kind": "slots",
+    "maxAgents": 2,
+    "maxChecks": 2,
+    "maxRuns": 4,
+    "status": "stable",
+    "waitSeconds": 3600
+  },
+  "dashboard": {
+    "also": [],
+    "bind": "127.0.0.1",
+    "id": "local",
+    "kind": "local",
+    "pollMs": 750,
+    "port": 8765,
+    "status": "stable",
+    "systemd": false,
+    "tokenEnv": ""
+  },
+  "description": "Agentic layer for the Gin HTTP web framework (Go library)",
+  "environments": [
+    {
+      "copyFiles": [],
+      "deleteMergedBranches": true,
+      "dir": "trees",
+      "gcDays": 7,
+      "id": "worktree",
+      "keep": "on-failure",
+      "kind": "worktree",
+      "portBase": 9100,
+      "portsPerRun": 2,
+      "sparse": [],
+      "status": "stable"
+    },
+    {
+      "agentInside": true,
+      "baseImage": "docker.io/library/golang:1.26-bookworm",
+      "caches": [
+        "go"
+      ],
+      "cpus": "2",
+      "credentials": [],
+      "id": "podman",
+      "kind": "podman",
+      "memory": "4g",
+      "nestedEngine": false,
+      "network": "slirp",
+      "packages": [],
+      "pidsLimit": 2048,
+      "publish": [],
+      "readOnlyRoot": false,
+      "scope": "run",
+      "services": [],
+      "setup": [],
+      "status": "stable"
+    }
+  ],
+  "experts": [
+    {
+      "domain": "Request binding and validation for JSON, XML, form, query, URI, header, YAML, TOML, protobuf, msgpack and BSON",
+      "maxLines": 1000,
+      "name": "binding",
+      "paths": [
+        "binding"
+      ]
+    },
+    {
+      "domain": "Response renderers for JSON, XML, HTML, YAML, TOML, protobuf, msgpack, BSON, PDF, redirect, text, data and reader",
+      "maxLines": 1000,
+      "name": "render",
+      "paths": [
+        "render"
+      ]
+    }
+  ],
+  "forge": {
+    "botMarker": "[ADW-BOT]",
+    "host": "github.com",
+    "id": "github",
+    "kind": "github",
+    "repo": "<REPO>",
+    "status": "stable",
+    "tokenEnv": "GITHUB_TOKEN"
+  },
+  "hops": [
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "run-plan",
+      "produces": "changes",
+      "takes": "plan",
+      "template": "run-plan"
+    },
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "meta-command",
+      "produces": "command",
+      "takes": "prompt",
+      "template": "meta-command"
+    },
+    {
+      "description": "",
+      "modelSet": "heavy",
+      "name": "meta-adw",
+      "produces": "adw",
+      "takes": "prompt",
+      "template": "meta-adw"
+    }
+  ],
+  "hosts": [],
+  "layer": {
+    "dir": "",
+    "git": true,
+    "id": "sibling",
+    "kind": "sibling",
+    "status": "stable"
+  },
+  "llmTxt": "LLM.txt",
+  "name": "<NAME>",
+  "notifiers": [
+    {
+      "id": "none",
+      "kind": "none",
+      "status": "stable"
+    }
+  ],
+  "promptInputs": [
+    {
+      "classify": true,
+      "id": "issue",
+      "keyword": "adw",
+      "kind": "issue",
+      "labels": [],
+      "status": "stable"
+    }
+  ],
+  "registry": null,
+  "reviews": [
+    {
+      "bodyCmd": "",
+      "draft": false,
+      "id": "human",
+      "kind": "human",
+      "reviewers": [],
+      "status": "stable"
+    }
+  ],
+  "schemaVersion": "agentic-layer-v1",
+  "services": [],
+  "storage": {
+    "dir": "artefacts",
+    "id": "local",
+    "kind": "local",
+    "status": "stable"
+  },
+  "triggers": [
+    {
+      "events": [
+        "issue-opened",
+        "issue-comment",
+        "workflow-dispatch"
+      ],
+      "id": "forge-actions",
+      "kind": "forge-actions",
+      "label": "adw",
+      "runner": "self-hosted",
+      "schedule": "",
+      "status": "stable"
+    },
+    {
+      "confirm": false,
+      "id": "manual",
+      "kind": "manual",
+      "status": "stable"
+    }
+  ],
+  "voice": null
+}

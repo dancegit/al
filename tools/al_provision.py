@@ -144,8 +144,11 @@ def _nix_str(text: str) -> str:
 
 
 def home_manager_module(ir: dict, name: str, module: str, packages: list[str], *, layer_default: str = "",
-                        units: list[tuple[str, dict[str, str]]] | None = None, host: dict | None = None) -> str:
+                        units: list[tuple[str, dict[str, str]]] | None = None, host: dict | None = None,
+                        toolchain: dict | None = None) -> str:
     """Without `host`: the text of env/home-manager.nix of an (environment home-manager …), unchanged.
+    With `toolchain` ({"id": …, "unfree": [names]}; without `host` only) the packages and variables
+    come from ./toolchain-<id>.nix, evaluated against the user's own nixpkgs.
     With `host` (a host record): env/hosts/<id>/home-manager.nix, whose host values are options and
     whose units are rendered from `units` ((kind, al.unit_spec(kind, …)) pairs)."""
     if host is None:
@@ -157,13 +160,28 @@ def home_manager_module(ir: dict, name: str, module: str, packages: list[str], *
       Service.Restart = "on-failure";
       Install.WantedBy = [ "default.target" ];
     }};''' if cron else ""
+        variable = f"AL_{re.sub(r'[^A-Z0-9]', '_', name.upper())}_LAYER"
+        note, let_extra = "", ""
+        home_packages = f"(with pkgs; [ {' '.join(packages)} uv git ]) ++ [ adw ]"
+        variables = f"home.sessionVariables.{variable} = cfg.layerDir;"
+        if toolchain:  # the toolchain's packages and variables, evaluated against the user's own nixpkgs
+            tid, unfree = toolchain["id"], toolchain.get("unfree") or []
+            note = (f"# The packages come from toolchain `{tid}` (./toolchain-{tid}.nix), evaluated against your own\n"
+                    f"# nixpkgs: the same names as the dev shell and the sandbox image, at your nixpkgs' versions.\n")
+            if unfree:
+                note += (f"# Unfree: {', '.join(unfree)}. Allow it in your configuration, e.g.\n"
+                         f"#   nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "
+                         + " ".join(f'"{u}"' for u in unfree) + " ];\n")
+            let_extra = f"\n  tc = import ./toolchain-{tid}.nix {{ inherit pkgs lib; }};"
+            home_packages = "tc.packages ++ (with pkgs; [ uv git ]) ++ [ adw ]"
+            variables = f"home.sessionVariables = tc.env // {{ {variable} = cfg.layerDir; }};"
         return f'''{GENERATED}
 # Import from your Home Manager configuration:
 #   imports = [ {layer_default}/env/home-manager.nix ];
 #   programs.{module}.enable = true;
-{{ config, lib, pkgs, ... }}:
+{note}{{ config, lib, pkgs, ... }}:
 let
-  cfg = config.programs."{module}";
+  cfg = config.programs."{module}";{let_extra}
   adw = pkgs.writeShellScriptBin "al-{name}" \'\'
     # al-{name} <adw> [args…]   run an ADW of the {name} agentic layer
     if [ $# -lt 1 ]; then ls "${{cfg.layerDir}}/adws" | sed -n 's/^adw_\\(.*\\)\\.py$/\\1/p'; exit 0; fi
@@ -180,8 +198,8 @@ in {{
   }};
 
   config = lib.mkIf cfg.enable {{
-    home.packages = (with pkgs; [ {' '.join(packages)} uv git ]) ++ [ adw ];
-    home.sessionVariables.AL_{re.sub(r'[^A-Z0-9]', '_', name.upper())}_LAYER = cfg.layerDir;{service}
+    home.packages = {home_packages};
+    {variables}{service}
   }};
 }}
 '''

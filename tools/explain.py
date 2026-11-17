@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 GROUPED = {"prompt-input", "trigger", "environment", "artefact", "review", "agent", "command", "hop", "expert", "service", "notify",
-           "stage", "promotion", "host"}
+           "stage", "promotion", "host", "toolchain"}
 CLAUSE = re.compile(r"^  \(([a-z][a-z-]*)\b")
 INCLUDED_CLAUSE = re.compile(r"^\(([a-z][a-z-]*)\b")       # an included file's clauses start in column 0
 INCLUDE = re.compile(r'\(include\s+"([^"]+)"\s*\)')
@@ -158,6 +158,17 @@ def where_it_runs(adw: dict, ir: dict) -> str:
     return f"The agent and the checks run on your machine{shell}, in a private copy of the repository."
 
 
+def feature_docs() -> dict[str, str]:
+    """What each toolchain feature adds, from the language reference (generated from the vocabulary)."""
+    docs, inside = {}, False
+    for line in (ROOT / "docs" / "AL-DSL.llms.txt").read_text().splitlines():
+        if line.startswith("## "):
+            inside = line == "## Toolchain features"
+        elif inside and (m := re.match(r"- `([a-z-]+)` — (.*)", line)):
+            docs[m.group(1)] = m.group(2)
+    return docs
+
+
 def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
     """(heading, one-paragraph explanation, extra bullet points)."""
     head, cb = block["head"], ir["codebase"]
@@ -195,7 +206,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
                 bullets.append("`worktree`: each run gets its own git worktree; your checkout is never touched")
             elif k == "nix-devshell":
                 parts.append("a Nix shell with the toolchain")
-                bullets.append("`nix-devshell`: provides " + listing(o["packages"]))
+                bullets.append(f"`nix-devshell`: uses toolchain `{o['toolchain']}`" if o.get("toolchain")
+                               else "`nix-devshell`: provides " + listing(o["packages"]))
             elif k == "podman":
                 inside = "the agent itself runs inside it" if o["agentInside"] else "the checks run inside it"
                 parts.append(f"a container ({inside})")
@@ -207,13 +219,36 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
                 if o["publish"]:
                     extra.append("port " + listing([str(p) for p in o["publish"]]) + " published to the host")
                 engine = ", with a container engine of its own (nested, isolated from the host's)" if o.get("nestedEngine") else ""
-                bullets.append(f"`podman`: image based on `{o['baseImage']}`; {inside}{engine}" + ("; " + "; ".join(extra) if extra else ""))
+                image = (f"image built from toolchain `{o['toolchain']}` with Nix" if o.get("toolchain")
+                         else f"image based on `{o['baseImage']}`")
+                bullets.append(f"`podman`: {image}; {inside}{engine}" + ("; " + "; ".join(extra) if extra else ""))
             elif k == "home-manager":
                 parts.append("a Home Manager module that installs the tools")
-                bullets.append("`home-manager`: provides " + listing(o["packages"]))
+                bullets.append(f"`home-manager`: uses toolchain `{o['toolchain']}`" if o.get("toolchain")
+                               else "`home-manager`: provides " + listing(o["packages"]))
             else:
                 parts.append("the checkout itself, read-only")
         return "Where agents work", "Environment: " + listing(parts) + ".", bullets
+    if head == "toolchain":
+        docs = feature_docs()
+        tcs = ir.get("toolchains") or []
+        text = ("Toolchain: the tools the environments provide, declared once and pinned with Nix: "
+                + listing([f"`{t['id']}` (" + listing([listing(t["packages"]),
+                                                     (f"the {listing(t['features'])} bundle{'s' if len(t['features']) > 1 else ''}"
+                                                      if t["features"] else "")], "plus") + ")" for t in tcs])
+                + ". The dev shell, the sandbox image and the Home Manager module that name it get exactly this set.")
+        bullets = []
+        for t in tcs:
+            for f in t["features"]:
+                extra = f" (here: {listing(t['agentClis'])})" if f == "agent-cli" and t["agentClis"] else ""
+                bullets.append(f"`{f}`: {docs.get(f, 'a feature bundle')}{extra}")
+            if t["env"]:
+                bullets.append("Variables: " + listing([f"`{v['name']}`" for v in t["env"]]))
+            bullets.append(f"nixpkgs `{t['nixpkgs']}`, pinned to one revision in env/flake.lock "
+                           "(`al sandbox LAYER update` re-pins it, `al sandbox LAYER build` rebuilds the image)")
+            users = [o["id"] for o in ir["environments"] if o.get("toolchain") == t["id"]]
+            bullets.append(f"Used by {listing([f'`{u}`' for u in users])}" if users else "Not used by any environment yet")
+        return "Which tools the environments have", text, bullets
     if head == "artefact":
         names = {"log": "command logs", "junit": "a test report", "coverage": "a coverage report", "image": "screenshots",
                  "video": "a recorded video, cut into frames for reviewers", "trace": "browser traces", "html": "HTML reports",
