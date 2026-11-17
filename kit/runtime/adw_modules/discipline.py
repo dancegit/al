@@ -393,7 +393,7 @@ def _porcelain_z(text: str) -> list[tuple[str, str, str]]:
 
 def clean_after_commit(layer: Any, state: Any, step_name: str, env_stack: Any) -> dict[str, Any]:
     """Restore what the commit step left uncommitted under the in-repo layer directory (unless the
-    ADW changes the layer) and under protected paths, so the worktree equals the commit."""
+    ADW changes the layer), so a regenerated layer does not count as the run's change."""
     from .review import is_protected
 
     prefixes: list[str] = []
@@ -404,7 +404,9 @@ def clean_after_commit(layer: Any, state: Any, step_name: str, env_stack: Any) -
         changes_layer = False
     if in_repo and not changes_layer:
         prefixes.append(in_repo)
-    prefixes += [str(p) for p in (layer.ir.get("codebase") or {}).get("paths", {}).get("protected", []) or []]
+    # Only the layer's own generated files are put back. A change an agent made under a protected path
+    # of the codebase is left where it is: the gate must see it and hand the run to a person. Putting
+    # it back would drop the change silently and let the rest ship without anyone knowing.
     copied = set()
     for option in layer.ir.get("environments") or []:
         if isinstance(option, dict) and option.get("kind") == "worktree":
