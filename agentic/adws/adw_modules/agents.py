@@ -366,14 +366,30 @@ def _run_mock(layer: Any, state: Any, agent: dict[str, Any], step: str, command:
 # ---------------------------------------------------------------- output handling
 
 def extract_json(output: str, step: str) -> dict[str, Any]:
-    """The last ```json fenced block, else the outermost {...} of the output."""
+    """The JSON object of an agent's answer: the last ```json fenced block; when that does not parse,
+    the text from the last ```json to the last fence (a string inside the object may itself contain
+    a code fence, which ends the short match too early); else the outermost {...} of the output."""
     blocks = _FENCED_JSON.findall(output)
-    candidate = blocks[-1].strip() if blocks else output[output.find("{"): output.rfind("}") + 1]
-    if not candidate:
+    candidates: list[str] = [blocks[-1].strip()] if blocks else []
+    opening = max(output.rfind("```json"), output.rfind("```JSON"))
+    closing = output.rfind("```")
+    if 0 <= opening < closing:
+        candidates.append(output[opening + len("```json"):closing].strip())
+    candidates.append(output[output.find("{"): output.rfind("}") + 1])
+    candidates = [candidate for candidate in dict.fromkeys(candidates) if candidate]
+    if not candidates:
         raise StepFailed(step, "agent output contains no JSON object")
-    try:
-        value = json.loads(candidate)
-    except json.JSONDecodeError as exc:
+    first_error: json.JSONDecodeError | None = None
+    value: Any = None
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate, strict=False)   # strict=False: a raw line break inside a string is accepted
+            first_error = None
+            break
+        except json.JSONDecodeError as exc:
+            first_error = first_error or exc
+    if first_error is not None:
+        exc = first_error
         raise StepFailed(step, f"agent output JSON is invalid: {exc}") from exc
     if not isinstance(value, dict):
         raise StepFailed(step, "agent output JSON must be an object")

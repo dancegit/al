@@ -1,0 +1,24 @@
+# hand-written: go is not installed here; `go test -json ./...` output (test2json events) for the same project as go-v.log
+{"Time":"2026-11-16T12:00:00.000000000Z","Action":"start","Package":"example.com/proj"}
+{"Time":"2026-11-16T12:00:00.001000000Z","Action":"run","Package":"example.com/proj","Test":"TestAdds"}
+{"Time":"2026-11-16T12:00:00.001100000Z","Action":"output","Package":"example.com/proj","Test":"TestAdds","Output":"=== RUN   TestAdds\n"}
+{"Time":"2026-11-16T12:00:00.001200000Z","Action":"output","Package":"example.com/proj","Test":"TestAdds","Output":"--- PASS: TestAdds (0.00s)\n"}
+{"Time":"2026-11-16T12:00:00.001300000Z","Action":"pass","Package":"example.com/proj","Test":"TestAdds","Elapsed":0}
+{"Time":"2026-11-16T12:00:00.001400000Z","Action":"run","Package":"example.com/proj","Test":"TestBuildsAnImage"}
+{"Time":"2026-11-16T12:00:00.001500000Z","Action":"output","Package":"example.com/proj","Test":"TestBuildsAnImage","Output":"=== RUN   TestBuildsAnImage\n"}
+{"Time":"2026-11-16T12:00:00.001600000Z","Action":"output","Package":"example.com/proj","Test":"TestBuildsAnImage","Output":"    engine_test.go:8: no podman\n"}
+{"Time":"2026-11-16T12:00:00.001700000Z","Action":"output","Package":"example.com/proj","Test":"TestBuildsAnImage","Output":"--- SKIP: TestBuildsAnImage (0.00s)\n"}
+{"Time":"2026-11-16T12:00:00.001800000Z","Action":"skip","Package":"example.com/proj","Test":"TestBuildsAnImage","Elapsed":0}
+{"Time":"2026-11-16T12:00:00.001900000Z","Action":"run","Package":"example.com/proj","Test":"TestStartsAContainer"}
+{"Time":"2026-11-16T12:00:00.002000000Z","Action":"output","Package":"example.com/proj","Test":"TestStartsAContainer","Output":"=== RUN   TestStartsAContainer\n"}
+{"Time":"2026-11-16T12:00:00.002100000Z","Action":"output","Package":"example.com/proj","Test":"TestStartsAContainer","Output":"    engine_test.go:12: no podman\n"}
+{"Time":"2026-11-16T12:00:00.002200000Z","Action":"output","Package":"example.com/proj","Test":"TestStartsAContainer","Output":"--- SKIP: TestStartsAContainer (0.00s)\n"}
+{"Time":"2026-11-16T12:00:00.002300000Z","Action":"skip","Package":"example.com/proj","Test":"TestStartsAContainer","Elapsed":0}
+{"Time":"2026-11-16T12:00:00.002400000Z","Action":"run","Package":"example.com/proj","Test":"TestPulls"}
+{"Time":"2026-11-16T12:00:00.002500000Z","Action":"output","Package":"example.com/proj","Test":"TestPulls","Output":"=== RUN   TestPulls\n"}
+{"Time":"2026-11-16T12:00:00.002600000Z","Action":"output","Package":"example.com/proj","Test":"TestPulls","Output":"    engine_test.go:16: needs network\n"}
+{"Time":"2026-11-16T12:00:00.002700000Z","Action":"output","Package":"example.com/proj","Test":"TestPulls","Output":"--- SKIP: TestPulls (0.00s)\n"}
+{"Time":"2026-11-16T12:00:00.002800000Z","Action":"skip","Package":"example.com/proj","Test":"TestPulls","Elapsed":0}
+{"Time":"2026-11-16T12:00:00.002900000Z","Action":"output","Package":"example.com/proj","Output":"PASS\n"}
+{"Time":"2026-11-16T12:00:00.003000000Z","Action":"output","Package":"example.com/proj","Output":"ok  \texample.com/proj\t0.002s\n"}
+{"Time":"2026-11-16T12:00:00.003100000Z","Action":"pass","Package":"example.com/proj","Elapsed":0.002}

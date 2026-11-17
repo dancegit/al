@@ -131,6 +131,33 @@ Shipping never touches the application's working tree: with a forge it is PR + m
 API; with a bare remote it is a push from the worktree; purely locally the result is placed on
 `al/ship/<default-branch>` for a one-line fast-forward.
 
+**Where a check runs.** `(check NAME #:cmd C #:in ENV)` runs C in the run's worktree inside
+environment option ENV instead of the workflow's own stack (the default): a podman option gets a
+container of its own (`adw_modules/checkenv.py`: named `al-<layer>-<run>-<ENV>`, labelled
+`al.check-env=ENV`, one `podman run --rm` per command, so nothing of it runs while the host runs git;
+it shares the run's worktree, variables and git sandbox and relaxes nothing), a nix-devshell option
+runs it under `nix develop` on the host. The compiler accepts only those two kinds. The same
+environment is used by the review's re-checks and by the gate's re-run of the same cmd, and the
+preflight checks each such podman environment with the commands of the checks that run in it. A
+zero-touch workflow whose check runs `#:in` a nix-devshell option compiles with a warning: that check
+runs outside the run's podman sandbox.
+
+**Skipped tests.** A check that exits 0 while the tests that matter were skipped proves nothing.
+Every check attempt counts its skipped tests and their reasons (`adw_modules/skips.py`) from the
+JUnit reports its `#:collect` junit artefacts wrote during that attempt, else from its log: the final
+summary and `-rs` lines of pytest (also `-q`), `go test -v` and `-json`, `cargo test` and mocha's
+spec reporter; several runners in one log add up. The count is recorded on the check
+(`state.checks[NAME].skips`), in `check.end`, in the run summary (`test=0 (3 skipped: no podman ×2,
+needs network ×1)`), on the dashboard and as a `skips` entry in the reviewers' manifest, whose prompt
+treats a requirement proven only by a skipped test as unproven. Two rules turn skips into a failure:
+`#:max-skipped N` (more than N skipped tests) and `#:forbid-skip-reason "TEXT"` (a skipped test whose
+reason contains TEXT, case-insensitive). A broken rule appends an `al: check NAME fails: …` line to
+the log and turns exit 0 into exit 1, so the resolve agent, the gate and a person all see why. The
+rules fail closed: with a rule set, output al cannot read, `go test` without `-v`, or skips that show
+no reason (pytest without `-rs`, mocha, a reason-less `#[ignore]`) fail the check with a line naming
+the flag to add. They apply in the check step, its resolve loop, the review's re-checks and the
+gate's re-run of the same cmd, so a gate cannot pass on tests that did not run.
+
 ## How work is delivered
 
 A layer may declare **stages**: `(stage NAME #:branch "…" #:from STAGE #:into STAGE #:accepts (…)
@@ -404,6 +431,86 @@ layer shares that image and differs only in how a container is started.
   checks off for that environment. A workflow that runs nothing in the container (no codebase cmd, and its
   agent outside it, or a dry run's stand-in agent) skips the preflight and builds nothing.
 
+### An engine for the sandbox
+
+`(environment podman … #:nested-engine #t)` gives the run's container a rootless podman of its own,
+for tests that build or start containers (`adw_modules/nested_engine.py`). The image gets
+`podman fuse-overlayfs` and the two configuration files below (`al gen` writes them to
+`env/al-engine/`, the Containerfile copies them to `/etc/containers/`; the recipe hash covers them).
+Layers without the flag generate byte-identical files.
+
+**The flag delta.** Compared with an ordinary run container exactly one device and one volume are added:
+
+| Flag | Why |
+|---|---|
+| added: `--device /dev/fuse` | fuse-overlayfs mounts the inner engine's image layers. The kernel's overlay cannot stack on the container's own overlay root, and the vfs driver copies every layer in full. |
+| added: `-v al-engine-<layer>-<run>:/al-engine:U` | the inner engine's own storage, one volume per run, owned by the run's user, removed with the run. |
+| kept: `--cap-drop=ALL` | the inner engine runs with a single uid mapping, so it never runs `newuidmap` or another setuid binary and needs no capability. |
+| kept: `--security-opt=no-new-privileges` | single uid mapping: no `newuidmap`, no setuid exec. |
+| kept: `--userns=keep-id` | the inner engine's user is the run's user, which owns the worktree and the engine volume. |
+| kept: default seccomp profile | it allows the unprivileged `unshare(CLONE_NEWUSER)` rootless podman needs. |
+| kept: default AppArmor profile | a host whose profile forbids user namespaces gets an `engine:userns` miss instead of a weaker profile. |
+| kept: masked `/proc` paths | inner `pidns="host"`: crun bind-mounts the outer `/proc`, nothing is unmasked. |
+| kept: `--memory`, `--cpus`, `--pids-limit` | inner `cgroups="disabled"`: everything the engine starts stays in the run container's cgroup. |
+
+There is no `--privileged`, no `--cap-add`, no `unmask`, no `/dev/net/tun` and no host socket.
+
+**The inner configuration** (`containers.conf`, then `storage.conf`), each line and why:
+
+- `netns="host"`: inner containers use the run container's network namespace, which is already
+  private to the run and follows its `#:network`; no new network, no `/dev/net/tun`.
+- `pidns="host"`: crun bind-mounts the outer `/proc` instead of mounting a new procfs, which the
+  masked `/proc` paths would forbid.
+- `userns="host"`, `ipcns="host"`, `utsns="host"`, `cgroupns="host"`: no new namespaces that need
+  anything the run container may not do, and none would add isolation from the run itself.
+- `cgroups="disabled"`: inner containers create no cgroup, so `#:memory`, `#:cpus` and
+  `#:pids-limit` cover every process they start.
+- `log_driver="k8s-file"`, `[engine] cgroup_manager="cgroupfs"`, `events_logger="file"`,
+  `runtime="crun"`: no systemd or journald inside a container; crun runs rootless without a helper.
+- `driver="overlay"` with `mount_program="/usr/bin/fuse-overlayfs"`, `rootless_storage_path=
+  "/al-engine/storage"` (the run's volume) and `ignore_chown_errors="true"` (one uid inside).
+
+**One uid inside.** The keep-id user has no `/etc/subuid` range in the container, so the inner engine
+maps a single uid and never uses `newuidmap` (a setuid binary). Inner images whose processes switch
+to another user (postgres, for one) do not run, and files another user owns in an inner image become
+the engine user's. A subuid range would need `newuidmap`, so `no-new-privileges` off and the `SETUID`
+/ `SETGID` capabilities; that is deliberately not done. Docker-API compatibility (`DOCKER_HOST` for
+testcontainers) is not provided either.
+
+**Volume lifecycle.** The preflight (and `al sandbox doctor`) creates `al-engine-<layer>-<run>`,
+labelled `al.layer`, `al.layer-dir` and `al.run`; a resumed run reuses it. It is removed at the end
+of the run, whatever the outcome. A crashed run's volume is removed by the next run of the layer, or
+by `al sandbox LAYER prune`, once its run is not alive.
+
+**Preflight rows.** With the flag the doctor script adds `engine` (podman in the image),
+`engine:fuse` (`/dev/fuse` in the container), `engine:storage` (`/al-engine` writable, and podman's
+graph root under it), `engine:isolation` (no `/run/podman/podman.sock`, `/run/user/*/podman/podman.sock`
+or `/var/run/docker.sock`, and no `CONTAINER_HOST` / `DOCKER_HOST`; it names the path or the
+variable, never a value) and `engine:userns` (`podman unshare true`), and the host rows
+`engine:host-fuse` and `engine:host-userns` (`user.max_user_namespaces`;
+`kernel.apparmor_restrict_unprivileged_userns=1` is reported as a detail). A miss stops the run before
+its first step, with a fix per row; al never turns AppArmor or seccomp off for a run.
+
+**Pending a person.** The flags are passed by the protected `kit/runtime/adw_modules/envs.py`, which
+an agent does not edit. The change is one line in `EnvStack._podman_base`:
+
+```python
+def _podman_base(self) -> list[str]:
+    from . import nested_engine
+    option = self.podman_option or {}
+    namespace = ["--pod", self._pod] if self._pod else self._network_flags()
+    return [*namespace, "--security-opt", "label=disable", *hardening_flags(option),
+            *nested_engine.podman_flags(option, self.layer, self.state), *self._labels(),
+            "--memory", str(option["memory"]), "--cpus", str(option["cpus"]),
+            "-w", str(self.state.worktree), *self._podman_mounts()]
+```
+
+For a podman option with `#:nested-engine #t` it passes exactly `--device /dev/fuse` and
+`-v al-engine-<layer>-<run>:/al-engine:U`; for every other option nothing. Until a person applies
+it, every nested-engine run is refused at preflight: the `engine:fuse` row misses with a fix naming
+this change. Afterwards the person regenerates the al layer's own copy (`al gen`). If a host turns
+out to need another flag, it is not added anywhere else: it goes to a person with the failing probe.
+
 ## Isolation per run
 
 Every run is isolated on five axes, and none of them depends on runs being polite to each other:
@@ -618,13 +725,13 @@ to its check, a re-check and the reviewers to the review step).
 | `env.container.start` / `env.container.stop` | `name` |
 | `env.build.start` | `image` (`al-<layer>:<hash>`), `recipe` (the hash) |
 | `env.build.end` | `image`, `recipe`, `status` (passed / failed), `seconds`, `size` (bytes, or null), `error` (`exit N`, `timed out after …`, or null) |
-| `env.preflight` | `status` (passed / failed), `seconds`, `checks` (`[{name, status (ok / miss / skip), detail}]`) |
+| `env.preflight` | `env` (the podman option checked: the run's own, or one its checks run `#:in`), `status` (passed / failed), `seconds`, `checks` (`[{name, status (ok / miss / skip), detail}]`) |
 | `step.start` | `step`, `kind`, `attempt` |
 | `step.end` | `step`, `kind`, `status` (passed / rejected / failed / skipped / waiting; `rejected` only for a review step whose final verdict failed), `detail`, `seconds` |
 | `agent.start` | `step` (the agent's directory: `build`, `test-resolve-1`, `review-2-1`, `patch-1`, …), `owner`, `agent` (option id), `agent_kind` (claude-code / codex / custom / mock), `model`, `model_set` (= `tier`), `tier`, `tier_from` (override / request / step / command), `model_from` (agent / override), `effort`; emitted before the call waits for an `agents` slot (a `slot.wait` / `slot.acquire` with `who` = `adw <id> step <dir>` follows) |
 | `agent.end` | as `agent.start`, plus `status` (passed / failed), `seconds`, and when the transcript says so `cost` (USD), `turns`, `duration_ms`; `billing` (subscription / api-key, when the transcript's init event says so; else empty); `error` on failure |
 | `check.start` | `step` (check step, or `gate` / `deploy`), `owner`, `phase` (check / recheck / gate / deploy), `cmd` (codebase cmd name), `attempt`, `log` (layer-relative) |
-| `check.end` | as `check.start`, plus `exit`, `seconds` |
+| `check.end` | as `check.start`, plus `exit`, `seconds`; when the output had a test report `skipped` (count), `skip_reasons` (`[[reason, count]]`, at most 5, most frequent first) and `skip_source` (`pytest`, `go`, `go (no -v)`, `cargo`, `mocha`, `junit:<file>`, joined with `+`); `in` (the environment option) for a check that runs `#:in` one. A gate re-run of a check's cmd carries the same fields |
 | `script.start` / `script.end` | `step`, `owner`, `cmd` (codebase cmd name), `log` (layer-relative); `script.end` adds `exit`, `seconds` |
 | `script.event` | `step`, `owner` (the script step), `line` (the line number in the script's own `events.jsonl`), `foreign` (that line's JSON object, unchanged) |
 | `budget.stop` | `step` (the agent call that crossed the limit, or the one refused), `limit` (run / step / day), `spent`, `of`, `reason` (`budget:<limit>: spent $X of $Y`) |

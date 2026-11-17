@@ -1090,3 +1090,72 @@
   (check-rejects (host-layer '(registry #:address-env "registry.example.org")) #rx"looks like a host name")
   (check-rejects (host-layer '(registry #:username-env "REG_USER")) #rx"#:username-env and #:password-env")
   (check-rejects (host-layer '(registry) '(registry)) #rx"only one \\(registry"))
+;; --- checks that need a container engine: #:in, skip rules, #:nested-engine -------------------
+
+(define (check-step ir adw name)
+  (findf (lambda (s) (equal? (hash-ref s 'name) name))
+         (hash-ref (findf (lambda (a) (equal? (hash-ref a 'name) adw)) (hash-ref ir 'adws)) 'steps)))
+(define (in-layer in . envs)
+  (apply layer plan `(adw a #:environment (worktree) (steps (run plan #:command plan) (check t #:cmd test #:in ,in)))
+         '(environment worktree) envs))
+
+(test-case "check #:in names a declared environment"
+  (check-rejects (in-layer 'nowhere '(environment podman #:id box))
+                 #rx"`nowhere` is not a declared environment; declared: "))
+
+(test-case "check #:in must be podman or nix-devshell"
+  (check-rejects (in-layer 'host '(environment host))
+                 #rx"\\(adw a\\): check `t` #:in `host` is a `host` environment; a check runs in the run's worktree inside a podman or nix-devshell environment")
+  (check-rejects (in-layer 'spare '(environment worktree #:id spare))
+                 #rx"check `t` #:in `spare` is a `worktree` environment")
+  (check-equal? (hash-ref (check-step (compile-layer-datum (in-layer 'box '(environment podman #:id box))) "a" "t") 'in) "box")
+  (check-equal? (hash-ref (check-step (compile-layer-datum (in-layer 'nix-devshell '(environment nix-devshell #:packages ("go"))))
+                                      "a" "t") 'in)
+                "nix-devshell"))
+
+(test-case "check #:max-skipped below -1 is rejected"
+  (check-rejects (layer plan '(adw a (steps (check t #:cmd test #:max-skipped -2))))
+                 #rx"\\(adw a\\): check `t` #:max-skipped must be -1 \\(no limit\\) or more, got -2")
+  (check-equal? (hash-ref (check-step (compile-layer-datum (layer plan '(adw a (steps (check t #:cmd test #:max-skipped 0)))))
+                                      "a" "t") 'maxSkipped)
+                0))
+
+(test-case "skip rules default to -1 and empty"
+  (define st (check-step (compile-layer-datum (layer plan '(adw a (steps (check t #:cmd test))))) "a" "t"))
+  (check-equal? (hash-ref st 'maxSkipped) -1)
+  (check-equal? (hash-ref st 'forbidSkipReason) "")
+  (check-equal? (hash-ref st 'in) ""))
+
+(test-case "podman #:nested-engine defaults to #f and compiles when #t"
+  (define (box . fields)
+    (define ir (compile-layer-datum (layer plan '(environment worktree) `(environment podman #:id box ,@fields)
+                                           '(adw a #:environment (worktree box) (steps (run plan #:command plan))))))
+    (hash-ref (findf (lambda (o) (equal? (hash-ref o 'id) "box")) (hash-ref ir 'environments)) 'nestedEngine))
+  (check-equal? (box) #f)
+  (check-equal? (box '#:nested-engine #t) #t))
+
+(define (zero-touch in . envs)
+  (apply warnings review-cmd '(review auto #:ship merge #:require-checks (test)) '(environment worktree)
+         '(environment podman #:id box)
+         `(adw zte #:environment (worktree box)
+               (steps (run plan #:command plan) (check t #:cmd test) (check engine #:cmd lint #:in ,in) (review) (ship)))
+         envs))
+
+(test-case "warning: a zero-touch check outside its sandbox"
+  (check-equal? (zero-touch 'nix-devshell '(environment nix-devshell #:packages ("go")))
+                '("workflow zte ships without a person, but check engine runs #:in nix-devshell (a nix-devshell environment), outside its podman sandbox"))
+  (check-equal? (zero-touch 'engine '(environment podman #:id engine)) '()))
+
+(test-case "warning: an environment used only by a check's #:in is used"
+  (define ws (warnings '(environment worktree) '(environment podman #:id engine)
+                       '(adw a #:environment (worktree) (steps (run plan #:command plan) (check t #:cmd test #:in engine)))))
+  (check-false (warned? ws #rx"is used by no workflow"))
+  (check-equal? ws '()))
+
+(test-case "the nested-engine fixture compiles without warnings"
+  (define spec (dynamic-require (build-path fixtures "nested-engine.rkt") 'layer-spec))
+  (check-equal? (layer-warnings spec) '())
+  (check-equal? (hash-ref (check-step spec "zte" "engine-test") 'forbidSkipReason) "no podman")
+  (check-equal? (hash-ref (check-step spec "build" "engine-test") 'in) "engine")
+  (check-true (for/and ([o (in-list (hash-ref spec 'environments))] #:when (equal? (hash-ref o 'kind) "podman"))
+                (hash-ref o 'nestedEngine))))

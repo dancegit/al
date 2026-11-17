@@ -130,11 +130,25 @@ def _key(layer: Any, state: Any, run_root: Path, path: Path) -> str:
     return f"{layer.name}/{state.adw_id}/{path.relative_to(run_root).as_posix()}"
 
 
+def skip_entries(state: Any) -> list[dict[str, Any]]:
+    """One `skips` entry per check with a skip record: how many tests did not run and why. They go
+    to the reviewers' manifest only; state.artefacts (PR links, the proof comment) is unchanged."""
+    entries = []
+    for name, record in (getattr(state, "checks", None) or {}).items():
+        found = record.get("skips") if isinstance(record, dict) else None
+        if not isinstance(found, dict):
+            continue
+        entries.append({"id": "skips", "type": "skips", "step": name, "path": record.get("log", ""),
+                        "skipped": found.get("skipped", 0), "reasons": found.get("reasons", []),
+                        "unexplained": found.get("unexplained", 0), "rule": list(record.get("skip_rule", []))})
+    return entries
+
+
 def write_manifest(layer: Any, state: Any) -> Path:
     target = manifest_path(layer, state.adw_id)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(state.artefacts, indent=2) + "\n", encoding="utf-8")
+    temporary.write_text(json.dumps(state.artefacts + skip_entries(state), indent=2) + "\n", encoding="utf-8")
     temporary.replace(target)
     return target
 

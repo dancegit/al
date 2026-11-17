@@ -1082,6 +1082,16 @@
         (when (and (not (member "worktree" env-kinds))
                    (ormap (lambda (k) (member k '("check" "ship" "script"))) kinds))
           (fail "~a: check, script and ship steps need a `worktree` environment in the stack so the application checkout is never touched" who))
+        (for ([st (in-list steps)] #:when (equal? (hash-ref st 'kind) "check"))
+          (define in (hash-ref st 'in ""))
+          (unless (string=? in "")
+            (define k (hash-ref (opt 'environment in) 'kind))
+            (unless (member k '("podman" "nix-devshell"))
+              (fail "~a: check `~a` #:in `~a` is a `~a` environment; a check runs in the run's worktree inside a podman or nix-devshell environment"
+                    who (hash-ref st 'name) in k)))
+          (when (< (hash-ref st 'maxSkipped -1) -1)
+            (fail "~a: check `~a` #:max-skipped must be -1 (no limit) or more, got ~a"
+                  who (hash-ref st 'name) (hash-ref st 'maxSkipped))))
         (check-fan-outs a who steps review-i ship-i env-kinds)
         (when (and (equal? (hash-ref a 'changes) "layer")
                    (not (member (hash-ref rv 'kind) '("human" "agent"))))

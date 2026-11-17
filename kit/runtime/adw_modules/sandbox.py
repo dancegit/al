@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from . import envs, events, gitsafe, slots
+from . import checkenv, envs, events, gitsafe, nested_engine, slots
 from .errors import LayerError, StepFailed
 
 LEGACY_TAG = "latest"
@@ -490,6 +490,7 @@ def throwaway(layer: Any, env_ids: list[str], purpose: str,
         stack = envs.build(layer, state, env_ids)
         stack.setup()
         stack.cwd = worktree
+        nested_engine.prepare(layer, state, stack.podman_option)
         yield stack
     finally:
         problems: list[str] = []
@@ -498,6 +499,8 @@ def throwaway(layer: Any, env_ids: list[str], purpose: str,
                 stack.teardown(True)
             except Exception as exc:  # noqa: BLE001 — reported, and the cleanup below still runs
                 problems.append(f"teardown failed: {exc}")
+        with contextlib.suppress(Exception):
+            nested_engine.remove_volume(layer, state)
         if worktree.exists():
             _git(["-C", str(app), "worktree", "remove", "--force", str(worktree)])
             shutil.rmtree(worktree, ignore_errors=True)
@@ -561,19 +564,30 @@ def first_executable(run: str) -> str | None:
     return None
 
 
-def workflow_commands(layer: Any, adw: dict[str, Any] | None) -> list[dict[str, Any]]:
+def workflow_commands(layer: Any, adw: dict[str, Any] | None, env_id: str | None = None) -> list[dict[str, Any]]:
     """The codebase cmds a workflow runs: its check and script steps' cmds and, when it has a ship
-    step (whose gate re-runs them), its review option's requireChecks; in declaration order, each once."""
+    step (whose gate re-runs them), its review option's requireChecks; in declaration order, each once.
+
+    `env_id` None: the cmds that run in the workflow's own stack; else those of its checks that run
+    `#:in env_id` (a required cmd whose check step runs #:in X belongs to X, as the gate re-runs it there)."""
     if not adw:
         return []
+    steps = adw.get("steps") or []
     names: list[str] = []
-    for step in adw.get("steps") or []:
-        if step.get("kind") in ("check", "script") and step.get("cmd"):
+    for step in steps:
+        if step.get("kind") == "check" and step.get("cmd"):
+            if checkenv.target(adw, step) == env_id:
+                names.append(str(step["cmd"]))
+        elif step.get("kind") == "script" and step.get("cmd") and env_id is None:
             names.append(str(step["cmd"]))
     review_id = adw.get("review")
-    if review_id and any(step.get("kind") == "ship" for step in adw.get("steps") or []):
+    if review_id and any(step.get("kind") == "ship" for step in steps):
         with contextlib.suppress(LayerError):
-            names += [str(name) for name in layer.option("reviews", review_id).get("requireChecks") or []]
+            for name in layer.option("reviews", review_id).get("requireChecks") or []:
+                check = next((step for step in steps if step.get("kind") == "check"
+                              and str(step.get("cmd")) == str(name)), None)
+                if (checkenv.target(adw, check) if check is not None else None) == env_id:
+                    names.append(str(name))
     out, seen = [], set()
     for name in names:
         if name in seen:
@@ -718,6 +732,7 @@ def doctor_script(stack: Any, cmds: list[dict[str, Any]], *, agent: tuple[str, s
             "else t=''; command -v timeout >/dev/null 2>&1 && t='timeout 30'; "
             "if $t \"$b\" --headless --no-sandbox --disable-gpu --dump-dom about:blank >/dev/null 2>&1; "
             "then r browser ok \"$b\"; else r browser miss \"$b does not start headless\"; fi; fi")
+    lines += nested_engine.doctor_lines(option)
     minimum = MIN_FREE_MB * 1024
     lines.append(f"free=$(df -Pk {q(worktree)} /tmp 2>/dev/null | awk 'NR>1 {{print $4}}' | sort -n | head -1); "
                  f"if [ -z \"$free\" ]; then r disk skip 'df is not available'; "
@@ -738,6 +753,8 @@ def parse_doctor_output(text: str) -> list[Check]:
 def _fix(check: Check, option: dict[str, Any], cmds: dict[str, dict[str, Any]], layer_dir: str) -> str:
     decl = _decl(option)
     name = check.name
+    if name == "engine" or name.startswith("engine:"):
+        return nested_engine.fixes(check, option)
     if name.startswith("command:"):
         cmd = name.split(":", 1)[1]
         exe = first_executable(str((cmds.get(cmd) or {}).get("run") or "")) or cmd
@@ -784,7 +801,8 @@ def doctor(layer: Any, stack: Any, adw: dict[str, Any] | None, *, fast: bool = F
     services = True if services is None else services
     script = doctor_script(stack, cmds, agent=agent, browser=browser, services=services)
     expected = ([f"command:{cmd.get('name')}" for cmd in cmds] + (["agent"] if agent else []) + ["git", "init"]
-                + [f"cache:{cache}" for cache in option.get("caches") or []] + (["browser"] if browser else []) + ["disk"])
+                + [f"cache:{cache}" for cache in option.get("caches") or []] + (["browser"] if browser else [])
+                + (list(nested_engine.ROWS) if nested_engine.enabled(option) else []) + ["disk"])
     checks: list[Check] = []
     started_ok = True
     try:
@@ -813,6 +831,7 @@ def doctor(layer: Any, stack: Any, adw: dict[str, Any] | None, *, fast: bool = F
             checks += found
             checks += [Check(item, "miss", "not reported by the doctor script") for item in expected if item not in seen]
         checks += _service_checks(stack, services)
+    checks += nested_engine.host_checks(option)
     host = host_agent_requirement(layer, adw, stack)
     if host is not None:
         where = shutil.which(host[0])
@@ -889,6 +908,7 @@ def preflight(layer: Any, state: Any, adw: dict[str, Any], stack: Any) -> list[C
     ensure_image(layer)
     if not getattr(state, "image", ""):
         state.image = image_ref(layer)
+    nested_engine.prepare(layer, state, option)
     on = set(option.get("preflight", list(DEFAULT_PREFLIGHT)))
     checks = doctor(layer, stack, adw, fast=True, cmds=cmds, agent=agent,
                     browser=needs_browser(layer, adw) and "browser" in on, services="services" in on)
@@ -899,7 +919,7 @@ def preflight(layer: Any, state: Any, adw: dict[str, Any], stack: Any) -> list[C
                 check.status, check.detail = "skip", "not in the image; only an agent inside the container needs it"
     missed = [check for check in checks if check.status == "miss"]
     events.say(f"[adw {state.adw_id}] preflight: {len(checks)} checks, {len(missed)} missed", "env.preflight",
-               status="failed" if missed else "passed", seconds=round(time.monotonic() - started, 3),
+               env=str(option.get("id") or ""), status="failed" if missed else "passed", seconds=round(time.monotonic() - started, 3),
                checks=[{"name": check.name, "status": check.status, "detail": check.detail} for check in checks])
     if missed:
         raise StepFailed("preflight", "the sandbox is missing what this workflow needs:\n" + format_table(checks))

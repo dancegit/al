@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import budget, delivery, envs, events, ir, models, notify, sandbox, state as state_module, steps
+from . import budget, checkenv, delivery, envs, events, ir, models, nested_engine, notify, sandbox, skips
+from . import state as state_module, steps
 from . import slots
 from .agents import CLASSES
 from .errors import LayerError, StepFailed, StepWaiting
@@ -190,7 +191,9 @@ def _resumed_state(layer: Any, adw_name: str, args: argparse.Namespace) -> state
 
 
 def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
-    checks = ", ".join(f"{name}={data['exit']}" for name, data in state.checks.items()) or "none"
+    checks = ", ".join(f"{name}={data['exit']}" + (f" ({skips.summary_text(data['skips'])})"
+                                                   if skips.summary_text(data.get("skips") or {}) else "")
+                       for name, data in state.checks.items()) or "none"
     review = _review_line(state)
     ship = state.ship.get("action", "none")
     if state.ship.get("action"):
@@ -315,6 +318,7 @@ def _execute(layer: Any, state: state_module.ADWState, adw: dict[str, Any], stac
     stack.setup()
     state.save(layer.layer_dir)
     sandbox.preflight(layer, state, adw, stack)  # podman stacks: current image, and what the workflow needs is there
+    checkenv.preflight(layer, state, adw, stack)  # the podman environments its checks run #:in
     state.save(layer.layer_dir)
     for step in adw.get("steps", []):
         steps.run_step(layer, state, adw, step, stack)
@@ -390,6 +394,9 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
             if stack.worktree_option:
                 for removed in envs.collect_garbage(layer, stack.worktree_option):
                     print(f"[adw {state.adw_id}] gc: removed stale worktree {removed}")
+            if any(nested_engine.enabled(option) for option in sandbox.podman_options(layer)):
+                for removed in nested_engine.collect_stale_volumes(layer):
+                    print(f"[adw {state.adw_id}] gc: removed stale nested-engine volume {removed}")
             _execute(layer, state, adw, stack)
         reasons = handover_reasons(layer, state, adw)
         if reasons:
@@ -424,6 +431,15 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
         except (StepFailed, LayerError, OSError) as exc:
             print(f"[adw {state.adw_id}] teardown failed: {exc}")
             state.status, exit_code = "failed", 1
+        try:
+            checkenv.close_all(state)
+        except (StepFailed, LayerError, OSError) as exc:
+            print(f"[adw {state.adw_id}] check environments: cleanup failed: {exc}")
+        if any(nested_engine.enabled(option) for option in sandbox.podman_options(layer)):
+            try:
+                nested_engine.remove_volume(layer, state)
+            except (StepFailed, LayerError, OSError) as exc:
+                print(f"[adw {state.adw_id}] nested engine: cleanup failed: {exc}")
         if request is not None and request.hooks is not None:
             try:
                 request.hooks.on_finish(state)

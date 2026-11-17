@@ -12,9 +12,11 @@ from typing import Any
 
 from . import artefacts
 from . import discipline
+from . import checkenv
 from . import events
 from . import journal as journal_module
 from . import models
+from . import skips
 from . import slots
 from .agents import run_agent
 from .budget import BudgetExceeded
@@ -117,16 +119,55 @@ def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
     owner = running_step(state)
     span = {"step": name, "owner": owner, "phase": "check" if owner in ("", name) else "recheck",
             "cmd": str(step["cmd"]), "attempt": attempt, "log": relative_log}
+    stack = checkenv.stack_for(layer, state, step, env_stack)
+    env_id = checkenv.target(layer.adw(state.adw), step)
     with slots.slot(layer, "checks", f"adw {state.adw_id} check {name}"):
-        argv = env_stack.wrap(cmd)
+        argv = stack.wrap(cmd)
         events.emit("check.start", **span)
         started = time.monotonic()
-        exit_code, _output = run_command(argv, env_stack.cwd, env_stack.process_env(),
+        started_wall = time.time()
+        exit_code, _output = run_command(argv, stack.cwd, stack.process_env(),
                                           int(timeout or command.get("timeout", 1800)), log_path=log_path)
-        events.emit("check.end", **span, exit=exit_code, seconds=round(time.monotonic() - started, 3))
-    state.checks[name] = {"cmd": cmd, "exit": exit_code, "log": relative_log}
+        exit_code, report, problems = _skip_rules(layer, state, step, log_path, started_wall, exit_code)
+        events.emit("check.end", **span, exit=exit_code, seconds=round(time.monotonic() - started, 3),
+                    **_skip_fields(report, env_id))
+    record: dict[str, Any] = {"cmd": cmd, "exit": exit_code, "log": relative_log}
+    if report is not None:
+        record["skips"] = report.as_dict()
+    if problems:
+        record["skip_rule"] = problems
+    if env_id:
+        record["in"] = env_id
+    state.checks[name] = record
     state.save(layer.layer_dir)
+    if report is not None:
+        artefacts.write_manifest(layer, state)  # reviewers see the skips without a #:collect
     return exit_code
+
+
+def _skip_rules(layer: Any, state: Any, step: dict[str, Any], log_path: Path, started_wall: float,
+                exit_code: int) -> tuple[int, Any, list[str]]:
+    """Count the attempt's skipped tests and apply the check's skip rules: a broken rule appends its
+    `al: …` lines to the log (the resolve agent, the gate and a person all read why) and turns
+    exit 0 into exit 1."""
+    report = skips.account(layer, state, step, log_path, started_wall)
+    problems = skips.violations(step, report)
+    if problems:
+        with Path(log_path).open("a", encoding="utf-8") as log:
+            log.write("\n" + "\n".join(problems) + "\n")
+        if exit_code == 0:
+            exit_code = 1
+    return exit_code, report, problems
+
+
+def _skip_fields(report: Any, env_id: str | None) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    if report is not None:
+        record = report.as_dict()
+        fields.update(skipped=record["skipped"], skip_reasons=record["reasons"], skip_source=record["source"])
+    if env_id:
+        fields["in"] = env_id
+    return fields
 
 
 def running_step(state: Any) -> str:
@@ -140,12 +181,21 @@ def run_logged(layer: Any, state: Any, env_stack: Any, command: dict[str, Any], 
     log streamed to log_path and a check.start / check.end pair."""
     span = {"step": step, "owner": running_step(state), "phase": phase, "cmd": str(command["name"]),
             "attempt": 1, "log": Path(log_path).relative_to(layer.layer_dir).as_posix()}
-    argv = env_stack.wrap(str(command["run"]))
+    # the gate re-runs a cmd where its check step runs it (#:in) and under the same skip rules
+    check = checkenv.check_for_cmd(layer, state, str(command["name"])) if phase == "gate" else None
+    stack = checkenv.stack_for(layer, state, check, env_stack) if check is not None else env_stack
+    env_id = checkenv.target(layer.adw(state.adw), check) if check is not None else None
+    argv = stack.wrap(str(command["run"]))
     events.emit("check.start", **span)
     started = time.monotonic()
-    code, _output = run_command(argv, env_stack.cwd, env_stack.process_env(), int(command.get("timeout", 1800)),
+    started_wall = time.time()
+    code, _output = run_command(argv, stack.cwd, stack.process_env(), int(command.get("timeout", 1800)),
                                 log_path=log_path)
-    events.emit("check.end", **span, exit=code, seconds=round(time.monotonic() - started, 3))
+    fields: dict[str, Any] = {}
+    if check is not None:
+        code, report, _problems = _skip_rules(layer, state, check, log_path, started_wall, code)
+        fields = _skip_fields(report, env_id)
+    events.emit("check.end", **span, exit=code, seconds=round(time.monotonic() - started, 3), **fields)
     return code
 
 

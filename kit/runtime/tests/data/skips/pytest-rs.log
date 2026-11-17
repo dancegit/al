@@ -1,0 +1,12 @@
+# recorded: pytest -rs on a two-file project (one passing test, two skipped "no podman", one skipped "needs network"); header lines removed
+============================= test session starts ==============================
+collected 4 items
+
+test_app.py .                                                            [ 25%]
+test_engine.py sss                                                       [100%]
+
+=========================== short test summary info ============================
+SKIPPED [1] test_engine.py:3: no podman
+SKIPPED [1] test_engine.py:7: no podman
+SKIPPED [1] test_engine.py:11: needs network
+========================= 1 passed, 3 skipped in 0.02s =========================

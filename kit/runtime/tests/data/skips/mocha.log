@@ -1,0 +1,15 @@
+# hand-written: node is not installed here; `npx mocha` output of the spec reporter for one passing test and three it.skip tests
+
+
+  app
+    ✔ adds
+
+  engine
+    - builds an image
+    - starts a container
+    - pulls
+
+
+  1 passing (3ms)
+  3 pending
+

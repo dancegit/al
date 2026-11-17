@@ -162,3 +162,17 @@ def test_a_step_can_name_its_own_agent(make_layer, tmp_path):
     (other / "text.json").write_text('{"output": "from the step agent"}')
     assert run_agent(layer, run_state, "text", "text", ["x"], "base", env, "other") == "from the step agent"
     assert run_agent(layer, run_state, "text", "text", ["x"], "base", env) != "from the step agent"
+
+
+def test_extract_json_survives_a_code_fence_inside_a_string() -> None:
+    """A reviewer quoted a fenced code block inside its description: the short match ended there."""
+    from adw_modules.agents import extract_json
+
+    answer = ('Here is my verdict.\n```json\n{\n  "success": true,\n  "summary": "ok",\n  "issues": [\n    {"severity": '
+              '"tech_debt", "description": "only blocks tagged ```bash are read, not ```console"}\n  ]\n}\n```\n')
+    verdict = extract_json(answer, "review-2")
+    assert verdict["success"] is True and "```bash" in verdict["issues"][0]["description"]
+    # a raw line break inside a string is accepted too
+    assert extract_json('```json\n{"summary": "line one\nline two"}\n```', "review-1")["summary"] == "line one\nline two"
+    # two objects in one answer: the last fenced one is still the answer
+    assert extract_json('```json\n{"a": 1}\n```\nthen\n```json\n{"a": 2}\n```', "x") == {"a": 2}

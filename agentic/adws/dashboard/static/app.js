@@ -607,6 +607,7 @@
         else if (node.duration !== null && node.duration !== undefined) meta.push(fmt.dur(node.duration));
         if (node.cost) meta.push(fmt.cost(node.cost));
         if (node.type === "check" && node.attempts > 1) meta.push(`${node.attempts} tries`);
+        if (node.type === "check" && node.skipped) meta.push(`${node.skipped} skipped`);
         if (node.resolves) meta.push(`${node.resolves} fix`);
       } else if (node.when && node.when !== "always") {
         meta.push(`when ${node.when.replace("class-", "")}`);
@@ -1994,6 +1995,9 @@
         content.appendChild(h("div", { class: "toolbar" },
           h("span", { class: "mono", text: cmd ? `$ ${cmd}` : source.label }),
           at.exit !== undefined && at.exit !== null ? h("span", { class: `badge ${at.exit === 0 ? "good" : "bad"}`, text: at.exit === "fail" ? "exit ≠ 0" : `exit ${at.exit}` }) : null,
+          at.skipped ? h("span", { class: "badge warn", "data-role": "skips", text: `${at.skipped} skipped`,
+            title: (at.skip_reasons || []).map(([reason, count]) => `${reason} ×${count}`).join("\n") }) : null,
+          at.env ? h("span", { class: "badge", text: `in ${at.env}` }) : null,
           source.pending ? h("span", { class: "badge info" }, "running for ", h("span", { class: "num", "data-since": source.start, text: fmt.dur(now() - source.start) }),
             " · this run's runtime writes the log when the command finishes") : null,
           at.running ? h("span", { class: "badge info", "data-role": "live-check" }, "running for ", h("span", { class: "num", "data-since": source.start, text: fmt.dur(now() - source.start) }),

@@ -1,0 +1,25 @@
+# recorded: make test running pytest -rs (recorded) and go test -v (hand-written, see go-v.log) in one log
+============================= test session starts ==============================
+collected 4 items
+
+test_app.py .                                                            [ 25%]
+test_engine.py sss                                                       [100%]
+
+=========================== short test summary info ============================
+SKIPPED [1] test_engine.py:3: no podman
+SKIPPED [1] test_engine.py:7: no podman
+SKIPPED [1] test_engine.py:11: needs network
+========================= 1 passed, 3 skipped in 0.02s =========================
+=== RUN   TestAdds
+--- PASS: TestAdds (0.00s)
+=== RUN   TestBuildsAnImage
+    engine_test.go:8: no podman
+--- SKIP: TestBuildsAnImage (0.00s)
+=== RUN   TestStartsAContainer
+    engine_test.go:12: no podman
+--- SKIP: TestStartsAContainer (0.00s)
+=== RUN   TestPulls
+    engine_test.go:16: needs network
+--- SKIP: TestPulls (0.00s)
+PASS
+ok  	example.com/proj	0.002s
