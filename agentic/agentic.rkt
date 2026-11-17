@@ -84,13 +84,20 @@
   (artefact image #:id screenshots #:glob "kit/dashboard/shots/*.png")
   (artefact image #:id showcase-stills #:glob "docs/showcase/*.png")
   (artefact video #:id showcase-clips #:glob "docs/showcase/*.mp4")
+  ;; Proof of the voice helper: written by its validation commands into a git-ignored folder of the
+  ;; run's worktree. Without these, reviewers got only the first twelve dashboard screenshots.
+  (artefact image #:id voice-shots #:glob "kit/dashboard/shots-proof/voice-*.png" #:max-files 24)
+  (artefact video #:id voice-clips #:glob "kit/dashboard/shots-proof/voice-*.webm")
+  (artefact audio #:id voice-audio #:glob "kit/dashboard/shots-proof/voice/roundtrip-*.wav")
+  (artefact file #:id voice-report #:glob "kit/dashboard/shots-proof/voice/*.json")
+  (artefact file #:id voice-logs #:glob "kit/dashboard/shots-proof/voice-*.log")
 
   (review human)
   (review auto #:id two-reviewers #:artefacts (log) #:reviewers 2 #:max-retries 2 #:ship pr
           #:require-checks (test-compiler test-runtime) #:allowed-classes (chore bug feature))
   ;; Zero-touch: two reviewer agents and every suite must pass, then the change is merged without a person.
   ;; A change under a protected path, or a very large one, still goes to a person.
-  (review auto #:id zero-touch #:artefacts (log screenshots showcase-stills showcase-clips) #:reviewers 2 #:max-retries 2 #:ship merge
+  (review auto #:id zero-touch #:artefacts (log screenshots showcase-stills showcase-clips voice-shots voice-clips voice-audio voice-report voice-logs) #:reviewers 2 #:max-retries 2 #:ship merge
           #:require-checks (test-docs test-compiler test-runtime test-tools test-dashboard-proof test-integration) #:require affected
           #:allowed-classes (chore bug feature) #:max-diff-lines 4000)
   (dashboard local #:port 8770)   ; 8765 is often taken by other tools
@@ -189,7 +196,7 @@
       (check test-compiler #:cmd test-compiler #:resolve resolve-test #:collect (log) #:when-affected #t)
       (check test-runtime #:cmd test-runtime #:resolve resolve-test #:collect (log) #:when-affected #t)
       (check test-tools #:cmd test-tools #:resolve resolve-test #:collect (log) #:when-affected #t)
-      (check test-dashboard #:cmd test-dashboard-proof #:resolve resolve-test #:collect (log screenshots showcase-stills showcase-clips) #:when-affected #t)
+      (check test-dashboard #:cmd test-dashboard-proof #:resolve resolve-test #:collect (log screenshots showcase-stills showcase-clips voice-shots voice-clips voice-audio voice-report voice-logs) #:when-affected #t)
       (check test-integration #:cmd test-integration #:resolve resolve-test #:collect (log) #:when-affected #t)
       (run document #:command document #:args ("$plan"))
       (run commit #:command commit)

@@ -587,7 +587,12 @@
             "log",
             "screenshots",
             "showcase-stills",
-            "showcase-clips"
+            "showcase-clips",
+            "voice-shots",
+            "voice-clips",
+            "voice-audio",
+            "voice-report",
+            "voice-logs"
           ],
           "forbidSkipReason": "",
           "in": "",
@@ -709,6 +714,38 @@
       "id": "showcase-clips",
       "keyframes": 6,
       "kind": "video",
+      "status": "stable"
+    },
+    {
+      "glob": "kit/dashboard/shots-proof/voice-*.png",
+      "id": "voice-shots",
+      "kind": "image",
+      "maxFiles": 24,
+      "status": "stable"
+    },
+    {
+      "glob": "kit/dashboard/shots-proof/voice-*.webm",
+      "id": "voice-clips",
+      "keyframes": 6,
+      "kind": "video",
+      "status": "stable"
+    },
+    {
+      "glob": "kit/dashboard/shots-proof/voice/roundtrip-*.wav",
+      "id": "voice-audio",
+      "kind": "audio",
+      "status": "stable"
+    },
+    {
+      "glob": "kit/dashboard/shots-proof/voice/*.json",
+      "id": "voice-report",
+      "kind": "file",
+      "status": "stable"
+    },
+    {
+      "glob": "kit/dashboard/shots-proof/voice-*.log",
+      "id": "voice-logs",
+      "kind": "file",
       "status": "stable"
     }
   ],
@@ -1314,7 +1351,12 @@
         "log",
         "screenshots",
         "showcase-stills",
-        "showcase-clips"
+        "showcase-clips",
+        "voice-shots",
+        "voice-clips",
+        "voice-audio",
+        "voice-report",
+        "voice-logs"
       ],
       "blockProtectedPaths": true,
       "bodyCmd": "",
