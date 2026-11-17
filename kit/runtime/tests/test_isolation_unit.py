@@ -473,3 +473,33 @@ def test_sidecars_start_as_namespace_root_with_a_minimal_capability_set() -> Non
     assert set(envs.SIDECAR_CAPABILITIES.split(",")) == {"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"}
     run = envs.hardening_flags(option)
     assert not any(flag.startswith("--cap-add") for flag in run) and "--user" not in run
+
+
+def test_the_container_gets_a_credential_copy_that_follows_the_hosts_renewals(make_layer, monkeypatch, tmp_path) -> None:
+    """The agent CLI on the host replaces its credential file when it renews the login, and the old
+    login is revoked. A file mount of the host's file would keep the replaced file for the whole run."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    host = home / ".claude" / ".credentials.json"
+    host.write_text('{"token": "first"}')
+    monkeypatch.setattr(Path, "home", lambda: home)
+    layer = _layer(make_layer, podman={"agentInside": True, "credentials": ["claude"]})
+    fake = FakePodman(monkeypatch)
+    state, stack = _stack(layer)
+    stack.setup()
+    stack.wrap_agent(["claude", "-p", "hi"])
+    copy = Path(layer.layer_dir) / "agents" / ADW_ID / "credentials" / "claude.json"
+    main = " ".join(_main_start(fake, layer))
+    assert f"{copy}:" in main and str(host) not in main          # the copy is mounted, never the host's file
+    assert copy.read_text() == '{"token": "first"}' and (copy.stat().st_mode & 0o777) == 0o600
+    inode = copy.stat().st_ino
+    replacement = home / ".claude" / "new"
+    replacement.write_text('{"token": "second, and longer"}')
+    replacement.replace(host)                                    # how the CLI renews: a new file takes the name
+    stack.wrap_agent(["claude", "-p", "again"])
+    assert copy.read_text() == '{"token": "second, and longer"}'
+    assert copy.stat().st_ino == inode                           # rewritten in place: the mount sees it
+    host.write_text('{"t": 1}')
+    stack.wrap_agent(["claude", "-p", "third"])
+    assert copy.read_text() == '{"t": 1}'                        # a shorter file leaves no tail behind
+    stack.teardown(success=True)

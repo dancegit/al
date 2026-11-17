@@ -407,9 +407,9 @@ class EnvStack:
                 directory.mkdir(parents=True, exist_ok=True)
                 mounts += ["-v", f"{directory}:{directory}"]
             for name in option.get("credentials", []):
-                source = Path.home() / CREDENTIALS[name][0]
-                if source.is_file():
-                    mounts += ["-v", f"{source}:{CONTAINER_HOME}/{CREDENTIALS[name][0]}:ro"]
+                copy = self._sync_credential(name)
+                if copy is not None:
+                    mounts += ["-v", f"{copy}:{CONTAINER_HOME}/{CREDENTIALS[name][0]}:ro"]
         mounts += ["-v", f"{worktree}:{worktree}", "-v", f"{git_dir}:{git_dir}:ro"]
         for name in ("refs", "logs", "reftable"):
             if (git_dir / name).is_dir() and not (git_dir / name).is_symlink():
@@ -570,10 +570,36 @@ class EnvStack:
     def agent_inside(self) -> bool:
         return bool(self.podman_option and self.podman_option.get("agentInside"))
 
+    def _sync_credential(self, name: str) -> Path | None:
+        """The run's own copy of a credential file, brought up to date with the host's. The container
+        mounts this copy, not the host's file: a file mount pins the file it was given, and the agent
+        CLI on the host replaces its credential file when it renews the login, which revokes the old
+        one. A run of several hours would then keep a revoked login. The copy is rewritten in place
+        (same file, so the mount sees it) before every agent call."""
+        source = Path.home() / CREDENTIALS[name][0]
+        if not source.is_file():
+            return None
+        copy = Path(self.layer.layer_dir) / "agents" / str(self.state.adw_id) / "credentials" / f"{name}.json"
+        try:
+            data = source.read_bytes()
+            if not copy.is_file():
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                copy.touch(mode=0o600)
+            if copy.read_bytes() != data:
+                with open(copy, "r+b") as handle:   # in place: never a new file
+                    handle.seek(0)
+                    handle.write(data)
+                    handle.truncate()
+        except OSError as exc:
+            raise StepFailed("environment setup", f"credential {name}: {exc}") from exc
+        return copy
+
     def wrap_agent(self, argv: list[str]) -> list[str]:
         """argv that runs an agent CLI: inside the container when the podman option says so
         (the agent itself is then sandboxed), else under the nix dev shell, else on the host."""
         if self.agent_inside:
+            for name in (self.podman_option or {}).get("credentials", []):
+                self._sync_credential(name)
             return self._podman_argv(argv, interactive=True)
         if self.nix_option:
             return [*self._nix_argv(), *argv]
