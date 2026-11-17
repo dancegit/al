@@ -67,6 +67,17 @@ def test_al_check_ignores_the_layer_s_own_changes_but_nothing_else(in_repo, app)
     assert "note: uncommitted change outside the layer (not checked):  M app.py" in out
 
 
+def test_al_check_accepts_a_fresh_in_repo_layer_before_its_first_commit(app) -> None:
+    al("init", app, "--in-repo")
+    layer = app / "agentic"
+    (layer / "agentic.rkt").write_text(LAYER_TEMPLATE.format(root="..", placement='(layer in-repo #:dir "agentic")'))
+    al("gen", layer)
+    assert (layer / "scout.json").is_file() and "?? agentic/scout.json" in status(app)   # written by al init, not committed
+    out = al("check", layer).stdout
+    assert out.strip().endswith("check: ok"), out
+    assert not [line for line in out.splitlines() if line.startswith("PROBLEM:")], out
+
+
 def test_al_check_passes_with_unrelated_work_in_progress(in_repo, app) -> None:
     (app / "scratch.txt").write_text("my notes\n")
     (app / "app.py").write_text("NOTES = ['work in progress']\n")

@@ -57,6 +57,8 @@ To keep the layer inside your repository instead, versioned with the code, use
 `al init ~/code/myapp --in-repo`. It creates `~/code/myapp/agentic`. Every later command then takes
 `~/code/myapp/agentic` where this guide writes `~/code/myapp.al`, and scripts are run from the repository
 root as `uv run agentic/adws/…`. Step 14 explains what is committed and the one rule that comes with it.
+`al create ~/code/myapp --in-repo` (below) runs this and the following steps in one command, with the
+layer in `~/code/myapp/agentic`.
 
 You should see the path of the new folder, `~/code/myapp.al`, containing three files (four with
 `--in-repo`: a `.gitignore` as well):
@@ -83,6 +85,11 @@ result card. `al adopt-all ~/code/myapp` is the same for a repository with an ag
 refuses one without (`use al create`). Each step prints `== STEP` first; the first that fails stops the
 sequence and keeps what the steps before it wrote. `al create ~/code/myapp --choices` prints the choices
 step 4 will make (with `--json`: as data) and writes nothing; `--choice KEY=VALUE` changes one (step 4).
+`al create ~/code/myapp --in-repo` (and `al adopt-all ~/code/myapp --in-repo`) does the same with the
+layer inside the repository, in `~/code/myapp/agentic`: its first step is `al init ~/code/myapp --in-repo`,
+every later step takes `~/code/myapp/agentic`, and `al author` has the agent declare
+`(layer in-repo #:dir "agentic")` and refuses a definition that does not. Nothing is committed for you:
+commit `agentic/` with the code when you are satisfied.
 The steps below are what it does, one at a time.
 
 ## Step 2 — Describe the codebase
@@ -706,15 +713,38 @@ its state, each with the exact command line it runs:
 | Action | For | Runs |
 |---|---|---|
 | scout | any | `al scout ~/code/orbit` (read-only; its output is the job's `LLM.txt`) |
-| create | `none`, `setup` | first `al create ~/code/fern --choices --json` (the detected choices); on Confirm `al init ~/code/fern` → `al scout ~/code/fern --into ~/code/fern.al` → `al adopt ~/code/fern.al --app ~/code/fern` → `al author ~/code/fern.al` → `al gen` → `al check` → `al result ~/code/fern.al --json` |
-| adopt | `setup` | first `al adopt ~/code/orbit.al --app ~/code/orbit --dry-run --diff`, shown as a diff, and the detected choices; on Confirm the same seven steps as create |
+| create | `none`, `setup` | choose the placement (below); first `al create ~/code/fern --choices --json` (the detected choices); on Confirm, beside the repository: `al init ~/code/fern` → `al scout ~/code/fern --into ~/code/fern.al` → `al adopt ~/code/fern.al --app ~/code/fern` → `al author ~/code/fern.al` → `al gen` → `al check` → `al result ~/code/fern.al --json`; inside it: `al init ~/code/fern --in-repo` → `al scout ~/code/fern --into ~/code/fern/agentic` → the same steps on `~/code/fern/agentic` |
+| adopt | `setup` | choose the placement; first `al adopt ~/code/orbit.al --app ~/code/orbit --dry-run --diff` (inside: `~/code/orbit/agentic`), shown as a diff, and the detected choices; on Confirm the same seven steps as create |
 | gen | `layer` | `al gen LAYER` |
 | check | `layer` | `al check LAYER` (read-only) |
 | verify | `layer` | `al verify LAYER --json` (writes the report and a throwaway worktree) |
 | explain | `layer` | `al explain LAYER --md …` (read-only; its output is the job's `EXPLAIN.md`) |
 
-Create and adopt are `al create` and `al adopt-all` (step 1): the same steps in the same order, so the
-author sees what was adopted. An action that writes asks first: it shows the command lines and the paths
+**Choose where the layer goes.** Create and adopt offer two placements, each with the path it leads to:
+**beside the repository** (`~/code/fern.al`, a folder next to it; nothing is written into the repository)
+or **inside the repository** (`~/code/fern/agentic`, committed with the code, so every clone has the
+layer; run state stays in git-ignored folders of it). Before anything starts, each placement shows three
+checks: whether the path exists (files there are kept) or will be created, whether it is writable, and
+whether it is already a layer. One that cannot be used is disabled and says why: it is already a layer,
+it is a file, the folder is not writable, or, for inside, the repository already tracks files in
+`agentic/`. The command lines under the button are those of the placement you selected, the confirmation
+repeats the placement and its path, and the server checks it again when the job starts. A job that wrote
+the layer inside the repository says so on its page ("commit agentic/ with the code"); nothing is
+committed for you.
+
+**Guided generation.** **generate a layer…** beside **refresh** (or **guided** in a repository's al
+panel; the address is `#/generate` or `#/generate/fern`) leads through the same create or adopt in four
+steps: the repository (one with a layer cannot be chosen; for one with an agent setup, whether to adopt
+it), the placement with its paths and checks, the options (the detected choices, each with a sentence
+saying what it decides, the fact behind its value, and the detected value selected), and a review of
+everything: repository, action, placement and path, every option with the changed ones marked, the exact
+command lines and the paths written. Nothing is written before **Start**; only the read-only detection
+(and for adopt the dry run) runs, when the options step opens. **Back** keeps your answers; another
+repository, action or placement detects again. Start opens the job. It is the same request as the
+buttons send, so it is off when they are (`--read-only`, `--no-actions`, no al tool), and says why.
+
+Create and adopt are `al create` and `al adopt-all` (step 1; with `--in-repo` for the inside placement):
+the same steps in the same order, so the author sees what was adopted. An action that writes asks first: it shows the command lines and the paths
 it writes (for adopt, the dry run's diff) and runs only after **Confirm**; if the repository changed in
 between, it asks again. The start form of create and adopt shows "detecting choices…" and then each
 choice step 4 will make (forge, forge host, repository, where work comes from, what starts it,

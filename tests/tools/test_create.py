@@ -359,3 +359,99 @@ def test_choices_json_lists_each_choice_with_its_fact(tmp_path):
     assert choices["forge"]["value"] == "forgejo" and ".forgejo/workflows" in choices["forge"]["fact"]
     assert choices["review"]["fact"] == "default: facts are silent"
     assert sorted(p.name for p in tmp_path.iterdir()) == before and status(app) == ""
+
+
+# ------------------------------------------------------------------------------------------ inside the repository
+
+# MOCK_DEFINITION with the placement `al author` names: (layer in-repo #:dir "agentic") inside, (layer sibling) beside
+IN_REPO_DEFINITION = MOCK_DEFINITION.replace("(layer sibling)", "${placement}")
+assert "${placement}" in IN_REPO_DEFINITION
+
+
+def test_dashboard_in_repo_dir_equals_al_create():
+    dashboard = load_dashboard()
+    assert dashboard.IN_REPO_DIR == al_create.IN_REPO_DIR
+    assert dashboard.PLACEMENTS == ("beside", "inside")
+
+
+def test_in_repo_sequence_differs_only_in_init_and_the_layer():
+    inside = al_create.sequence("al", "/a", "/a/agentic", [], {}, in_repo=True)
+    beside = al_create.sequence("al", "/a", "/a/agentic", [], {})
+    assert tuple(name for name, _, _ in inside) == al_create.SEQUENCE_NAMES
+    assert dict((name, argv) for name, argv, _ in inside)["init"] == ["al", "init", "/a", "--in-repo"]
+    assert [step for step in inside if step[0] != "init"] == [step for step in beside if step[0] != "init"]
+
+
+@pytest.mark.parametrize("flags, choices", [
+    (["--agent", "mock", "--mock", "/m.json"], {}),
+    ([], {"review": "agent", "forge": "none"}),
+    (["--agent", "claude-code"], {"delivery": "trunk"}),
+])
+def test_dashboard_inside_steps_equal_the_in_repo_sequence(tmp_path, flags, choices):
+    dashboard = load_dashboard()
+    app = ff.bare_repo(tmp_path)
+    entry = dashboard.RepoEntry(key="fern", name="fern", path=app, root=tmp_path)
+    config = dashboard.ActionConfig(Path("/x/al"), flags, choices, placement="inside")
+    assert dashboard.layer_of(entry, "inside") == Path(os.path.realpath(app)) / "agentic"
+    layer = str(dashboard.layer_of(entry, "inside"))
+    expected = [(name, argv[1:]) for name, argv, _ in
+                al_create.sequence("/x/al", os.path.realpath(app), layer, flags, choices, raw=True, in_repo=True)]
+    assert expected[0] == ("init", ["init", os.path.realpath(app), "--in-repo"])
+    for build in (dashboard._steps_create, dashboard._steps_adopt):
+        steps = build(entry, config, tmp_path / "docs")
+        assert [(s.name, s.argv[1:]) for s in steps] == expected
+
+
+def test_create_in_repo_puts_the_layer_inside_the_repository(tmp_path):
+    app = ff.bare_repo(tmp_path)
+    out = al("create", app, "--in-repo", "--agent", "mock", "--mock", mock_file(tmp_path, IN_REPO_DEFINITION)).stdout
+    assert step_lines(out) == ["init", "scout", "adopt", "author", "gen", "check", "result"]
+    layer = app / "agentic"
+    ir = json.loads((layer / "agentic-layer.json").read_text())
+    assert ir["layer"]["kind"] == "in-repo" and ir["layer"]["dir"] == "agentic"
+    assert not (tmp_path / "fern.al").exists()
+    assert al("check", layer).stdout.strip().endswith("check: ok")
+    lines = status(app).splitlines()
+    assert lines and all(line[3:].startswith("agentic/") for line in lines), lines
+
+
+def test_author_tells_the_agent_the_layer_is_in_the_repository(tmp_path):
+    app = ff.bare_repo(tmp_path)
+    al("init", app, "--in-repo")
+    layer = app / "agentic"
+    al("author", layer, "--agent", "mock", "--mock", mock_file(tmp_path, IN_REPO_DEFINITION))
+    prompt = (layer / "agents" / "author" / "prompt.txt").read_text()
+    assert 'The layer is in the repository: (codebase #:root "..") and (layer in-repo #:dir "agentic").' in prompt
+    assert "The codebase root, relative to the layer folder, is" not in prompt
+    ir = json.loads(al("compile", layer).stdout)
+    assert ir["layer"] == {**ir["layer"], "kind": "in-repo", "dir": "agentic"}
+
+
+def test_author_refuses_a_definition_without_the_in_repo_clause(tmp_path):
+    app = ff.bare_repo(tmp_path)
+    al("init", app, "--in-repo")
+    layer = app / "agentic"
+    cp = al("author", layer, "--agent", "mock", "--mock", mock_file(tmp_path), ok=False)   # writes (layer sibling)
+    assert cp.returncode == 1, cp.stdout + cp.stderr
+    assert '(layer in-repo #:dir "agentic")' in cp.stderr and al_author.REPAIR_HINT in cp.stderr
+    assert (layer / "agentic.rkt").is_file()
+    cp = al("author", layer, "--agent", "mock", "--mock", mock_file(tmp_path), "--accept-existing", ok=False)
+    assert cp.returncode == 1 and '(layer in-repo #:dir "agentic")' in cp.stderr
+
+
+def test_create_in_repo_never_overwrites_a_definition(tmp_path):
+    app = ff.bare_repo(tmp_path)
+    (app / "agentic").mkdir()
+    (app / "agentic" / "agentic.rkt").write_text("#lang al\n")
+    cp = al("create", app, "--in-repo", "--agent", "mock", "--mock", mock_file(tmp_path, IN_REPO_DEFINITION), ok=False)
+    assert cp.returncode == 1 and "already exists; it is never overwritten" in cp.stderr
+    assert (app / "agentic" / "agentic.rkt").read_text() == "#lang al\n"
+    assert not (app / "agentic" / "LLM.txt").exists()
+
+
+def test_mock_placement_is_sibling_for_a_layer_beside(tmp_path):
+    app = ff.bare_repo(tmp_path)
+    al("create", app, "--agent", "mock", "--mock", mock_file(tmp_path, IN_REPO_DEFINITION))
+    ir = json.loads((tmp_path / "fern.al" / "agentic-layer.json").read_text())
+    assert ir["layer"]["kind"] == "sibling"
+    assert status(app) == ""
