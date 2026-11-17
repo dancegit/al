@@ -22,7 +22,7 @@ with `REQUIRES HUMAN: envs.py does not pass nested_engine.podman_flags yet`, and
 With `AL_SANDBOX_PROOF` set, a host without a usable podman fails the run instead of skipping it.
 
 ```bash
-(cd kit/runtime && AL_SANDBOX_PROOF=/tmp/proof env -u AL_APP_ROOT uv run --with pytest pytest -q -m podman tests/test_nested_engine_podman.py)
+(cd kit/runtime && AL_SANDBOX_PROOF=/tmp/proof env -u AL_APP_ROOT uv run --with pytest pytest -q -rs -m podman tests/test_nested_engine_podman.py)
 ```
 
 `AL_SANDBOX_PROOF` writes `nested-isolation.txt`, `nested-run-summary.txt` and `doctor-engine.txt` there.
