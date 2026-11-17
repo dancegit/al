@@ -1791,6 +1791,26 @@
             ["reasons", ho.reasons && ho.reasons.length ? h("ul", { class: "issues" }, ho.reasons.map((r) => h("li", { text: r }))) : ""],
             ["handoff error", ho.error], ["no handoff", ho.skipped]])));
       }
+      if (detail.kept) {
+        // a workflow without a ship step: its work is committed on its branch and copied into the run's artefacts
+        const kp = detail.kept;
+        const keptLink = (rel, label) => h("a", { href: `/files/${enc(layerKey)}/${rel.split("/").map(enc).join("/")}`, target: "_blank", rel: "noopener", text: label });
+        const badge = kp.error ? h("span", { class: "badge warn", text: "keeping failed" })
+          : kp.changed ? h("span", { class: "badge info", text: "kept on a branch" }) : h("span", { class: "badge", text: "nothing changed" });
+        const files = (kp.files || []).map((f) => h("li", {}, f.artefact ? keptLink(f.artefact, f.path) : h("span", { class: "mono", text: f.path })));
+        if (kp.more) files.push(h("li", { class: "dim", text: `… and ${kp.more} more` }));
+        blocks.push(h("div", { class: "outcome-block kept-block" }, h("div", { class: "card-head" }, h("h3", { text: "Kept on a branch" }), badge),
+          kp.changed === false ? h("div", { class: "dim", text: "The workflow has no ship step and the run changed nothing." }) : null,
+          kv([["error", kp.error ? `${kp.error}; the worktree is kept` : ""],
+            ["branch", kp.changed ? h("span", { class: "mono", text: kp.branch || "no branch" }) : ""],
+            ["commit", kp.commit ? h("span", { class: "mono", text: kp.commit }) : ""],
+            ["files", kp.changed ? String(kp.count) : ""],
+            ["kept files", files.length ? h("ul", { class: "issues" }, files) : ""],
+            ["diff", kp.diff && kp.changed ? keptLink(kp.diff, "changes.diff") : ""],
+            ["too large", (kp.too_large || []).length ? h("ul", { class: "issues" }, kp.too_large.map((t) => h("li", { text: `${t.path} (${t.bytes} bytes; on the branch only)` }))) : ""],
+            ["not copied", (kp.skipped || []).length ? h("span", { class: "mono", text: kp.skipped.join("  ") }) : ""],
+            ["left uncommitted", (kp.left_uncommitted || []).length ? h("span", { class: "mono", text: kp.left_uncommitted.join("  ") }) : ""]])));
+      }
       if (detail.gate || (detail.ship && detail.ship.action)) {
         const gate = detail.gate || {}, ship = detail.ship || {};
         const url = ship.url || (ship.pr && ship.pr.url) || "";

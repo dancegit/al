@@ -100,3 +100,21 @@ def test_video_generates_keyframes_when_ffmpeg_available(make_layer: object, tmp
     result = collect(layer, state, ["clips"], "test")
     assert len(result) == 1
     assert len(result[0]["keyframes"]) == 2
+
+
+def test_add_files_replaces_previous_collection(make_layer: object, tmp_path: Path) -> None:
+    from adw_modules.artefacts import add_files
+
+    layer = load(make_layer())
+    source = tmp_path / "source"
+    (source / "docs").mkdir(parents=True)
+    (source / "docs" / "first.md").write_text("first\n")
+    (source / "second.md").write_text("second\n")
+    state = SimpleNamespace(adw_id="1234abcd", worktree="", checks={}, artefacts=[{"id": "other", "path": "x"}])
+    add_files(layer, state, "kept-files", "file", "keep", [("docs/first.md", source / "docs" / "first.md")])
+    second = add_files(layer, state, "kept-files", "file", "keep", [("second.md", source / "second.md")])
+    run_root = layer.layer_dir / "artefacts" / "1234abcd"
+    assert _files_under(run_root / "kept-files") == {"second.md"}
+    assert [item["path"] for item in second] == ["artefacts/1234abcd/kept-files/second.md"]
+    assert [item["id"] for item in state.artefacts] == ["other", "kept-files"]
+    assert json.loads((run_root / "manifest.json").read_text()) == state.artefacts

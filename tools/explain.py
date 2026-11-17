@@ -152,6 +152,24 @@ def where_it_runs(adw: dict, ir: dict) -> str:
     return f"The agent and the checks run on your machine{shell}, in a private copy of the repository."
 
 
+def result_kept_on_branch(adw: dict, ir: dict) -> bool:
+    """True for a workflow whose result the runtime keeps on a local branch (kit/runtime keep.py):
+    it works in a worktree, has no ship step and no committing `run` step, and one of its steps can
+    change files (an agent step, a script, or a check that an agent fixes)."""
+    environments = by_id(ir, "environments")
+    if not any(environments.get(i, {}).get("kind") == "worktree" for i in adw.get("environment") or []):
+        return False
+    steps = adw.get("steps") or []
+    if any(s.get("kind") == "ship" for s in steps):
+        return False
+    commands = {c.get("name"): c for c in ir.get("commands") or []}
+    for s in steps:
+        command = commands.get(s.get("command")) if s.get("kind") == "run" else None
+        if command and (command.get("template") == "commit" or command.get("mayCommit")):
+            return False
+    return any(s.get("kind") in ("run", "script") or (s.get("kind") == "check" and s.get("resolve")) for s in steps)
+
+
 def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
     """(heading, one-paragraph explanation, extra bullet points)."""
     head, cb = block["head"], ir["codebase"]
@@ -306,7 +324,10 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         reviewed = "the pull request" if has_forge(ir) else "the branch and its description file (`PR.md`)"
         outcome = {"human": f"A person reviews {reviewed}.", "agent": f"An agent reviews on evidence; a person merges ({reviewed}).",
                    "auto": f"No person is involved if every rule holds; it ships by {ship_words(ir, review.get('ship', 'pr'))}."}[review["kind"]]
-        if not any(s.get("kind") == "ship" for s in adw["steps"]):
+        if result_kept_on_branch(adw, ir):
+            outcome = ("No ship step: nothing is reviewed or published; its result is kept on a local branch "
+                       "(and as artefacts of the run).")
+        elif not any(s.get("kind") == "ship" for s in adw["steps"]):
             outcome = "No ship step: nothing is reviewed or published; the result stays with the run."
         steps = [s for s in adw["steps"]]
         short = " → ".join(s["name"] for s in steps)

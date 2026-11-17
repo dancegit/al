@@ -73,3 +73,11 @@ def test_host_and_registry_are_explained_without_values() -> None:
     assert "://" not in words and "@" not in words                         # names of variables only, never a value
     assert explain.registry_text({"registry": None})[1].startswith("No registry")
     assert explain.host_text({"hosts": []})[1].startswith("No machine")
+
+
+def test_a_workflow_without_commit_or_ship_keeps_its_result_on_a_branch(app, tmp_path) -> None:
+    text = _explained(app, tmp_path, "(forge none)", "(review human)")
+    plan_only = text[text.index("### Workflow: only-plan"):text.index("### Workflow: change")]
+    change = text[text.index("### Workflow: change"):]
+    assert "its result is kept on a local branch" in plan_only
+    assert "its result is kept on a local branch" not in change.split("\n### ")[0]

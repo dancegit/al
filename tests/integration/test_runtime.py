@@ -83,6 +83,24 @@ def test_concurrency_soak(layer):
     assert not left, f"branches with nothing unshipped must be deleted with their worktree: {sorted(left)}"
 
 
+def test_plan_build_keeps_its_report(layer):
+    """plan-build has no ship step: the report its build step writes is committed on the run's
+    branch and copied into the run's artefacts before teardown, and the summary says so."""
+    lay = layer("flask", *alit.mock_agent())
+    report = "".join(f"{n}. a finding of the report\n" for n in range(1, 937))
+    lay.mock("plan-build", "build", files={"docs/report.md": report})
+    cp = lay.run_adw("plan-build", "Write the report")
+    assert cp.returncode == 0, alit.describe(cp)
+    state = lay.only_state()
+    assert state["status"] == "passed"
+    assert lay.trees() == []
+    branch = state["branch"]
+    assert branch in alit.heads(lay.app), "the branch holding the kept report must survive teardown"
+    assert len(alit.git(lay.app, "show", f"{branch}:docs/report.md").splitlines()) == 936
+    assert (lay.dir / "artefacts" / state["adw_id"] / "kept-files" / "docs" / "report.md").is_file()
+    assert "kept:      branch" in cp.stdout and "work kept on branch" in cp.stdout, cp.stdout
+
+
 def _wait_for(predicate, timeout: float, what: str):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

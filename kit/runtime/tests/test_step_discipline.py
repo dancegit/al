@@ -147,8 +147,10 @@ def test_a_build_step_that_commits_is_failed_and_the_commit_undone(make_layer, a
     assert record["discipline"]["violations"] == ["committed"]
     assert any(line.startswith("HEAD reset to") for line in record["discipline"]["restored"])
     worktree = Path(_state(layer)["worktree"])
-    assert _git(worktree, "rev-parse", "HEAD") == _git(app_repo, "rev-parse", "main")
-    assert _git(worktree, "status", "--short") == "?? feature.py"
+    # the step's commit is undone; the workflow has no ship step, so its left-over work is then kept (keep.py)
+    assert _git(worktree, "rev-parse", "HEAD~1") == _git(app_repo, "rev-parse", "main")
+    assert _git(worktree, "log", "-1", "--format=%s").startswith(f"work of run {ADW_ID}, kept because")
+    assert _git(worktree, "status", "--short") == ""
     assert any(e["type"] == "step.discipline" and e.get("ok") is False for e in _events(layer))
 
 
@@ -160,7 +162,9 @@ def test_a_failed_build_that_also_committed_keeps_its_failure_and_the_commit_is_
     assert "step-discipline" not in record["detail"]
     assert record["discipline"]["violations"] == ["committed"]
     worktree = Path(_state(layer)["worktree"])
-    assert _git(worktree, "rev-parse", "HEAD") == _git(app_repo, "rev-parse", "main")
+    # the step's commit is undone; the workflow has no ship step, so its left-over work is then kept (keep.py)
+    assert _git(worktree, "rev-parse", "HEAD~1") == _git(app_repo, "rev-parse", "main")
+    assert _git(worktree, "log", "-1", "--format=%s").startswith(f"work of run {ADW_ID}, kept because")
 
 
 def _after_mock(monkeypatch, action) -> None:

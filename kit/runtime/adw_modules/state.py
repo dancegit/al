@@ -80,6 +80,10 @@ class ADWState:
     # a promotion run (promotion.py): {from, to, from_branch, to_branch, pinned, to_head, method, approval,
     # approvers, changes, decisions_file, …}; empty, and then left out of state.json, for every other run
     promotion: dict[str, Any] = field(default_factory=dict)
+    # the work of a workflow without a ship step, kept before teardown (keep.py): {changed, workflow_ships,
+    # branch, commit, committed, files, count, left_uncommitted, artefacts, too_large, skipped, diff} or
+    # {changed: None, error}; empty, and then left out of state.json, for every other run
+    kept: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -111,6 +115,8 @@ class ADWState:
                 data.pop("delivery", None)  # a layer without stages writes the state.json of before
             if not data.get("promotion"):
                 data.pop("promotion", None)  # only a promotion run has one
+            if not data.get("kept"):
+                data.pop("kept", None)  # only a run of a workflow without a ship step has one
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")
