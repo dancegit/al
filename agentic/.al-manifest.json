@@ -46,17 +46,17 @@
   "adws/dashboard/static/index.html": "ffe7f2d62b1dd1183a8c0d0fcbdb9b85cfe3609a1d32a603f2bf7d9b1da1f392",
   "adws/dispatch.py": "c165661522feb14094907488704508b91a77d65a826f91fecae07bec4b390864",
   "adws/triggers/trigger_cron.py": "5ca10f3d3ebb7e40c618b0b8735f1fd73bb9c7ddc6541a2be3b8d7ea8b87b49f",
-  "agentic-layer.json": "69b30193bea2f915da404b81f3b4b24216322f11fd1b1912ab3aa06f17b6db47",
+  "agentic-layer.json": "d07a1a6a1fed2b67c98fed983784da816f2859c302a40ac86f4f0b2d4ef2dae5",
   "commands/classify.md": "348923602cb942eace16f3ba6274b1fdf4a2adf4761db4ad067f599cfe12104c",
   "commands/commit.md": "3c7fc6536d8f12c7abce202bb7d312eb02d427774a61f0a9af7c690eac413834",
   "commands/document.md": "649f219b84392e96520dafafba6d30909ba19c95991fc764dd56ad307ad8b5b5",
-  "commands/plan-bug.md": "1de0991cbf87790d5add1957a6b2673c988a8ff2b10b09bbcdfb81eb722c2720",
-  "commands/plan-chore.md": "225d3ee3c2525a3a4bffaa2ed993a25e692bd197f323e71fe2b83f654d3c5368",
-  "commands/plan-feature.md": "1b6a9de4c861d68f035de16648455aeaf7f8c9b8c361ae1d637580eee6f2331f",
-  "commands/plan-patch.md": "360257a0c2dbae8c7b320d4843e7306e38e7c3725e26db177a4ca4c35a8fa74e",
-  "commands/prime.md": "2de7b5b2b8fb43ec659d4dfe77ad9f9c67750a8106f51f8ef485097038bef040",
+  "commands/plan-bug.md": "7a7f3ee8b8b818f4b5cea13840e0bfe042ead45f3ba024df0557c54f50a3ebc1",
+  "commands/plan-chore.md": "9a73cdf0741c9850413d24dfa5416b45d3f7e1021ee7460c9a98e074099e3fcf",
+  "commands/plan-feature.md": "48db8c7c026e6ca0c71c2ffd23177ed4062ba9799d262802cc1debe67a5e3cd7",
+  "commands/plan-patch.md": "93f89da60290058a70d2b2853ee232bfff34e04f7246f8ce2ba278b19c5774ef",
+  "commands/prime.md": "4f58017637d7709a69ecc6f8f1a7909b9e01fe4e656a97f943fa5c710665db73",
   "commands/pull-request.md": "137723931263ee65cf5975eb7455c72e7014ba3ce202d3a46c1a9595eca88076",
-  "commands/resolve-test.md": "566d11141601aeb43aab0686810a07a4888334321af9839788b443a13a2b8131",
+  "commands/resolve-test.md": "cc4ab87bf642720bcf5c0e639a9c4cfa2ad6caee32efdddbe338ddf56aea5e0d",
   "commands/review.md": "ba04fe7cf2f57448c25a3c6c4a37446baf70b33ef69c7a5c5908f829f2c65396",
   "conditional_docs.md": "c58df43e5a665afcf0654a456dcff3dcbe6dc11ac836056fed69ad9200bce7b6",
   "env/Containerfile": "89eaf4b3f43d1e152d71b518e56954b6a92745ade0068363127646c5db4382e6",
@@ -68,6 +68,6 @@
   "experts/runtime/self-improve.md": "bdb2cae392b90c2b67e4b4f4421b595b86b3abd324232244371d25f03a6e5280",
   "hops/implement.md": "285bc93d67a4e26aefc3f127a6f44b9c8af1cd3ae58275863d0d718decde8ea7",
   "hops/meta-adw.md": "142f21132a1f28ccbd8cad88ac1e2e5ab221e9e82d8827a27347145256948097",
-  "hops/meta-command.md": "f4a32370b7e5c6beda30d89e422094b9d494c0c949784007b8616566bed4356d"
+  "hops/meta-command.md": "e493b334dc77369dc146596d2c79524eeed53baec04a944cc4b38607c1a592b7"
  }
 }

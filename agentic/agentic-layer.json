@@ -656,7 +656,7 @@
       {
         "description": "The al command itself works: eject, in-repo layers, al improve, dashboard generation",
         "name": "test-tools",
-        "run": "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q",
+        "run": "env -u AL_APP_ROOT uv run --with pytest --with pytest-xdist --with pyyaml --with jsonschema pytest tests/tools -q -n 4",
         "timeout": 3600
       },
       {

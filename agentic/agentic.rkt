@@ -14,7 +14,7 @@
          #:description "The language rules: the compiler accepts the examples and rejects each invalid definition with the documented error")
     (cmd test-runtime "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q)"
          #:description "The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container")
-    (cmd test-tools "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools -q"
+    (cmd test-tools "env -u AL_APP_ROOT uv run --with pytest --with pytest-xdist --with pyyaml --with jsonschema pytest tests/tools -q -n 4"
          #:description "The al command itself works: eject, in-repo layers, al improve, dashboard generation"
          #:timeout 3600)
     (cmd test-dashboard "(cd kit/dashboard && uv run --with pytest pytest -q tests)"
