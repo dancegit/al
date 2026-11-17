@@ -12,7 +12,13 @@ are substituted; every path must stay inside the layer.
 Before any agent (or the mock) runs, the prerequisites are checked (racket, and the agent's CLI) through
 tools/al_tools.py: a missing one stops it at once with exit 4. A compiler that cannot be started is never
 blamed on the file. `--accept-existing` (a dashboard retry) takes an agentic.rkt that is already there
-when it compiles, and asks no agent. Standard library only.
+when it compiles, and asks no agent.
+
+What it prints while the agent works: one progress line per message, tool call and error, and the agent's
+report once at the end (with its Decisions and Left out lists), condensed from Claude Code's event stream by
+the dashboard kit's AgentJournal (kit/dashboard/dashboard.py, the parser a dashboard job uses). `--raw`
+prints the event stream itself, line by line, as before; a dashboard job runs `al author … --raw` and
+condenses it in its runner. Standard library only.
 """
 from __future__ import annotations
 
@@ -54,7 +60,10 @@ def claude_argv(root: Path, layer: Path, claude: str = "claude") -> list[str]:
             "--add-dir", str(root / "docs"), "--add-dir", str(root / "meta")]
 
 
-def run_claude(layer: Path, prompt: str, say) -> None:
+def run_claude(layer: Path, prompt: str, say, raw: bool = False, kit: Any = None) -> None:
+    """Run the agent CLI on `prompt` in the layer. With `raw`, `say` each line of its event stream and then
+    its result text; else `say` the condensed lines of `kit.AgentJournal` (the dashboard kit, loaded by
+    tools/al) and, at the end, the report once with its Decisions and Left out lists."""
     found = al_tools.find("claude", layer)
     if not found.path:
         raise al_tools.ToolMissing([found])
@@ -67,6 +76,29 @@ def run_claude(layer: Path, prompt: str, say) -> None:
     assert proc.stdin is not None and proc.stdout is not None
     proc.stdin.write(prompt)
     proc.stdin.close()
+    if not raw:
+        journal = kit.AgentJournal(kit.Shortener([(str(layer), "layer:")]))
+        report: dict[str, Any] | None = None
+        for line in proc.stdout:
+            for event in journal.feed_line(line):
+                shown = kit.journal_line(event)
+                if shown is not None:
+                    say(shown)
+                if event.get("kind") == "report":
+                    report = event
+        code = proc.wait()
+        for event in journal.finish():
+            report = event if event.get("kind") == "report" else report
+        if report is not None:
+            say(report["text"])
+            for title, key in (("Decisions:", "decisions"), ("Left out and why:", "left_out")):
+                if report.get(key):
+                    say(title)
+                    for item in report[key]:
+                        say(f"  - {item}")
+        if code != 0:
+            raise AuthorError(f"the agent exited {code}")
+        return
     result = ""
     for line in proc.stdout:
         say(line.rstrip("\n"))
@@ -113,7 +145,7 @@ def never_compiled(layer: Path) -> str:
 
 
 def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str | None, say=print,
-           accept_existing: bool = False) -> int:
+           accept_existing: bool = False, raw: bool = False) -> int:
     layer = layer.resolve()
     definition = layer / "agentic.rkt"
     if definition.exists() and not accept_existing:
@@ -157,7 +189,7 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
         if output:
             say(output)
     elif agent == "claude-code":
-        run_claude(layer, author_prompt(layer, prefs), say)
+        run_claude(layer, author_prompt(layer, prefs), say, raw=raw, kit=None if raw else al.dashboard_kit_module())
     else:
         raise AuthorError(f"unknown agent {agent}")
     if not definition.is_file():

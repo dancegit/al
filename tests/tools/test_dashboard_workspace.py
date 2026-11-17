@@ -164,6 +164,17 @@ def test_create_a_layer_for_the_empty_repository_end_to_end(server, ws):
     job = create_fern(server, ws)
     assert [s["name"] for s in job["steps"]] == ["init", "author", "gen", "check"]
     assert "agentic.rkt compiles" in output(job["id"], server)
+    # the author step ran with --raw through the job runner: its journal and the page's view of it
+    author = next(s for s in job["steps"] if s["name"] == "author")
+    assert author["stream"] == "agent" and author["activity"] == "journal" and author["raw"] is True
+    journal = server.json(f"/api/job/journal?id={job['id']}&step=author&from=0")
+    messages = [e["text"] for e in journal["events"] if e["kind"] == "message"]
+    assert messages and any("agentic.rkt compiles" in text for text in messages), journal
+    assert any(e["kind"] == "report" for e in journal["events"])
+    outcome = job["outcome"]
+    assert outcome["status"] == "passed" and outcome["created"]["layer"].endswith("fern.al")
+    assert outcome["created"]["added"] >= 1 and outcome["next"].startswith("al gen ")
+    assert str(Path.home()) not in json.dumps(job) and str(ws) not in json.dumps(job)
     al("compile", ws / "fern.al")
     assert "change" in layer_of(server, "fern")["adws"]
     assert status(ws / "fern") == ""

@@ -3,6 +3,7 @@ the definition, compiles it, never overwrites an existing one and never writes o
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -176,3 +177,58 @@ def test_author_without_accept_existing_still_refuses_an_existing_definition(app
     cp = al("author", layer, "--agent", "mock", "--mock", mock_file(tmp_path, {"agentic.rkt": DEFINITION}), ok=False)
     assert cp.returncode == 1 and "agentic.rkt already exists; it is never overwritten" in cp.stderr
     assert (layer / "agentic.rkt").read_bytes() == before
+
+
+# --- what `al author` prints: the condensed view by default, the agent's event stream with --raw --------
+
+FINISHED_STREAM = ROOT / "kit" / "dashboard" / "tests" / "data" / "job-streams" / "author-finished.jsonl"
+FAKE_CLAUDE = """#!{python}
+\"\"\"A stand-in for the claude CLI (tests): replays a recorded event stream and writes the definition.\"\"\"
+import sys
+sys.stdin.read()
+with open({definition!r}) as source, open("agentic.rkt", "w") as target:
+    target.write(source.read())
+with open({stream!r}, "rb") as stream:
+    for line in stream:
+        sys.stdout.buffer.write(line)
+        sys.stdout.buffer.flush()
+"""
+
+
+def fake_claude(tmp_path: Path) -> dict[str, str]:
+    """A `claude` first on PATH that replays author-finished.jsonl and writes a definition that compiles."""
+    definition = tmp_path / "definition.rkt"
+    definition.write_text(rendered_definition())
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir()
+    claude = bin_dir / "claude"
+    claude.write_text(FAKE_CLAUDE.format(python=sys.executable, definition=str(definition), stream=str(FINISHED_STREAM)))
+    claude.chmod(0o755)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+
+
+def test_author_prints_a_condensed_view_by_default(app, tmp_path, monkeypatch):
+    monkeypatch.delenv("AL_CLAUDE", raising=False)
+    al("init", app)
+    layer = app.with_name("notes.al")
+    out = al("author", layer, env=fake_claude(tmp_path)).stdout
+    lines = out.splitlines()
+    assert not any(line.startswith('{"type"') for line in lines), out[:2000]
+    assert "fernhook-sentinel" not in out and "hook configuration" not in out
+    assert "  · read " in out and "  ! Bash failed" in out and "  = 14 turns, 3m 04s, $0.42" in out
+    assert out.count("### Decisions") == 1 and "UNVERIFIED: the tests may need network access" in out
+    assert "Decisions:" in lines and "Left out and why:" in lines
+    assert "agentic.rkt compiles; next: al gen" in out
+    assert len(out) < 10_000
+
+
+def test_author_raw_prints_the_event_stream(app, tmp_path, monkeypatch):
+    monkeypatch.delenv("AL_CLAUDE", raising=False)
+    al("init", app)
+    layer = app.with_name("notes.al")
+    out = al("author", layer, "--raw", env=fake_claude(tmp_path)).stdout
+    lines = out.splitlines()
+    position = 0
+    for expected in FINISHED_STREAM.read_text().splitlines():
+        position = lines.index(expected, position) + 1          # every line of the stream, in order
+    assert "agentic.rkt compiles; next: al gen" in out

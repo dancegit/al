@@ -452,7 +452,7 @@ def test_retry_from_the_failed_step_runs_only_the_remaining_steps(ws, tmp_path, 
     assert view["status"] == "passed", view
     after = wf.calls(al, preflight=True)[seen:]
     assert [c[0] for c in after] == ["doctor", "author", "adopt", "gen", "check"]
-    assert after[1][-1] == "--accept-existing"
+    assert after[1][-2:] == ["--raw", "--accept-existing"]                # the agent's event stream, then the retry flag
     record = job_file(tmp_path / "jobs", job_id)
     assert record["steps"][0]["started"] == init_before["started"] and record["steps"][0]["ended"] == init_before["ended"]
     assert len(record["retries"]) == 1 and record["retries"][0]["from"] == "author"
