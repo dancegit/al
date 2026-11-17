@@ -1,0 +1,55 @@
+~/work $ al sandbox notes.al status
+box  recipe 8e2a0b082212  not built         -     -  al-notes:8e2a0b082212
+
+~/work $ al sandbox notes.al doctor
+[sandbox] building al-notes:8e2a0b082212 (recipe 8e2a0b082212)
+STEP 1/2: FROM docker.io/library/debian:stable-slim
+STEP 2/2: WORKDIR /work
+[adw 13eb44eb] container started: al-notes-13eb44eb
+[adw 13eb44eb] container removed: al-notes-13eb44eb
+[adw 13eb44eb] worktree removed: ~/work/notes.al/trees/13eb44eb
+doctor: workflow change, stack worktree → box, image al-notes:8e2a0b082212
+check        | result | detail                                    | fix
+command:test | miss   | pytest not found on PATH                  | add the package that provides `pytest` to (environment podman #:id box #:packages …) or #:setup, or change (cmd test …)
+git          | ok     | rev-parse and status work in the worktree |
+init         | ok     | catatonit                                 |
+disk         | ok     | 90000 MB free                             |
+agent        | ok     | /usr/local/bin/claude (on this machine)   |
+image        | ok     | al-notes:8e2a0b082212, 312 MB             |
+doctor: 5 ok, 1 missed, 0 skipped
+
+~/work $ al run notes.al /change 'Tidy the readme' --dry-run
+run 88c5554d started (layer: notes, workflow change)
+[adw 88c5554d] change start: class=chore dry_run=True models=base=claude-opus-5-5 (built-in default), heavy=claude-opus-5-5 (built-in default)
+[adw 88c5554d] container started: al-notes-88c5554d
+[adw 88c5554d] preflight: 5 checks, 1 missed
+[adw 88c5554d] run failed: preflight: the sandbox is missing what this workflow needs:
+check        | result | detail                                    | fix
+command:test | miss   | pytest not found on PATH                  | add the package that provides `pytest` to (environment podman #:id box #:packages …) or #:setup, or change (cmd test …)
+git          | ok     | rev-parse and status work in the worktree |
+init         | ok     | catatonit                                 |
+disk         | ok     | 90000 MB free                             |
+agent        | ok     | /usr/local/bin/claude (on this machine)   |
+[adw 88c5554d] handoff: none: nothing changed relative to main: nothing to hand over
+[adw 88c5554d] container removed: al-notes-88c5554d
+=== ADW summary ===
+adw:       change 88c5554d
+status:    failed
+branch:    chore/88c5554d-tidy-the-readme
+tiers:     base=claude-opus-5-5 (built-in default); heavy=claude-opus-5-5 (built-in default)
+plan:      none
+checks:    none
+review:    none
+cost:      $0.00
+ship:      none
+handoff:   none (nothing changed relative to main: nothing to hand over)
+artefacts: 0
+state:     ~/work/notes.al/agents/88c5554d/state.json
+
+~/work $ al doctor notes.al --agent mock
+tool    found where                 version
+racket  ~/bin/racket (PATH)         Welcome to Racket v8.16 [cs].
+raco    ~/bin/raco (beside racket)
+uv      ~/bin/uv (PATH)             uv 0.13.8 (x86_64-unknown-linux-gnu)
+git     ~/bin/git (PATH)            git version 2.47.3
+
