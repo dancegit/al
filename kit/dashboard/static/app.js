@@ -1794,7 +1794,7 @@
       if (detail.kept) {
         // a workflow without a ship step: its work is committed on its branch and copied into the run's artefacts
         const kp = detail.kept;
-        const keptLink = (rel, label) => h("a", { href: `/files/${enc(layerKey)}/${rel.split("/").map(enc).join("/")}`, target: "_blank", rel: "noopener", text: label });
+        const keptLink = (rel, label) => h("a", { "data-role": "kept-doc", href: link(["documents"], { path: rel }), text: label });
         const badge = kp.error ? h("span", { class: "badge warn", text: "keeping failed" })
           : kp.changed ? h("span", { class: "badge info", text: "kept on a branch" }) : h("span", { class: "badge", text: "nothing changed" });
         const files = (kp.files || []).map((f) => h("li", {}, f.artefact ? keptLink(f.artefact, f.path) : h("span", { class: "mono", text: f.path })));

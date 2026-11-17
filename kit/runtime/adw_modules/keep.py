@@ -15,6 +15,8 @@ untracked files that are not ignored, commits not on the base branch), it:
 Never raises: when keeping fails, the failure is recorded in `state.kept["error"]` and the
 worktree is kept (`env_stack.keep_worktree = True`), so nothing is discarded silently.
 
+Promotion runs are never kept: they merge and tag through promotion.py, not through a ship step.
+
 Files copied in from the app (`copyFiles`, e.g. `.env`) are never committed and never copied.
 A symlink in the worktree is never followed (a sandboxed worktree is untrusted).
 
@@ -200,6 +202,8 @@ def _copy_artefacts(layer: Any, state: Any, paths: list[str],
 def _skip(layer: Any, state: Any, adw: dict[str, Any], env_stack: Any) -> bool:
     if any(item.get("kind") == "ship" for item in adw.get("steps", [])):
         return True
+    if getattr(state, "promotion", None) or any(item.get("kind") == "promote" for item in adw.get("steps", [])):
+        return True
     if state.dry_run or state.status == "waiting" or getattr(env_stack, "read_only", False):
         return True
     return not state.worktree or not Path(state.worktree).is_dir()
@@ -228,6 +232,10 @@ def keep_work(layer: Any, state: Any, adw: dict[str, Any], env_stack: Any) -> di
             commit = _git(env_stack, state, ["rev-parse", "HEAD"], check=True).stdout.strip()
             base = _base(env_stack, state, default)
             changed = _changed_files(env_stack, state, base)
+            if not committed and not changed and not layer_paths:
+                state.kept = {"changed": False, "workflow_ships": False}
+                state.save(layer.layer_dir)
+                return state.kept
             diff = _write_diff(layer, env_stack, state, base)
         files = [path for letter, path in changed]
         to_copy = [path for letter, path in changed if letter != "D"] + layer_paths

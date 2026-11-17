@@ -147,6 +147,27 @@ def test_run_that_changed_nothing_leaves_nothing(make_layer, app_repo, capsys):
     assert "kept:" not in out
 
 
+def test_commits_without_changed_files_are_nothing_changed(make_layer, app_repo, monkeypatch, capsys):
+    layer = _layer(make_layer)
+    _mock(layer, {"output": "nothing to do"})
+    real_run_step = steps.run_step
+
+    def run_step(layer_, state, adw, step, stack):
+        result = real_run_step(layer_, state, adw, step, stack)
+        if step.get("name") == "build":
+            _git(Path(state.worktree), "-c", "user.name=Mock", "-c", "user.email=mock@example.invalid",
+                 "commit", "-q", "--allow-empty", "-m", "empty")
+        return result
+    monkeypatch.setattr(steps, "run_step", run_step)
+    assert main("pb", layer, ["Empty commit", "--adw-id", ID]) == 0
+    out = capsys.readouterr().out
+    state = _state(layer)
+    assert state["kept"] == {"changed": False, "workflow_ships": False}
+    assert not (layer / "artefacts" / ID / "kept-diff").exists()
+    assert "delivery:  nothing changed" in out
+    assert "kept:" not in out
+
+
 def test_dry_run_behaves_as_today(make_layer, app_repo, capsys):
     layer = _layer(make_layer)
     _mock(layer, {"files": {"docs/report.md": REPORT}})

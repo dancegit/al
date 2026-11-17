@@ -69,6 +69,26 @@ def test_sprint_of_three_changes_promoted_after_acceptance(make_layer, app_repo)
     assert not (layer / "agents" / "promotions" / "sprint-main.json").exists()
 
 
+def test_a_promotion_run_is_not_kept(make_layer, app_repo):
+    layer = sprint_layer(make_layer, app_repo)
+    deliver(layer, app_repo, "a1000001", {"cart.py": "CART = 1\n"}, prompt="Add a cart",
+            criteria=["The cart holds items"])
+    code, out = promote(layer, "sprint", "main")
+    assert code == 75, out
+    pid = open_id(layer)
+    code, out = decide(layer, "sprint", "main", "approve", "--by", "Ada Example")
+    assert code == 0, out
+    code, out = promote(layer, "sprint", "main")
+    assert code == 0, out
+    state = state_of(layer, pid)
+    assert "kept" not in state
+    assert not (layer / "artefacts" / pid / "kept-files").exists()
+    assert not (layer / "artefacts" / pid / "kept-diff").exists()
+    assert not [item for item in state.get("artefacts", []) if item.get("id") in ("kept-files", "kept-diff")]
+    assert "kept:" not in out and "work kept on branch" not in out
+    assert not [e for e in events_of(layer, pid) if e.get("type") == "run.kept"]
+
+
 def _approve(layer, who="Ada Example", pair=("sprint", "main")):
     code, out = decide(layer, *pair, "approve", "--by", who)
     assert code == 0, out
