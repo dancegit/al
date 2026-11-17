@@ -536,6 +536,10 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
         from . import promotion
 
         promotion.run_step(layer, state, adw, step, env_stack)
+    elif kind == "integrate":  # a step of an integration run (integrate.integration_adw)
+        from . import integrate
+
+        integrate.run_step(layer, state, adw, step, env_stack)
     else:
         raise LayerError(f"Unknown ADW step kind: {kind!r}")
 

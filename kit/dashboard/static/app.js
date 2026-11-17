@@ -662,10 +662,11 @@
     return text.length > n ? `${text.slice(0, n - 1)}…` : text;
   }
 
-  function graphLegend() {
+  function graphLegend(graph) {
     const item = (cls, label) => h("span", {}, h("i", { class: cls }), label);
     const legend = h("div", { class: "legend" });
     const colours = { agent: "var(--agent)", check: "var(--check)", script: "var(--script)", review: "var(--review)", ship: "var(--ship)", "fan-out": "var(--fan)" };
+    if (graph && (graph.nodes || []).some((node) => node.type === "integrate")) colours.integrate = "var(--integrate, #4fb6a8)";
     for (const [name, colour] of Object.entries(colours)) {
       const i = h("i");
       i.style.background = colour;
@@ -1432,6 +1433,7 @@
 
   /** "landed in 1a2b3c4 (patch-id), 2026-11-02": what put a handed-over run's work on its target. */
   function landedText(run) {
+    if (run.landed_by) return `landed by ${run.landed_by} (integration)`;   // settled by its integration run
     const l = run.landing || {};
     if (l.state !== "landed") return run.reason || "";
     return `landed in ${l.commit || "?"} (${l.how || "?"})${l.at ? `, ${fmt.time(l.at).slice(0, 10)}` : ""}`;
@@ -1567,7 +1569,11 @@
       if (needs) {
         return h("tr", { "data-key": run.key, class: `${run.key === selectedKey ? "selected" : ""}${run.group ? " group-member" : ""}`, onclick: open },
           ...base, h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }),
-          h("td", { class: "reason" }, limitBadge(run) || budgetBadge(run), run.reason || ""), h("td", { class: "next mono", text: run.next || "" }));
+          h("td", { class: "reason" }, limitBadge(run) || budgetBadge(run), run.reason || ""),
+          h("td", { class: "next mono" }, run.next || "", run.integrate && run.integrate.offered
+            ? h("button", { type: "button", class: "btn integrate integrate-open", text: "Resolve with an agent",
+              title: "an agent brings this run onto its target branch: conflicts, checks, review, ship; you see what it will do first",
+              onclick: (event) => { event.stopPropagation(); go(routeHash(["run", run.layer, run.id], { integrate: "1" })); } }) : null));
       }
       const bucket = bucketOf(run);
       const why = bucket === "landed" ? h("span", { class: "landing", text: landedText(run) })
@@ -1752,6 +1758,42 @@
     why.value = form.note;
     const who = h("input", { type: "text", class: "settle-who", placeholder: "your name", maxlength: 80,
       value: localStorage.getItem("al.settle.who") || localStorage.getItem("al.promotion.by") || "", "aria-label": "your name" });
+    // The two evidence buttons only read (GET /api/settle/evidence): they show what was compared and, when
+    // something was found, fill the form in. Nothing is written until the person clicks Settle.
+    const evidenceBox = h("div", { class: "settle-evidence", role: "status" });
+    const showEvidence = (found) => {
+      form.evidence = found;
+      replace(evidenceBox, h("div", { class: "evidence-head", text: found.kind === "landed" ? "Has it landed?" : "What replaced it?" }),
+        h("ul", {}, (found.evidence || []).map((line) => h("li", { text: line }))),
+        found.found ? h("div", { class: "evidence-proposal", text: `Proposed: settle as ${found.as} by ${found.by}. Nothing is written until you click the button below.` })
+          : h("div", { class: "evidence-none faint", text: `Nothing to propose${found.why ? `: ${found.why}` : ""}.` }));
+      if (found.found) {
+        form.as = found.as; form.by = found.by; form.note = found.note || "";
+        as.value = form.as; by.value = form.by; why.value = form.note;
+        button.textContent = `Settle as ${found.as} by ${found.by}`;
+      } else {
+        button.textContent = "Settle";
+      }
+    };
+    const evidenceButton = (cls, label, kind, title) => {
+      const b = h("button", { type: "button", class: `btn ${cls}`, text: label, title, onclick: async () => {
+        b.disabled = true;
+        try {
+          showEvidence(await api(`/api/settle/evidence?layer=${enc(layerKey)}&run=${enc(sm.id)}&kind=${kind}`));
+        } catch (error) {
+          replace(evidenceBox, h("span", { class: "badge warn", text: error.message }));
+        } finally {
+          b.disabled = false;
+        }
+      } });
+      return b;
+    };
+    const offer = sm.integrate || {};
+    const canResolve = offer.offered && sm.bucket === "needs-you";
+    const resolve = canResolve || (offer.script && offer.conflict && sm.bucket === "needs-you" && sm.status === "handed-over")
+      ? h("button", { type: "button", class: "btn primary integrate integrate-open", text: "Resolve with an agent", disabled: !canResolve,
+        title: canResolve ? "an agent brings this run onto its target branch: conflicts, checks, review, ship; you see what it will do first" : offer.why || "",
+        onclick: () => { integrateOpen.add(sm.key); reload(true); } }) : null;
     const button = h("button", { type: "button", class: "btn primary settle-go", text: "Settle", onclick: async () => {
       button.disabled = true;
       localStorage.setItem("al.settle.who", who.value.trim());
@@ -1766,16 +1808,128 @@
         button.disabled = false;
       }
     } });
-    return h("div", { class: "card settle-card" },
+    const card = h("div", { class: "card settle-card" },
       h("div", { class: "card-head" }, h("h2", { text: "Settle this run" }), h("span", { class: "spacer" }),
         h("span", { class: "faint", text: "it leaves Needs you; nothing of the run is deleted" })),
       sm.reason ? h("div", { class: "settle-reason", text: `${sm.reason}${sm.next ? ` · next: ${sm.next}` : ""}` }) : null,
+      h("div", { class: "settle-actions" }, resolve,
+        evidenceButton("settle-check-landed", "Check if it has landed", "landed", "compare its work with the target branch now; nothing is written"),
+        evidenceButton("settle-find-replaced", "Find what replaced it", "replaced", "look for a later run that names it, starts it again or has the same source; nothing is written")),
+      evidenceBox,
       h("div", { class: "settle-fields" }, as, by, who, why, h("div", { class: "buttons" }, button, note)));
+    if (form.evidence) showEvidence(form.evidence);
+    return card;
+  }
+
+  const integrateOpen = new Set();       // run keys whose "Resolve with an agent" preview is open
+  const integratePreviews = new Map();   // run key -> {at, promise}: one preview (and its confirmation) per look
+
+  function loadPreview(layerKey, sm, fresh) {
+    const cached = integratePreviews.get(sm.key);
+    if (cached && !fresh && Date.now() - cached.at < 60000) return cached.promise;
+    const promise = fetch(`/api/integrate/preview?layer=${enc(layerKey)}&run=${enc(sm.id)}`, { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        let data = null;
+        try { data = await response.json(); } catch (_err) { data = null; }
+        if (!response.ok) throw new Error((data && data.error) || `${response.status} preview`);
+        return data;
+      });
+    integratePreviews.set(sm.key, { at: Date.now(), promise });
+    promise.catch(() => integratePreviews.delete(sm.key));
+    return promise;
+  }
+
+  /** "Resolve with an agent": what the integration will do (GET /api/integrate/preview: the branch, the
+   * target, the conflicted files, the steps), then Start (POST /api/integrate with the preview's nonce),
+   * which goes to the new run's page. A run the runtime refuses shows its words and no start button. */
+  function integrateCard(detail, layerKey) {
+    const sm = detail.summary;
+    const content = h("div", { class: "integrate-preview", text: "looking at what it would do…" });
+    const note = h("div", { class: "integrate-note", role: "status" });
+    const close = h("button", { type: "button", class: "toggle integrate-close", text: "close", onclick: () => {
+      integrateOpen.delete(sm.key);
+      card.remove();
+    } });
+    const card = h("div", { class: "card integrate-card" },
+      h("div", { class: "card-head" }, h("h2", { text: "Resolve with an agent" }), h("span", { class: "spacer" }),
+        h("span", { class: "faint", text: "what will happen; nothing starts until you confirm" }), close),
+      content, note);
+    const sha = (text) => String(text || "").slice(0, 7);
+    const show = (p) => {
+      if (!p.eligible) {
+        replace(content, h("div", { class: "integrate-refused" }, h("span", { class: "badge warn", text: "cannot be integrated" }),
+          h("span", { class: "refusal", text: ` ${p.reason}: ${p.why}` })),
+          h("div", { class: "faint", text: "A person merges it, or settles it below." }));
+        return;
+      }
+      const generated = new Set(p.generated || []);
+      const files = p.conflicts === null || p.conflicts === undefined ? h("span", { class: "faint", text: p.note || "known once it starts" })
+        : !p.conflicts.length ? h("span", { class: "clean", text: "none: the branch applies cleanly (no agent is needed for the resolve step)" })
+          : h("ul", { class: "conflicts" }, p.conflicts.map((name) => h("li", {}, h("span", { class: "mono", text: name }),
+            generated.has(name) ? " " : null, generated.has(name) ? h("span", { class: "badge", text: "generated: regenerated, not merged by hand" }) : null)));
+      const tier = h("select", { class: "integrate-tier", "aria-label": "model tier" },
+        h("option", { value: "", text: "the layer's tiers (heavy for the resolve step)" }),
+        (p.tiers || []).map((name) => h("option", { value: name, text: `every agent step on ${name}` })));
+      const start = h("button", { type: "button", class: "btn primary integrate-start", text: "Start the integration",
+        disabled: !(p.start && p.start.enabled && p.nonce), title: p.start && !p.start.enabled ? p.start.why : "", onclick: async () => {
+          start.disabled = true;
+          try {
+            const answer = await api.post("/api/integrate", { layer: layerKey, run: sm.id, action: "start", confirm: p.nonce, model_set: tier.value });
+            integrateOpen.delete(sm.key);
+            integratePreviews.delete(sm.key);
+            location.hash = answer.url;
+          } catch (error) {
+            integratePreviews.delete(sm.key);
+            replace(note, h("span", { class: "badge warn", text: error.message }));
+            if (error.status === 409) loadPreview(layerKey, sm, true).then(show).catch(() => {});
+            else start.disabled = false;
+          }
+        } });
+      const kv = (pairs) => h("dl", { class: "kv" }, pairs.filter(([, v]) => v !== null && v !== undefined && v !== "").map(([k, v]) => [h("dt", { text: k }), h("dd", {}, v)]));
+      replace(content, kv([
+        ["branch", h("span", {}, h("span", { class: "mono", text: p.branch }), ` at ${sha(p.tip)} (it is not changed)`)],
+        ["target", h("span", {}, h("span", { class: "mono", text: p.target }), ` at ${sha(p.target_head)}`)],
+        ["conflicted files", files],
+        ["steps", (p.steps || []).join(" → ")],
+        ["approval", p.approval === "person" ? "waits for your approval before it ships" : ""],
+        ["queue", (p.ahead || []).length ? `queued behind ${p.ahead.join(", ")}` : ""],
+        ["models", tier],
+      ]), h("div", { class: "buttons" }, start,
+        p.start && !p.start.enabled ? h("span", { class: "faint", text: p.start.why }) : null));
+    };
+    loadPreview(layerKey, sm, false).then(show).catch((error) => {
+      replace(content, h("span", { class: "badge warn", text: error.message }));
+    });
+    return card;
+  }
+
+  /** On an integration run that waits at its approve step: who approves, then it ships. */
+  function approveCard(detail, layerKey, reload) {
+    const sm = detail.summary;
+    const note = h("div", { class: "integrate-note", role: "status" });
+    const who = h("input", { type: "text", class: "approve-who", placeholder: "your name", maxlength: 80,
+      value: localStorage.getItem("al.settle.who") || localStorage.getItem("al.promotion.by") || "", "aria-label": "your name" });
+    const button = h("button", { type: "button", class: "btn primary approve-go", text: "Approve and ship", onclick: async () => {
+      button.disabled = true;
+      localStorage.setItem("al.settle.who", who.value.trim());
+      try {
+        await api.post("/api/integrate", { layer: layerKey, run: sm.id, action: "approve", who: who.value.trim() });
+        replace(note, h("span", { class: "badge ok", text: "approved: the run continues" }));
+        reload();
+      } catch (error) {
+        replace(note, h("span", { class: "badge warn", text: error.message }));
+        button.disabled = false;
+      }
+    } });
+    return h("div", { class: "card integrate-card approve-card" },
+      h("div", { class: "card-head" }, h("h2", { text: "Approve and ship" }), h("span", { class: "spacer" }),
+        h("span", { class: "faint", text: `the conflicts are resolved, the checks and the review passed; run ${sm.integrates} lands when you approve` })),
+      h("div", { class: "settle-fields" }, who, h("div", { class: "buttons" }, button, note)));
   }
 
   /** "Start again" for a failed or died run nothing replaces yet: the same request, recorded as replacing it. */
   function startAgainButton(summary) {
-    if (!(summary.status === "failed" || summary.status === "died") || summary.replaced_by) return null;
+    if (!(summary.status === "failed" || summary.status === "died") || summary.replaced_by || summary.integrates) return null;
     const button = h("button", { type: "button", class: "btn start-again", text: "Start again", title: "start this request again; the new run records that it replaces this one" });
     const send = async (extra) => {
       button.disabled = true;
@@ -1869,8 +2023,11 @@
             sm.status === "waiting" ? h("span", { class: "badge waiting", title: "a script step exited with a code it declares as waiting; the worktree is kept",
               text: `⏸ waiting${sm.waiting_step ? ` at ${sm.waiting_step.name}` : ""} · resume: ${sm.resume || ""}` }) : null,
             sm.current ? h("span", { class: "badge info", text: `▶ ${sm.current.step}: ${sm.current.action}` }) : null,
-            sm.bucket === "landed" ? h("span", { class: "badge good landing", text: landedText(sm) }) : null,
+            sm.bucket === "landed" && sm.landed_by ? h("a", { class: "badge good landing landed-by", href: `#/run/${enc(layerKey)}/${enc(sm.landed_by)}`,
+              title: "the integration run that brought it onto its target", text: landedText(sm) })
+              : sm.bucket === "landed" ? h("span", { class: "badge good landing", text: landedText(sm) }) : null,
             sm.bucket === "settled" ? h("span", { class: "badge settled", text: settledText(sm) }) : null,
+            sm.integrates ? h("a", { class: "badge info integrates", href: `#/run/${enc(layerKey)}/${enc(sm.integrates)}`, text: `integrates ${sm.integrates}` }) : null,
             startAgainButton(sm),
             h("button", { class: "toggle", type: "button", text: "copy link", title: "copy a deep link to this view", onclick: (e) => copyLink(e.target) })),
           prompt,
@@ -1889,7 +2046,7 @@
     }
 
     function renderGraph_() {
-      const legend = graphLegend();
+      const legend = graphLegend(detail.graph);
       const wrap = h("div", { class: "graph-wrap" }, renderGraph(detail.graph, {
         selected: state.step,
         onNode: (node) => {
@@ -1904,7 +2061,12 @@
       for (const child of [...body.children]) if (child !== graphCard) child.remove();
       if (detail.promotion) body.appendChild(promotionCard(detail, layerKey, load));
       const sm = detail.summary;
-      if (!["running", "unknown"].includes(sm.status) && !sm.settled) body.appendChild(settleCard(detail, layerKey, load));
+      if (state.params.integrate === "1") integrateOpen.add(sm.key);
+      const canIntegrate = sm.status === "handed-over" && !sm.settled && sm.bucket === "needs-you";
+      if (!canIntegrate) integrateOpen.delete(sm.key);
+      if (integrateOpen.has(sm.key)) body.appendChild(integrateCard(detail, layerKey));
+      if (sm.integrates && sm.status === "waiting" && sm.waiting_step && sm.waiting_step.name === "approve") body.appendChild(approveCard(detail, layerKey, load));
+      if (!["running", "unknown"].includes(sm.status) && !sm.settled) body.appendChild(settleCard(detail, layerKey, (redraw) => (redraw === true ? renderOverview() : load())));
       const grid = h("div", { class: "grid-2" }, h("div", { class: "stack" }, timelineCard(), costsCard()), h("div", { class: "stack" }, outcomeCard()));
       body.appendChild(grid);
     }
@@ -1978,6 +2140,10 @@
             : sm.landing.state === "partly" ? `partly: ${(sm.landing.differs || []).join(", ")} differ on ${sm.landing.target}`
               : `${sm.landing.state}${sm.landing.why ? ` (${sm.landing.why})` : ""} on ${sm.landing.target || "?"}`) : ""],
           ["settled", sm.settled ? `${settledText(sm)}${sm.settled.at ? ` · ${sm.settled.at}` : ""}` : ""],
+          ["integration", sm.integration ? h("span", { class: "integration-fact" },
+            h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(sm.integration.run)}`, text: sm.integration.run }),
+            ` ${sm.integration.status}${sm.integration.commit ? ` in ${sm.integration.commit.slice(0, 7)}` : ""}${sm.integration.why ? `: ${sm.integration.why}` : ""}`) : ""],
+          ["integrates", sm.integrates ? h("a", { class: "mono integrates-fact", href: `#/run/${enc(layerKey)}/${enc(sm.integrates)}`, text: sm.integrates }) : ""],
           ["next", sm.bucket === "needs-you" ? sm.next : ""]])));
       if (detail.budget) {
         const b = detail.budget, stop = b.stopped;

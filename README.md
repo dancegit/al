@@ -316,7 +316,7 @@ repository, and why a small language in Racket, is in
 
 ```
 racket/al/        the language: vocabulary, compiler, schema and reference generators, tests
-tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard
+tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard · integrate
 tools/al_provision.py   the provisioning files of a (host …): Home Manager, NixOS, shell script
 tools/al_sandbox.py     al sandbox LAYER push|pull and the sandbox image on deploy (the runtime's recipe hash)
 kit/host/pins.json      pinned versions and sha256 of uv and the agent CLIs a host installs

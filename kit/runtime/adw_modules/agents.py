@@ -363,6 +363,10 @@ def _synthesise(layer: Any, state: Any, step: str, command: dict[str, Any]) -> s
     if output == "json" and template == "decide":
         return json.dumps({"action": "ask-human", "summary": "mock decider: no decision", "explanation": "mock",
                            "instructions": "", "from_step": ""})
+    if template == "resolve-conflicts":
+        # a dry run without a mock script resolves nothing: markers that remain then fail the step
+        report = json.dumps({"resolved": [], "regenerated": [], "undecidable": []})
+        return f"mock: {step}: nothing resolved\n\n```json\n{report}\n```\n"
     return f"mock: {step} ok"
 
 
