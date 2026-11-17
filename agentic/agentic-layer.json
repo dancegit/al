@@ -526,6 +526,20 @@
           "when": "always"
         },
         {
+          "cmd": "test-docs",
+          "collect": [
+            "log"
+          ],
+          "forbidSkipReason": "",
+          "in": "",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "test-docs",
+          "resolve": "resolve-test",
+          "retries": 3,
+          "whenAffected": true
+        },
+        {
           "cmd": "test-compiler",
           "collect": [
             "log"
@@ -537,7 +551,7 @@
           "name": "test-compiler",
           "resolve": "resolve-test",
           "retries": 3,
-          "whenAffected": false
+          "whenAffected": true
         },
         {
           "cmd": "test-runtime",
@@ -551,7 +565,7 @@
           "name": "test-runtime",
           "resolve": "resolve-test",
           "retries": 3,
-          "whenAffected": false
+          "whenAffected": true
         },
         {
           "cmd": "test-tools",
@@ -565,7 +579,7 @@
           "name": "test-tools",
           "resolve": "resolve-test",
           "retries": 3,
-          "whenAffected": false
+          "whenAffected": true
         },
         {
           "cmd": "test-dashboard-proof",
@@ -582,7 +596,7 @@
           "name": "test-dashboard",
           "resolve": "resolve-test",
           "retries": 3,
-          "whenAffected": false
+          "whenAffected": true
         },
         {
           "cmd": "test-integration",
@@ -596,7 +610,7 @@
           "name": "test-integration",
           "resolve": "resolve-test",
           "retries": 3,
-          "whenAffected": false
+          "whenAffected": true
         },
         {
           "agent": "",
@@ -702,8 +716,13 @@
   "codebase": {
     "commands": [
       {
-        "always": true,
-        "covers": [],
+        "always": false,
+        "covers": [
+          "racket",
+          "schemas",
+          "docs/AL-DSL.llms.txt",
+          "kit/runtime/tests/full.layer.json"
+        ],
         "description": "The language rules: the compiler accepts the examples and rejects each invalid definition with the documented error",
         "name": "test-compiler",
         "reuse": true,
@@ -711,8 +730,12 @@
         "timeout": 1800
       },
       {
-        "always": true,
-        "covers": [],
+        "always": false,
+        "covers": [
+          "kit/runtime",
+          "racket",
+          "schemas"
+        ],
         "description": "The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container",
         "name": "test-runtime",
         "reuse": true,
@@ -720,13 +743,36 @@
         "timeout": 1800
       },
       {
-        "always": true,
-        "covers": [],
+        "always": false,
+        "covers": [
+          "tools",
+          "tests/tools",
+          "kit",
+          "racket",
+          "schemas",
+          "meta"
+        ],
         "description": "The al command itself works: eject, in-repo layers, al improve, dashboard generation",
         "name": "test-tools",
         "reuse": true,
         "run": "env -u AL_APP_ROOT uv run --with pytest --with pytest-xdist --with pyyaml --with jsonschema pytest tests/tools -q -n 4",
         "timeout": 3600
+      },
+      {
+        "always": false,
+        "covers": [
+          "README.md",
+          "docs",
+          "kit/dashboard/README.md",
+          "meta/README.md",
+          "tests/README.md",
+          "tests/tools/test_readme.py"
+        ],
+        "description": "Links, images and commands shown in the README and the documents resolve, and the generated references are current",
+        "name": "test-docs",
+        "reuse": true,
+        "run": "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_readme.py tests/tools/test_generated_references.py -q",
+        "timeout": 1800
       },
       {
         "always": true,
@@ -747,8 +793,11 @@
         "timeout": 1800
       },
       {
-        "always": true,
-        "covers": [],
+        "always": false,
+        "covers": [
+          "kit/dashboard",
+          "kit/runtime"
+        ],
         "description": "The dashboard's unit, HTTP and real-browser tests, with screenshots of the page written to kit/dashboard/shots",
         "name": "test-dashboard-proof",
         "reuse": true,
@@ -756,8 +805,15 @@
         "timeout": 2400
       },
       {
-        "always": true,
-        "covers": [],
+        "always": false,
+        "covers": [
+          "tools",
+          "kit",
+          "racket",
+          "schemas",
+          "meta",
+          "tests/integration"
+        ],
         "description": "The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots",
         "name": "test-integration",
         "reuse": true,
@@ -1262,8 +1318,9 @@
       "kind": "auto",
       "maxDiffLines": 4000,
       "maxRetries": 2,
-      "require": "all",
+      "require": "affected",
       "requireChecks": [
+        "test-docs",
         "test-compiler",
         "test-runtime",
         "test-tools",

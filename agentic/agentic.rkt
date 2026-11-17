@@ -11,12 +11,18 @@
             #:readme "README.md"
             #:package-manager "inline script metadata in the script that needs it, or uv run --with for a test command; there is no manifest or lock file"
     (cmd test-compiler "PLTCOLLECTS=\"$PWD/racket:\" raco test racket/al/tests/compiler-test.rkt"
-         #:description "The language rules: the compiler accepts the examples and rejects each invalid definition with the documented error")
+         #:description "The language rules: the compiler accepts the examples and rejects each invalid definition with the documented error"
+         #:covers ("racket" "schemas" "docs/AL-DSL.llms.txt" "kit/runtime/tests/full.layer.json") #:always #f)
     (cmd test-runtime "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q)"
-         #:description "The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container")
+         #:description "The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container"
+         #:covers ("kit/runtime" "racket" "schemas") #:always #f)
     (cmd test-tools "env -u AL_APP_ROOT uv run --with pytest --with pytest-xdist --with pyyaml --with jsonschema pytest tests/tools -q -n 4"
          #:description "The al command itself works: eject, in-repo layers, al improve, dashboard generation"
-         #:timeout 3600)
+         #:timeout 3600
+         #:covers ("tools" "tests/tools" "kit" "racket" "schemas" "meta") #:always #f)
+    (cmd test-docs "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_readme.py tests/tools/test_generated_references.py -q"
+         #:description "Links, images and commands shown in the README and the documents resolve, and the generated references are current"
+         #:covers ("README.md" "docs" "kit/dashboard/README.md" "meta/README.md" "tests/README.md" "tests/tools/test_readme.py") #:always #f)
     (cmd test-dashboard "(cd kit/dashboard && uv run --with pytest pytest -q tests)"
          #:description "The dashboard's model and HTTP server work: unit and HTTP tests, no browser")
     ;; Declared because the repository documents it; not used as a workflow check: one browser test
@@ -27,10 +33,12 @@
     ;; Chromium, saving the screenshots the tests take as proof for the reviewers.
     (cmd test-dashboard-proof "(cd kit/dashboard && rm -rf shots && AL_DASHBOARD_SHOTS=shots uv run --with pytest --with playwright pytest -q tests)"
          #:timeout 2400
-         #:description "The dashboard's unit, HTTP and real-browser tests, with screenshots of the page written to kit/dashboard/shots")
+         #:description "The dashboard's unit, HTTP and real-browser tests, with screenshots of the page written to kit/dashboard/shots"
+         #:covers ("kit/dashboard" "kit/runtime") #:always #f)
     (cmd test-integration "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q"
          #:timeout 3600
-         #:description "The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots")
+         #:description "The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots"
+         #:covers ("tools" "kit" "racket" "schemas" "meta" "tests/integration") #:always #f)
     (paths #:source ("racket/al" "tools" "kit/runtime" "kit/templates" "kit/schemas" "kit/dashboard" "kit/self" "meta")
            #:tests ("racket/al/tests" "kit/runtime/tests" "kit/dashboard/tests" "tests/tools" "tests/integration")
            #:docs ("docs" "README.md" "tests/README.md" "kit/dashboard/README.md" "meta/README.md")
@@ -83,7 +91,7 @@
   ;; Zero-touch: two reviewer agents and every suite must pass, then the change is merged without a person.
   ;; A change under a protected path, or a very large one, still goes to a person.
   (review auto #:id zero-touch #:artefacts (log screenshots showcase-stills showcase-clips) #:reviewers 2 #:max-retries 2 #:ship merge
-          #:require-checks (test-compiler test-runtime test-tools test-dashboard-proof test-integration)
+          #:require-checks (test-docs test-compiler test-runtime test-tools test-dashboard-proof test-integration) #:require affected
           #:allowed-classes (chore bug feature) #:max-diff-lines 4000)
   (dashboard local #:port 8770)   ; 8765 is often taken by other tools
 
@@ -177,11 +185,12 @@
        #:input (cli tasklist) #:trigger (manual cron) #:environment (worktree sandbox) #:review zero-touch
     (steps
       (compose plan-build)
-      (check test-compiler #:cmd test-compiler #:resolve resolve-test #:collect (log))
-      (check test-runtime #:cmd test-runtime #:resolve resolve-test #:collect (log))
-      (check test-tools #:cmd test-tools #:resolve resolve-test #:collect (log))
-      (check test-dashboard #:cmd test-dashboard-proof #:resolve resolve-test #:collect (log screenshots showcase-stills showcase-clips))
-      (check test-integration #:cmd test-integration #:resolve resolve-test #:collect (log))
+      (check test-docs #:cmd test-docs #:resolve resolve-test #:collect (log) #:when-affected #t)
+      (check test-compiler #:cmd test-compiler #:resolve resolve-test #:collect (log) #:when-affected #t)
+      (check test-runtime #:cmd test-runtime #:resolve resolve-test #:collect (log) #:when-affected #t)
+      (check test-tools #:cmd test-tools #:resolve resolve-test #:collect (log) #:when-affected #t)
+      (check test-dashboard #:cmd test-dashboard-proof #:resolve resolve-test #:collect (log screenshots showcase-stills showcase-clips) #:when-affected #t)
+      (check test-integration #:cmd test-integration #:resolve resolve-test #:collect (log) #:when-affected #t)
       (run document #:command document #:args ("$plan"))
       (run commit #:command commit)
       (review #:patch plan-patch #:implement implement)
