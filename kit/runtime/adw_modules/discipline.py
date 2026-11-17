@@ -255,6 +255,12 @@ def compare(layer: Any, state: Any, step_name: str, before: Snapshot, after: Sna
             continue
         if ref == own and new == after.head:
             continue  # the run's own branch followed HEAD: reported as `committed`
+        # The repository is shared: people and other sessions create, move and delete branches while
+        # this step runs. A ref change is this step's doing only when it is the run's own branch, or
+        # when the ref now points at work that grew out of this run's HEAD (a commit made here).
+        if ref != own and not (new and new != before.head
+                               and _is_ancestor(layer, state, env_stack, before.head, new, step_name)):
+            continue
         if old is None:
             violations.append({"kind": "ref-created", "text": f"the {step_name} step created ref {ref} at {_short(new or '')}"})
         elif new is None:

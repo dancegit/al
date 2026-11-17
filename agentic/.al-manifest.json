@@ -9,7 +9,7 @@
   "adws/adw_modules/artefacts.py": "ff8d4f9a9d23e8724e3b5f205534a5bdf491fec25c45248421b67b5702618e26",
   "adws/adw_modules/budget.py": "ac14cf62da28c2a37bd2f3939411c3bedd8d15a5454800b8f922b8a470810110",
   "adws/adw_modules/delivery.py": "b05bd2b87bded755e2bf12d1baf52bcef48a32bd3dc2d5d40ea993a3d46f031e",
-  "adws/adw_modules/discipline.py": "add8595eca3b8a4eafb6054708a008c8d9b70bc612fae36fe571f06d62092a00",
+  "adws/adw_modules/discipline.py": "b65040a57fce709bd13a355ddd88c263b5d372718827625b912b61664c6fc8d0",
   "adws/adw_modules/envs.py": "69b7eef1d795ba8eb476581ce44df0a0c5523c59b589b72ad123fa44e8772325",
   "adws/adw_modules/errors.py": "aebc3bbb3757ba81a09b9fe0cd2afb980654c75d71655d7880a69ac817822a81",
   "adws/adw_modules/events.py": "cfc98a0794064ada30884b4599fdde9038a659e2edf22af77b567270f142d9e0",

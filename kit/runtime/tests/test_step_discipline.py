@@ -179,7 +179,12 @@ def test_a_build_step_that_creates_a_branch_is_failed_and_the_ref_left_for_a_per
                                                                                     monkeypatch) -> None:
     layer = make_layer(_ir(BUILD_ONLY))
     _script(layer, "build", {"files": {"feature.py": "FEATURE = True\n"}})
-    _after_mock(monkeypatch, lambda work: _git(work, "branch", "extra"))
+
+    def branch_with_new_work(work: Path) -> None:
+        made = _git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "x")
+        _git(work, "branch", "extra", made.strip())
+
+    _after_mock(monkeypatch, branch_with_new_work)
     assert main("demo", layer, ["Add a feature", "--adw-id", ADW_ID]) == 1
     discipline_record = _record(layer, "build")["discipline"]
     assert discipline_record["violations"] == ["ref-created"]
@@ -305,3 +310,19 @@ def test_a_layer_change_workflow_keeps_its_layer_files(in_repo, app_repo, monkey
     assert left_out["restored"] == [] and left_out["still_uncommitted"] == ["agentic/notes.md"]
     worktree = Path(_state(layer)["worktree"])
     assert (worktree / "agentic" / "notes.md").is_file()
+
+
+def test_branches_other_people_change_meanwhile_are_not_the_steps_doing(make_layer, app_repo, monkeypatch) -> None:
+    """The repository is shared. While a build runs, someone deletes a branch of theirs and creates
+    another at the commit the run started from: neither is the build step's work."""
+    _git(app_repo, "branch", "someones-old-branch")
+    layer = make_layer(_ir(BUILD_ONLY))
+    _script(layer, "build", {"files": {"feature.py": "FEATURE = True\n"}})
+
+    def meanwhile(_work: Path) -> None:
+        _git(app_repo, "branch", "-D", "someones-old-branch")
+        _git(app_repo, "branch", "someones-new-branch")
+
+    _after_mock(monkeypatch, meanwhile)
+    assert main("demo", layer, ["Add a feature", "--adw-id", ADW_ID]) == 0
+    assert _record(layer, "build")["discipline"]["violations"] == []
