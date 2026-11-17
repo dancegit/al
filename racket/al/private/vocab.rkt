@@ -356,6 +356,7 @@
   [ship (enum pr merge deploy) merge "On pass: open PR only, merge to the default branch, or merge and run the deploy command."]
   [deploy-cmd (optional-ref cmd) "" "Codebase command run after merge when ship = deploy."]
   [require-checks (list-of (ref cmd)) #:required "Codebase commands that must exit 0 in the final state (the deterministic gate)."]
+  [require (enum all affected) all "all = every #:require-checks cmd has a passing result for the exact tree that ships (run at the gate, or reused from the same tree). affected = a required cmd with #:always #f whose #:covers no changed path touches is recorded as not affected instead; the compiler warns when this is combined with #:ship merge or deploy."]
   [allowed-classes (list-of (enum chore bug feature patch)) (chore bug)
    "Work classes allowed to ship untouched; others fall back to a human PR."]
   [max-diff-lines integer 400 "Larger diffs fall back to a human PR."]
@@ -415,7 +416,10 @@
   "A named shell command of the codebase: (cmd NAME \"shell\" …). Check steps and validation sections refer to these names."
   [run string #:required "Shell command, run from the worktree root."]
   [timeout integer 1800 "Seconds one run of the command may take; allow for several runs sharing the machine."]
-  [description string "" "What the command proves."])
+  [description string "" "What the command proves."]
+  [covers (list-of string) () "Paths this command proves something about, relative to the repository root: a directory (\"kit/dashboard\"), a file, or a glob (\"*.md\", \"docs/**\"). A cmd with #:covers is one of the layer's checks: (check NAME #:cmds affected) runs it, and `al verify` reports source paths no check covers."]
+  [always boolean #t "#t = the command runs for every change. #f = where affected checks are asked for (a check step with #:when-affected #t, a gate with #:require affected) it runs only when a changed path is under its #:covers, and is recorded as not affected otherwise; needs #:covers."]
+  [reuse boolean #t "#t = a passing result is reused when the same command is asked for again on an identical tree in the same run (the gate after a passing check step, a review round that changed nothing). #f = it always runs again: for a command that is not deterministic."])
 
 (define-record paths
   "Where things are: (paths #:source (…) #:tests (…) …)."
@@ -522,14 +526,15 @@
   [agent (optional-ref agent) "" "Agent for this step only; empty = the ADW's agent. Use it for a cheaper model on routine steps or a different vendor for an independent step."])
 
 (define-record step-check
-  "(check NAME #:cmd C …): a deterministic feedback loop. Runs a codebase command; on failure an agent resolves and the command re-runs."
+  "(check NAME #:cmd C …): a deterministic feedback loop. Runs a codebase command; on failure an agent resolves and the command re-runs. (check NAME #:cmds affected …) stands for one check step per codebase cmd that declares #:covers, each named after its cmd, with #:when-affected #t and the other fields as written."
   [cmd (ref cmd) #:required "Codebase command."]
   [resolve (optional-ref command) "" "Command given the failing output; empty = fail the run immediately."]
   [retries integer 3 "Resolve attempts."]
   [collect (list-of (ref artefact)) () "Artefacts collected after the command."]
   [in (optional-ref environment) "" "Environment option the command runs in, together with the ADW's worktree: a podman option (its own container, e.g. one with #:nested-engine #t) or a nix-devshell option (on the host). \"\" = the ADW's own environment stack. The gate's re-run of the same cmd runs there too."]
   [max-skipped integer -1 "The check fails when more tests than this were skipped (counted from the output of pytest, go test, cargo test, mocha or a collected JUnit report); -1 = no limit. With a limit set, output al cannot count fails the check."]
-  [forbid-skip-reason string "" "The check fails when a skipped test's reason contains this text (case-insensitive), e.g. \"no podman\"; \"\" = none. Skips without a visible reason then fail it too (pytest: -rs, go test: -v)."])
+  [forbid-skip-reason string "" "The check fails when a skipped test's reason contains this text (case-insensitive), e.g. \"no podman\"; \"\" = none. Skips without a visible reason then fail it too (pytest: -rs, go test: -v)."]
+  [when-affected boolean #f "#t = the step runs its cmd only when the run's changed paths (against the run's base; in a review round, since the cmd last passed) touch the cmd's #:covers, or the cmd is #:always #t. Not run, it is recorded as not affected with the paths compared, never as passed. A layer change, a changed path no check of the workflow covers, and a changed file two #:always #f checks cover run it anyway."])
 
 (define-record step-script
   "(script NAME #:cmd C …): run a declared codebase cmd as a workflow step, e.g. a workflow script the team already has. It runs in the run's environment (worktree, container), gets the run context in environment variables (ADW_ID, ADW_PROMPT, ADW_CLASS, ADW_PLAN, ADW_BRANCH, ADW_WORKTREE, ADW_LAYER_DIR, ADW_RESUME), its output becomes the step's output ($out.NAME), and a non-zero exit fails the run, unless the exit code is one of its #:waiting-exit codes: then the run ends as `waiting`, and `--resume` runs the step again with ADW_RESUME=1 (empty otherwise). It is not a check: no resolve loop, and the gate does not count it as verification."
@@ -706,4 +711,7 @@
     "(registry …) is declared at most once. #:address-env, #:username-env and #:password-env take the NAME of an environment variable in capitals; a value that looks like a URL, an e-mail address or a host name is rejected. #:username-env and #:password-env are given both or neither."
     "Kinds marked planned compile but are refused by the generator."
     "A (check …) #:in names a podman or nix-devshell environment option; the check runs in the run's worktree inside it instead of the ADW's stack. A zero-touch ADW whose check runs #:in a nix-devshell option gets a warning: that check runs outside the sandbox."
-    "(check …) #:max-skipped is -1 (no limit) or more."))
+    "(check …) #:max-skipped is -1 (no limit) or more."
+    "(cmd … #:always #f) needs a non-empty #:covers; a #:covers entry is a path or glob relative to the repository root, without `..` and without a leading `/`."
+    "(check NAME #:cmds affected …) takes no #:cmd and no #:when-affected; at least one codebase cmd must declare #:covers; the steps it stands for are named after their cmds, so those names must be free in the ADW."
+    "A review with #:require affected and #:ship merge or deploy compiles with a warning: required checks no changed path touches are not run before the change ships without a person."))

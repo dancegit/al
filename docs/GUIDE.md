@@ -321,6 +321,28 @@ Expect the first run to be slow: it builds the container image and downloads you
 You should end with `verify: N/N ok`. Do not skip this step. On the example repositories it found
 mistakes in layers that compiled perfectly.
 
+Just before that line verify says what the layer's checks declare to cover (see "Run only the
+checks a change needs" under Step 12). A layer that declares nothing prints one line:
+
+```text
+coverage: no check declares #:covers, so every check runs for every change
+verify: 1/1 ok; report ~/code/myapp.al/agents/verify/report.json
+```
+
+One that does lists the checks without a declaration and the source paths (`(paths #:source …)`) no
+check covers, or says that nothing is left over:
+
+```text
+coverage: 1 check declares no #:covers and runs for every change: lint
+coverage: source path lib is covered by no check: a change there runs every check
+```
+
+```text
+coverage: every check declares #:covers and every source path is covered
+```
+
+These lines never change the exit code, and with `--json` they go to standard error.
+
 *If it goes wrong:*
 
 | Symptom | Usual cause | Fix |
@@ -374,7 +396,9 @@ doctor: 7 ok, 1 missed, 0 skipped
   mounts, sidecars, init) on a clean copy of your default branch, checks what the workflow needs (each
   command's program, the agent CLI and its credential when the agent runs inside, git, caches, disk, a
   browser when the workflow collects screenshots or videos, the sidecars) and exits 1 if anything is
-  missing. Credential values are never printed.
+  missing. Credential values are never printed. Before its last line (`doctor: N ok, N missed, N skipped`)
+  it prints the same `coverage:` lines as `al verify` (checks without `#:covers`, source paths no check
+  covers); they do not change the exit code.
 - `shell [--env ID]` — a shell in such a container, to try a command the way a run would; the copy and
   the container are removed when you leave it.
 - `build [--no-cache]` — build now, with the output as it happens (otherwise the next run does it).
@@ -743,7 +767,7 @@ Only after a streak of runs you merged without changes. A workflow may ship with
 ```racket
 (review auto #:id zero-touch #:reviewers 2
         #:artefacts (log screenshots recording)
-        #:require-checks (lint test e2e)          ; re-run on the final result
+        #:require-checks (lint test e2e)          ; proven on the final result (a pass on the same tree is reused)
         #:allowed-classes (chore bug)             ; features still go to you
         #:max-diff-lines 300
         #:ship merge)
@@ -850,6 +874,126 @@ al: check test fails: 2 tests skipped because "no podman", forbidden by #:forbid
 
 With a rule set, output al cannot read fails the check too, with a line that says what to add
 (`pytest -rs`, `go test -v`, or `#:collect` a JUnit report): a gate never passes on tests it could not count.
+
+### Run only the checks a change needs
+
+A workflow runs every check it lists for every change: in its check steps, again in each review
+round, and again at the gate. For a change to a README that is an hour of suites nothing in the
+change can affect. Two things bring the cost down to what the change needs.
+
+**The same check never runs twice on the same tree.** This needs nothing from you. Every result is
+recorded with a hash of the worktree's content; when the same command is asked for again on an
+identical tree (the gate after a passing check step, a review round that changed nothing), the
+pass is used again and shown as `reused from STEP, same tree HASH`. A command whose answer can
+differ between two runs on the same files says so, and is then always run:
+
+```racket
+(cmd load-test "./scripts/load-test.sh" #:reuse #f)
+```
+
+**A command says what it covers, and a workflow asks for the affected checks only.**
+
+```racket
+(codebase #:root "../myapp" #:languages (python)
+  (cmd suite-a "sh a/test.sh"    #:covers ("a") #:always #f)
+  (cmd suite-b "sh b/test.sh"    #:covers ("b") #:always #f)
+  (cmd docs    "sh check-docs.sh" #:covers ("README.md" "docs") #:always #f)
+  (cmd lint    "ruff check"      #:covers ("a" "b")))          ; #:always #t is the default
+```
+
+`#:covers` lists directories, files or globs (`"*.md"`, `"docs/**"`) relative to the repository
+root. `#:always #f` means: where affected checks are asked for, run this one only when a changed
+path is under what it covers. Without `#:always #f` a command runs for every change, so a layer
+that declares nothing behaves as before. A workflow asks in one of three places:
+
+```racket
+(check tests #:cmds affected #:resolve resolve-test)   ; one check step per cmd with #:covers, named after it
+(check e2e #:cmd e2e #:when-affected #t)                ; one step
+(review auto #:id zero-touch #:require-checks (suite-a suite-b docs) #:require affected #:ship merge)
+```
+
+The runner compares the paths the run changed (against the branch it started from; in a review
+round, since the check last passed) with the declared coverage. A check it does not run is
+recorded as **not affected**, with the reason and the paths compared, never as passed. A run that
+changed `a/x.txt` only:
+
+```text
+[adw afec0001] step suite-a (check) passed: exit 0, log agents/afec0001/checks/suite-a.1.log
+[adw afec0001] check suite-b not run: not affected (no covered path changed; 1 paths compared)
+[adw afec0001] step suite-b (check) not affected: not affected: no covered path changed (1 paths compared)
+…
+checks:    docs=not affected (no covered path changed; 1 paths compared), suite-a=0, suite-b=not affected (no covered path changed; 1 paths compared)
+gate:      suite-a=reused from suite-a, same tree 428c44f0, suite-b=not affected (no covered path changed; 1 paths compared), docs=not affected (no covered path changed; 1 paths compared)
+```
+
+It is careful where it cannot know. Every check runs, and the record of each names the path that
+caused it, when
+
+- the change touches the agentic layer itself (`the change touches the agentic layer (agentic/commands/plan.md)`),
+- a changed path is covered by no check (`other/x.txt is covered by no check`),
+- a changed file is declared by two or more `#:always #f` checks (`shared/util.py is declared by several checks (suite-a, suite-b)`),
+- or the changed paths cannot be computed.
+
+**Making a documentation change cheap.** Because a path no check covers runs everything, a README
+change is not made cheap by leaving the README out. Give the documentation paths a cheap check of
+their own, as `docs` above (a link checker, a spelling check, `true` if you have nothing better).
+A run that only reorganised `README.md` then runs that one command, once, and ships:
+
+```text
+checks:    docs=0, suite-a=not affected (no covered path changed; 1 paths compared), suite-b=not affected (no covered path changed; 1 paths compared)
+gate:      suite-a=not affected (no covered path changed; 1 paths compared), suite-b=not affected (no covered path changed; 1 paths compared), docs=reused from docs, same tree a4003e51
+review:    pass (auto) after 1 round(s)
+ship:      merge -> main (shipped=True)
+```
+
+**The gate.** By default (`#:require all`) the gate accepts nothing less than a passing result for
+the exact tree that ships: it reuses a pass recorded for that very tree, and runs every other
+required command, also the ones a check step recorded as not affected. A pass on an earlier tree
+is never used, even when nothing the command covers changed since. `#:require affected` lets the
+gate record a required `#:always #f` command as not affected instead, which is what makes the
+README change above ship without a code suite. It is your decision, and the compiler says what it
+costs when the workflow merges without a person:
+
+```text
+al: warning: review `zero-touch` has #:require affected and #:ship merge: a required check no changed path touches is not run before the change ships without a person; a wrong #:covers then ships unproven code
+```
+
+**Where you read it.** In the run summary, as above. In the pull request: a section is appended to
+`PR.md`, or posted as one comment on the run's pull request:
+
+```markdown
+## What the checks proved
+
+| Check | Where | Result | Evidence |
+| --- | --- | --- | --- |
+| `suite-a` | suite-a | not affected (no covered path changed; 1 paths compared) | 1 paths compared, tree `a4003e51` |
+| `suite-a` | gate | not affected (no covered path changed; 1 paths compared) | 1 paths compared, tree `a4003e51` |
+| `suite-b` | suite-b | not affected (no covered path changed; 1 paths compared) | 1 paths compared, tree `a4003e51` |
+| `suite-b` | gate | not affected (no covered path changed; 1 paths compared) | 1 paths compared, tree `a4003e51` |
+| `docs` | docs | passed | log `agents/afec0005/checks/docs.1.log`, tree `a4003e51` |
+| `docs` | gate | reused from docs, same tree a4003e51 | log `agents/afec0005/checks/docs.1.log` |
+
+Paths compared:
+
+- `README.md`
+```
+
+(The "Checks" list in the pull request body itself still prints `exit 0` and a
+`NAME.not-affected.log` for a check that was not run; the table is what to read.) On the
+dashboard's run page a step that was not run is shown as `not affected`, and the outcome has the
+same table under "What the checks proved". `al explain` says what each command covers and which
+steps run only when affected; `al verify` and `al sandbox doctor` list the checks that declare no
+`#:covers` and the source paths no check covers (Step 7).
+
+*If it goes wrong:*
+
+| Symptom | Usual cause | Fix |
+|---|---|---|
+| `#:always #f needs #:covers: without declared paths the command would never run` | a selective command without paths | add `#:covers`, or drop `#:always #f` |
+| `#:cmds affected, but no codebase cmd declares #:covers` | the step stands for nothing | declare `#:covers` on the commands it should run |
+| `step name … used twice` | `#:cmds affected` names its steps after the commands, and a step of that name exists | rename the other step |
+| every check runs although the change was small | a changed path no check covers, or one two selective checks declare; the summary and the log of each check name it | cover the path with one check, or make one of the two `#:always #t` |
+| a check always runs again at the gate | it changed files in the worktree while it ran (its result then belongs to no tree), or it is `#:reuse #f` | write reports to an ignored directory |
 
 ## How work is delivered
 

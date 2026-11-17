@@ -275,3 +275,76 @@ def add_setup_runs(layer: Path, now: float | None = None) -> None:
                                                        heartbeat=stamp(29)), indent=2), 100_000.0)
     fixtures.write(run / "run.log", f"2026-11-01T10:00:00.000Z [adw {rid}] zte start: class=chore dry_run=False\n",
                    100_000.0)
+
+
+PROOF_TREE = "9f2c1e7ab4d05566778899aabbccddeeff001122"
+
+
+def add_proof_run(layer: Path) -> None:
+    """e1000007 passed: a README-only change. Check `lint` ran and passed; check `test` was not
+    affected (`check.decision`, step status `not-affected`); at the gate `lint` was reused from its
+    step on the same tree and `test` was again not affected. state.json carries the ledger
+    (`check_results`) the run page's "What the checks proved" block is built from."""
+    agents, host = Path(layer) / "agents", socket.gethostname()
+    rid, run = "e1000007", agents / "e1000007"
+    same = 100_000.0
+    checks = f"agents/{rid}/checks"
+    not_affected = {"outcome": "not-affected", "why": "no covered path changed", "paths": ["README.md"],
+                    "paths_total": 1, "tree": PROOF_TREE, "from_step": "", "from_phase": ""}
+    ev = Events()
+    ev.add(0, "run.start", adw="zte", adw_id=rid, klass="chore", dry_run=False, resumed=False, pid=1, host=host,
+           fanout_parent=None)
+    ev.step(1, None, "build", "run")
+    ev.agent(1.5, 29.5, "build", "build", cost=0.05)
+    ev.add(30, "step.end", step="build", kind="run", status="passed", detail="", seconds=29)
+    ev.step(30.2, None, "lint", "check")
+    ev.check(31, 35, "lint", 1, 0, rid)
+    ev.add(35.1, "step.end", step="lint", kind="check", status="passed", detail="exit 0", seconds=4.9)
+    ev.step(35.2, None, "test", "check")
+    ev.add(35.5, "check.decision", step="test", owner="test", phase="check", cmd="test",
+           log=f"{checks}/test.not-affected.log", **not_affected)
+    ev.add(35.6, "step.end", step="test", kind="check", status="not-affected",
+           detail="not affected: no covered path changed (1 paths compared)", seconds=0.4)
+    ev.step(40, None, "ship", "ship")
+    ev.add(41, "check.decision", step="gate", owner="ship", phase="gate", cmd="lint", outcome="reused", why="",
+           paths=[], paths_total=0, tree=PROOF_TREE, from_step="lint", from_phase="check", log=f"{checks}/gate-lint.log")
+    ev.add(41.5, "check.decision", step="gate", owner="ship", phase="gate", cmd="test", log=f"{checks}/gate-test.log",
+           **not_affected)
+    ev.add(42, "gate.decision", action="merge", ship=True, reasons=[])
+    ev.add(43, "step.end", step="ship", kind="ship", status="passed", detail="", seconds=3)
+    ev.add(44, "run.end", status="passed", exit=0)
+    fixtures.write(run / "events.jsonl", ev.text(), same)
+    fixtures.write(run / "build" / "prompt.md", "# build\n", same)
+    fixtures.write(run / "build" / "raw.jsonl", simple_claude(1.5, 29.5, f"{LAYER_DIR}/trees/{rid}", "build done", 0.05), same)
+    fixtures.write(run / "build" / "output.txt", "ok", same)
+    fixtures.write(run / "checks" / "lint.1.log", "All checks passed!\n", same)
+    fixtures.write(run / "checks" / "test.not-affected.log",
+                   "al: check test not run: not affected: no covered path changed\nREADME.md\n", same)
+    fixtures.write(run / "checks" / "gate-lint.log", "al: gate: lint not run: reused from lint, same tree 9f2c1e7a\n", same)
+    fixtures.write(run / "checks" / "gate-test.log", "al: gate: test not run: not affected: no covered path changed\n", same)
+    entry = {"definition": "0123456789abcdef", "why": "", "paths": [], "paths_total": 0, "from": None, "at": iso(35)}
+    ledger = [
+        {**entry, "check": "lint", "step": "lint", "phase": "check", "outcome": "passed", "tree": PROOF_TREE, "exit": 0,
+         "log": f"{checks}/lint.1.log", "why": "runs for every change"},
+        {**entry, "check": "test", "step": "test", "phase": "check", "outcome": "not-affected", "tree": PROOF_TREE,
+         "exit": None, "log": f"{checks}/test.not-affected.log", "why": "no covered path changed",
+         "paths": ["README.md"], "paths_total": 1},
+        {**entry, "check": "lint", "step": "gate", "phase": "gate", "outcome": "reused", "tree": PROOF_TREE, "exit": 0,
+         "log": f"{checks}/gate-lint.log", "from": {"step": "lint", "phase": "check", "log": f"{checks}/lint.1.log"}},
+        {**entry, "check": "test", "step": "gate", "phase": "gate", "outcome": "not-affected", "tree": PROOF_TREE,
+         "exit": None, "log": f"{checks}/gate-test.log", "why": "no covered path changed",
+         "paths": ["README.md"], "paths_total": 1}]
+    records = [with_agent(rec("build", "run", "passed", 1, 30)), rec("lint", "check", "passed", 30.2, 35.1, "exit 0"),
+               rec("test", "check", "not-affected", 35.2, 35.6, "not affected: no covered path changed (1 paths compared)"),
+               rec("ship", "ship", "passed", 40, 43)]
+    fixtures.write(run / "state.json", json.dumps(state(
+        rid, "zte", "Reword the README", "passed", 0, 44, records, pid=1, host=host, heartbeat=iso(43.9),
+        checks={"lint": {"cmd": "ruff check .", "exit": 0, "log": f"{checks}/lint.1.log", "outcome": "passed",
+                         "tree": PROOF_TREE},
+                "test": {"cmd": "pytest -q", "exit": 0, "outcome": "not-affected", "why": "no covered path changed",
+                         "paths": ["README.md"], "paths_total": 1, "tree": PROOF_TREE,
+                         "log": f"{checks}/test.not-affected.log"}},
+        check_results=ledger,
+        ship={"action": "merge", "shipped": True, "target": "al/ship/main", "reasons": [],
+              "gate": {"action": "merge", "ship": True, "reasons": []}}), indent=2), same)
+    fixtures.write(run / "run.log", f"2026-11-01T10:00:00.000Z [adw {rid}] zte start: class=chore dry_run=False\n", same)

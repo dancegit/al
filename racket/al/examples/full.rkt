@@ -9,8 +9,10 @@
             #:description "Vue storefront + FastAPI backend" #:package-manager "bun add / uv add"
     (cmd install "bun install && (cd api && uv sync)" #:timeout 1200)
     (cmd lint "bun run lint && (cd api && uv run ruff check)")
-    (cmd test "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)")
-    (cmd e2e "bun run e2e" #:timeout 1800 #:description "Playwright; writes e2e-results/")
+    (cmd test "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)"
+         #:covers ("web" "api"))
+    (cmd e2e "bun run e2e" #:timeout 1800 #:description "Playwright; writes e2e-results/"
+         #:covers ("web") #:always #f)   ; only run where affected checks are asked for and web/ changed
     (cmd deploy "./scripts/deploy.sh staging")
     (cmd changelog "./scripts/changelog.sh" #:description "the team's own script: appends the change to CHANGELOG.md")
     (paths #:source ("web/src" "api/app") #:tests ("web/tests" "api/tests") #:docs ("docs")
@@ -106,7 +108,7 @@
       (compose plan-build)
       (check lint #:cmd lint #:resolve resolve-test)
       (check test #:cmd test #:resolve resolve-test #:collect (junit))
-      (check e2e #:cmd e2e #:resolve resolve-test #:retries 2 #:collect (screenshots recordings))
+      (check e2e #:cmd e2e #:resolve resolve-test #:retries 2 #:collect (screenshots recordings) #:when-affected #t)
       (run commit #:command commit)
       (review #:patch patch #:implement implement)
       (ship)))

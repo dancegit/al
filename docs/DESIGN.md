@@ -117,7 +117,7 @@ check steps (deterministic, with resolve loop) ─▶ collect artefacts ─▶ s
    exit codes                         review command × N reviewers ─▶ verdict JSON
         └───────────────┬──────────────────────────────┘
                         ▼
-      gate: all checks green · required checks re-run green · no blocker · class allowed
+      gate: all checks green · required checks green on the tree that ships · no blocker · class allowed
             · diff ≤ max-diff-lines · no protected path touched
                  │ all true                       │ any false
                  ▼                                ▼
@@ -157,6 +157,83 @@ rules fail closed: with a rule set, output al cannot read, `go test` without `-v
 no reason (pytest without `-rs`, mocha, a reason-less `#[ignore]`) fail the check with a line naming
 the flag to add. They apply in the check step, its resolve loop, the review's re-checks and the
 gate's re-run of the same cmd, so a gate cannot pass on tests that did not run.
+
+### Affected checks and reused results
+
+A workflow that lists five suites ran all five for every change, again in every review round and
+again at the gate. Two things make the checks cost what the change needs; neither is a way to skip
+a check that matters. Both are decided in one module (`adw_modules/affected.py`); `steps.py` is the
+only caller, and the review and the gate (`review.py`, `ship.py`, both protected and unchanged) reach
+it through `steps.run_check_with_resolve` and `steps.run_logged`.
+
+**What a check covers.** `(cmd NAME "…" #:covers ("kit/dashboard" "*.md") #:always #f #:reuse #t)`.
+`#:covers` lists directories, files or globs relative to the repository root; `#:always #t` (the
+default) means the cmd runs for every change, so a layer that declares nothing behaves as before.
+Affected checks are asked for in three places: `#:when-affected #t` on one check step,
+`(check NAME #:cmds affected …)`, which the compiler expands, like `(compose …)`, into one ordinary
+check step per cmd that declares `#:covers` (named after the cmd, `whenAffected` true, the other
+keywords as written, so the IR and the schema know no new step kind), and `#:require affected` on a
+`review auto`, for the gate.
+
+**Selection** is a pure function of the workflow's checks (the cmds of its check steps and its
+required checks) and the changed paths, and it fails safe. First match wins:
+
+1. the changed paths cannot be computed → every check runs;
+2. the workflow is a layer change, or a changed path lies under an in-repo layer directory → every check runs;
+3. a changed path no check covers → every check runs;
+4. a changed path two or more `#:always #f` checks declare → every check runs;
+5. otherwise the `#:always` checks run, and the checks whose `#:covers` matches a changed path.
+
+Each "every check runs" names the path that caused it, in the record of every check. A check that
+is not run is recorded as **not affected**, with the reason and the paths compared (at most 50, plus
+the real count): step status `not-affected`, `state.checks[NAME].outcome`, an entry in
+`state.check_results`, a `check.decision` event and a log `checks/NAME.not-affected.log`. Its
+`state.checks` record carries `"exit": 0` only because the protected gate counts a check step without
+a record as failed; every reader shows `outcome`, never the exit code, so nothing displays it as
+passed.
+
+**The changed paths** are `git diff-tree -r --name-only -z --no-renames REFERENCE TREE`: a rename
+counts as its old and its new path, a deleted file counts. `REFERENCE` is the run's base (the merge
+base of `HEAD` and the branch the run delivers into); in a review round it is the tree the check
+last passed on, so a patch that leaves a suite's paths alone does not run it again. The round
+re-runs the check steps that ran (`review._checks_that_ran`); whenever it does, the steps recorded
+as not affected are decided again for the new tree (`steps._redecide_not_affected`), so a patch
+that touches what such a step covers runs it in the round.
+
+**The tree hash.** Every result is recorded with the hash of the worktree's content: `git add -A`
+into a temporary copy of the index (the real index is never written), the worktree option's
+`#:copy-files` unstaged again as `ship.commit_pending` does, then `git write-tree`. It equals
+`HEAD^{tree}` once everything is committed, which is how a pass in a check step is found again at
+the gate. Sandboxed runs compute it through `gitsafe` (container frozen, metadata verified, pinned
+locations, hardening options). A result also carries the hash of the check's definition (command
+line, environment, skip rules, sandbox image). A command that left the worktree different from how
+it found it has a result without a tree, which nothing reuses; when git fails there is no hash,
+every check runs and nothing is reused.
+
+**Reuse.** When a cmd is asked for again on a tree with exactly the content it already passed on
+in this run, with the same definition, it is not run: the result is recorded as `reused from STEP,
+same tree HASH`. Only a real pass is a source, never a failure, a "not affected" or another reuse.
+`#:reuse #f` on a cmd turns this off for a check that is not deterministic. Results are not shared
+between runs.
+
+**The gate's guarantee.** For each required cmd the gate first compares the worktree's hash with
+`HEAD^{tree}`: only when they are equal (what is in the worktree is exactly what ships) can a pass
+be reused, and only then, and only with `#:require affected`, can a cmd be judged not affected,
+always against the run's base and never against a later pass. In every other case the gate runs
+the cmd, as before. There is no proof by transitivity: a pass on an older tree plus "nothing it
+covers changed since" does not satisfy the gate. So by default every required check has a passing
+result for the exact tree that ships; `#:require affected` trades that for speed, and the compiler
+warns when it is combined with `#:ship merge` or `deploy`, because a wrong `#:covers` then ships
+unproven code. A gate decision's text is the content of `checks/gate-NAME.log`.
+
+**What a person sees.** The run summary shows `NAME=not affected (WHY; N paths compared)` or
+`NAME=reused from STEP, same tree HASH` in `checks:` and a `gate:` line; "What the checks proved"
+(a table per check: where, result, evidence, then the paths compared) is appended to `PR.md` or
+posted as one comment on the run's pull request after shipping or a handoff
+(`affected.publish`; the pull request body itself is built in the protected `ship.py`, whose
+"Checks" list still prints `exit 0` for a check that was not run); the dashboard shows the same
+table. `al verify` and `al sandbox doctor` print `coverage:` lines before their last line: the checks that declare no
+`#:covers`, and the `(paths #:source …)` entries no check covers.
 
 ## How work is delivered
 
@@ -727,11 +804,12 @@ to its check, a re-check and the reviewers to the review step).
 | `env.build.end` | `image`, `recipe`, `status` (passed / failed), `seconds`, `size` (bytes, or null), `error` (`exit N`, `timed out after …`, or null) |
 | `env.preflight` | `env` (the podman option checked: the run's own, or one its checks run `#:in`), `status` (passed / failed), `seconds`, `checks` (`[{name, status (ok / miss / skip), detail}]`) |
 | `step.start` | `step`, `kind`, `attempt` |
-| `step.end` | `step`, `kind`, `status` (passed / rejected / failed / skipped / waiting; `rejected` only for a review step whose final verdict failed), `detail`, `seconds` |
+| `step.end` | `step`, `kind`, `status` (passed / rejected / failed / skipped / waiting / not-affected; `rejected` only for a review step whose final verdict failed, `not-affected` only for a check step whose cmd was not run), `detail`, `seconds` |
 | `agent.start` | `step` (the agent's directory: `build`, `test-resolve-1`, `review-2-1`, `patch-1`, …), `owner`, `agent` (option id), `agent_kind` (claude-code / codex / custom / mock), `model`, `model_set` (= `tier`), `tier`, `tier_from` (override / request / step / command), `model_from` (agent / override), `effort`; emitted before the call waits for an `agents` slot (a `slot.wait` / `slot.acquire` with `who` = `adw <id> step <dir>` follows) |
 | `agent.end` | as `agent.start`, plus `status` (passed / failed), `seconds`, and when the transcript says so `cost` (USD), `turns`, `duration_ms`; `billing` (subscription / api-key, when the transcript's init event says so; else empty); `error` on failure |
 | `check.start` | `step` (check step, or `gate` / `deploy`), `owner`, `phase` (check / recheck / gate / deploy), `cmd` (codebase cmd name), `attempt`, `log` (layer-relative) |
 | `check.end` | as `check.start`, plus `exit`, `seconds`; when the output had a test report `skipped` (count), `skip_reasons` (`[[reason, count]]`, at most 5, most frequent first) and `skip_source` (`pytest`, `go`, `go (no -v)`, `cargo`, `mocha`, `junit:<file>`, joined with `+`); `in` (the environment option) for a check that runs `#:in` one. A gate re-run of a check's cmd carries the same fields |
+| `check.decision` | a check that was not run, in place of a `check.start` / `check.end` pair: `step` (check step, or `gate`), `owner`, `phase` (check / recheck / gate), `cmd`, `outcome` (not-affected / reused), `why`, `paths` (the changed paths compared, at most 50), `paths_total`, `tree` (the worktree's tree hash), `from_step` and `from_phase` (where the reused pass ran; empty otherwise), `log` (the decision's text; for a reused check step the log of the run that passed) |
 | `script.start` / `script.end` | `step`, `owner`, `cmd` (codebase cmd name), `log` (layer-relative); `script.end` adds `exit`, `seconds` |
 | `script.event` | `step`, `owner` (the script step), `line` (the line number in the script's own `events.jsonl`), `foreign` (that line's JSON object, unchanged) |
 | `budget.stop` | `step` (the agent call that crossed the limit, or the one refused), `limit` (run / step / day), `spent`, `of`, `reason` (`budget:<limit>: spent $X of $Y`) |

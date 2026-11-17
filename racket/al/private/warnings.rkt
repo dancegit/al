@@ -102,6 +102,14 @@
     (format "workflow ~a ships without a person, but check ~a runs #:in ~a (a ~a environment), outside its podman sandbox"
             (field adw 'name "") (field st 'name "") (field st 'in "") (field option 'kind ""))))
 
+(define (require-affected-ships ir)
+  (for/list ([rv (in-list (field ir 'reviews))]
+             #:when (equal? (field rv 'kind "") "auto")
+             #:when (equal? (field rv 'require "all") "affected")
+             #:when (member (field rv 'ship "") '("merge" "deploy")))
+    (format "review `~a` has #:require affected and #:ship ~a: a required check no changed path touches is not run before the change ships without a person; a wrong #:covers then ships unproven code"
+            (field rv 'id "") (field rv 'ship ""))))
+
 (define (layer-warnings ir)
   (append (unused-environments ir) (credentials-outside ir) (scope-command ir) (nix-not-in-container ir)
-          (check-outside-sandbox ir)))
+          (check-outside-sandbox ir) (require-affected-ships ir)))

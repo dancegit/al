@@ -27,6 +27,33 @@ With `AL_SANDBOX_PROOF` set, a host without a usable podman fails the run instea
 
 `AL_SANDBOX_PROOF` writes `nested-isolation.txt`, `nested-run-summary.txt` and `doctor-engine.txt` there.
 
+### Affected checks and reused results
+
+`kit/runtime/tests/test_affected.py` covers `adw_modules/affected.py` on its own: what a `#:covers`
+entry matches, the selection rules and each fail-safe case, the tree hash on real repositories
+(untracked files count, the index is not touched, `#:copy-files` are left out, a sandboxed run goes
+through `gitsafe`), the changed paths (both sides of a rename, deleted files), the ledger and the
+texts a person reads. `kit/runtime/tests/test_affected_runs.py` runs whole workflows through
+`runner.main` with the mock agent on an IR shaped like `racket/al/tests/fixtures/affected-checks.rkt`;
+every cmd appends its name to a counter file outside the worktree, so a test counts how often a
+command really ran: a change in one directory runs one suite, a README-only change runs no code suite
+and still ships, a covered-path change runs its suite once, `#:reuse #f` always runs again, and the
+gate never uses a pass from another tree. `tests/tools/test_affected_checks.py` (needs racket) covers
+the compile warning, the expanded steps in a generated layer, `al explain`, and the `coverage:` lines
+of `al verify` and `al sandbox doctor`.
+
+```bash
+(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q tests/test_affected.py tests/test_affected_runs.py)
+(cd kit/runtime && AL_AFFECTED_PROOF=/tmp/proof env -u AL_APP_ROOT uv run --with pytest pytest -q tests/test_affected_runs.py)
+```
+
+`AL_AFFECTED_PROOF` writes `readme-only-summary.txt`, `readme-only-PR.md` (the "What the checks
+proved" section of that run), `one-suite-summary.txt` and `covered-path-events.jsonl` (the
+`check.decision` events) there. Two older runtime tests changed with the feature: the gate in
+`test_events.py` now reuses the check step's pass (one `check.decision`, no second run), and
+`test_skips.py::test_skip_rule_applies_to_the_gate_rerun` declares `"reuse": False` on its cmd,
+whose output differs each time it runs.
+
 `tests/acceptance.sh` is the older end-to-end script. It works on the git-ignored `layers/` directory
 and leaves branches and worktrees behind in the testbeds; `tests/integration` supersedes it and covers
 everything it did (sections C and D) reproducibly.
@@ -191,3 +218,13 @@ only when every verified cmd exited 0 in every stack; the summary counts one row
 current branch and index are compared before and after; a difference is an error. Files edited in
 the checkout meanwhile are reported as a note, not an error: verify runs every cmd in its own
 worktree, so it cannot tell them from the developer's own work in progress.
+
+Just before the final `verify: N/M ok` line it prints what the layer's checks declare to cover, from the layer's
+own `adws/adw_modules/affected.py` (`coverage_report`): `coverage: no check declares #:covers, so
+every check runs for every change`; or `coverage: N check(s) declare no #:covers and run for every
+change: A, B` and one `coverage: source path P is covered by no check: a change there runs every
+check` per `(paths #:source …)` entry; or `coverage: every check declares #:covers and every source
+path is covered`. With `--workflow NAME` only that workflow's check steps count (plus every review's
+required checks and every stage's checks). The lines never change the exit status, go to standard
+error with `--json` (stdout stays the rows), and a layer generated before the feature prints none.
+`al sandbox LAYER doctor` prints the same lines before its summary line.

@@ -177,12 +177,13 @@ def test_normalise_reason():
 
 # ------------------------------------------------------------------------------------- through a run
 
-def _layer(make_layer, *, run: str, check: dict | None = None, review: dict | None = None, steps=None) -> Path:
+def _layer(make_layer, *, run: str, check: dict | None = None, review: dict | None = None, steps=None,
+           cmd: dict | None = None) -> Path:
     return make_layer({
         "agents": [{"id": "mock", "kind": "mock", "scriptDir": "mock", "status": "stable", "timeout": 20}],
         "commands": [{"name": "build", "template": "build", "modelSet": "base", "output": "text"},
                      {"name": "review", "template": "review", "modelSet": "base", "output": "json"}],
-        "codebase": {"commands": [{"name": "test", "run": run, "timeout": 10}]},
+        "codebase": {"commands": [{"name": "test", "run": run, "timeout": 10, **(cmd or {})}]},
         "reviews": [{"id": "policy", "kind": "auto", "status": "stable", "command": "review", "reviewers": 1,
                      "maxRetries": 0, "artefacts": [], "allowedClasses": ["chore", "bug"],
                      "blockProtectedPaths": True, "maxDiffLines": 100, "requireChecks": ["test"], "ship": "merge",
@@ -234,7 +235,8 @@ def test_skip_rule_applies_to_the_gate_rerun(make_layer, tmp_path):
              {"name": "test", "kind": "check", "cmd": "test", "resolve": "", "retries": 0, "collect": [],
               "in": "", "maxSkipped": -1, "forbidSkipReason": "no podman"},
              {"name": "review", "kind": "review"}, {"name": "ship", "kind": "ship"}]
-    layer = _layer(make_layer, run=run, steps=steps)
+    # the command answers differently each time it runs, so its pass must not be reused: #:reuse #f
+    layer = _layer(make_layer, run=run, steps=steps, cmd={"reuse": False})
     runner.main("demo", layer, ["Ship it", "--adw-id", "5c1b0002"])
     state = _state(layer, "5c1b0002")
     assert state["checks"]["test"]["exit"] == 0

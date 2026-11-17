@@ -207,9 +207,15 @@
          (unless (null? pos) (fail "~a: unexpected ~s" who (car pos)))
          (when (findf (lambda (c) (equal? (hash-ref c 'name) (symbol->string (cadr s)))) cmds)
            (fail "~a: declared twice" who))
-         (set! cmds (cons (compile-fields (rec-fields 'cmd) (cons (cons '#:run (caddr s)) k) who
-                                          #:init (hasheq 'name (symbol->string (cadr s))))
-                          cmds))]
+         (define compiled (compile-fields (rec-fields 'cmd) (cons (cons '#:run (caddr s)) k) who
+                                          #:init (hasheq 'name (symbol->string (cadr s)))))
+         (when (and (not (hash-ref compiled 'always)) (null? (hash-ref compiled 'covers)))
+           (fail "~a: #:always #f needs #:covers: without declared paths the command would never run" who))
+         (for ([entry (in-list (hash-ref compiled 'covers))])
+           (when (or (string=? entry "") (regexp-match? #rx"^/" entry) (member ".." (string-split entry "/")))
+             (fail "~a: #:covers ~s must be a path or glob relative to the repository root, without `..` or a leading `/`"
+                   who entry)))
+         (set! cmds (cons compiled cmds))]
         [(paths)
          (when paths (fail "(codebase): (paths …) given twice"))
          (define-values (pos k) (split-kwargs (cdr s) "(paths)"))
@@ -297,7 +303,7 @@
                     #:init (hasheq 'kind (symbol->string kind) 'name name)))
   (case (car s)
     [(run) (named 'step-run 'run #f)]
-    [(check) (named 'step-check 'check #f)]
+    [(check) (if (memq '#:cmds (cdr s)) (compile-check-affected s adw-name) (named 'step-check 'check #f))]
     [(script) (compile-script s adw-name named)]
     [(review) (named 'step-review 'review "review")]
     [(ship) (named 'step-ship 'ship "ship")]
@@ -308,6 +314,48 @@
      (hasheq 'kind "compose" 'adw (symbol->string (cadr s)))]
     [(fan-out) (compile-fan-out s adw-name named)]
     [else (fail "(adw ~a): unknown step ~a; steps are ~a" adw-name (car s) step-kinds)]))
+
+;; (check NAME #:cmds affected …): a placeholder that expand-affected turns into one ordinary
+;; check step per codebase cmd that declares #:covers. The IR never holds this kind.
+(define (compile-check-affected s adw-name)
+  (define rest (cdr s))
+  (unless (and (pair? rest) (symbol? (car rest)))
+    (fail "(adw ~a): (check NAME …) needs a step name" adw-name))
+  (define name (symbol->string (car rest)))
+  (define who (format "(adw ~a) step (check ~a)" adw-name name))
+  (define-values (pos kws) (split-kwargs (cdr rest) who))
+  (unless (null? pos) (fail "~a: unexpected ~s" who (car pos)))
+  (unless (eq? (cdr (assq '#:cmds kws)) 'affected)
+    (fail "~a: #:cmds takes `affected` (one check step per cmd that declares #:covers); name a single cmd with #:cmd" who))
+  (for ([kw (in-list '(#:cmd #:when-affected))])
+    (when (assq kw kws)
+      (fail "~a: #:cmds affected stands for the cmds that declare #:covers; remove ~a" who kw)))
+  (hasheq 'kind "check-affected" 'name name 'who who
+          'kws (filter (lambda (p) (not (eq? (car p) '#:cmds))) kws)))
+
+;; Each "check-affected" placeholder becomes, for every cmd with a non-empty #:covers and in
+;; declaration order, a check step named after the cmd with #:when-affected #t and the written keywords.
+(define (expand-affected adws codebase clause-of)
+  (define covering
+    (filter (lambda (c) (pair? (hash-ref c 'covers '()))) (hash-ref codebase 'commands)))
+  (for/list ([a (in-list adws)])
+    (parameterize ([current-clause (hash-ref clause-of (hash-ref a 'name) (current-clause))])
+      (hash-set
+       a 'steps
+       (append*
+        (for/list ([s (in-list (hash-ref a 'steps))])
+          (cond
+            [(equal? (hash-ref s 'kind) "check-affected")
+             (define who (hash-ref s 'who))
+             (when (null? covering) (fail "~a: #:cmds affected, but no codebase cmd declares #:covers" who))
+             (for/list ([c (in-list covering)])
+               (define cmd-name (hash-ref c 'name))
+               (compile-fields (rec-fields 'step-check)
+                               (list* (cons '#:cmd (string->symbol cmd-name)) (cons '#:when-affected #t)
+                                      (hash-ref s 'kws))
+                               who
+                               #:init (hasheq 'kind "check" 'name cmd-name)))]
+            [else (list s)])))))))
 
 (define (compile-adw datum firsts)
   (unless (and (>= (length datum) 2) (symbol? (cadr datum)))
@@ -622,7 +670,7 @@
             (fail "(adw ~a): declared twice" (hash-ref a 'name)))
           (hash-set! clause-of (hash-ref a 'name) (car c))
           a)))
-    (define adws (expand-compose adws-raw))
+    (define adws (expand-compose (expand-affected adws-raw codebase clause-of)))
 
     ;; ---- reference resolution -----------------------------------------------------------
     (define (ids-of target)

@@ -80,6 +80,10 @@ class ADWState:
     # a promotion run (promotion.py): {from, to, from_branch, to_branch, pinned, to_head, method, approval,
     # approvers, changes, decisions_file, …}; empty, and then left out of state.json, for every other run
     promotion: dict[str, Any] = field(default_factory=dict)
+    # every check result and decision of the run, in order (affected.record): {check, step, phase:
+    # check | recheck | gate, outcome: passed | failed | not-affected | reused, tree, definition, exit,
+    # log, why, paths, paths_total, from: {step, phase, log} | null, at}; left out of state.json while empty
+    check_results: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -111,6 +115,8 @@ class ADWState:
                 data.pop("delivery", None)  # a layer without stages writes the state.json of before
             if not data.get("promotion"):
                 data.pop("promotion", None)  # only a promotion run has one
+            if not data.get("check_results"):
+                data.pop("check_results", None)  # a run without a check writes the state.json of before
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")

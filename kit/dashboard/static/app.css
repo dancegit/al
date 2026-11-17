@@ -636,3 +636,17 @@ table.tools .why { padding: 4px 8px; }
 }
 .act-row .act-text.md > :first-child { margin-top: 0; }
 .act-row .act-text.md > :last-child { margin-bottom: 0; }
+/* a check that was not run: not affected by the change (styled like skipped, never like passed), or its pass reused */
+.s-not-affected { color: var(--skipped); } .s-reused { color: var(--unknown); }
+.progress i.s-not-affected { background: transparent; border: 1px dashed var(--skipped); opacity: .7; }
+.g-node.st-not-affected { opacity: .6; } .g-node.st-not-affected rect.box { stroke-dasharray: 4 3; stroke: var(--skipped); }
+.g-node.st-not-affected text.icon { fill: var(--skipped); }
+.tl-bar.st-not-affected, .tl-bar.st-reused { opacity: .25; }
+.badge.not-affected { color: var(--text-2); border-style: dashed; border-color: var(--skipped); }
+.badge.reused { color: var(--accent); border-color: rgba(110, 168, 254, .4); background: rgba(110, 168, 254, .08); }
+.decision { margin: 6px 0 8px; padding: 6px 8px; font-size: 12px; border-radius: 4px; border: 1px dashed var(--skipped); color: var(--text-2); }
+.decision .decision-what { color: var(--text); }
+.decision pre.decision-paths { margin: 4px 0 0; font-size: 11px; max-height: 180px; overflow: auto; }
+table.proof td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
+table.proof td:nth-child(3) { min-width: 190px; overflow-wrap: normal; }
+table.proof .badge { white-space: normal; }

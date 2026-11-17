@@ -1159,3 +1159,137 @@
   (check-equal? (hash-ref (check-step spec "build" "engine-test") 'in) "engine")
   (check-true (for/and ([o (in-list (hash-ref spec 'environments))] #:when (equal? (hash-ref o 'kind) "podman"))
                 (hash-ref o 'nestedEngine))))
+
+;; --- checks that say what they cover: #:covers, #:always, #:reuse, #:cmds affected ------------
+
+(define (cmd-of ir name)
+  (findf (lambda (c) (equal? (hash-ref c 'name) name)) (hash-ref (hash-ref ir 'codebase) 'commands)))
+(define (covering-layer cmds . clauses)
+  `(agentic-layer #:name "t" (codebase #:root "." #:languages (python) ,@cmds) ,plan ,@clauses))
+(define two-suites
+  '((cmd unit "pytest") (cmd suite-a "sh a.sh" #:covers ("a") #:always #f)
+    (cmd suite-b "sh b.sh" #:covers ("b" "docs/**"))))
+(define (step-names ir adw)
+  (map (lambda (s) (hash-ref s 'name))
+       (hash-ref (findf (lambda (a) (equal? (hash-ref a 'name) adw)) (hash-ref ir 'adws)) 'steps)))
+
+(test-case "cmd coverage defaults: covers (), always #t, reuse #t"
+  (define c (cmd-of (compile-layer-datum (layer plan simple-adw)) "test"))
+  (check-equal? (hash-ref c 'covers) '())
+  (check-equal? (hash-ref c 'always) #t)
+  (check-equal? (hash-ref c 'reuse) #t))
+
+(test-case "cmd #:covers, #:always #f and #:reuse #f compile to the IR"
+  (define ir (compile-layer-datum
+              (covering-layer '((cmd e2e "bun run e2e" #:covers ("web" "*.md") #:always #f #:reuse #f)) simple-adw)))
+  (define c (cmd-of ir "e2e"))
+  (check-equal? (hash-ref c 'covers) '("web" "*.md"))
+  (check-equal? (hash-ref c 'always) #f)
+  (check-equal? (hash-ref c 'reuse) #f))
+
+(test-case "cmd #:always #f needs #:covers"
+  (check-rejects (covering-layer '((cmd e2e "bun run e2e" #:always #f)) simple-adw)
+                 #rx"\\(cmd e2e\\): #:always #f needs #:covers: without declared paths the command would never run"))
+
+(test-case "cmd #:covers refuses .. and absolute paths"
+  (for ([bad (in-list '("../other" "a/../../b" "/etc" ""))])
+    (check-rejects (covering-layer `((cmd e2e "bun run e2e" #:covers (,bad))) simple-adw)
+                   #rx"\\(cmd e2e\\): #:covers \".*\" must be a path or glob relative to the repository root, without `..` or a leading `/`")))
+
+(test-case "check #:when-affected defaults to #f"
+  (define ir (compile-layer-datum
+              (layer plan '(adw a (steps (run plan #:command plan) (check t #:cmd test)
+                                         (check l #:cmd lint #:when-affected #t))))))
+  (check-equal? (hash-ref (check-step ir "a" "t") 'whenAffected) #f)
+  (check-equal? (hash-ref (check-step ir "a" "l") 'whenAffected) #t))
+
+(test-case "review auto #:require defaults to all"
+  (define (require-of . kws)
+    (define ir (compile-layer-datum
+                (layer plan review-cmd `(review auto #:ship pr #:require-checks (test) ,@kws) simple-adw)))
+    (hash-ref (car (hash-ref ir 'reviews)) 'require))
+  (check-equal? (require-of) "all")
+  (check-equal? (require-of '#:require 'affected) "affected")
+  (check-rejects (layer plan review-cmd '(review auto #:ship pr #:require-checks (test) #:require some) simple-adw)
+                 #rx"one of: all, affected"))
+
+(test-case "check #:cmds affected expands to one step per cmd with #:covers"
+  (define ir (compile-layer-datum
+              (covering-layer two-suites '(command fix #:template resolve-test)
+                              '(adw a (steps (run plan #:command plan)
+                                             (check tests #:cmds affected #:resolve fix #:retries 1)
+                                             (check unit #:cmd unit))))))
+  ;; names and order follow the cmd declarations; `unit` declares no #:covers and is left out
+  (check-equal? (step-names ir "a") '("plan" "suite-a" "suite-b" "unit"))
+  (for ([name (in-list '("suite-a" "suite-b"))])
+    (define st (check-step ir "a" name))
+    (check-equal? (hash-ref st 'kind) "check")
+    (check-equal? (hash-ref st 'cmd) name)
+    (check-equal? (hash-ref st 'whenAffected) #t)
+    (check-equal? (hash-ref st 'resolve) "fix")
+    (check-equal? (hash-ref st 'retries) 1))
+  (check-equal? (hash-ref (check-step ir "a" "unit") 'whenAffected) #f)
+  ;; the IR holds ordinary check steps only: the same keys as a written one
+  (check-equal? (sort (map symbol->string (hash-keys (check-step ir "a" "suite-a"))) string<?)
+                (sort (map symbol->string (hash-keys (check-step ir "a" "unit"))) string<?))
+  ;; through (compose …) too
+  (define composed (compile-layer-datum
+                    (covering-layer two-suites
+                                    '(adw base (steps (run plan #:command plan) (check tests #:cmds affected)))
+                                    '(adw b (steps (compose base))))))
+  (check-equal? (step-names composed "b") '("plan" "suite-a" "suite-b")))
+
+(test-case "check #:cmds affected: shape errors"
+  (define (with-step step [cmds two-suites])
+    (covering-layer cmds `(adw a (steps (run plan #:command plan) ,step))))
+  (check-rejects (with-step '(check tests #:cmds all))
+                 #rx"step \\(check tests\\): #:cmds takes `affected` \\(one check step per cmd that declares #:covers\\); name a single cmd with #:cmd")
+  (check-rejects (with-step '(check tests #:cmds affected #:cmd unit))
+                 #rx"#:cmds affected stands for the cmds that declare #:covers; remove #:cmd")
+  (check-rejects (with-step '(check tests #:cmds affected #:when-affected #f))
+                 #rx"#:cmds affected stands for the cmds that declare #:covers; remove #:when-affected")
+  (check-rejects (with-step '(check tests #:cmds affected) '((cmd unit "pytest")))
+                 #rx"step \\(check tests\\): #:cmds affected, but no codebase cmd declares #:covers")
+  (check-rejects (covering-layer two-suites
+                                 '(adw a (steps (run suite-a #:command plan) (check tests #:cmds affected))))
+                 #rx"step name `suite-a` used twice"))
+
+(test-case "warning: #:require affected with a ship policy that merges without a person"
+  (define (ws ship . kws)
+    (apply warnings review-cmd `(review auto #:id zt #:ship ,ship #:require-checks (test) ,@kws
+                                        ,@(if (eq? ship 'deploy) '(#:deploy-cmd lint) '()))
+           '(environment worktree) '(environment podman #:id box)
+           '((adw zte #:environment (worktree box)
+                  (steps (run plan #:command plan) (check t #:cmd test) (review) (ship))))))
+  (define (text ship)
+    (format "review `zt` has #:require affected and #:ship ~a: a required check no changed path touches is not run before the change ships without a person; a wrong #:covers then ships unproven code" ship))
+  (check-equal? (ws 'merge '#:require 'affected) (list (text "merge")))
+  (check-equal? (ws 'deploy '#:require 'affected) (list (text "deploy")))
+  (check-equal? (ws 'pr '#:require 'affected) '())
+  (check-equal? (ws 'merge '#:require 'all) '())
+  (check-equal? (ws 'merge) '()))
+
+(test-case "the affected-checks fixture compiles with exactly that warning"
+  (define spec (dynamic-require (build-path fixtures "affected-checks.rkt") 'layer-spec))
+  (check-equal? (layer-warnings spec)
+                '("review `zero-touch` has #:require affected and #:ship merge: a required check no changed path touches is not run before the change ships without a person; a wrong #:covers then ships unproven code"))
+  (for ([adw (in-list '("zte" "build"))])
+    (check-equal? (filter (lambda (n) (member n '("suite-a" "suite-b" "docs" "flaky"))) (step-names spec adw))
+                  '("suite-a" "suite-b" "docs" "flaky") adw)
+    (check-true (hash-ref (check-step spec adw "docs") 'whenAffected)))
+  (check-equal? (hash-ref (cmd-of spec "flaky") 'reuse) #f)
+  (check-equal? (hash-ref (cmd-of spec "flaky") 'always) #t)
+  (check-equal? (hash-ref (cmd-of spec "docs") 'covers) '("README.md" "docs")))
+
+(test-case "an IR without the new clauses differs from before only by the defaulted keys"
+  (define spec (dynamic-require (build-path examples "minimal.rkt") 'layer-spec))
+  (define c (cmd-of spec "test"))
+  (check-equal? (sort (map symbol->string (hash-keys c)) string<?)
+                '("always" "covers" "description" "name" "reuse" "run" "timeout"))
+  (check-equal? (list (hash-ref c 'covers) (hash-ref c 'always) (hash-ref c 'reuse)) '(() #t #t))
+  (check-equal? (step-names spec "plan-build") '("plan" "build" "test"))
+  (define st (check-step spec "plan-build" "test"))
+  (check-equal? (hash-ref st 'whenAffected) #f)
+  (check-equal? (hash-remove st 'whenAffected)
+                (hasheq 'kind "check" 'name "test" 'cmd "test" 'resolve "" 'retries 3 'collect '()
+                        'in "" 'maxSkipped -1 'forbidSkipReason "")))

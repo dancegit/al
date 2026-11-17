@@ -106,6 +106,17 @@ def by_id(ir: dict, key: str) -> dict:
     return {o["id"]: o for o in ir.get(key) or []}
 
 
+def cmd_coverage(cmd: dict) -> str:
+    """What a codebase cmd says about itself as a check: `; covers a, b (only when affected) (never reused)`."""
+    covers = cmd.get("covers") or []
+    text = f"; covers {listing(['`' + p + '`' for p in covers])}" if covers else ""
+    if cmd.get("always", True) is False:
+        text += " (only when affected)"
+    if cmd.get("reuse", True) is False:
+        text += " (never reused)"
+    return text
+
+
 def describe_step(step: dict, ir: dict | None = None) -> str:
     kind = step["kind"]
     if kind == "script":
@@ -131,7 +142,8 @@ def describe_step(step: dict, ir: dict | None = None) -> str:
             rules += f"; fails when more than {step['maxSkipped']} tests are skipped"
         if step.get("forbidSkipReason"):
             rules += f"; fails when a test is skipped because of \"{step['forbidSkipReason']}\""
-        return f"check `{step['name']}`: run the `{step['cmd']}` command{where}{fix}{rules}"
+        affected = ", only when the change touches what it covers" if step.get("whenAffected") else ""
+        return f"check `{step['name']}`: run the `{step['cmd']}` command{where}{affected}{fix}{rules}"
     if kind == "fan-out":
         return f"fan-out `{step['name']}`: {step['count']} runs of `{step['adw']}` race, pick {step['pick']}"
     if kind == "review":
@@ -172,7 +184,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
                 "never by saying so.")
         if prot:
             text += f" {len(prot)} protected path{'s' if len(prot) != 1 else ''}: agents may not ship changes there without a person."
-        bullets = [f"`{c['name']}` runs `{c['run']}`" + (f" — {c['description']}" if c["description"] else "") for c in cmds]
+        bullets = [f"`{c['name']}` runs `{c['run']}`" + (f" — {c['description']}" if c["description"] else "")
+                   + cmd_coverage(c) for c in cmds]
         if prot:
             bullets.append("Protected: " + listing([f"`{p}`" for p in prot]))
         bullets += [f"Read `{d['path']}` {d['when'][0].lower() + d['when'][1:]}" for d in cb["conditionalDocs"]]
@@ -238,6 +251,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
                          f"the work is a {listing(o['allowedClasses'], 'or')}", f"the change is at most {o['maxDiffLines']} lines"]
                 if o["blockProtectedPaths"]:
                     rules.append("no protected path was touched")
+                if o.get("require") == "affected":
+                    rules[0] += " (the gate runs only the required checks the change affects)"
                 bullets.append(f"`{o['id']}`: {o['reviewers']} reviewer agent(s) must approve, and then every rule must hold: "
                                + "; ".join(rules) + f". If so it ships by `{o['ship']}` ({ship_words(ir, o['ship'])}); "
                                f"otherwise a person decides, through {for_review(ir)}")
