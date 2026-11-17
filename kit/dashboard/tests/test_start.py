@@ -387,3 +387,70 @@ def test_the_page_state_says_why_starting_is_off(start_site):
         for name, (enabled, why) in expected.items():
             assert layers[name]["enabled"] is enabled, (flags, layers[name])
             assert why in layers[name]["why"] if why else layers[name]["why"] == "", (flags, layers[name])
+
+
+# ---------------------------------------------------------------- start again
+
+
+def _old_run(layer: Path, run_id: str, status: str = "failed", prompt: str = "", **extra: Any) -> None:
+    """A finished run of plan-build as the runtime records it; request.md holds the full prompt."""
+    import settle_fixtures
+
+    settle_fixtures.write_run(layer, run_id, adw="plan-build", prompt=prompt[:40], status=status,
+                              started="2026-11-10T09:00:00+00:00", ended="2026-11-10T09:01:00+00:00",
+                              klass="chore", class_fixed=True,
+                              overrides={"tier": "heavy", "models": {}, "from": {"tier": "--model-set"}}, **extra)
+    (layer / "agents" / run_id / "request.md").write_text(prompt + "\n")
+
+
+def _seen(running: Running, run_id: str) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if running.get(f"/api/run?layer=notes&run={run_id}")[0] == 200 and \
+                any(r["id"] == run_id for r in running.json("/api/snapshot")["runs"]):
+            return
+        time.sleep(0.2)
+    raise AssertionError(f"the dashboard never saw {run_id}")
+
+
+def test_start_again_rebuilds_request_and_passes_replaces(site):
+    running, layers = site
+    old = "0a1d0a1d"
+    prompt = "Add a word count to the notes list, and show it in the footer of every page as well"
+    _old_run(layers["notes"], old, prompt=prompt)
+    _seen(running, old)
+    body = {"layer": "notes", "again": old, "request_key": f"again-{old}"}
+    status, data = post(running, body)
+    assert status == 202, data
+    status, twice = post(running, body)   # a double click starts one run
+    assert status == 202 and twice["run_id"] == data["run_id"] and twice["existing"] is True, twice
+    new = data["run_id"]
+    state = wait_state(layers["notes"], new)
+    assert state["replaces"] == old and state["adw"] == "plan-build"
+    assert state["prompt"] == prompt   # the full prompt from request.md, not the clipped state.prompt
+    assert (state["klass"], state["class_fixed"], state["overrides"]["tier"]) == ("chore", True, "heavy")
+    events = [json.loads(line) for line in (layers["notes"] / "agents" / new / "events.jsonl").read_text().splitlines()]
+    assert next(e for e in events if e.get("type") == "run.start").get("replaces") == old
+    assert sorted(run_dirs(layers["notes"])) == sorted([old, new])
+    _seen(running, new)
+    status, refused = post(running, {**body, "request_key": key()})   # replaced now: not again
+    assert status == 409 and new in refused["error"]
+
+
+def test_start_again_refuses_passed_or_replaced_run(site):
+    running, layers = site
+    _old_run(layers["notes"], "0a55ed00", status="passed", prompt="Tidy the notes")
+    _old_run(layers["notes"], "0f00f000", prompt="Sort the notes")
+    _old_run(layers["notes"], "0e0e0e0e", status="running", prompt="Sort the notes", replaces="0f00f000",
+             heartbeat="2026-11-10T09:01:00+00:00")
+    for run_id in ("0a55ed00", "0f00f000", "0e0e0e0e"):
+        _seen(running, run_id)
+    status, data = post(running, {"layer": "notes", "again": "0a55ed00", "request_key": key()})
+    assert status == 400 and "only a failed or died run" in data["error"]
+    status, data = post(running, {"layer": "notes", "again": "0f00f000", "request_key": key()})
+    assert status == 409 and "0e0e0e0e" in data["error"]
+    status, data = post(running, {"layer": "notes", "again": "0badc0de", "request_key": key()})
+    assert status == 404
+    status, data = post(running, {"layer": "notes", "again": "0f00f000", "request_key": key(), "prompt": "x"})
+    assert status == 400
+    assert sorted(run_dirs(layers["notes"])) == ["0a55ed00", "0e0e0e0e", "0f00f000"]

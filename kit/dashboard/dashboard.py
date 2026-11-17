@@ -2341,7 +2341,8 @@ def attention(summaries: list[dict[str, Any]], landings: dict[str, dict[str, Any
                             reason=f"replaced by {new} ({(by_id.get(new) or {}).get('status', 'unknown')})")
             else:
                 cause = first_line(row.get("error")) or ("its process died" if status == "died" else "failed")
-                item.update(bucket="needs-you", reason=f"{row.get('failed_step') or status}: {cause}",
+                step = str(row.get("failed_step") or status)
+                item.update(bucket="needs-you", reason=cause if cause.startswith(f"{step}:") else f"{step}: {cause}",
                             next="Start again")
         elif record:
             item.update(bucket="settled", reason=settled_reason(record))
@@ -4209,10 +4210,12 @@ class Model:
         self.refresh_attention(layer)
         return 200, {"status": "settled", "record": record}
 
-    def again_request(self, layer: Layer, run_id: str) -> tuple[dict[str, Any] | None, int, str]:
+    def again_request(self, layer: Layer, run_id: str, request_key: str = "") -> tuple[dict[str, Any] | None, int, str]:
         """The start request that begins a failed (or died) run again, rebuilt from its records: its
         workflow (or its command, for a single-command run), its full prompt (agents/<id>/request.md, else
-        state.prompt), its class when it was fixed and its model set → (request, 0, "") or (None, code, why)."""
+        state.prompt), its class when it was fixed and its model set → (request, 0, "") or (None, code, why).
+        A run already replaced is refused, unless `request_key` is the key that started its replacement
+        (a double click): the launcher then answers with that run."""
         if not isinstance(run_id, str) or not RUN_ID.match(run_id) or not (layer.path / "agents" / run_id).is_dir():
             return None, 404, "unknown run"
         key = f"{layer.key}/{run_id}"
@@ -4223,7 +4226,11 @@ class Model:
             return None, 400, f"run {run_id} is {summary.get('status')}: only a failed or died run is started again"
         with self.lock:
             others = [s for s in self.summaries.values() if s["layer"] == layer.key and s.get("replaces") == run_id]
-        if others:
+        ledger = read_json(layer.path / "agents" / "starts.json") if request_key else None   # {"version", "starts": {key: {run_id, …}}}
+        starts = ledger.get("starts") if isinstance(ledger, dict) and isinstance(ledger.get("starts"), dict) else {}
+        entry = starts.get(request_key) if isinstance(starts.get(request_key), dict) else {}
+        mine = str(entry.get("run_id") or "")
+        if others and not any(s["id"] == mine for s in others):
             newest = max(others, key=lambda s: s.get("started") or 0)
             return None, 409, f"run {run_id} is replaced by {newest['id']} already"
         state = read_json(layer.path / "agents" / run_id / "state.json")
@@ -4243,9 +4250,11 @@ class Model:
         if not prompt and target["kind"] == "workflow":
             return None, 400, f"run {run_id} recorded no prompt to start again"
         klass = str(state.get("klass") or "") if state.get("class_fixed") else ""
+        overrides = state.get("overrides") if isinstance(state.get("overrides"), dict) else {}
+        tier = str(overrides.get("tier") or "") if (overrides.get("from") or {}).get("tier") == "--model-set" else ""
         return {"target": target, "prompt": prompt, "class": klass or None,
-                "model_set": str(state.get("model_set") or "") or None, "models": {}, "issue": "none",
-                "replaces": run_id}, 0, ""
+                "model_set": tier or str(state.get("model_set") or "") or None,
+                "models": {}, "issue": "none", "replaces": run_id}, 0, ""
 
     @staticmethod
     def layer_usage(layer: Layer, now: float) -> dict[str, Any]:
@@ -4453,13 +4462,13 @@ class Model:
         key = f"{layer_key}/{run_id}"
         cached = self.detail_cache.get(key)
         if cached and cached[0] == sig and cached[1]["summary"]["status"] != "running":
-            return cached[1]
+            return {**cached[1], "summary": self._decorated(cached[1]["summary"])}
         detail = RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).detail()
-        detail["summary"] = self._decorated(detail["summary"])
         if len(self.detail_cache) > 64:
             self.detail_cache.clear()
         self.detail_cache[key] = (sig, detail)
-        return detail
+        # decorated on every read: the bucket and landing change without the run's files changing
+        return {**detail, "summary": self._decorated(detail["summary"])}
 
     def layer_detail(self, layer_key: str) -> dict[str, Any] | None:
         layer = self.layers.get(layer_key)
@@ -6267,7 +6276,7 @@ class Handler(BaseHTTPRequestHandler):
         key = data.get("request_key")
         if not isinstance(key, str) or not START_KEY.fullmatch(key):
             return None, "request_key: 8 to 64 letters, digits, - or _", 400
-        request, code, why = self.server.model.again_request(layer, data.get("again"))
+        request, code, why = self.server.model.again_request(layer, data.get("again"), key)
         if request is None:
             return None, why, code
         return {**request, "request_key": key, "confirm_duplicate": data.get("confirm_duplicate") is True,

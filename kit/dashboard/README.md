@@ -1,7 +1,8 @@
 # al work dashboard
 
-A live view of what the agents of one or more layers are doing (with two guarded writes: which
-model each tier uses, and starting work: a workflow or a single command): which runs are in
+A live view of what the agents of one or more layers are doing (with three guarded writes: which
+model each tier uses, starting work: a workflow, a single command or a failed run again, and settling
+a finished run), which runs still need someone, which runs are in
 flight and what each agent is doing right now, the workflow of every run as a graph that colours
 in as steps finish, where the time went, what it cost, and every agent's transcript formatted for
 people. One Python file (standard library only) serves one page (HTML, CSS and vanilla JS, no
@@ -65,7 +66,7 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | View | What it shows |
 |---|---|
 | **Now** (`1`) | every run in flight: layer, workflow, request, current step, the agent's latest action in one line ("editing tests/test_basic.py", "running pytest", "thinking"), elapsed time, cost so far, whether it waits for a slot, its container (name, state, CPU and memory when podman is available); a **Subscription usage** panel per layer: what the agent CLI last reported about the subscription's usage windows (5-hour, weekly, or whatever name the CLI uses): share used as a bar, status, reset time, when and by which run it was reported, and the layer's threshold when it declares one. It has three states: the windows, "API key: not applicable" (the last call ran on an API key), "no data yet"; where the CLI gave no share it says so. It is not a live meter: it changes when an agent call ends. Then slot pools per layer (runs / agents / checks, held / total, from the lock files) and leased ports; recently finished runs. Dollars of runs whose calls ran on a subscription are marked "API-equivalent" |
-| **Runs** (`2`) | history with filters (layer, workflow, status, class, dates, text), sortable by time, cost and duration; count, pass rate, total and median cost and time |
+| **Runs** (`2`) | opens on **Needs you**: the runs that still need someone, each with a one-line reason and the next action (below). Chips switch to **Running**, **Landed**, **Settled** or **All**, each with its count; the filters (layer, workflow, status, class, dates, text) apply inside a chip, sortable by time, cost and duration; count, pass rate, total and median cost and time. The header reads "N need you", and the Runs link carries the same count |
 | **Run** | the workflow as a graph from the layer's IR (agent / check / review / ship / fan-out nodes; `when` branches stacked in one column; resolve loops and the review → patch → re-check loop as back-edges; fan-out candidates as lanes linked to their own runs), coloured live with duration and cost per node; a timeline of every step, check attempt, resolve agent, reviewer, patch round and gate re-run, with agent / check / slot-wait totals, setup bars at the top for a sandbox image build (`building sandbox image <recipe> (<size>)`) and the preflight (`preflight: all checks passed` or `preflight: missing <checks>`) from `env.build.*` / `env.preflight` events (while a build runs the run's current action reads "building the sandbox image"), and marks for what the CLI reported about subscription usage, a limit stop and a wait for a reset (`limit.*` events); cost and tokens per agent ("API-equivalent" when the calls ran on a subscription); the outcome: gate decision and reasons, ship target or PR, **why the run stopped** (a run a subscription limit stopped carries a "limit stop" mark and a "Subscription limit" block with the window, the share used and the reset time) and what the agent asks a human to do, review verdicts per round and reviewer with issues by severity |
 | **Step** | the exact prompt (sections collapsible), the transcript as one row per event: what the agent said, tool calls summarised (file read / edit with a diff / write, shell command, search pattern), results collapsed with size, errors marked, thinking as a marker, the final cost / turns / time. Filters (kind, errors only, tool), search with highlight, follow mode, raw JSON of any event, download of the raw `.jsonl`. Checks: every attempt's log with ANSI colours, its exit code and the resolve agent that followed |
 | **Documents** | what the run has written for people to read, as soon as each file exists: the plan, the `.md` / `.txt` / `.json` / `.log` outputs its steps recorded (a review's `patch-<n>` plans among them), review patch plans, `PR.md` (the handoff or PR text) and other text files in `agents/<id>/`, each reviewer's verdict (`review-*/output.txt`) and text artefacts; with the step that produced each, its size and time. **View** renders Markdown in the page (with a raw toggle), pretty-prints JSON and shows text as text; **Download** saves the exact file, **Download all** a zip of them all. A step's panel links the documents it produced (the plan on `plan-feature`). A new document appears live |
@@ -84,6 +85,27 @@ now", or "let the trigger start it" for a workflow a cron or webhook trigger sta
 workflow that merges or deploys without a person, and the same request again within five minutes,
 open a confirmation dialog. Then the page opens the new run. When starting is off, the panel says why
 (`--read-only`, `--no-start`, the container, or a layer generated before this feature: "run `al gen`").
+
+Every run is in one bucket (`attention()` in dashboard.py, recomputed when a layer's runs change and
+every 20 ticks):
+
+| Bucket | Runs | Row shows |
+|---|---|---|
+| **Needs you** | a waiting run; a handed-over run whose work is not on its target branch (or only partly: "partly landed: N paths differ (…)"); a failed or died run nothing replaces and nobody settled | the reason (the handover reasons, "waiting at STEP", "STEP: first line of the error") and the next action ("review PR #N", "merge BRANCH into TARGET, or `al settle`", the resume command, "Start again") |
+| **Running** | running and unknown runs | the current step |
+| **Landed** | a handed-over run whose work is on its target branch (see Landing below) | "landed in SHA (ancestor / forge / patch-id / paths), DATE" |
+| **Settled** | a run a person settled (`al settle`, or the run page's form); a handed-over run a later landed run integrated ("superseded by B"); a failure a later run replaces ("replaced by NEW (status)") | what settled it: "superseded by B", "replaced by NEW", "AS by WHO: note" |
+| done | passed runs | (only under All) |
+
+Failures of one layer that stopped at the same step with the same reason (the first line of the error
+with ids, numbers, paths and times dropped), each ending within 30 minutes of the one before, show in
+Needs you as **one group row**: "5 runs: preflight, same reason", with **show runs** and **Start all
+again**, which asks once and then starts each run again in turn (`POST /api/start {again}`), listing
+each new run above the table. A run page shows "replaces OLD", "replaced by NEW", "superseded by B" and
+the landing result in its Status block, a **Start again** button on a failed or died run nothing
+replaces, and, on a finished run nobody settled, a **Settle this run** card: landed, superseded or
+abandoned, an optional run or commit (`by`), a note, and your name (kept in the browser like the
+promotion card's).
 
 A run whose `script` step exited with a code the step declares as waiting (`#:waiting-exit (75)`)
 ended **waiting**: it is neither failed nor passed, its worktree is kept, and nobody is notified.
@@ -137,7 +159,11 @@ actions run `al`, which writes what that command writes. `--read-only` turns all
 | `commands/<name>.md`, `hops/<name>.md` | the `argument-hint` of their front matter, shown next to `/name` in the Start work panel (regular files inside those directories only) |
 | `adws/dispatch.py`, `adws/adw_modules/launch.py` | starting work: their presence enables the Start work panel; `dispatch.py --start --json` is run (see Safety) |
 | `agents/starts.json` | written by the layer's launcher, not read by the page: the request keys of the last two days (`{key: {run_id, target, prompt_sha, at, issue}}`) behind the double-start guard; `agents/.starts.lock` serialises starts |
-| `agents/<id>/request.md`, `agents/<id>/launch.log` | a started run's prompt (mode 0600) and the output of its detached process until the run's own `run.log` takes over; both are documents of the run |
+| `agents/<id>/request.md`, `agents/<id>/launch.log` | a started run's prompt (mode 0600) and the output of its detached process until the run's own `run.log` takes over; both are documents of the run. "Start again" rebuilds its request from `request.md` (else `state.prompt`), the run's workflow or command, its fixed class and its tier |
+| `agents/<id>/settlement.json` | a person's settlement of a finished run (`{"as": landed\|superseded\|abandoned, "by", "note", "who", "at", "via": cli\|dashboard}`, the record before it under `"previous"`, one level; `"pruned"` after `al runs … prune`); written by `al settle` and `POST /api/settle`, atomically, mode 0600; also part of a run's signature, so a new one moves the run at once |
+| `state.json` `replaces`, `branch`, `ship.commit`, `ship.pr`, `delivery.branch` | what landing and settlement need: the run a run starts again (a run whose `replaces` names another makes that one "replaced by"), the run's branch and shipped commit, its pull request, and its target branch (`delivery.branch` with stages, else `codebase.defaultBranch`, else `main`) |
+| the application repository (`codebase.root`, `AL_APP_ROOT` when set) | **Landing**, read-only: whether a handed-over run's tip (its branch, else `ship.commit`) is on the target branch's heads (`refs/heads/<target>` and every `refs/remotes/*/<target>`, read from the ref files): (1) `merge-base --is-ancestor` (landed in the oldest commit of `rev-list --ancestry-path`), (2) the forge says the pull request is merged, (3) the stable `patch-id` of the branch's change equals one of the last 500 target commits' (a squash merge), (4) every path the branch changed has the same blob on the target (an integration; some only: "partly"). git through the same hardened `safe_git` as the workspace scan, 10 s per call, never a fetch, never a write. Cached per (repository, run tip, target heads), so a new target commit recomputes; at most 8 uncached checks per tick (the others show "checking"). A later landed run whose prompt names a run's branch or id, or whose tip holds the run's tip, supersedes it |
+| `adws/dispatch.py --pr-state N --json` | the forge's answer for a run with a pull request whose local result is open: the layer's own runtime asks its forge read-only (`pr_state`, so credentials stay with the layer), kept 10 minutes per run and target heads; not asked for forge `none` or in a container |
 | `state.json` `definition` | a single-command run's one-step workflow (`command:<name>`), which the compiled layer does not declare: the run's graph is drawn from it; likewise a promotion run's workflow (`promote-<from>-<to>`, steps of kind `promote`) |
 | `state.json` `promotion`, `promotions/<id>/acceptance.jsonl` | the **promotion card** of a promotion run (below); the decisions are read through the same safe-path rule as every served file |
 | `agents/promotions/<from>-<to>.json` | the open promotions: the layer page's Promote / Continue buttons, and whether a card still takes decisions |
@@ -190,9 +216,9 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
 
 ## Safety
 
-- **Three writes, guarded.** Only GET and HEAD, plus `POST /api/models`, `POST /api/start` and
-  `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions); every other method and path is 405 (GET on `/api/models` or `/api/start` is
-  405 too), and no endpoint stops or changes a run. All three writes pass one guard
+- **Four writes, guarded.** Only GET and HEAD, plus `POST /api/models`, `POST /api/start`,
+  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions); every other method and path is 405 (GET on `/api/models`, `/api/start` or `/api/settle` is
+  405 too), and no endpoint stops a run or changes its records (a settlement is a file of its own). All four writes pass one guard
   (`Handler._write_guard`): the token as for every request, but from the `Authorization` header or
   the cookie only (a token in the query string is refused); a loopback `Host` when there is no
   token; an `Origin` header equal to `http://<Host>` (a missing one is refused); the
@@ -220,6 +246,14 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
   review and no ship step: it cannot ship. "Log as an issue, start now" opens the issue with a
   `<!-- al:claimed run=<id> -->` marker in its body, which the layer's poller and webhook skip;
   "let the trigger start it" opens it with the issue input's labels and starts nothing.
+  `{layer, again: RUN, request_key, confirm_duplicate, confirm_ships}` (no target, no prompt) starts
+  the failed or died run RUN again: the server rebuilds the request from RUN's own records (its
+  workflow, or its command for a single-command run; the full prompt from `request.md`; its class when
+  it was fixed; the tier it was started with) and the launcher gets `--replaces RUN`, so the new run
+  records `replaces` and RUN reads as "replaced by" it. A run that is not failed or died is 400, one a
+  run already replaces 409 (naming it), unless the request key is the one that started that run (a
+  double click: the launcher answers with it). "Start again" of an issue-sourced run restarts from the
+  recorded prompt, not from the issue.
 - **Actions.** `POST /api/action {"repo": KEY, "action": NAME}` (and `"confirm": NONCE`) runs `al` on a
   scanned repository, from this fixed allow-list only (AL = the found tool, APP = the repository's real
   path, LAYER = its layer, else `<folder>/<name>.al`):
@@ -295,6 +329,17 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
   A transcript full of `<script>` and `<img onerror>` displays as text (tested in Chrome).
 - **Network.** Loopback by default, with a Host-header check against DNS rebinding. A non-loopback
   `--bind` needs `--token`; then every request needs it.
+
+### `POST /api/settle`
+
+`{layer, run, as: landed|superseded|abandoned, by, note, who}` passes the same guard as every write (a body
+of at most 4 KiB; refused with `--read-only`). Only those keys are accepted. `by` is empty, a run of the
+layer (8 hexadecimal characters with a `state.json`) or a commit (7 to 40 hexadecimal characters that `git
+cat-file -e` finds in the application repository); a note is at most 500 characters (kept as one
+paragraph), `who` at most 80 printable characters on one line. An unknown layer or run is 404, a running or
+unknown run 409, any other bad field 400. It writes `agents/<id>/settlement.json` (above) and nothing
+else, recomputes the layer's buckets and answers `{"status": "settled", "record": …}`. `al settle` writes
+the same record with `"via": "cli"`.
 
 ### `POST /api/promotion`
 
@@ -392,6 +437,23 @@ confirmation; with `AL_DASHBOARD_SHOTS=DIR` it saves `start-form.png`, `start-co
 page and the layer page's Promotions section; with `AL_DASHBOARD_SHOTS=DIR` it saves
 `promotion-card.png`, `promotion-refused.png`, `promotion-pack.png` and `promotion-layer.png` (the
 layer page's Promotions section with its buttons) to DIR.
+
+`tests/settle_fixtures.py` builds the runs-list scenario as code: an invented application `orchard/` with
+real git history and its layer `orchard.al/` with 27 runs (five merged, three squash-merged, two
+integrated by a later run, four open, one with a pull request; five failures replaced by running
+restarts; a waiting run; an older failure), and `build_group_scenario` with the five failures alone.
+`tests/test_landing.py` checks Landing on small repositories built in the test (ancestor, patch-id, equal
+paths, partly, open, the forge's answer, a gone branch, a remote-tracking target, the cache per target
+head with a counting `safe_git`, and that refs, HEAD and the index are unchanged afterwards);
+`tests/test_settle_model.py` the settlement record, the buckets of the scenario, replacement,
+supersession, failure groups, `normalise_reason`, `needs_you` and the 8 checks per tick;
+`tests/test_settle_http.py` `POST /api/settle` behind every guard, its refusals and the snapshot's counts;
+`tests/test_start.py` "Start again" (`again`); `tests/test_browser_runs_settle.py` (Chrome) the chips and
+counts, landed and settled rows, a failure group's **Start all again** and the settle form; with
+`AL_DASHBOARD_SHOTS=DIR` it saves `runs-needs-you-1280.png`, `runs-needs-you-390.png`,
+`runs-landed-1280.png`, `runs-settled-1280.png`, `runs-failure-group-1280.png`,
+`runs-failure-group-started-1280.png` and `run-settle-form-1280.png`. `tests/tools/test_al_runs.py` (at
+the repository root) runs `al runs`, `al settle` and `al runs … prune` on the same scenario.
 
 `tests/test_workspace.py` covers the workspace scan (states, sibling layers, al scout's summary, depth,
 symlinks out of the folder, the file and time bounds, git without fsmonitor or hooks, the cache and the

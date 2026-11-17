@@ -39,8 +39,18 @@
                                    also list the git repositories beside the layer's (or in DIR) with their al state,
                                    and run al on one from the page (scout, create, adopt, gen, check, verify, explain)
   al run     LAYER /NAME [ARGS …] [--class C] [--model-set T] [--model T=ID …] [--detach] [--dry-run] [--yes]
+             [--replaces OLD]
                                    start one of the layer's workflows, or one command or hop as a recorded run
-                                   that never ships, exactly as the dashboard does; ARGS (or stdin) are the prompt
+                                   that never ships, exactly as the dashboard does; ARGS (or stdin) are the prompt;
+                                   --replaces OLD starts run OLD again (it then reads as replaced by the new run)
+  al runs    LAYER [--view needs-you|running|landed|settled|all] [--json] [--forge]
+                                   what needs you among the layer's runs, with the reason and next action of each;
+                                   what landed (read from git, never fetched) or settled the others
+  al runs    LAYER prune --landed --older-than DAYS [--dry-run]
+                                   remove the worktrees, containers and local branches of landed or settled runs;
+                                   their records (agents/<id>, artefacts/<id>) are kept
+  al settle  LAYER RUN --as landed|superseded|abandoned [--by RUN|COMMIT] [--note T] [--who NAME]
+                                   record that a finished run needs nothing more (agents/<id>/settlement.json)
   al cycle  LAYER status|start|close [--name N] [--version V] [--push] [--json]
                                    the layer's (cycle …): open the next stage branch from its source (git branch,
                                    nothing checked out; --push publishes it), close the open one (never merges)
@@ -326,6 +336,15 @@ def delivery_module():
         sys.path.insert(0, str(ROOT / "tools"))
     import al_delivery
     return al_delivery
+
+
+def runs_module():
+    """tools/al_runs.py: `al runs` (what needs someone, what landed or settled; prune) and `al settle`,
+    with the dashboard's own model (dashboard_kit_module)."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_runs
+    return al_runs
 
 
 def suite_module():
@@ -2426,7 +2445,8 @@ def run_cli(a: argparse.Namespace) -> int:
     try:
         result = launch.start(loaded, target, prompt, request_key=a.request_key or secrets.token_hex(16),
                               klass=a.klass, model_set=a.model_set, models=a.model, confirm_duplicate=a.yes,
-                              confirm_ships=a.yes, dry_run=a.dry_run, detach=a.detach, spawn=spawn)
+                              confirm_ships=a.yes, dry_run=a.dry_run, detach=a.detach, spawn=spawn,
+                              replaces=a.replaces or "")
     except KeyboardInterrupt:
         return 130
     status = result["status"]
@@ -2641,6 +2661,33 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--request-key", help="the same key never starts a second run (default: a new one)")
     p.add_argument("--yes", action="store_true",
                    help="confirm a workflow that ships without a person, or the same request again within 5 minutes")
+    p.add_argument("--replaces", metavar="OLD", help="this run starts run OLD again (8 hex chars); OLD then reads "
+                   "as replaced by it and leaves the runs that need you")
+    p = sub.add_parser("runs", help="what needs you among a layer's runs, and what landed or settled the others; prune leftovers",
+                       description="List LAYER's runs that need someone (open hand-overs, waiting runs, failures nothing "
+                       "replaces), each with its reason and next action; --view shows the running, landed or settled "
+                       "runs, or all. Whether a handed-over run's work landed on its target branch is read from git, "
+                       "never fetched; --forge also asks the layer's forge about pull requests. "
+                       "`prune --landed --older-than DAYS` removes the worktrees, containers and local branches of "
+                       "landed or settled runs that ended more than DAYS ago, and keeps their records.")
+    p.add_argument("layer", type=Path)
+    p.add_argument("action", nargs="?", choices=("prune",), help="prune: remove what finished runs leave behind")
+    p.add_argument("--view", choices=("needs-you", "running", "landed", "settled", "all"), default="needs-you")
+    p.add_argument("--json", action="store_true", help="print the runs of the view as JSON")
+    p.add_argument("--forge", action="store_true", help="ask the layer's forge whether pull requests are merged (network)")
+    p.add_argument("--landed", action="store_true", help="prune: only runs in the landed or settled bucket (required)")
+    p.add_argument("--older-than", type=float, metavar="DAYS", help="prune: runs that ended more than DAYS ago")
+    p.add_argument("--dry-run", action="store_true", help="prune: print what would be removed; change nothing")
+    p = sub.add_parser("settle", help="record that a finished run needs nothing more (agents/<id>/settlement.json)",
+                       description="Write LAYER's run RUN a settlement: landed, superseded or abandoned, with the run "
+                       "or commit that did it and a note. Nothing else of the run is touched. Exit 0 written, 2 bad "
+                       "use, 3 refused (the run is running, or --by names neither a run nor a commit), 4 no such run.")
+    p.add_argument("layer", type=Path)
+    p.add_argument("run", metavar="RUN")
+    p.add_argument("--as", dest="as_", required=True, choices=("landed", "superseded", "abandoned"))
+    p.add_argument("--by", metavar="RUN|COMMIT", help="the run or commit that landed or superseded it")
+    p.add_argument("--note", metavar="TEXT", help="why, in one paragraph (at most 500 characters)")
+    p.add_argument("--who", metavar="NAME", help="who settles it (default: git config user.name of the application)")
     p = sub.add_parser("cycle", help="the layer's (cycle …): status, start the next stage branch, close the open one")
     p.add_argument("layer", type=Path)
     p.add_argument("action", choices=("status", "start", "close"))
@@ -2816,6 +2863,8 @@ def main(argv: list[str] | None = None) -> int:
             return decide_cli(a)
         elif a.cmd == "run":
             return run_cli(a)
+        elif a.cmd in ("runs", "settle"):
+            return runs_module().main(a, sys.modules[__name__])
         elif a.cmd == "deploy":
             return deploy_module().main(a, sys.modules[__name__])
         elif a.cmd in IMPROVE_COMMANDS:

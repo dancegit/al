@@ -342,10 +342,12 @@ uv run adws/dashboard.py --open            # http://127.0.0.1:8765/
 It shows what is running now, each workflow as a graph that colours in as steps finish, where the time
 and the money went, and every agent step's transcript in readable form, with filters and search. A
 check's log can be read while the check is still running. A run whose process was killed is shown as
-"died", which is different from "failed". The page cannot stop or change a run. It makes two changes,
-both guarded: the Models panel (see [Choose models and limit spending](#choose-models-and-limit-spending))
-changes the layer's local model setting, and the Layers view starts work (see the next section). Start
-it with `--read-only` to turn both off, or `--no-start` to turn off starting only.
+"died", which is different from "failed". The page cannot stop or change a run. It makes three changes,
+all guarded: the Models panel (see [Choose models and limit spending](#choose-models-and-limit-spending))
+changes the layer's local model setting, the Layers view starts work (see
+[Start work](#start-work-from-the-dashboard-or-the-command-line)), and a run page can settle a finished
+run (see the next section). Start it with `--read-only` to turn them all off, or `--no-start` to turn off
+starting only.
 
 A run's **Documents** tab lists the plan, `PR.md`, review reports and patch plans and other text the run
 wrote, as soon as each exists, with the step that produced it. **View** shows it in the page (Markdown
@@ -357,6 +359,86 @@ To watch several codebases at once: `al dashboard ~/code` (finds every layer und
 `al dashboard ~/code --read-only` for a page that changes nothing). To run it in its own locked-down
 container, declare `(dashboard podman)` in `agentic.rkt`; to turn it off, `(dashboard none)`. It listens
 on your own machine only; exposing it elsewhere requires naming a token variable with `#:token-env`.
+
+## Settle what is done: `al runs` and `al settle`
+
+The dashboard's **Runs** view opens on **Needs you**: only the runs that still need someone, each with
+why and what to do next. The "N need you" in its header, and the count on the Runs link, are that list.
+A run leaves it when its work is done, even when nobody told al:
+
+- **Landed.** A handed-over run whose work is on its target branch: its branch was merged, squash-merged,
+  or brought in with other changes (every file it changed is the same on the target). The dashboard
+  works this out from git, read only and without fetching, and says how ("landed in 1a2b3c4 (patch-id)").
+  If you merged on the forge and have not fetched, `al runs … --forge` asks the forge as well.
+- **Superseded.** A later run that landed and named the run's branch or id in its request, or contains its
+  branch, settles it as "superseded by" that run.
+- **Replaced.** A failure that was started again ("Start again" on the run page, **Start all again** on
+  a group of failures with the same cause, `al run … --replaces OLD`, or the task reopened in a task list
+  or issue) reads "replaced by" the new run.
+- **Settled by you.** Anything else you decide needs nothing more: the run page's **Settle this run**
+  card, or `al settle`.
+
+The chips **Running**, **Landed**, **Settled** and **All** show the rest, each with what landed or settled
+it. Nothing is deleted. The same list in a terminal:
+
+```bash
+$ al runs orchard.al
+6 need you (5 running, 8 landed, 7 settled; --view all for every run)
+a0000001  waiting      plan-build      Order new rootstock once the budget i…  waiting at approve
+          → uv run adws/adw_plan-build.py --resume --adw-id a0000001
+b000000e  handed-over  plan-build      Track the fig trees, part 14            review-rejected
+          → review PR #7
+b000000d  handed-over  plan-build      Track the medlar trees, part 13         review-rejected
+          → merge al/b000000d into main, or al settle orchard.al b000000d --as …
+b000000c  handed-over  plan-build      Track the quince trees, part 12         review-rejected
+          → merge al/b000000c into main, or al settle orchard.al b000000c --as …
+b000000b  handed-over  plan-build      Track the cherry trees, part 11         review-rejected
+          → merge al/b000000b into main, or al settle orchard.al b000000b --as …
+a0000002  failed       plan-build      Draw the orchard map                    build: the map renderer needs a page size
+          → al run orchard.al /plan-build --replaces a0000002 < orchard.al/agents/a0000002/request.md
+
+$ al settle orchard.al b000000c --as abandoned --note "the map work replaces it" --who Ada
+settled b000000c as abandoned by Ada: agents/b000000c/settlement.json
+
+$ al runs orchard.al --view settled
+8 settled (5 need you, 5 running, 8 landed, 8 settled)
+d0000005  failed       plan-build      Add the pruning calendar, part 5        replaced by e0000005 (running)
+d0000004  failed       plan-build      Add the pruning calendar, part 4        replaced by e0000004 (running)
+d0000003  failed       plan-build      Add the pruning calendar, part 3        replaced by e0000003 (running)
+d0000002  failed       plan-build      Add the pruning calendar, part 2        replaced by e0000002 (running)
+d0000001  failed       plan-build      Add the pruning calendar, part 1        replaced by e0000001 (running)
+b000000c  handed-over  plan-build      Track the quince trees, part 12         abandoned by Ada: the map work replaces it
+b000000a  handed-over  plan-build      Track the plum trees, part 10           superseded by c0000001
+b0000009  handed-over  plan-build      Track the pear trees, part 9            superseded by c0000001
+```
+
+`--view needs-you|running|landed|settled|all` picks the list and `--json` prints it as JSON. Several
+failures at the same step with the same reason, within half an hour of each other, show as one line
+("5 runs: preflight, same reason") followed by their ids. `al settle LAYER RUN --as
+landed|superseded|abandoned` takes `--by RUN|COMMIT` (a run of the layer or a commit of the application),
+`--note TEXT` (at most 500 characters) and `--who NAME` (default: your `git config user.name` in the
+application). It writes `agents/<run id>/settlement.json` and nothing else; settling again keeps the
+earlier record under `previous`. Exit codes: 0 written, 2 bad use, 3 refused (the run is still running, or
+`--by` names neither a run nor a commit), 4 no such run.
+
+Finished runs leave worktrees, containers and branches behind. `al runs LAYER prune --landed --older-than
+DAYS` removes them for runs in the Landed or Settled list that ended more than DAYS ago, and keeps the
+runs' records (`agents/<id>`, `artefacts/<id>`); see first with `--dry-run`:
+
+```bash
+$ al runs orchard.al prune --landed --older-than 3 --dry-run
+b000000c  settled: abandoned by Ada: the map work replaces it
+  would remove branch al/b000000c (was a320f39)
+b000000a  settled: superseded by c0000001
+  would remove branch al/b000000a (was a852ef4)
+…
+b0000001  landed: landed in fc68848 (ancestor) on main, 2026-11-02
+  would remove branch al/b0000001 (was 738b20d)
+would prune 11 runs; agents/<id> and artefacts/<id> are kept
+```
+
+It never deletes the target branch, a stage branch, the default branch, or a branch checked out in
+another worktree, and it notes what it removed in the run's `settlement.json`.
 
 ## Start work from the dashboard or the command line
 
@@ -424,7 +506,10 @@ The prompt is the rest of the line (or stdin with `-`). `--class`, `--model-set`
 `--dry-run` work as for a workflow script; `--yes` confirms a shipping workflow or a repeated request;
 `--request-key K` makes a retry safe. Exit codes: the run's own (0 with `--detach`), 2 for an unknown
 name, 3 refused by a limit, 4 needs `--yes`. The prompt is written to `agents/<run id>/request.md` and
-never put on a command line.
+never put on a command line. To start a failed run again under a new id, use `al run … --replaces OLD`, or
+**Start again** on its run page (which reuses its recorded request): the new run records that it replaces
+OLD, and OLD leaves the runs that need you. "Start again" of a run that came from an issue restarts from
+the recorded prompt, not from the issue.
 
 ## Work with several repositories from the dashboard
 
