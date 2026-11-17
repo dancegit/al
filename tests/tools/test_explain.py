@@ -231,3 +231,29 @@ def test_environment_with_toolchain_names_it():
     podman = next(b for b in bullets if b.startswith("`podman`"))
     assert "built from toolchain `dev` with Nix" in podman and "debian" not in podman
     assert "`home-manager`: provides uv" in bullets
+
+
+# --- reused environments -------------------------------------------------------------------------
+
+def test_explain_names_reused_environments():
+    ir = {"codebase": {}, "environments": [
+        {"id": "worktree", "kind": "worktree", "prepare": ["install", "fetch"]},
+        {"id": "nix-devshell", "kind": "nix-devshell", "packages": ["jq"], "flake": ".", "shell": "ci", "browser": True},
+        {"id": "box", "kind": "podman", "agentInside": False, "caches": [], "services": [], "publish": [],
+         "baseImage": "docker.io/library/debian:stable-slim", "containerfile": "Containerfile", "target": "dev",
+         "devcontainer": "", "browser": False},
+        {"id": "dc", "kind": "podman", "agentInside": True, "caches": [], "services": [], "publish": [],
+         "baseImage": "docker.io/library/debian:stable-slim", "containerfile": "", "target": "",
+         "devcontainer": ".devcontainer/devcontainer.json", "browser": True}]}
+    _title, _text, bullets = explain.explain({"head": "environment"}, ir)
+    assert "before the first step: `install` and `fetch`" in bullets[0]
+    assert "uses the repository's own dev shell `ci` from `flake.nix`; adds jq and a headless browser" in bullets[1]
+    assert "image built from the repository's `Containerfile` (stage `dev`)" in bullets[2]
+    assert "image from the repository's dev container `.devcontainer/devcontainer.json`" in bullets[3]
+    assert "a headless browser" in bullets[3]
+    plain = {"codebase": {}, "environments": [{"id": "worktree", "kind": "worktree", "prepare": []},
+                              {"id": "nix-devshell", "kind": "nix-devshell", "packages": ["jq"], "flake": "",
+                               "shell": "default", "browser": False}]}
+    _title, _text, bullets = explain.explain({"head": "environment"}, plain)
+    assert bullets == ["`worktree`: each run gets its own git worktree; your checkout is never touched",
+                       "`nix-devshell`: provides jq"]

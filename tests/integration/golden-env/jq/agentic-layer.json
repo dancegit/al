@@ -653,15 +653,20 @@
       "kind": "worktree",
       "portBase": 9100,
       "portsPerRun": 2,
+      "prepare": [],
       "sparse": [],
       "status": "stable"
     },
     {
       "agentInside": true,
       "baseImage": "docker.io/library/debian:stable-slim",
+      "browser": false,
       "caches": [],
+      "containerfile": "",
+      "context": ".",
       "cpus": "2",
       "credentials": [],
+      "devcontainer": "",
       "id": "podman",
       "kind": "podman",
       "memory": "4g",
@@ -681,7 +686,8 @@
       "scope": "run",
       "services": [],
       "setup": [],
-      "status": "stable"
+      "status": "stable",
+      "target": ""
     }
   ],
   "experts": [],

@@ -1123,19 +1123,24 @@
       "kind": "worktree",
       "portBase": 9100,
       "portsPerRun": 2,
+      "prepare": [],
       "sparse": [],
       "status": "stable"
     },
     {
       "agentInside": true,
       "baseImage": "docker.io/library/python:3.12-slim",
+      "browser": false,
       "caches": [
         "uv"
       ],
+      "containerfile": "",
+      "context": ".",
       "cpus": "4",
       "credentials": [
         "claude"
       ],
+      "devcontainer": "",
       "id": "sandbox",
       "kind": "podman",
       "memory": "8g",
@@ -1163,7 +1168,8 @@
         "pip install --no-cache-dir uv",
         "HOME=/opt/claude bash -c 'curl -fsSL https://claude.ai/install.sh | bash' && chmod -R a+rX /opt/claude && ln -s /opt/claude/.local/bin/claude /usr/local/bin/claude"
       ],
-      "status": "stable"
+      "status": "stable",
+      "target": ""
     }
   ],
   "experts": [

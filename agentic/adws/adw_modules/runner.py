@@ -13,8 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import affected, budget, checkenv, decide, delivery, envs, events, ir, models, nested_engine, notify, sandbox
-from . import skips
+from . import affected, budget, checkenv, decide, delivery, envs, envsource, events, ir, models, nested_engine, notify
+from . import prepare, sandbox, skips
 from . import state as state_module, steps
 from . import slots
 from .agents import CLASSES
@@ -391,9 +391,11 @@ def _speak(layer: Any, line: str) -> None:
 def _execute(layer: Any, state: state_module.ADWState, adw: dict[str, Any], stack: envs.EnvStack) -> None:
     stack.setup()
     state.save(layer.layer_dir)
+    envsource.ensure_ready(layer, state, stack)  # the repository's own base image or dev shell, as of now
     sandbox.preflight(layer, state, adw, stack)  # podman stacks: current image, and what the workflow needs is there
     checkenv.preflight(layer, state, adw, stack)  # the podman environments its checks run #:in
     state.save(layer.layer_dir)
+    prepare.run(layer, state, adw, stack)        # #:prepare (or postCreateCommand): once per run
     for step in adw.get("steps", []):
         steps.run_step(layer, state, adw, step, stack)
 
@@ -464,6 +466,7 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
          request: Request | None) -> int:
     exit_code = 1
     stack = envs.build(layer, state, list(adw.get("environment", [])))
+    envsource.apply_publish(layer, stack)  # a dev container's forwardPorts, published like #:publish
     stack.keep_worktree = bool(args.keep_worktree)
     beat = state_module.Heartbeat(state, layer.layer_dir).start()
     state.save(layer.layer_dir)

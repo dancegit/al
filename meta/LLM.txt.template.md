@@ -44,6 +44,26 @@ install, lint, format, typecheck, test, test-fast, e2e, build, start, docs, depl
 - System packages: <libraries and tools not covered above; `none`>
 - Services: <databases, queues, browsers, emulators a command needs, and which command; `none`>
 
+## Environment
+
+<What the repository already says about its environment, as `al scout` read it from tracked files
+(nothing executed): its own setup files (flake dev shells, shell.nix, devenv, Containerfile stages,
+dev container, compose services, CI workflows), tool versions per source, lockfiles and their prepare
+commands, services, system packages from CI, whether browser tests need a browser and why, the
+variables a run needs (names only, never values), the conflicts between sources, and a proposed
+declaration in the layer language whose every line ends in `; from FILE[:LINE]`. The scout command
+verifies each line and completes UNVERIFIED cells; it changes the proposal only to correct a fact,
+with evidence.>
+
+### Found
+### Tools and versions
+### Services
+### System packages (from CI)
+### Browser
+### Variables a run needs (names only)
+### Conflicts
+### Proposed declaration
+
 ## Artefacts
 
 <What proof the codebase can emit, and the glob (relative to the repo root) where it lands. One line per type that exists:

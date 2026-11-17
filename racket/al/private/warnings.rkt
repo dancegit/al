@@ -88,6 +88,9 @@
       (define nix (findf (lambda (o) (equal? (field o 'kind "") "nix-devshell")) options))
       (define podman (findf (lambda (o) (equal? (field o 'kind "") "podman")) options))
       (cond [(not (and nix podman)) acc]
+            ;; an image from the repository's own Containerfile or dev container: al cannot know what it provides
+            [(or (non-empty-string? (field podman 'containerfile "")) (non-empty-string? (field podman 'devcontainer "")))
+             acc]
             [(assoc (cons nix podman) acc)
              => (lambda (entry) (cons (cons (car entry) (append (cdr entry) (list (field adw 'name ""))))
                                       (remove entry acc)))]

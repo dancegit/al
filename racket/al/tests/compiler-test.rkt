@@ -861,6 +861,12 @@
                                      #:setup ("pip install uv")))
                 '()))
 
+(test-case "warning: no nix-vs-container warning when the image is the repository's own"
+  (check-equal? (warnings '(environment worktree) '(environment nix-devshell #:packages ("ffmpeg"))
+                          '(environment podman #:id box #:containerfile "Containerfile")
+                          '(adw a #:environment (worktree nix-devshell box) (steps (run plan #:command plan))))
+                '()))
+
 (test-case "no warnings for the shipped examples"
   (for ([f (in-list (directory-list examples))] #:when (regexp-match? #rx"[.]rkt$" (path->string f)))
     (check-equal? (layer-warnings (dynamic-require (build-path examples f) 'layer-spec)) '() (path->string f))))
@@ -1373,3 +1379,63 @@
   (check-equal? (hash-remove st 'whenAffected)
                 (hasheq 'kind "check" 'name "test" 'cmd "test" 'resolve "" 'retries 3 'collect '()
                         'in "" 'maxSkipped -1 'forbidSkipReason "")))
+
+(test-case "environment sources"
+  ;; a minimal layer with the given environment options, used by one ADW with a check step
+  (define (layer-with #:cmds [cmds '()] #:steps [steps '((check t #:cmd test))] . options)
+    (define ids
+      (for/list ([o (in-list options)] #:when (eq? (car o) 'environment))
+        (define p (memq '#:id o))
+        (if p (cadr p) (cadr o))))
+    `(agentic-layer #:name "t"
+       (codebase #:root "." #:languages (python) (cmd test "pytest") ,@cmds)
+       ,@(if (memq 'worktree (map cadr options)) '() '((environment worktree)))
+       ,@options
+       (adw a #:environment ,(remove-duplicates (cons 'worktree ids)) (steps ,@steps))))
+  (define (env-of ir kind)
+    (findf (lambda (o) (equal? (hash-ref o 'kind) kind)) (hash-ref ir 'environments)))
+  ;; accepted forms
+  (define flake (compile-layer-datum (layer-with '(environment nix-devshell #:flake "."))))
+  (check-equal? (hash-ref (env-of flake "nix-devshell") 'flake) ".")
+  (check-equal? (hash-ref (env-of flake "nix-devshell") 'shell) "default")
+  (check-equal? (hash-ref (env-of flake "nix-devshell") 'packages) '())
+  (define extras (compile-layer-datum (layer-with '(environment nix-devshell #:flake "nix" #:shell "ci" #:packages ("jq") #:browser #t))))
+  (check-equal? (hash-ref (env-of extras "nix-devshell") 'shell) "ci")
+  (check-equal? (hash-ref (env-of extras "nix-devshell") 'browser) #t)
+  (define cf (compile-layer-datum (layer-with '(environment podman #:containerfile "Containerfile" #:target "dev" #:context "."))))
+  (check-equal? (hash-ref (env-of cf "podman") 'containerfile) "Containerfile")
+  (check-equal? (hash-ref (env-of cf "podman") 'target) "dev")
+  (define dc (compile-layer-datum (layer-with '(environment podman #:devcontainer ".devcontainer/devcontainer.json" #:browser #t))))
+  (check-equal? (hash-ref (env-of dc "podman") 'devcontainer) ".devcontainer/devcontainer.json")
+  (check-equal? (hash-ref (env-of dc "podman") 'context) ".")
+  (define prep (compile-layer-datum (layer-with #:cmds '((cmd install "uv sync")) '(environment worktree #:prepare (install)))))
+  (check-equal? (hash-ref (env-of prep "worktree") 'prepare) '("install"))
+  (check-equal? (hash-ref (env-of cf "worktree") 'prepare) '())
+  ;; rejected forms
+  (check-rejects (layer-with '(environment nix-devshell)) #rx"needs #:packages .* or #:flake")
+  (check-rejects (layer-with '(environment nix-devshell #:packages ("jq") #:shell "ci")) #rx"#:shell needs #:flake")
+  (check-rejects (layer-with '(environment nix-devshell #:flake "." #:shell "a b")) #rx"#:shell must be the name of a dev shell")
+  (check-rejects (layer-with '(environment podman #:base-image "x" #:containerfile "C"))
+                 #rx"at most one of #:base-image, #:containerfile, #:devcontainer")
+  (check-rejects (layer-with '(environment podman #:containerfile "C" #:devcontainer "d.json"))
+                 #rx"at most one of #:base-image, #:containerfile, #:devcontainer")
+  (check-rejects (layer-with '(environment podman #:target "dev")) #rx"#:target needs #:containerfile")
+  (check-rejects (layer-with '(environment podman #:context ".")) #rx"#:context needs #:containerfile")
+  (check-rejects (layer-with '(environment podman #:containerfile "/abs/C")) #rx"relative to the repository root")
+  (check-rejects (layer-with '(environment podman #:containerfile "../C")) #rx"relative to the repository root")
+  (check-rejects (layer-with '(environment podman #:devcontainer "")) #rx"relative to the repository root")
+  (check-rejects (layer-with '(environment nix-devshell #:flake "../x")) #rx"relative to the repository root")
+  (check-rejects (layer-with '(environment podman #:containerfile "C")
+                             '(environment podman #:id second #:containerfile "D"))
+                 #rx"only the first declared podman option")
+  (check-rejects (layer-with '(environment nix-devshell #:flake ".")
+                             '(environment nix-devshell #:id other #:flake "sub"))
+                 #rx"only the first declared nix-devshell option")
+  (check-rejects (layer-with '(environment worktree #:prepare (nope)))
+                 #rx"`nope` is not a declared codebase cmd; declared: test")
+  (check-rejects (layer-with #:cmds '((cmd install "uv sync"))
+                             #:steps '((check prepare #:cmd test))
+                             '(environment worktree #:prepare (install)))
+                 #rx"step name `prepare` is reserved")
+  ;; without #:prepare the name is free
+  (check-not-exn (lambda () (compile-layer-datum (layer-with #:steps '((check prepare #:cmd test)))))))

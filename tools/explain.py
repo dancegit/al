@@ -216,15 +216,26 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
             k = o["kind"]
             if k == "worktree":
                 parts.append("a private copy of the repository for every run")
-                bullets.append("`worktree`: each run gets its own git worktree; your checkout is never touched")
+                bullets.append("`worktree`: each run gets its own git worktree; your checkout is never touched"
+                               + ("; before the first step: " + listing([f"`{c}`" for c in o["prepare"]])
+                                  if o.get("prepare") else ""))
             elif k == "nix-devshell":
                 parts.append("a Nix shell with the toolchain")
-                bullets.append(f"`nix-devshell`: uses toolchain `{o['toolchain']}`" if o.get("toolchain")
-                               else "`nix-devshell`: provides " + listing(o["packages"]))
+                if o.get("toolchain"):
+                    bullets.append(f"`nix-devshell`: uses toolchain `{o['toolchain']}`")
+                elif o.get("flake"):
+                    flake = "flake.nix" if o["flake"].strip("/") in ("", ".") else f"{o['flake'].strip('/')}/flake.nix"
+                    added = ([listing(o["packages"])] if o["packages"] else []) + (["a headless browser"] if o.get("browser") else [])
+                    bullets.append(f"`nix-devshell`: uses the repository's own dev shell `{o['shell']}` from `{flake}`"
+                                   + ("; adds " + listing(added) if added else ""))
+                else:
+                    bullets.append("`nix-devshell`: provides " + listing(o["packages"] + (["a headless browser"] if o.get("browser") else [])))
             elif k == "podman":
                 inside = "the agent itself runs inside it" if o["agentInside"] else "the checks run inside it"
                 parts.append(f"a container ({inside})")
                 extra = []
+                if o.get("browser"):
+                    extra.append("a headless browser")
                 if o["caches"]:
                     extra.append("caches for " + listing(o["caches"]))
                 if o["services"]:
@@ -232,8 +243,14 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
                 if o["publish"]:
                     extra.append("port " + listing([str(p) for p in o["publish"]]) + " published to the host")
                 engine = ", with a container engine of its own (nested, isolated from the host's)" if o.get("nestedEngine") else ""
-                image = (f"image built from toolchain `{o['toolchain']}` with Nix" if o.get("toolchain")
-                         else f"image based on `{o['baseImage']}`")
+                if o.get("toolchain"):
+                    image = f"image built from toolchain `{o['toolchain']}` with Nix"
+                elif o.get("containerfile"):
+                    image = f"image built from the repository's `{o['containerfile']}`" + (f" (stage `{o['target']}`)" if o.get("target") else "")
+                elif o.get("devcontainer"):
+                    image = f"image from the repository's dev container `{o['devcontainer']}`"
+                else:
+                    image = f"image based on `{o['baseImage']}`"
                 bullets.append(f"`podman`: {image}; {inside}{engine}" + ("; " + "; ".join(extra) if extra else ""))
             elif k == "home-manager":
                 parts.append("a Home Manager module that installs the tools")

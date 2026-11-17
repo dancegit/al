@@ -4,6 +4,7 @@ podman is faked here (a recorder answering from a dict the test controls); git i
 flows against real rootless podman are in test_sandbox_lifecycle_podman.py."""
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -191,6 +192,56 @@ def test_recipe_hash_refuses_a_copy_source_outside_env(make_layer) -> None:
 def test_image_ref_is_layer_name_and_short_hash(make_layer) -> None:
     layer = load(_layer(make_layer))
     assert sandbox.image_ref(layer) == f"al-test-layer:{sandbox.recipe_hash(layer)}"
+
+
+
+def _source(layer_dir: Path, podman: dict | None) -> None:
+    (layer_dir / "env" / "source.json").write_text(json.dumps(
+        {"version": 1, "nix": None, "podman": podman}), encoding="utf-8")
+
+
+BUILD_ENTRY = {"option": "box", "build": {"containerfile": "Containerfile", "target": "dev", "context": "."},
+               "image": "", "publish": [], "prepare": "", "notHonoured": []}
+
+
+def test_recipe_hash_unchanged_without_a_repository_source(make_layer) -> None:
+    layer = load(_layer(make_layer))
+    text = (layer.layer_dir / "env" / "Containerfile").read_bytes()
+    digest = hashlib.sha256(b"containerfile\0" + text)    # main's recipe: no COPY, then the base image
+    digest.update(b"base\0" + b"debian:stable-slim")
+    assert sandbox.recipe_hash(layer) == digest.hexdigest()[:12]
+    _source(layer.layer_dir, None)                          # a source.json that reuses no image (e.g. only a flake)
+    assert sandbox.recipe_hash(layer) == digest.hexdigest()[:12]
+
+
+def test_recipe_hash_follows_the_repository_containerfile(make_layer, app_repo) -> None:
+    def commit(message: str) -> None:
+        subprocess.run(["git", "-C", str(app_repo), "add", "Containerfile"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(app_repo), "-c", "user.name=t", "-c", "user.email=t@example.org",
+                        "commit", "-qm", message], check=True, capture_output=True)
+
+    (app_repo / "Containerfile").write_text("FROM debian:stable-slim AS dev\n")
+    commit("containerfile")
+    layer = load(_layer(make_layer))
+    plain = sandbox.recipe_hash(layer)
+    _source(layer.layer_dir, BUILD_ENTRY)
+    first = sandbox.recipe_hash(layer)
+    assert first != plain
+    (app_repo / "Containerfile").write_text("FROM debian:stable-slim AS dev\nRUN true\n")
+    assert sandbox.recipe_hash(layer) == first              # the working tree does not count
+    commit("change")
+    assert sandbox.recipe_hash(layer) != first              # the default branch does
+
+
+def test_build_image_needs_the_base_image_of_a_build_source(make_layer, monkeypatch) -> None:
+    layer = load(_layer(make_layer))
+    _source(layer.layer_dir, BUILD_ENTRY)
+    fake = FakePodman(monkeypatch)                          # knows no image: `podman image exists` answers 1
+    with pytest.raises(StepFailed) as raised:
+        sandbox.build_image(layer, say=lambda line: None)
+    assert raised.value.step == "environment setup"
+    assert "al-test-layer-base" in raised.value.reason and "al verify test-layer" in raised.value.reason
+    assert fake.builds() == []
 
 
 # ------------------------------------------------------------------ build / ensure / prune / status

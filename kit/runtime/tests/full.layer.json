@@ -1094,10 +1094,13 @@
       "kind": "worktree",
       "portBase": 9100,
       "portsPerRun": 2,
+      "prepare": [],
       "sparse": [],
       "status": "stable"
     },
     {
+      "browser": false,
+      "flake": "",
       "id": "nix-devshell",
       "kind": "nix-devshell",
       "nixpkgs": "github:NixOS/nixpkgs/nixos-unstable",
@@ -1109,18 +1112,23 @@
         "ffmpeg"
       ],
       "pure": false,
+      "shell": "default",
       "shellHook": "",
       "status": "stable"
     },
     {
       "agentInside": true,
       "baseImage": "docker.io/library/debian:stable-slim",
+      "browser": false,
       "caches": [
         "npm",
         "uv"
       ],
+      "containerfile": "",
+      "context": ".",
       "cpus": "2",
       "credentials": [],
+      "devcontainer": "",
       "id": "sandbox",
       "kind": "podman",
       "memory": "4g",
@@ -1134,6 +1142,7 @@
       "services": [],
       "setup": [],
       "status": "stable",
+      "target": "",
       "toolchain": "dev"
     }
   ],

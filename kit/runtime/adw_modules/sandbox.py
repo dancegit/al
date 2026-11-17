@@ -5,8 +5,10 @@ Recipe identity. The image of a layer is `al-<layer>:<hash>`, where the hash cov
 podman option's `baseImage`. When that option has a `toolchain`, the hash also covers the toolchain
 key (images.key: the flake, its lock, the toolchain file, the kit files, the #:setup lines and the
 builder), and the image is built by images.ensure (Nix, then env/Containerfile on top) under the
-same name and labels. A changed recipe is therefore always built and an unchanged one never
-is. `al-<layer>:latest` is re-pointed at the current hash, so a runtime that still asks for
+same name and labels. For a layer that reuses the repository's Containerfile or dev container
+image (env/source.json, see envsource.py) it also covers that Containerfile and its context on the
+default branch, or the dev container's image. A changed recipe is therefore always built and an
+unchanged one never is. `al-<layer>:latest` is re-pointed at the current hash, so a runtime that still asks for
 `:latest` gets it too. Old hashes stay while a run or a container uses them and are pruned by
 count and age (KEEP_OLD, MAX_AGE_DAYS).
 
@@ -37,7 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from . import checkenv, envs, events, gitsafe, images, nested_engine, slots
+from . import checkenv, envs, envsource, events, gitsafe, images, nested_engine, slots
 from .errors import LayerError, StepFailed
 
 LEGACY_TAG = "latest"
@@ -170,8 +172,9 @@ def _hash_entries(context: Path, source: str) -> list[bytes]:
 
 
 def recipe_hash(layer: Any) -> str:
-    """12 hex digits over the Containerfile, the files it copies from env/, the base image and,
-    for a recipe option with a toolchain, the toolchain key."""
+    """12 hex digits over the Containerfile, the files it copies from env/, the base image, for a
+    recipe option with a toolchain the toolchain key, and the repository's source of that base
+    image, if any."""
     path = _containerfile(layer)
     text = path.read_bytes()
     digest = hashlib.sha256(b"containerfile\0" + text)
@@ -183,6 +186,9 @@ def recipe_hash(layer: Any) -> str:
     if option.get("toolchain"):
         digest.update(b"toolchain\0" + images.key(path.parent, str(option["toolchain"]),
                                                   list(option.get("setup") or [])).encode())
+    identity = envsource.source_identity(layer)
+    if identity:  # the repository's own Containerfile or dev container image
+        digest.update(b"source\0" + identity.encode())
     return digest.hexdigest()[:12]
 
 
@@ -287,6 +293,12 @@ def _tag_latest(layer: Any, ref: str) -> None:
 def build_image(layer: Any, *, no_cache: bool = False, say: Callable[[str], Any] = print) -> dict[str, Any]:
     """Build the current recipe with live output (each line to `say`), labelled with its layer,
     layer directory and recipe; tag :latest to it and prune old images. StepFailed on failure."""
+    build = (envsource.load(layer).get("podman") or {}).get("build")
+    if build and not image_exists(envsource.base_image(layer)):
+        raise StepFailed("environment setup",
+                         f"the base image {envsource.base_image(layer)} is missing: it is built from the repository's "
+                         f"{build.get('containerfile') or 'Containerfile'} in a run's worktree; start a run or "
+                         f"`al verify {layer.name}` first")
     recipe = recipe_hash(layer)
     ref = f"{image_name(layer)}:{recipe}"
     option = recipe_option(layer) or {}

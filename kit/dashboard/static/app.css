@@ -24,6 +24,7 @@
   --ship: #33b8a6;
   --fan: #e47bc4;
   --script: #8fb3a0;
+  --setup: #9aa7b8;
   --budget: #e8875a;
   --gate: #8f7cf0;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
@@ -187,6 +188,8 @@ svg text { font-family: var(--sans); }
 .g-node .t-script { fill: var(--script); }
 .g-node .t-promote { fill: var(--promote, #b07cd8); }
 .g-node.t-script-node .box { stroke-dasharray: 4 2; }
+.g-node .t-setup { fill: var(--setup); }
+.g-node.t-setup-node .box { stroke-dasharray: 2 2; }
 .badge.budget { color: var(--budget); border-color: rgba(232, 135, 90, .5); background: rgba(232, 135, 90, .1); font-weight: 600; }
 .stat.budget-stat.over .value { color: var(--budget); }
 /* subscription usage: what the agent CLI last reported about its usage windows, per layer */
@@ -253,6 +256,7 @@ svg text { font-family: var(--sans); }
 .tl-bar.k-run, .tl-bar.k-agent { fill: var(--agent); } .tl-bar.k-check { fill: var(--check); } .tl-bar.k-gate { fill: var(--gate); }
 .tl-bar.k-review { fill: var(--review); } .tl-bar.k-ship { fill: var(--ship); } .tl-bar.k-fan-out { fill: var(--fan); }
 .tl-bar.k-script { fill: var(--script); }
+.tl-bar.k-setup { fill: var(--setup); }
 .tl-bar.l0 { opacity: .28; }
 .tl-bar.k-wait, .tl-bar.k-setup { fill: var(--waiting); opacity: .55; }
 .tl-bar.k-limit { fill: var(--budget); }

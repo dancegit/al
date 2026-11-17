@@ -598,6 +598,7 @@
       "kind": "worktree",
       "portBase": 9100,
       "portsPerRun": 2,
+      "prepare": [],
       "sparse": [],
       "status": "stable"
     },

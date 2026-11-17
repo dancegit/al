@@ -160,6 +160,8 @@ def test_verify_json_output_is_unchanged(app) -> None:
     # a layer generated before this feature has no affected module: verify prints no coverage line
     module = layer / "adws" / "adw_modules" / "affected.py"
     module.unlink()
+    for later in ("prepare.py", "envsource.py"):               # modules a layer of that time did not have either
+        (module.parent / later).unlink(missing_ok=True)
     shutil.rmtree(module.parent / "__pycache__", ignore_errors=True)
     for path in (layer / "adws" / "adw_modules").glob("*.py"):   # … and nothing that imports it
         text = path.read_text()

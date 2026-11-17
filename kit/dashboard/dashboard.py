@@ -1206,6 +1206,9 @@ def build_graph(adw: dict[str, Any], layer_ir: dict[str, Any] | None = None) -> 
             continue
         columns.append([_node(step, "flow")])
         index += 1
+    setup = _setup_node(adw, layer_ir)
+    if setup:  # the run's prepare step (#:prepare, or a dev container's postCreateCommand) comes first
+        columns.insert(0, [setup])
     has_back = any(s.get("kind") == "review" and s.get("patch") and s.get("implement") for s in steps)
     looped = {s["name"] for s in steps if s.get("kind") == "check" and s.get("resolve")}
     nodes: list[dict[str, Any]] = []
@@ -1298,6 +1301,19 @@ def _node(step: dict[str, Any], role: str) -> dict[str, Any]:
     return {"id": str(step.get("name", "")), "step": str(step.get("name", "")), "type": types.get(kind, kind),
             "label": str(step.get("name", "")), "sub": str(sub), "when": str(step.get("when") or "always"),
             "role": role}
+
+
+def _setup_node(adw: dict[str, Any], layer_ir: dict[str, Any]) -> dict[str, Any] | None:
+    """The `prepare` node (type `setup`) of an ADW whose worktree option has #:prepare, or whose podman
+    option reuses a dev container (its postCreateCommand is then the prepare step), else None."""
+    options = {o.get("id"): o for o in layer_ir.get("environments") or [] if isinstance(o, dict)}
+    stack = [options[i] for i in adw.get("environment") or [] if i in options]
+    prepare = next((list(o.get("prepare") or []) for o in stack if o.get("kind") == "worktree" and o.get("prepare")), [])
+    devcontainer = any(o.get("kind") == "podman" and o.get("devcontainer") for o in stack)
+    if not prepare and not devcontainer:
+        return None
+    return {"id": "prepare", "step": "prepare", "type": "setup", "label": "prepare",
+            "sub": " ".join(prepare) if prepare else "postCreateCommand", "when": "always", "role": "flow"}
 
 
 @dataclass
@@ -2997,10 +3013,15 @@ class RunModel:
         records = {str(r.get("name")): r for r in (state or {}).get("steps") or [] if isinstance(r, dict)}
         # the last agent call made from each agent directory (state.json `agent_calls`)
         calls = {str(c.get("step")): c for c in (state or {}).get("agent_calls") or [] if isinstance(c, dict)}
+        setups = 0
         for name, record in records.items():
             kinds.setdefault(name, str(record.get("kind", "run")))
             if name not in step_names:
-                step_names.append(name)
+                if record.get("kind") == "setup":  # the prepare step runs before every ADW step
+                    step_names.insert(setups, name)
+                    setups += 1
+                else:
+                    step_names.append(name)
         status = str((state or {}).get("status") or "unknown")
         now = self.now()
         alive = liveness(state or {}, now, self.can_see_pids)

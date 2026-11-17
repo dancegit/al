@@ -765,10 +765,13 @@
       "kind": "worktree",
       "portBase": 9100,
       "portsPerRun": 2,
+      "prepare": [],
       "sparse": [],
       "status": "stable"
     },
     {
+      "browser": false,
+      "flake": "",
       "id": "nix-devshell",
       "kind": "nix-devshell",
       "nixpkgs": "path:/nix/store/243rp6ap5vd4zhgh24fqhvd8m1k48yyi-nixpkgs/nixpkgs",
@@ -778,18 +781,23 @@
         "git"
       ],
       "pure": false,
+      "shell": "default",
       "shellHook": "",
       "status": "stable"
     },
     {
       "agentInside": true,
       "baseImage": "docker.io/library/python:3.12-slim",
+      "browser": false,
       "caches": [
         "uv",
         "pre-commit"
       ],
+      "containerfile": "",
+      "context": ".",
       "cpus": "2",
       "credentials": [],
+      "devcontainer": "",
       "id": "podman",
       "kind": "podman",
       "memory": "4g",
@@ -806,7 +814,8 @@
       "setup": [
         "pip install --no-cache-dir uv"
       ],
-      "status": "stable"
+      "status": "stable",
+      "target": ""
     }
   ],
   "experts": [

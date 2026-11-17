@@ -140,6 +140,11 @@ these statuses existed (review `passed` with a failed verdict, run `passed`) are
 when the files are read; the files are never rewritten. Pass rates count handed-over runs as
 finished, not passed.
 
+A run whose environment prepares (`(environment worktree #:prepare (…))`, or a podman option that reuses a
+dev container: its postCreateCommand) starts with a **setup** node `prepare` on the graph and the timeline;
+its log is the one in `state.scripts["prepare"]` (`agents/<id>/scripts/prepare.<n>.log`), shown like a script step's
+(screenshots: `run-setup-step.png`, `run-setup-step-log.png`).
+
 A `script` step that follows the script's own run journal (`#:journal`) shows that journal's lines
 (mirrored as `script.event` events) as **inner steps** under the script step: time, kind, subject,
 and the tokens and cost when the line reports them (`usage.input_tokens` / `output_tokens` / cache
