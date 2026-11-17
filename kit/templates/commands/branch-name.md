@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [prompt-or-issue-text]
 ---
+{{step_block}}
 
 # Branch Name
 

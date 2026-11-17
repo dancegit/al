@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [workflow-description]
 ---
+{{step_block}}
 
 # Meta-ADW (workflow meta-prompt)
 

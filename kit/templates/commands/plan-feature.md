@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [prompt]
 ---
+{{step_block}}
 
 # Plan Feature
 
@@ -28,6 +29,7 @@ Languages: {{languages}}. Entry document: `{{readme}}`. Default branch: `{{defau
 - Keep the commands already present under `## Validation Commands` in the Plan Format unchanged and in order; add feature-specific commands after them.
 - If the feature is user-visible, name in Notes the artefacts that will prove it (screenshots, video, reports), where they land, and the step that produces them.
 - Never plan a change under a protected path. If the feature cannot avoid one, plan everything else and add a line starting `REQUIRES HUMAN` to Notes naming the path and the reason.
+- A plan covers building and validating only: no step commits, merges, pushes, tags, releases or opens a pull request; delivery is the workflow's. Integration work (bringing in another branch or patch) is planned as 'apply onto the worktree, uncommitted', e.g. `git merge --no-commit --squash <ref>`, `git checkout <ref> -- <path>` or `git apply`.
 - A new dependency is added with `{{package_manager}}` and justified in Notes. Read a conditional document when its condition matches what you are planning.
 
 ## Relevant Files

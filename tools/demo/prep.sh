@@ -46,7 +46,7 @@ RKT
     (cmd present "test -f ATTEMPT.md && cat ATTEMPT.md"))
   (concurrency slots #:max-runs 4)
   (agent mock)
-  (command build #:template custom #:file "commands/build.src.md")
+  (command build #:template custom #:file "commands/build.src.md" #:may-commit #t)
   (adw candidate #:description "One attempt at the task, committed on its own branch"
     (steps (run build #:command build #:args ("\$prompt")) (check present #:cmd present)))
   (adw race #:description "Three candidates race; the best one continues"

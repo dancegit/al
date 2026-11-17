@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [task]
 ---
+{{step_block}}
 
 # Plan, Build, Improve (orchestrating higher-order prompt)
 
@@ -26,7 +27,6 @@ EXPERTS_DIR: ${layer_dir}/experts
 - Stage 3, improve. Choose the expert whose paths contain the most changed files in the diff stat; run its self-improve prompt from EXPERTS_DIR with the git-diff check switched on. Input: the diff summary from stage 2 (the `git diff --stat` output), and nothing else. Output: its report. If no expert covers any changed file, skip the stage and say so; do not create an expert here.
 - Gate each stage on the one before. No plan file means stop. A build that reports failing validation or a `REQUIRES HUMAN` line means: do not run stage 3, report the build's result.
 - Do not repair a stage's output by hand. If a stage fails, re-run that stage once with the same input; a second failure ends the run.
-- Do not commit; committing is a separate step of the workflow.
 {{focus}}
 
 ## Relevant Files
@@ -57,5 +57,7 @@ The build stage runs these; you only check that its report shows each one passin
 - Build: the bullet summary and `git diff --stat` from the build stage, and each validation command's result.
 - Improve: the expert chosen, and what it changed in its expertise file (or "no changes needed", or "skipped: no expert covers the diff").
 - Any stage that failed or was skipped, with the reason.
+
+{{worktree_report}}
 
 {{output_contract}}

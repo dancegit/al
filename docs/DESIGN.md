@@ -632,6 +632,7 @@ to its check, a re-check and the reviewers to the review step).
 | `promotion.tagged` / `promotion.deployed` | `tag`, `commit` / `environment`, `exit` |
 | `promotion.back-merge` | `stage`, `branch`, `conflict`, `resolved`, `published` |
 | `promotion.closed` | `id`, `result`, `tag`, `changes` (id → status) |
+| `step.discipline` | after a `run` step that may not commit: `step`, `ok`, `head_before`, `head_after`, `branch_before`, `branch_after`, `refs` (`created`, `moved`, `deleted`), `main_checkout` (new status lines), `layer_entries` (new top-level names), `violations` (kinds: `committed`, `head-moved`, `ref-created`, `ref-moved`, `ref-deleted`, `main-checkout-changed`, `layer-entry`), `texts`, `restored`, `not_restored`; after a step that may commit (the `commit` template or `#:may-commit #t`): `step`, `ok`, `left_out_restored` (the uncommitted paths under the layer directory or a protected path it restored). The same facts are in the step's record in `state.json` (`discipline`, or `left_out` on a commit step) |
 
 Two more things make a run observable from outside. A check's log file grows while the check runs
 (its output goes straight to the file; when it ends the content is normalised exactly as before).

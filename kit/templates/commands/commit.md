@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [extra-context]
 ---
+{{step_block}}
 
 # Commit
 
@@ -23,7 +24,8 @@ PLAN_FILE: ${plan}
 - If the diff touches a protected path, do not stage that path; commit the rest and report the path on a line starting `REQUIRES HUMAN`.
 - Write the message in the Message Format below.
 - One commit. Do not amend, rebase, squash or rewrite existing commits. Do not skip hooks.
-- If a commit hook fails, read its output. Fix what it reports when the fix is mechanical (formatting, lint autofix), re-stage, and commit again. Otherwise stop and report the hook output.
+- If a commit hook fails, do not change any file to satisfy it: stop and report the hook output.
+- Never merge, rebase, push, tag, or create or switch a branch.
 - If there is nothing to commit, change nothing and say so.
 
 ## Message Format

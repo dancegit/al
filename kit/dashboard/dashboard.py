@@ -2048,6 +2048,26 @@ def budget_view(state: dict[str, Any]) -> dict[str, Any] | None:
             "stopped": {k: stopped.get(k) for k in ("limit", "spent", "of", "step", "reason")} if stopped else None}
 
 
+def discipline_view(record: dict[str, Any]) -> dict[str, Any] | None:
+    """The step page's step-discipline line from a step record's `discipline` (written by the
+    runtime around every run step that may not commit): {ok, text}; None for a record without it
+    (another kind of step, a commit step, or a run from before the check)."""
+    facts = record.get("discipline")
+    if not isinstance(facts, dict):
+        return None
+    if facts.get("ok"):
+        return {"ok": True, "text": "Stayed in its step: HEAD unchanged, no refs changed, nothing outside the worktree"}
+    said = [str(t) for t in facts.get("texts") or []] or [str(v) for v in facts.get("violations") or []]
+    text = "Left its step: " + "; ".join(said or ["(no details recorded)"])
+    restored = [str(r) for r in facts.get("restored") or []]
+    not_restored = [str(r) for r in facts.get("not_restored") or []]
+    if restored:
+        text += ". Restored: " + "; ".join(restored)
+    if not_restored:
+        text += ". Not restored: " + "; ".join(not_restored)
+    return {"ok": False, "text": text}
+
+
 def usage_view(state: dict[str, Any]) -> dict[str, Any] | None:
     """What a run recorded about subscription usage: its billing mode, the limit that stopped it and
     how often it waited for a reset; None for a run that recorded nothing."""
@@ -2908,7 +2928,8 @@ class RunModel:
             "runlog": [short(line) for line in runlog_tail],
             "steps_detail": {name: {"detail": short(str(r.get("detail", ""))), "attempts": r.get("attempts"),
                                     "status": step_status(data, name), "started": parse_time(r.get("started")),
-                                    "ended": parse_time(r.get("ended"))} for name, r in records.items()},
+                                    "ended": parse_time(r.get("ended")), "discipline": discipline_view(r)}
+                             for name, r in records.items()},
             "promotion": promotion_view(self.layer, self.id, state, short),
         }
 

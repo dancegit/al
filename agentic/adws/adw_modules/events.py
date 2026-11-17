@@ -42,6 +42,7 @@ TYPES = (
     "delivery.frozen",
     "promotion.opened", "promotion.decision", "promotion.excluded", "promotion.waiting", "promotion.approved",
     "promotion.merged", "promotion.tagged", "promotion.deployed", "promotion.back-merge", "promotion.closed",
+    "step.discipline",
 )
 
 

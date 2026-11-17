@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import artefacts
+from . import discipline
 from . import events
 from . import journal as journal_module
 from . import models
@@ -101,7 +102,8 @@ def run_command(argv: list[str], cwd: Path, env: dict[str, str], timeout: int,
 
 
 def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
-              attempt_offset: int = 0) -> int:
+              attempt_offset: int = 0, timeout: int | None = None) -> int:
+    """Run a check step's cmd once; `timeout` overrides the cmd's own time limit."""
     name = str(step["name"])
     if env_stack.read_only:
         raise StepFailed(name, "check refused in read-only host environment")
@@ -120,7 +122,7 @@ def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
         events.emit("check.start", **span)
         started = time.monotonic()
         exit_code, _output = run_command(argv, env_stack.cwd, env_stack.process_env(),
-                                          int(command.get("timeout", 1800)), log_path=log_path)
+                                          int(timeout or command.get("timeout", 1800)), log_path=log_path)
         events.emit("check.end", **span, exit=exit_code, seconds=round(time.monotonic() - started, 3))
     state.checks[name] = {"cmd": cmd, "exit": exit_code, "log": relative_log}
     state.save(layer.layer_dir)
@@ -195,6 +197,8 @@ def run_check_with_resolve(layer: Any, state: Any, step: dict[str, Any], env_sta
     retries = max(0, int(step.get("retries", 0)))
     for attempt in range(retries + 1):
         exit_code = run_check(layer, state, step, env_stack)
+        if exit_code == 124:
+            exit_code = _retry_time_limit(layer, state, step, env_stack)
         final = exit_code == 0 or not step.get("resolve") or attempt == retries
         if final:
             # Collected on failure too: screenshots of a failing run are the proof a human needs.
@@ -211,6 +215,42 @@ def run_check_with_resolve(layer: Any, state: Any, step: dict[str, Any], env_sta
         output = run_agent(layer, state, f"{name}-resolve-{attempt + 1}", step["resolve"], resolve_args,
                            model_set, env_stack)
         state.outputs[f"{name}-resolve-{attempt + 1}"] = output
+
+
+def _retry_time_limit(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> int:
+    """A check that hit its time limit runs once more with twice the limit, without the resolve
+    agent: a slow (shared) machine is not broken code. Timing out again fails the step."""
+    name = str(step["name"])
+    limit = int(layer.cmd(step["cmd"]).get("timeout", 1800))
+    first_log = state.checks[name]["log"]
+    print(f"[adw {state.adw_id}] check {name} timed out after {limit}s; running it once more with {2 * limit}s "
+          "(a time limit is not a test failure; no resolve agent)")
+    entry: dict[str, Any] = {"limit": limit, "retry_limit": 2 * limit, "log": first_log}
+    state.step_record(name, "check").setdefault("time_limit_retries", []).append(entry)
+    state.save(layer.layer_dir)
+    exit_code = run_check(layer, state, step, env_stack, timeout=2 * limit)
+    entry["exit"] = exit_code
+    state.save(layer.layer_dir)
+    if exit_code == 124:
+        artefacts.collect(layer, state, list(step.get("collect", [])), name)
+        log = state.checks[name]["log"]
+        line = _last_progress_line(Path(layer.layer_dir) / log)
+        raise StepFailed(name, f"check {step['cmd']} timed out twice ({limit} s, then {2 * limit} s); "
+                               f"last progress: {line or '(none)'}; log {log}")
+    return exit_code
+
+
+def _last_progress_line(log_path: Path) -> str:
+    """The last non-empty line of a check's log that is not the runtime's own timeout note."""
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        text = line.strip()
+        if text and not text.startswith("command timed out after"):
+            return text[:300]
+    return ""
 
 
 SCRIPT_TAIL = 4000  # characters of a script's output kept as the step's output ($out.NAME)
@@ -275,7 +315,8 @@ def run_script(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> 
 def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_stack: Any) -> None:
     kind = step.get("kind")
     if kind == "run":
-        run_run(layer, state, step, env_stack)
+        with discipline.watched(layer, state, step, env_stack):
+            run_run(layer, state, step, env_stack)
     elif kind == "script":
         run_script(layer, state, step, env_stack)
     elif kind == "check":
@@ -395,7 +436,13 @@ def _pass_detail(state: Any, step: dict[str, Any]) -> str:
         if success is not None:
             return detail
     if step.get("kind") == "check" and name in state.checks:
-        return f"exit {state.checks[name]['exit']}, log {state.checks[name]['log']}"
+        detail = f"exit {state.checks[name]['exit']}, log {state.checks[name]['log']}"
+        record = next((r for r in state.steps if r.get("name") == name), {})
+        retried = [r for r in record.get("time_limit_retries") or [] if r.get("exit") == 0]
+        if retried:
+            detail += (f" (time limit {retried[-1]['limit']} s was too low: passed on the retry with "
+                       f"{retried[-1]['retry_limit']} s)")
+        return detail
     if step.get("kind") == "script" and name in state.scripts:
         return f"exit {state.scripts[name]['exit']}, log {state.scripts[name]['log']}"
     output = state.outputs.get(name, "")

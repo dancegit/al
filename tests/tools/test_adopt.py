@@ -108,7 +108,7 @@ def test_adopt_produces_a_layer_that_compiles_generates_and_checks(larder, layer
     report = (layer / "adopted" / "REPORT.md").read_text()
     assert ("the rule says “Never commit directly; leave committing to the developer who asked for the change.” "
             "(`CLAUDE.md:8`), while the layer says “4. `git commit` with the message.” "
-            "(`kit/templates/commands/commit.md:55`)") in report
+            "(`kit/templates/commands/commit.md:57`)") in report
     assert ".github/workflows/claude.yml already runs an agent (anthropics/claude-code-action)" in report
     assert "PROPOSAL `adws/adw_plan_build.py`" in report and "al improve" in report
     rules = (layer / "adopted" / "RULES.md").read_text()

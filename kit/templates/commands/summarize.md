@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [text-or-path]
 ---
+{{step_block}}
 
 # Summarize
 

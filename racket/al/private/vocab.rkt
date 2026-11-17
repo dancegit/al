@@ -441,7 +441,8 @@
   [focus (list-of string) () "Codebase-specific instructions injected into the template's Instructions section."]
   [relevant (list-of string) () "Codebase paths listed under Relevant Files; empty = codebase source+tests paths."]
   [validation (list-of (ref cmd)) () "Codebase commands listed as Validation Commands."]
-  [fabric (list-of symbol) () "Fabric patterns vendored into the layer and applied by this command."])
+  [fabric (list-of symbol) () "Fabric patterns vendored into the layer and applied by this command."]
+  [may-commit boolean #f "Whether a run step of this command may commit (move HEAD in the worktree). The commit template always may; every other step's HEAD, refs and the layer directory are checked after it and a change fails the step."])
 
 (define-record hop
   "(hop NAME #:template T …): a higher-order prompt — it takes another prompt, plan or command as its argument."
@@ -677,4 +678,5 @@
     "#:after items are (deploy) or (deploy ENV): TO needs a #:deploy-cmd, and ENV equals TO's #:environment-name."
     "#:back-merge names declared stages other than FROM and TO."
     "A stage #:frozen period is \"YYYY-MM-DD..YYYY-MM-DD\" with valid dates, the first not after the second."
+    "#:may-commit #t is rejected on a read-only template (review, classify, question, pull-request, branch-name, summarize): those steps never commit."
     "Kinds marked planned compile but are refused by the generator."))

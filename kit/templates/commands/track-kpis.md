@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: (none)
 ---
+{{step_block}}
 
 # Track Agentic KPIs
 

@@ -90,6 +90,8 @@ def test_an_ordinary_run_that_changes_the_layer_goes_to_a_person(in_repo, app) -
     script = in_repo / "mock" / "change" / "build.json"
     script.parent.mkdir(parents=True)
     script.write_text(json.dumps({"files": {"app.py": "NOTES = [1]\n", "agentic/commands/plan.md": "rewritten by an agent\n"}}))
+    # the build leaves its work uncommitted; the commit step commits it, the layer file included
+    (script.parent / "commit.json").write_text(json.dumps({"commit": True}))
     commit(app, "mock script", "agentic/mock")
     cp = sh(["uv", "run", "--quiet", in_repo / "adws" / "adw_change.py", "Tidy", "--dry-run", "--adw-id", "c0ffee01"], cwd=app)
     assert cp.returncode == 0, cp.stdout + cp.stderr

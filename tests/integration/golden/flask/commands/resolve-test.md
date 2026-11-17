@@ -2,6 +2,15 @@
 description: resolve-test for <NAME>
 argument-hint: [failing-command] [output-tail]
 ---
+## Your step
+
+${workflow_steps}
+
+Leave your work as uncommitted changes in the worktree. Do not commit, merge into any branch, push, tag, open a pull request, or change any ref. The runtime checks this when you finish: a step that moved HEAD or a ref, changed the main checkout, or left a file at the top of the layer directory fails, and what it did is undone.
+
+Git in this step is for reading (`git status`, `git diff`, `git log`, `git show`) and, when the plan asks, for bringing content into the working tree (`git merge --no-commit --squash <ref>`, `git checkout <ref> -- <path>`, `git apply`), always ending uncommitted. Never run in this step: `git commit`, `git merge` without `--no-commit --squash`, `git rebase`, `git cherry-pick`, `git revert`, `git reset` to another commit, `git push`, `git tag`, `git branch`, `git switch`, `git checkout -b`, `git stash`, `git update-ref`.
+
+Notes, scratch files and helper scripts go in `${scratch_dir}`, and nowhere else in the layer.
 
 # Resolve Failing Check
 
@@ -25,7 +34,6 @@ PLAN_FILE: ${plan}
 - If the test itself is wrong (it contradicts the plan, or asserts behaviour that was deliberately changed), do not edit it on your own judgement: say which test, why it is wrong, what the correct assertion would be, and stop.
 - Do not modify anything under a protected path. If the fix lies there, stop and report it on a line starting `REQUIRES HUMAN`.
 - Fix only this failure. Other failures you notice go in the report, not in the diff.
-- Do not commit.
 - The lint cmd's hooks rewrite files in place and exit non-zero when they changed something: keep the rewritten files and fix only what the hooks still report.
 - Every warning raised during the tests fails the suite (filterwarnings = error): fix the cause of the warning, do not add a filter.
 - Imports are one name per 'from ... import ...' line; maximum line length is 88.
@@ -81,5 +89,15 @@ FAILING_COMMAND itself is the validation. For reference, every command of the co
 - Fix: what changed, one bullet per file.
 - Result: the exit code of the final run of FAILING_COMMAND, or the stop condition you hit (not reproducible, test is wrong, `REQUIRES HUMAN`).
 - The output of `git diff --stat`.
+
+End the report with this section, filled from commands you run (`git rev-parse HEAD` before your first change and again now; `git status --short`):
+
+### State of the worktree
+- HEAD before: `<sha>`; HEAD after: `<sha>` (must be equal)
+- `git status --short`: <n> modified, <n> added, <n> deleted, <n> untracked
+- Changed outside the plan's scope: <paths, or "none">
+- Nothing is committed; nothing left this worktree.
+
+Wording: say "applied to the worktree". Never write "merged onto main", "shipped" or "delivered": no step before `ship` does any of those.
 
 Finish with a concise report in plain markdown. No preamble.

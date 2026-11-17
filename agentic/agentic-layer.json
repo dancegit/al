@@ -763,6 +763,7 @@
       "fabric": [],
       "file": "",
       "focus": [],
+      "mayCommit": false,
       "modelSet": "base",
       "name": "prime",
       "output": "text",
@@ -775,6 +776,7 @@
       "fabric": [],
       "file": "",
       "focus": [],
+      "mayCommit": false,
       "modelSet": "base",
       "name": "classify",
       "output": "json",
@@ -793,6 +795,7 @@
         "No personal paths in committed files: no home directory, user name or machine-specific absolute path.",
         "Never mention a private repository, a real employer or a real customer; examples use public repositories or synthetic data."
       ],
+      "mayCommit": false,
       "modelSet": "heavy",
       "name": "plan-chore",
       "output": "path",
@@ -815,6 +818,7 @@
         "Tests must not need the network unless marked `network`, and must not call a real LLM.",
         "No personal paths and no private repository, employer or customer names in committed files."
       ],
+      "mayCommit": false,
       "modelSet": "heavy",
       "name": "plan-bug",
       "output": "path",
@@ -840,6 +844,7 @@
         "A test that needs podman, nix or a browser carries that marker and skips when the tool is missing; it never downloads one.",
         "No personal paths and no private repository, employer or customer names in committed files."
       ],
+      "mayCommit": false,
       "modelSet": "heavy",
       "name": "plan-feature",
       "output": "path",
@@ -858,6 +863,7 @@
       "fabric": [],
       "file": "",
       "focus": [],
+      "mayCommit": false,
       "modelSet": "heavy",
       "name": "plan-patch",
       "output": "path",
@@ -878,6 +884,7 @@
         "Fix the code or the new test, never weaken or delete an existing test to make a command pass.",
         "A failure in tests/integration golden snapshots after a template change is resolved with --update-golden and a reviewed snapshot diff, not by editing snapshots by hand."
       ],
+      "mayCommit": false,
       "modelSet": "heavy",
       "name": "resolve-test",
       "output": "text",
@@ -894,6 +901,7 @@
         "Any personal path, user name, private repository, employer or customer name in the diff is a blocker.",
         "A hand edit of docs/AL-DSL.llms.txt, schemas/agentic-layer-v1.schema.json or any file under docs/demo is a blocker."
       ],
+      "mayCommit": false,
       "modelSet": "heavy",
       "name": "review",
       "output": "json",
@@ -909,6 +917,7 @@
         "Prose in README.md and docs/ is plain and factual: short sentences, no marketing adjectives, numbers only from real runs.",
         "docs/GUIDE.md quotes tools/al output: when a subcommand's output changes, the quoted text changes with it."
       ],
+      "mayCommit": false,
       "modelSet": "base",
       "name": "document",
       "output": "text",
@@ -923,6 +932,7 @@
       "focus": [
         "One lower-case summary line that names the area first (e.g. `dashboard: \u2026`, `runtime: \u2026`, `tools: \u2026`); no trailer lines."
       ],
+      "mayCommit": false,
       "modelSet": "base",
       "name": "commit",
       "output": "text",
@@ -935,6 +945,7 @@
       "fabric": [],
       "file": "",
       "focus": [],
+      "mayCommit": false,
       "modelSet": "base",
       "name": "pull-request",
       "output": "text",

@@ -1031,6 +1031,8 @@ al gen ~/code/myapp.al
 
 A template in the layer's `templates/` folder wins over the built-in one and survives every
 regeneration. Keep its `{{…}}` placeholders; they are how your commands and paths get filled in.
+An ejected command or hop template keeps the line `{{step_block}}` at its top, right after the front
+matter: it becomes the "Your step" block that tells the agent which step it is and what it must leave undone.
 `--list` tells you when the built-in version has changed since you took your copy. For a one-line
 instruction, a `#:focus` line on the command in `agentic.rkt` is simpler than a template. A focus line
 now takes precedence over the format a template prescribes (a commit message, a pull request body, a
@@ -1167,6 +1169,9 @@ changed. The paths are recorded in `~/.config/al/<name>-tools.json` on the host,
 
 | What you see | What it means | What to do |
 |---|---|---|
+| a step fails with `step-discipline: the build step committed …` (or `created ref …`, `left validate-x at the top of the layer directory`) | the agent did another step's job: only the commit step commits, and nothing but the run's own state may appear at the top of the layer. This is a step-discipline violation, not a test failure | the detail lists what the runtime undid (HEAD reset with the changes kept, stray files moved to `agents/<run id>/scratch/stray/`) and what it left for you (a ref, the main checkout); delete a stray ref with `git branch -D` and run again |
+| a check fails with `timed out twice (300 s, then 600 s)` | the check hit its time limit, was run once more with twice the limit (without the resolve agent), and hit that too; the detail quotes its last progress line | a slow or busy machine: raise the cmd's `#:timeout`, or run fewer runs at once (`#:max-checks`) |
+| `al check` notes `template … (yours) has no "Your step" block` | a template you ejected before the block existed does not tell the agent which step it is | add a line `{{step_block}}` right after its front matter, as in the kit's version, then `al gen` |
 | `al gen` says a template uses an unknown placeholder | a hand-written template has a typo in `{{…}}` | fix the name; use only the placeholder names that appear in the kit's templates (`kit/templates/`) |
 | a run waits with `waiting for a free runs slot` | the concurrency limit is reached | wait, or raise `#:max-runs` |
 | `status: failed` and a `[needs human]` pull request | the run stopped and handed over | read "Why this stopped" in it |

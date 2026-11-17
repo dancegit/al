@@ -1099,6 +1099,10 @@
             },
             "type": "array"
           },
+          "mayCommit": {
+            "description": "Whether a run step of this command may commit (move HEAD in the worktree). The commit template always may; every other step's HEAD, refs and the layer directory are checked after it and a change fails the step.",
+            "type": "boolean"
+          },
           "modelSet": {
             "description": "Model tier the command runs on: a tier declared on the agent that runs it (base, heavy, or one from #:models).",
             "pattern": "^[a-z][a-z0-9-]*$",
@@ -1166,6 +1170,7 @@
           "fabric",
           "file",
           "focus",
+          "mayCommit",
           "modelSet",
           "name",
           "output",

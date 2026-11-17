@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [problem-class-description]
 ---
+{{step_block}}
 
 # Meta-Command (template meta-prompt)
 

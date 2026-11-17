@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [failing-command] [output-tail]
 ---
+{{step_block}}
 
 # Resolve Failing Check
 
@@ -25,7 +26,6 @@ PLAN_FILE: ${plan}
 - If the test itself is wrong (it contradicts the plan, or asserts behaviour that was deliberately changed), do not edit it on your own judgement: say which test, why it is wrong, what the correct assertion would be, and stop.
 - Do not modify anything under a protected path. If the fix lies there, stop and report it on a line starting `REQUIRES HUMAN`.
 - Fix only this failure. Other failures you notice go in the report, not in the diff.
-- Do not commit.
 {{focus}}
 
 ## Relevant Files
@@ -62,5 +62,7 @@ FAILING_COMMAND itself is the validation. For reference, every command of the co
 - Fix: what changed, one bullet per file.
 - Result: the exit code of the final run of FAILING_COMMAND, or the stop condition you hit (not reproducible, test is wrong, `REQUIRES HUMAN`).
 - The output of `git diff --stat`.
+
+{{worktree_report}}
 
 {{output_contract}}

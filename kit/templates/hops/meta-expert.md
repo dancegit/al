@@ -2,6 +2,7 @@
 description: {{description}}
 argument-hint: [domain]
 ---
+{{step_block}}
 
 # Meta-Expert (expert meta-prompt)
 
