@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
+import re
 import subprocess
 import sys
 import traceback
@@ -118,6 +120,8 @@ def _parser(adw: str) -> argparse.ArgumentParser:
                         help="use MODEL_ID for tier TIER in this run (repeatable)")
     parser.add_argument("--max-cost", metavar="USD", help="run spending limit in US dollars for this run")
     parser.add_argument("--notify", action="store_true", help="send the layer's notifications even in a --dry-run")
+    parser.add_argument("--replaces", metavar="OLD", help="this run starts run OLD (8 hex chars) again; OLD then "
+                        "reads as replaced by this run")
     return parser
 
 
@@ -159,7 +163,55 @@ def _new_state(adw_name: str, adw: dict[str, Any], args: argparse.Namespace, req
         adw_id=args.adw_id or state_module.new_adw_id(), adw=adw_name, prompt=request.prompt,
         source=request.source, klass=initial, class_fixed=fixed is not None, dry_run=args.dry_run,
         model_set=request.model_set or "", fanout_parent=fanout_parent(),
+        replaces=getattr(args, "replaces", None) or "",
     )
+
+
+def _check_replaces(layer: Any, old: str) -> str:
+    """The run `--replaces OLD` names: 8 hex characters and a run of this layer, else UsageError."""
+    if not re.fullmatch(r"[0-9a-f]{8}", old or ""):
+        raise UsageError("--replaces needs a run id of 8 hexadecimal characters")
+    if not (state_module.run_dir(layer.layer_dir, old) / "state.json").is_file():
+        raise UsageError(f"--replaces {old}: the layer has no such run")
+    return old
+
+
+def _age_seconds(stamp: str) -> float | None:
+    try:
+        when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - when).total_seconds()
+
+
+def previous_attempt(layer: Any, source: str, adw_id: str) -> str:
+    """The run this one retries: the newest earlier run of the same prompt source (issue:N, a
+    task-list line; never cli or manual) that failed, or that still says running but whose
+    heartbeat stopped long ago, and that no other run replaces already. "" when there is none."""
+    kind = (source or "").partition(":")[0]
+    if ":" not in (source or "") or kind in ("cli", "manual"):
+        return ""
+    found: list[tuple[str, str]] = []
+    replaced: set[str] = set()
+    for path in sorted((Path(layer.layer_dir) / "agents").glob("*/state.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or path.parent.name == adw_id:
+            continue
+        if data.get("replaces"):
+            replaced.add(str(data["replaces"]))
+        if data.get("source") != source:
+            continue
+        status = data.get("status")
+        stale = status == "running" and (_age_seconds(data.get("heartbeat") or "") or 0) > state_module.HEARTBEAT_SECONDS * 12
+        if status == "failed" or stale:
+            found.append((str(data.get("started") or ""), path.parent.name))
+    open_ = [item for item in found if item[1] not in replaced]
+    return max(open_)[1] if open_ else ""
 
 
 def fanout_parent() -> dict[str, Any]:
@@ -210,6 +262,7 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"ship:      {ship}",
         *([f"delivery:  {_delivery_line(state)}"] if state.delivery else []),
         *([f"promotion: {_promotion_line(state)}"] if state.promotion else []),
+        *([f"replaces:  {state.replaces}"] if state.replaces else []),
         *([handoff] if handoff else []),
         f"artefacts: {len(state.artefacts)}",
         *([f"resume:    {resume_command(state)}"] if state.status == "waiting" else []),
@@ -382,7 +435,7 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
                adw=state.adw, adw_id=state.adw_id, klass=state.klass, dry_run=state.dry_run,
                resumed=bool(args.resume), pid=state.pid, host=state.host, fanout_parent=state.fanout_parent or None,
                overrides=state.overrides or None, models=state.models or None,
-               limits=state.budget.get("limits") or None)
+               limits=state.budget.get("limits") or None, replaces=state.replaces or None)
     try:
         if request is not None and request.hooks is not None:
             request.hooks.on_start(state)
@@ -476,8 +529,12 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
             models.check_overrides(layer, definition, over)
         except LayerError as exc:
             raise UsageError(str(exc)) from exc
+        if args.replaces:
+            _check_replaces(layer, args.replaces)
         request = None if args.resume else resolve_request(layer, definition, args)
         state = _resumed_state(layer, adw, args) if args.resume else _new_state(adw, definition, args, request)
+        if not args.resume and not state.replaces:   # a reopened task or issue started again after a failure
+            state.replaces = previous_attempt(layer, state.source, state.adw_id)
         if synthetic is not None:
             state.definition = dict(synthetic)
         if recompute:

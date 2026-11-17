@@ -3,15 +3,19 @@
   dispatch.py [PROMPT] [--source KIND:REF] [--adw NAME] [--class C] [--dry-run]
   dispatch.py --start (--adw NAME | --command NAME) --request-key KEY [--class C] [--model-set T]
               [--model T=ID …] [--issue none|start|trigger] [--confirm-duplicate] [--confirm-ships]
-              [--dry-run] [--json]   < prompt
+              [--dry-run] [--replaces OLD] [--json]   < prompt
+  dispatch.py --pr-state N [--json]
   dispatch.py --command NAME [runner flags: --prompt-file F --adw-id ID --class C --dry-run …]
 
 The first form is used by CI workflows and triggers that do not know which ADW applies. --start is
 the layer's one start path (adw_modules/launch.py): it reads the prompt from stdin, starts the run
 detached and prints the result (with --json: one JSON line); exit 0 started or issue created,
 2 invalid, 3 refused (day limit or usage threshold), 4 needs a confirmation, 1 failed.
---command alone runs one command or hop in the foreground as a recorded run (what a single-command
-start executes). The (PEP 723) script header is prepended by `al gen`.
+--replaces OLD names the run the start begins again ("Start again"). --command alone runs one
+command or hop in the foreground as a recorded run (what a single-command start executes).
+--pr-state N asks the layer's forge, read only, whether pull request N is merged and prints one JSON
+line {"state": open|merged|closed|unknown, "commit", "at"}; exit 0, or 1 with {"state": "unknown",
+"error"} when the forge fails (the dashboard's landed check uses it, so credentials stay here). The (PEP 723) script header is prepended by `al gen`.
 """
 import argparse
 import json
@@ -54,7 +58,22 @@ def start(a: argparse.Namespace) -> int:
     return done(launch.start(layer, target, prompt, request_key=a.request_key or "", klass=a.klass,
                              model_set=a.model_set, models=a.model, issue=a.issue,
                              confirm_duplicate=a.confirm_duplicate, confirm_ships=a.confirm_ships,
-                             dry_run=a.dry_run))
+                             dry_run=a.dry_run, replaces=a.replaces or ""))
+
+
+def pr_state(a: argparse.Namespace) -> int:
+    from adw_modules import forge, ir
+
+    try:
+        result, code = dict(forge.get_client(ir.load(LAYER)).pr_state(a.pr_state)), 0
+    except Exception as exc:  # the forge's own failure (ForgeError, HTTP, a missing gh): the answer is unknown
+        result, code = {"state": "unknown", "error": f"{type(exc).__name__}: {exc}"[:500]}, 1
+    if a.json:
+        print(json.dumps(result), flush=True)
+    else:
+        print(f"dispatch: pull request #{a.pr_state} {result.get('state')}"
+              + (f": {result['error']}" if result.get("error") else ""), flush=True)
+    return code
 
 
 def main() -> int:
@@ -82,8 +101,12 @@ def main() -> int:
                     help="with --start: also log the request as a forge issue")
     ap.add_argument("--confirm-duplicate", action="store_true")
     ap.add_argument("--confirm-ships", action="store_true")
-    ap.add_argument("--json", action="store_true", help="with --start: print the result as one JSON line")
+    ap.add_argument("--replaces", metavar="OLD", help="with --start: the run this start begins again")
+    ap.add_argument("--pr-state", type=int, metavar="N", help="is pull request N merged? (read only)")
+    ap.add_argument("--json", action="store_true", help="with --start or --pr-state: print one JSON line")
     a = ap.parse_args()
+    if a.pr_state is not None:
+        return pr_state(a)
     if a.start:
         return start(a)
 

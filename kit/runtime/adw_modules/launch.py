@@ -15,6 +15,11 @@ like any run and never shipping; see single_command_adw). `start()`:
   6. reserves the run id, writes the prompt to agents/<id>/request.md (never onto a command line),
      records the request key in agents/starts.json and launches the layer's own script.
 
+A start may name the run it starts again (`replaces`, "Start again" on the dashboard, `al run
+--replaces`): that run must exist, a recent duplicate of it needs no confirmation, and the new run
+records `replaces` (in its skeleton state and through the runner's --replaces), so the old run reads
+as replaced by the new one.
+
 Steps 1-6 hold agents/.starts.lock, so two starts with one key (a double click, a retried request)
 start one run. The launched process is detached (its own session) unless the caller attaches.
 """
@@ -38,6 +43,7 @@ from .errors import LayerError
 DUPLICATE_SECONDS = 300            # the same target and prompt again within this window asks first
 LEDGER_DAYS = 2                    # request keys are remembered this long
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+RUN_ID_RE = re.compile(r"^[0-9a-f]{8}$")
 LEDGER = Path("agents") / "starts.json"
 LEDGER_LOCK = Path("agents") / ".starts.lock"
 REQUEST_FILE = "request.md"
@@ -229,9 +235,10 @@ def _check(layer: Any, target: Target, prompt: str, request_key: str, klass: str
 def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: str | None = None,
           model_set: str | None = None, models: Iterable[str] = (), issue: str = "none",
           confirm_duplicate: bool = False, confirm_ships: bool = False, dry_run: bool = False,
-          detach: bool = True, spawn: Callable[..., Any] = _spawn, forge: Any = None) -> dict[str, Any]:
+          detach: bool = True, spawn: Callable[..., Any] = _spawn, forge: Any = None,
+          replaces: str = "") -> dict[str, Any]:
     """Start `target` with `prompt` once per `request_key`; see the module docstring. `models` are
-    TIER=MODEL_ID strings. Returns {"status": started | issue-created | confirm-duplicate |
+    TIER=MODEL_ID strings; `replaces` is the run this one starts again. Returns {"status": started | issue-created | confirm-duplicate |
     confirm-ships | refused | invalid | error, …}; EXIT maps the status to an exit code."""
     model_list = [str(m) for m in models]
     layer_dir = Path(layer.layer_dir)
@@ -241,6 +248,11 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
         adw, over = _check(layer, target, prompt, request_key, klass, model_set or None, model_list, issue)
     except (LayerError, ValueError) as exc:
         return _result("invalid", error=str(exc), **base)
+    replaces = str(replaces or "")
+    if replaces and not RUN_ID_RE.fullmatch(replaces):
+        return _result("invalid", error="replaces: a run id of 8 hexadecimal characters", **base)
+    if replaces and not (state_module.run_dir(layer_dir, replaces) / "state.json").is_file():
+        return _result("invalid", error=f"replaces: the layer has no run {replaces}", **base)
     prompt = prompt.strip()
     digest, label = prompt_sha(prompt), f"{target.kind}:{target.name}"
     with _ledger_lock(layer):
@@ -253,7 +265,8 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
         now = time.time()
         if not confirm_duplicate:
             recent = [v for v in starts.values() if v.get("target") == label and v.get("prompt_sha") == digest
-                      and now - float(v.get("at") or 0) < DUPLICATE_SECONDS]
+                      and now - float(v.get("at") or 0) < DUPLICATE_SECONDS
+                      and not (replaces and v.get("run_id") == replaces)]   # starting that run again is the point
             if recent:
                 last = max(recent, key=lambda v: float(v.get("at") or 0))
                 ago = int(now - float(last.get("at") or 0))
@@ -308,7 +321,8 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
         # what a reader sees until the run writes its own state: running, without a process to
         # check, so a launch that never comes up shows as died (and launch.log says why)
         skeleton = state_module.ADWState(adw_id=run_id, adw=target.adw, prompt=prompt, source="cli",
-                                         dry_run=dry_run, definition=adw if target.kind == "command" else {})
+                                         dry_run=dry_run, definition=adw if target.kind == "command" else {},
+                                         replaces=replaces)
         skeleton.host, skeleton.heartbeat = "", state_module.now()
         skeleton.save(layer_dir)
     if target.kind == "workflow":
@@ -324,6 +338,7 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
     for item in model_list:
         argv += ["--model", item]
     argv += ["--dry-run"] if dry_run else []
+    argv += ["--replaces", replaces] if replaces else []
     limits = slots.limits(layer)
     queued = (f"all {max(1, limits['runs'])} run slots are in use; it waits up to {limits['wait']} s"
               if slots.free_slots(layer, "runs") == 0 else "")

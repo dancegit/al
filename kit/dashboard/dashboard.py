@@ -11,9 +11,11 @@
 
 It watches each layer's `agents/` (run state, run.log, step transcripts, check logs, slot locks,
 port leases) and `artefacts/` by polling mtimes and sizes, and serves one page that updates over
-Server-Sent Events. Standard library only. It changes two things in a layer, both guarded: a layer's
-local model setting (agents/settings/models.json), from the Models panel, and it starts work (a
-workflow or one command) through the layer's own `adws/dispatch.py --start`.
+Server-Sent Events. Standard library only. It changes three things in a layer, all guarded: a layer's
+local model setting (agents/settings/models.json), from the Models panel; it starts work (a workflow
+or one command, or a failed run again) through the layer's own `adws/dispatch.py --start`; and it
+records that a finished run is settled (agents/<id>/settlement.json). Whether a handed-over run's work
+landed on its target branch is worked out read-only from git (see Landing), never by fetching.
 
 It also lists the git repositories of a workspace (the folder holding each layer's repository, or
 --workspace DIR) with their al state (layer / setup / none), read-only, and runs allow-listed `al`
@@ -133,6 +135,19 @@ RETRY_KEYS = {"job", "from"}
 PREFLIGHT_TIMEOUT = 10      # seconds `al doctor --for …` may take before a job's first pending step
 TOOL_ROWS_TTL = 300         # seconds the Repos view's tools table (with versions) is kept
 PREVIEW_TTL = 600              # seconds a preview's confirmation stays valid
+SETTLEMENT_FILE = "settlement.json"   # agents/<id>/settlement.json: a person settled the run (al settle, the page)
+SETTLE_AS = ("landed", "superseded", "abandoned")
+SETTLE_NOTE_CHARS = 500
+SETTLE_WHO_CHARS = 80
+FAILURE_GROUP_SECONDS = 1800   # failures of one step and reason that end within this of each other are one group
+LANDING_CHECKS_PER_TICK = 8    # uncached landed checks (git) per watcher tick; the others wait as "checking"
+PR_STATE_SECONDS = 600         # a forge answer about a pull request is kept this long
+LANDING_GIT_TIMEOUT = 10       # seconds per git call of a landed check
+PATCH_ID_COMMITS = 500         # commits of the target compared by patch-id
+LANDING_PATHS = 2000           # a branch that changed more paths than this is not compared path by path
+COMMIT_RX = re.compile(r"^[0-9a-f]{7,40}$")
+BUCKETS = ("needs-you", "running", "landed", "settled", "done")
+ATTENTION_EVERY = 20           # ticks between recomputations of a layer's attention without a change
 _STAMP = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ")   # run.log line prefix since run events
 
 
@@ -1834,6 +1849,7 @@ def start_via_layer(layer: Layer, request: dict[str, Any], timeout: float = STAR
         argv += ["--model", f"{tier}={model_id}"]
     argv += ["--confirm-duplicate"] if request.get("confirm_duplicate") else []
     argv += ["--confirm-ships"] if request.get("confirm_ships") else []
+    argv += ["--replaces", request["replaces"]] if request.get("replaces") else []
     env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
     try:
         done = subprocess.run(argv, input=request["prompt"].encode("utf-8"), capture_output=True, cwd=str(layer.path),
@@ -1849,6 +1865,536 @@ def start_via_layer(layer: Layer, request: dict[str, Any], timeout: float = STAR
     except ValueError:
         result = {}
     return done.returncode, result if isinstance(result, dict) else {}, tail
+
+
+# ============================================================================ landing and settlement
+#
+# A handed-over run's work may already be on its target branch: a person merged it, squash-merged it,
+# or another run integrated it. Landing works that out read-only (git through safe_git, never a
+# fetch), cached per (repository, the run's tip, the target's heads), so a new commit on the target
+# recomputes. A settlement is a person's record that a finished run needs nothing more
+# (agents/<id>/settlement.json). attention() puts every run of a layer in one bucket of BUCKETS with
+# a one-line reason and next action; replacement and supersession are derived from the later run's
+# records, so detection never writes.
+
+
+class SettleError(ValueError):
+    """A settlement that cannot be written: kind invalid (bad as / by / note / who), running (the run
+    is not finished) or by (by names neither a run nor a commit of the application repository)."""
+
+    def __init__(self, message: str, kind: str = "invalid") -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+def run_target(layer_ir: dict[str, Any], state: dict[str, Any] | None) -> str:
+    """The branch a run's work goes to: its stage's branch when the layer has stages, else the
+    codebase's default branch, else main."""
+    delivery = (state or {}).get("delivery") if isinstance(state, dict) else None
+    if isinstance(delivery, dict) and delivery.get("branch") and not delivery.get("refused"):
+        return str(delivery["branch"])
+    codebase = layer_ir.get("codebase") if isinstance(layer_ir.get("codebase"), dict) else {}
+    return str(codebase.get("defaultBranch") or "main")
+
+
+def app_repo(layer_dir: Path, layer_ir: dict[str, Any]) -> Path | None:
+    """The application repository: AL_APP_ROOT when set, else codebase.root resolved against the layer
+    (the rule of tools/al app_root_of and the runtime's ir.load)."""
+    override = os.environ.get("AL_APP_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    root = (layer_ir.get("codebase") or {}).get("root") if isinstance(layer_ir.get("codebase"), dict) else None
+    return (Path(layer_dir) / str(root)).resolve() if root else None
+
+
+def prompt_mentions(prompt: str, cap: int = 100) -> list[str]:
+    """Run ids and branch-like names (al/1a2b3c4d, feature/x) a prompt names: how a later run says
+    which runs it integrates, without sending whole prompts to the page."""
+    found = re.findall(r"(?<![\w/.-])(?:[0-9a-f]{8}|[\w.-]+/[\w./-]*[\w-])(?![\w/-])", prompt or "")
+    return list(dict.fromkeys(found))[:cap]
+
+
+def read_settlement(layer_dir: Path, run_id: str) -> dict[str, Any] | None:
+    """agents/<id>/settlement.json, or None when there is none (or it is not a settlement)."""
+    data = read_json(Path(layer_dir) / "agents" / run_id / SETTLEMENT_FILE)
+    if not isinstance(data, dict) or data.get("as") not in SETTLE_AS:
+        return None
+    keep = ("as", "by", "note", "who", "at", "via", "previous", "pruned")
+    return {k: data[k] for k in keep if k in data}
+
+
+def _write_record(path: Path, data: dict[str, Any]) -> None:
+    """Atomically: a temporary file beside it (mode 0o600), then os.replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".settlement.", suffix=".json")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
+
+
+def check_settlement(as_: Any, by: Any, note: Any, who: Any) -> tuple[str, str, str, str]:
+    """The fields of a settlement, checked → (as, by, note, who); SettleError (invalid) otherwise."""
+    if as_ not in SETTLE_AS:
+        raise SettleError(f"as is one of {', '.join(SETTLE_AS)}")
+    by = "" if by is None else by
+    note = "" if note is None else note
+    who = "" if who is None else who
+    if not isinstance(by, str) or not isinstance(note, str) or not isinstance(who, str):
+        raise SettleError("by, note and who are text")
+    by = by.strip()
+    if by and not COMMIT_RX.fullmatch(by):
+        raise SettleError("by names a run (8 hexadecimal characters) or a commit (7 to 40)")
+    if len(note) > SETTLE_NOTE_CHARS:
+        raise SettleError(f"a note has at most {SETTLE_NOTE_CHARS} characters")
+    note = " ".join(note.split())   # one paragraph
+    if len(who) > SETTLE_WHO_CHARS or not who.isprintable():
+        raise SettleError(f"who is at most {SETTLE_WHO_CHARS} printable characters on one line")
+    return as_, by, note, who.strip()
+
+
+def write_settlement(layer_dir: Path, run_id: str, *, as_: str, by: str = "", note: str = "", who: str = "",
+                     via: str, status: str, repo: Path | None = None) -> dict[str, Any]:
+    """Write agents/<id>/settlement.json and return the record. Writing again replaces the record and
+    keeps the earlier one under "previous" (one level). Nothing else of the run is touched. Refused
+    (SettleError) for a run that is running or unknown, and when `by` is neither a run of the layer
+    nor a commit `git cat-file -e` finds in `repo`."""
+    if not RUN_ID.match(run_id or "") or not (Path(layer_dir) / "agents" / run_id).is_dir():
+        raise SettleError(f"no run {run_id}", "missing")
+    if status in ("running", "unknown"):
+        raise SettleError(f"run {run_id} is {status}: only a finished run can be settled", "running")
+    as_, by, note, who = check_settlement(as_, by, note, who)
+    if by:
+        is_run = bool(RUN_ID.match(by)) and (Path(layer_dir) / "agents" / by / "state.json").is_file()
+        if not is_run and not (repo is not None and safe_git(repo, "cat-file", "-e", f"{by}^{{commit}}",
+                                                              timeout=LANDING_GIT_TIMEOUT) is not None):
+            raise SettleError(f"by {by}: neither a run of this layer nor a commit of the application repository", "by")
+    record: dict[str, Any] = {"as": as_, "by": by, "note": note, "who": who, "at": utc_stamp(), "via": via}
+    previous = read_settlement(layer_dir, run_id)
+    if previous:
+        record["previous"] = {k: v for k, v in previous.items() if k not in ("previous", "pruned")}
+        if previous.get("pruned"):
+            record["pruned"] = previous["pruned"]
+    _write_record(Path(layer_dir) / "agents" / run_id / SETTLEMENT_FILE, record)
+    return record
+
+
+def add_pruned(layer_dir: Path, run_id: str, pruned: dict[str, Any], landing: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Note in the settlement what `al runs … prune` removed; a run that landed by detection (no
+    settlement yet) gets one with as = landed."""
+    record = read_settlement(layer_dir, run_id)
+    if record is None:
+        how = (landing or {}).get("how")
+        record = {"as": "landed", "by": str((landing or {}).get("commit") or ""),
+                  "note": f"landed ({how}) on {(landing or {}).get('target', '')}" if how else "",
+                  "who": "al runs prune", "at": utc_stamp(), "via": "cli"}
+    record["pruned"] = pruned
+    _write_record(Path(layer_dir) / "agents" / run_id / SETTLEMENT_FILE, record)
+    return record
+
+
+def normalise_reason(text: Any) -> str:
+    """The first line of an error with what differs between runs of the same fault dropped: times,
+    paths, hexadecimal ids and numbers."""
+    line = first_line(text)
+    line = re.sub(r"\d{4}-\d\d-\d\d(?:[T ]\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:?\d\d)?)?", " ", line)
+    line = re.sub(r"\b\d\d:\d\d(?::\d\d(?:\.\d+)?)?\b", " ", line)
+    line = re.sub(r"(?:~|\.{1,2})?(?:/[^\s'\"`,;:()\[\]]+)+/?", " ", line)
+    line = re.sub(r"\b(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{7,64}\b", " ", line)
+    line = re.sub(r"\d+(?:\.\d+)?", " ", line)
+    return " ".join(line.split())
+
+
+def _git_common_dir(repo: Path) -> Path:
+    directory = git_dir(repo)
+    common = directory / "commondir"
+    if common.is_file():
+        text = read_text(common, cap=4096).strip()
+        if text:
+            target = Path(text)
+            return target if target.is_absolute() else (directory / target).resolve()
+    return directory
+
+
+class Landing:
+    """Did a handed-over run's work land on its target branch? Read-only: git rev-parse, merge-base,
+    rev-list, log, diff, patch-id and ls-tree through safe_git with a timeout; refs are read from the
+    repository's files (for-each-ref when it keeps them in a reftable). Never fetches. A result is
+    cached per (repository, the run's tip, the target heads), so asking again costs no git call and a
+    new commit on the target recomputes."""
+
+    def __init__(self, git: Callable[..., str | None] | None = None) -> None:
+        self._git = git
+        self.cache: dict[tuple, dict[str, Any]] = {}
+        self.contained: dict[tuple, bool] = {}
+        self.lock = threading.Lock()
+
+    def git(self, repo: Path, *args: str, input: bytes | None = None) -> str | None:  # noqa: A002
+        run = self._git or safe_git   # looked up at call time, so a test can count the calls
+        return run(repo, *args, timeout=LANDING_GIT_TIMEOUT, input=input) if input is not None else \
+            run(repo, *args, timeout=LANDING_GIT_TIMEOUT)
+
+    # ---------------------------------------------------------------- refs, without git
+    def _refs(self, repo: Path, names: Callable[[str], bool], loose: list[str]) -> dict[str, str] | None:
+        common = _git_common_dir(repo)
+        if not common.is_dir():
+            return None
+        if (common / "reftable").exists():
+            out = self.git(repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes")
+            pairs = [line.split(" ", 1) for line in (out or "").splitlines() if " " in line]
+            return {name: sha for name, sha in pairs if names(name)}
+        found: dict[str, str] = {}
+        for line in read_text(common / "packed-refs", cap=50_000_000).splitlines():
+            if not line or line[0] in "#^":
+                continue
+            sha, _, name = line.partition(" ")
+            if names(name.strip()):
+                found[name.strip()] = sha.strip()
+        for name in loose:
+            text = read_text(common / name, cap=200).strip()
+            if re.fullmatch(r"[0-9a-f]{40,64}", text):
+                found[name] = text
+        return found
+
+    def heads(self, repo: Path, target: str) -> list[tuple[str, str]] | None:
+        """[(ref, sha)] of refs/heads/<target> and refs/remotes/*/<target> that exist; None without a repository."""
+        common = _git_common_dir(repo)
+        remotes = []
+        with contextlib.suppress(OSError):
+            remotes = [f"refs/remotes/{e.name}/{target}" for e in os.scandir(common / "refs" / "remotes") if e.is_dir()]
+        pattern = re.compile(rf"^refs/(?:heads|remotes/[^/]+)/{re.escape(target)}$")
+        refs = self._refs(repo, lambda name: bool(pattern.match(name)), [f"refs/heads/{target}", *remotes])
+        return None if refs is None else sorted(refs.items())
+
+    def tip(self, repo: Path, branch: str, commit: str) -> str:
+        """The run's tip: refs/heads/<branch> when it exists, else the shipped commit, else ""."""
+        if branch:
+            refs = self._refs(repo, lambda name: name == f"refs/heads/{branch}", [f"refs/heads/{branch}"])
+            if refs and refs.get(f"refs/heads/{branch}"):
+                return refs[f"refs/heads/{branch}"]
+        return commit if COMMIT_RX.fullmatch(commit or "") else ""
+
+    def _key(self, repo: Path | None, branch: str, commit: str, target: str) -> tuple | dict[str, Any]:
+        if repo is None or not Path(repo).is_dir():
+            return {"state": "unknown", "why": "no application repository", "target": target}
+        heads = self.heads(repo, target)
+        if heads is None:
+            return {"state": "unknown", "why": "not a git repository", "target": target}
+        if not heads:
+            return {"state": "unknown", "why": f"no branch {target}", "target": target}
+        tip = self.tip(repo, branch, commit)
+        if not tip:
+            return {"state": "unknown", "why": "branch and commit are gone", "target": target}
+        return (str(repo), tip, tuple(heads), target)
+
+    # ---------------------------------------------------------------- the checks
+    def peek(self, repo: Path | None, branch: str, commit: str, target: str) -> dict[str, Any] | None:
+        """The cached result (or one that needs no git), else None: a check would run git."""
+        key = self._key(repo, branch, commit, target)
+        if isinstance(key, dict):
+            return key
+        with self.lock:
+            return self.cache.get(key)
+
+    def check(self, repo: Path | None, branch: str, commit: str, target: str, pr: Any = None,
+              pr_state: Callable[[Any], dict[str, Any]] | None = None) -> dict[str, Any]:
+        """{"state": landed|partly|open|unknown, "how": ancestor|forge|patch-id|paths, "commit": short sha,
+        "at": epoch, "target", "differs": [paths]}. The first check that holds wins: the tip is an
+        ancestor of a target head; the forge says the pull request `pr` is merged (`pr_state`, when
+        given); the patch-id of the branch's change equals a target commit's; every changed path is
+        equal on the target (some only: partly)."""
+        key = self._key(repo, branch, commit, target)
+        if isinstance(key, dict):
+            return key
+        with self.lock:
+            local = self.cache.get(key)
+        if local is None:
+            local = self._compute(Path(key[0]), key[1], list(key[2]), target)
+            with self.lock:
+                if len(self.cache) > 4096:
+                    self.cache.clear()
+                self.cache[key] = local
+        if local.get("how") == "ancestor" or local.get("state") == "unknown" or not pr or pr_state is None:
+            return local
+        try:
+            answer = pr_state(pr) or {}
+        except Exception:  # noqa: BLE001 — the forge is optional: the local result stands
+            answer = {}
+        if answer.get("state") == "merged":
+            sha = str(answer.get("commit") or "")
+            return {"state": "landed", "how": "forge", "commit": sha[:7], "at": parse_time(answer.get("at")),
+                    "target": target, "pr": pr}
+        return local
+
+    def _compute(self, repo: Path, tip: str, heads: list[tuple[str, str]], target: str) -> dict[str, Any]:
+        g = lambda *args, **kw: self.git(repo, *args, **kw)   # noqa: E731
+        if g("cat-file", "-e", f"{tip}^{{commit}}") is None:
+            return {"state": "unknown", "why": "branch and commit are gone", "target": target}
+
+        def landed(how: str, sha: str, **extra: Any) -> dict[str, Any]:
+            when = (g("log", "-1", "--format=%ct", sha) or "").strip()
+            return {"state": "landed", "how": how, "commit": sha[:7], "at": int(when) if when.isdigit() else None,
+                    "target": target, **extra}
+
+        for _ref, head in heads:   # 1. merged: the tip is in the target's history
+            if g("merge-base", "--is-ancestor", tip, head) is not None:
+                path = (g("rev-list", "--ancestry-path", "--reverse", f"{tip}..{head}") or "").split()
+                return landed("ancestor", path[0] if path else tip)
+        bases: list[tuple[str, str]] = []
+        for _ref, head in heads:   # 2. (the forge, in check) 3. squash-merged: the same patch on the target
+            base = (g("merge-base", tip, head) or "").strip()
+            if not base:
+                continue
+            bases.append((head, base))
+            diff = g("diff", "--no-color", "--no-ext-diff", base, tip)
+            if not diff or not diff.strip():
+                continue
+            mine = (g("patch-id", "--stable", input=diff.encode("utf-8", "surrogateescape")) or "").split()
+            if not mine:
+                continue
+            log = g("log", "-p", "--no-color", "--no-ext-diff", f"-{PATCH_ID_COMMITS}", f"{base}..{head}")
+            theirs = g("patch-id", "--stable", input=(log or "").encode("utf-8", "surrogateescape")) if log else ""
+            for line in (theirs or "").splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[0] == mine[0]:
+                    return landed("patch-id", parts[1])
+        partly: dict[str, Any] | None = None
+        for head, base in bases:   # 4. integrated: every path the branch changed is the same on the target
+            names = [n for n in (g("diff", "--name-only", "--no-renames", "-z", base, tip) or "").split("\0") if n]
+            if not names or len(names) > LANDING_PATHS:
+                continue
+            mine, theirs = self._blobs(g, tip, names), self._blobs(g, head, names)
+            if mine is None or theirs is None:
+                continue
+            equal = [n for n in names if mine.get(n) == theirs.get(n)]
+            if len(equal) == len(names):
+                sha = (g("log", "-1", "--format=%H", head, "--", *names) or "").strip() or head
+                return landed("paths", sha)
+            if equal and (partly is None or len(equal) > partly["equal"]):
+                differs = [n for n in names if n not in equal]
+                partly = {"state": "partly", "differs": differs[:20], "differ": len(differs), "equal": len(equal),
+                          "target": target}
+        return partly or {"state": "open", "target": target}
+
+    @staticmethod
+    def _blobs(g: Callable[..., str | None], rev: str, names: list[str]) -> dict[str, str] | None:
+        out = g("ls-tree", "-r", "-z", "--full-tree", rev, "--", *names)
+        if out is None:
+            return None
+        blobs = {}
+        for entry in out.split("\0"):
+            meta, _, name = entry.partition("\t")
+            if name:
+                blobs[name] = meta.split()[-1] if meta.split() else ""
+        return blobs
+
+    def contains(self, repo: Path | None, older: dict[str, Any], newer: dict[str, Any]) -> bool:
+        """Is the older run's tip in the newer run's tip (the newer run integrated it)? Cached per pair."""
+        if repo is None or not Path(repo).is_dir():
+            return False
+        a = self.tip(repo, str(older.get("branch") or ""), str(older.get("commit") or ""))
+        b = self.tip(repo, str(newer.get("branch") or ""), str(newer.get("commit") or ""))
+        if not a or not b or a == b:
+            return False
+        key = (str(repo), a, b)
+        with self.lock:
+            if key in self.contained:
+                return self.contained[key]
+        found = self.git(repo, "merge-base", "--is-ancestor", a, b) is not None
+        with self.lock:
+            if len(self.contained) > 4096:
+                self.contained.clear()
+            self.contained[key] = found
+        return found
+
+
+def _day(epoch: Any) -> str:
+    return datetime.fromtimestamp(float(epoch), timezone.utc).strftime("%Y-%m-%d") if isinstance(epoch, (int, float)) else ""
+
+
+def settled_reason(record: dict[str, Any]) -> str:
+    """"abandoned by Ada: the spec changed", "landed (c0ffee1) by al settle"."""
+    text = str(record.get("as") or "settled") + (f" ({record['by']})" if record.get("by") else "")
+    text += f" by {record['who']}" if record.get("who") else ""
+    return text + (f": {record['note']}" if record.get("note") else "")
+
+
+def landed_reason(landing: dict[str, Any]) -> str:
+    when = _day(landing.get("at"))
+    return f"landed in {landing.get('commit') or '?'} on {landing.get('target') or '?'}" + (f", {when}" if when else "")
+
+
+def failure_groups(rows: list[dict[str, Any]], layer_key: str = "") -> dict[str, dict[str, Any]]:
+    """Failures (summaries) of one layer that share failed_step and normalise_reason(error) and whose
+    ends each fall within FAILURE_GROUP_SECONDS of the previous one's → {run key: group} for groups of
+    at least two: {"id": LAYER/STEP/first-id, "count", "step", "reason", "runs": [ids]}."""
+    by_cause: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        by_cause.setdefault((str(row.get("failed_step") or row.get("status") or ""),
+                             normalise_reason(row.get("error"))), []).append(row)
+    out: dict[str, dict[str, Any]] = {}
+    for (step, reason), members in by_cause.items():
+        members.sort(key=lambda r: (r.get("ended") or r.get("started") or 0, r["id"]))
+        chains: list[list[dict[str, Any]]] = []
+        last: float | None = None
+        for row in members:
+            end = row.get("ended") or row.get("started") or 0
+            if chains and last is not None and end - last <= FAILURE_GROUP_SECONDS:
+                chains[-1].append(row)
+            else:
+                chains.append([row])
+            last = end
+        for chain in chains:
+            if len(chain) < 2:
+                continue
+            group = {"id": f"{layer_key or chain[0].get('layer', '')}/{step}/{chain[0]['id']}", "count": len(chain),
+                     "step": step, "reason": first_line(chain[0].get("error")), "runs": [r["id"] for r in chain]}
+            for row in chain:
+                out[row["key"]] = group
+    return out
+
+
+def attention(summaries: list[dict[str, Any]], landings: dict[str, dict[str, Any]], layer_ir: dict[str, Any],
+              contains: Callable[[dict[str, Any], dict[str, Any]], bool] | None = None) -> dict[str, dict[str, Any]]:
+    """For each run of one layer: {bucket, reason, next, landing, settled, replaced_by, superseded_by,
+    group}. `landings` are Landing results by run key (handed-over runs); `contains(older, newer)` says
+    whether the newer run's tip holds the older one's (optional). See the module's runs list."""
+    ordered = sorted(summaries, key=lambda r: (r.get("started") or 0, r["id"]))
+    by_id = {r["id"]: r for r in ordered}
+    replaced_by: dict[str, str] = {}
+    for row in ordered:   # the newest run that names it wins
+        if row.get("replaces") and row["replaces"] != row["id"]:
+            replaced_by[row["replaces"]] = row["id"]
+
+    def landed_run(row: dict[str, Any]) -> bool:
+        record = row.get("settlement") or {}
+        if record.get("as") == "landed":
+            return True
+        if row.get("status") == "handed-over" and (landings.get(row["key"]) or {}).get("state") == "landed":
+            return True
+        return row.get("status") == "passed" and bool((row.get("outcome") or {}).get("shipped"))
+
+    landed_runs = [r for r in ordered if landed_run(r)]
+
+    def superseded(row: dict[str, Any]) -> str:
+        names = {row["id"], *( [row["branch"]] if row.get("branch") else [])}
+        for later in reversed(landed_runs):
+            if later["id"] == row["id"] or (later.get("started") or 0) < (row.get("started") or 0):
+                continue
+            text = str(later.get("prompt") or "")
+            if any(name in text for name in names) or names & set(later.get("mentions") or []):
+                return later["id"]
+        if contains is not None:
+            for later in reversed(landed_runs):
+                if later["id"] != row["id"] and (later.get("started") or 0) >= (row.get("started") or 0) \
+                        and contains(row, later):
+                    return later["id"]
+        return ""
+
+    out: dict[str, dict[str, Any]] = {}
+    for row in ordered:
+        status = str(row.get("status") or "unknown")
+        record = row.get("settlement") if isinstance(row.get("settlement"), dict) else None
+        landing = landings.get(row["key"])
+        item: dict[str, Any] = {"bucket": "done", "reason": "", "next": "", "landing": landing, "settled": record,
+                                "replaced_by": replaced_by.get(row["id"], ""), "superseded_by": "", "group": None}
+        target = str(row.get("target_branch") or run_target(layer_ir, None))
+        if status in ("running", "unknown"):
+            current = row.get("current") or {}
+            item.update(bucket="running", reason=(f"at {current['step']}: {current.get('action', '')}"
+                                                   if current.get("step") else str(current.get("action") or status)))
+        elif status == "waiting":
+            step = (row.get("waiting_step") or {}).get("name") or "a step"
+            item.update(bucket="needs-you", reason=f"waiting at {step}", next=str(row.get("resume") or ""))
+        elif status == "handed-over":
+            state = (landing or {}).get("state")
+            if record:
+                item.update(bucket="settled", reason=settled_reason(record))
+            elif state == "landed":
+                item.update(bucket="landed", reason=landed_reason(landing or {}))
+            elif (sb := superseded(row)):
+                item.update(bucket="settled", reason=f"superseded by {sb}", superseded_by=sb)
+            else:
+                pr = row.get("pr") or {}
+                why = ", ".join((row.get("outcome") or {}).get("handover") or []) or "handed over"
+                if state == "partly":
+                    shown = ", ".join((landing or {}).get("differs", [])[:3])
+                    more = "…" if (landing or {}).get("differ", 0) > 3 else ""
+                    why = f"partly landed: {(landing or {}).get('differ', 0)} paths differ ({shown}{more})"
+                elif state == "checking":
+                    why += "; checking whether it landed"
+                nxt = (f"review PR #{pr['number']}" if pr.get("number") else
+                       f"merge {row.get('branch') or 'its branch'} into {target}, or `al settle`")
+                item.update(bucket="needs-you", reason=why, next=nxt)
+        elif status in ("failed", "died"):
+            new = item["replaced_by"]
+            if record:
+                item.update(bucket="settled", reason=settled_reason(record))
+            elif new:
+                item.update(bucket="settled",
+                            reason=f"replaced by {new} ({(by_id.get(new) or {}).get('status', 'unknown')})")
+            else:
+                cause = first_line(row.get("error")) or ("its process died" if status == "died" else "failed")
+                item.update(bucket="needs-you", reason=f"{row.get('failed_step') or status}: {cause}",
+                            next="Start again")
+        elif record:
+            item.update(bucket="settled", reason=settled_reason(record))
+        out[row["key"]] = item
+    failures = [r for r in ordered if out[r["key"]]["bucket"] == "needs-you" and r.get("status") in ("failed", "died")]
+    for key, group in failure_groups(failures).items():
+        out[key]["group"] = group
+    return out
+
+
+def layer_attention(layer: "Layer", summaries: list[dict[str, Any]], landing: Landing, *, limit: int | None = None,
+                    pr_state: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None
+                    ) -> tuple[dict[str, dict[str, Any]], int]:
+    """attention() for one layer with landed checks from `landing`: at most `limit` checks that are not
+    cached yet (the others are "checking"); `pr_state(summary, number)` asks the forge. → (attention by
+    run key, how many checks wait)."""
+    repo = app_repo(layer.path, layer.ir)
+    landings: dict[str, dict[str, Any]] = {}
+    pending = checks = 0
+    for row in sorted(summaries, key=lambda r: -(r.get("started") or 0)):
+        if row.get("status") != "handed-over" or row.get("settlement"):
+            continue
+        args = (repo, str(row.get("branch") or ""), str(row.get("commit") or ""),
+                str(row.get("target_branch") or run_target(layer.ir, None)))
+        if landing.peek(*args) is None:
+            if limit is not None and checks >= limit:
+                landings[row["key"]] = {"state": "checking", "target": args[3]}
+                pending += 1
+                continue
+            checks += 1
+        number = (row.get("pr") or {}).get("number")
+        ask = (lambda n, row=row: pr_state(row, n)) if pr_state is not None and number else None
+        landings[row["key"]] = landing.check(*args, pr=number, pr_state=ask)
+    return attention(summaries, landings, layer.ir, lambda older, newer: landing.contains(repo, older, newer)), pending
+
+
+def pr_state_via_layer(layer: "Layer", number: int, timeout: float = 15.0) -> dict[str, Any]:
+    """Ask the layer's own runtime whether pull request `number` is merged (`adws/dispatch.py
+    --pr-state N --json`): argv list, no shell, the forge's credentials stay with the layer. →
+    {"state": open|merged|closed|unknown, "commit", "at"}."""
+    argv = [sys.executable, str(layer.path / LAUNCHER), "--pr-state", str(int(number)), "--json"]
+    env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
+    try:
+        done = subprocess.run(argv, capture_output=True, cwd=str(layer.path), env=env, timeout=timeout, check=False,
+                              stdin=subprocess.DEVNULL)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return {"state": "unknown", "error": str(exc)[:200]}
+    lines = [line for line in done.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    try:
+        result = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        result = {}
+    return result if isinstance(result, dict) and result.get("state") else {"state": "unknown"}
 
 
 # ============================================================================ runs
@@ -1941,7 +2487,7 @@ class RunFiles:
 
     def signature(self, deep: bool) -> tuple:
         items: list[Any] = [stat_sig(self.dir / "state.json"), stat_sig(self.dir / "run.log"), mtime(self.dir),
-                            stat_sig(self.dir / EVENTS_FILE)]
+                            stat_sig(self.dir / EVENTS_FILE), stat_sig(self.dir / SETTLEMENT_FILE)]
         if deep:
             items.append(stat_sig(self.dir / "PR.md"))
             items.append(stat_sig(self.layer.path / "artefacts" / self.id / "manifest.json"))
@@ -2605,6 +3151,7 @@ class RunModel:
         prompt = str(state.get("prompt") or "")
         cost_record = state.get("cost") if isinstance(state.get("cost"), dict) else {}
         parent = state.get("fanout_parent") if isinstance(state.get("fanout_parent"), dict) else {}
+        pr = ship.get("pr") if isinstance(ship.get("pr"), dict) else {}
         return {
             "key": f"{self.layer.key}/{self.id}", "layer": self.layer.key, "id": self.id, "adw": data["adw"].get("name"),
             "status": status, "problem": data["problem"],
@@ -2641,6 +3188,16 @@ class RunModel:
             "mtime": max([mtime(self.files.dir / "state.json") or 0, mtime(self.files.dir / "run.log") or 0]),
             **self._promotion_badge(state, status),
             **self._waiting(data),
+            # what landing and settlement need (see attention): the run's branch and shipped commit, its
+            # pull request, the branch its work goes to, a person's settlement, and the run it starts again
+            "replaces": str(state.get("replaces") or "") if RUN_ID.match(str(state.get("replaces") or "")) else "",
+            "branch": str(state.get("branch") or ""), "commit": str(ship.get("commit") or ""),
+            "pr": {"number": pr.get("number"), "url": str(pr.get("url") or "")}
+            if isinstance(pr.get("number"), int) and pr.get("number") > 0 else None,
+            "target_branch": run_target(self.layer.ir, state),
+            "settlement": read_settlement(self.layer.path, self.id),
+            "ended_at": str(state.get("ended") or ""),
+            "mentions": prompt_mentions(prompt),
             **extras,
         }
 
@@ -3207,6 +3764,10 @@ class Model:
         self.read_only = read_only
         self.no_start = no_start
         self.allow_start = allow_start
+        self.landing = Landing()
+        self.attention: dict[str, dict[str, Any]] = {}       # run key → attention() of its layer
+        self.attention_pending: dict[str, int] = {}          # layer key → landed checks still waiting
+        self.pr_answers: dict[tuple, tuple[float, dict[str, Any]]] = {}   # (run key, target heads) → (at, answer)
 
     # ---------------------------------------------------------------- discovery
     def discover(self) -> bool:
@@ -3566,12 +4127,125 @@ class Model:
                             "description": str(layer.ir.get("description", "")),
                             "adws": [a.get("name") for a in layer.ir.get("adws") or [] if isinstance(a, dict)],
                             "runs": len(runs), "running": sum(1 for r in runs if r["status"] == "running"),
+                            "needs_you": self.needs_you(layer.key),
                             "explain": layer.explain_file(), "limits": layer.limits(),
                             "budget": self.layer_budget(layer, runs),
                             "usage": self.layer_usage(layer, time.time()),
                             "models": layer.models_view(self.read_only),
                             "start": start_status(layer, self)})
             return out
+
+    def needs_you(self, layer_key: str) -> int:
+        """How many runs of the layer are in the needs-you bucket (what the Runs link counts)."""
+        with self.lock:
+            return sum(1 for key, item in self.attention.items()
+                       if key.startswith(layer_key + "/") and item.get("bucket") == "needs-you")
+
+    def _pr_state(self, layer: Layer, row: dict[str, Any], number: Any) -> dict[str, Any]:
+        """The forge's answer for a run's pull request, kept PR_STATE_SECONDS per (run, target heads)."""
+        repo = app_repo(layer.path, layer.ir)
+        heads = tuple(self.landing.heads(repo, str(row.get("target_branch") or "")) or ()) if repo else ()
+        key, now = (row["key"], heads), time.time()
+        with self.lock:
+            cached = self.pr_answers.get(key)
+        if cached and now - cached[0] < PR_STATE_SECONDS:
+            return cached[1]
+        answer = pr_state_via_layer(layer, int(number))
+        with self.lock:
+            self.pr_answers[key] = (now, answer)
+        return answer
+
+    def refresh_attention(self, layer: Layer) -> None:
+        """Recompute the buckets of one layer's runs (landed checks bounded per call) and publish the
+        runs whose attention changed, and the layers when the needs-you count changed."""
+        with self.lock:
+            runs = [s for s in self.summaries.values() if s["layer"] == layer.key]
+        forge = layer.ir.get("forge") if isinstance(layer.ir.get("forge"), dict) else {}
+        ask = None
+        if str(forge.get("kind") or "none") != "none" and not self.in_container and (layer.path / LAUNCHER).is_file():
+            ask = lambda row, number: self._pr_state(layer, row, number)   # noqa: E731
+        before = self.needs_you(layer.key)
+        result, pending = layer_attention(layer, runs, self.landing, limit=LANDING_CHECKS_PER_TICK, pr_state=ask)
+        changed = []
+        with self.lock:
+            for key, item in result.items():
+                if self.attention.get(key) != item:
+                    self.attention[key] = item
+                    changed.append(key)
+            for key in [k for k in self.attention if k.startswith(layer.key + "/") and k not in result]:
+                del self.attention[key]
+            self.attention_pending[layer.key] = pending
+            published = [self._decorated(self.summaries[key]) for key in changed if key in self.summaries]
+        for summary in published:
+            self.hub.publish("run", summary)
+        if self.needs_you(layer.key) != before:
+            self.hub.publish("layers", self.layer_list())
+
+    def settle(self, layer_key: str, run_id: str, request: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """Write a person's settlement of a finished run (the page's form) → (HTTP status, answer)."""
+        layer = self.layers.get(layer_key)
+        if layer is None:
+            return 404, {"error": "unknown layer"}
+        if not isinstance(run_id, str) or not RUN_ID.match(run_id) or not (layer.path / "agents" / run_id).is_dir():
+            return 404, {"error": "unknown run"}
+        key = f"{layer_key}/{run_id}"
+        model = RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container)
+        with self.lock:
+            summary = self.summaries.get(key)
+        status = str((summary or model.summary()).get("status") or "unknown")
+        try:
+            record = write_settlement(layer.path, run_id, as_=request.get("as"), by=request.get("by") or "",
+                                      note=request.get("note") or "", who=request.get("who") or "", via="dashboard",
+                                      status=status, repo=app_repo(layer.path, layer.ir))
+        except SettleError as exc:
+            return (409 if exc.kind == "running" else 404 if exc.kind == "missing" else 400), {"error": str(exc)}
+        except OSError as exc:
+            return 409, {"error": f"cannot write {SETTLEMENT_FILE}: {exc.strerror or exc}"}
+        fresh = model.summary(self._extras(layer, run_id))
+        with self.lock:
+            self.summaries[key] = fresh
+            self.signatures[key] = RunFiles(layer, run_id).signature(deep=False)
+        self.hub.publish("run", self._decorated(fresh))
+        self.refresh_attention(layer)
+        return 200, {"status": "settled", "record": record}
+
+    def again_request(self, layer: Layer, run_id: str) -> tuple[dict[str, Any] | None, int, str]:
+        """The start request that begins a failed (or died) run again, rebuilt from its records: its
+        workflow (or its command, for a single-command run), its full prompt (agents/<id>/request.md, else
+        state.prompt), its class when it was fixed and its model set → (request, 0, "") or (None, code, why)."""
+        if not isinstance(run_id, str) or not RUN_ID.match(run_id) or not (layer.path / "agents" / run_id).is_dir():
+            return None, 404, "unknown run"
+        key = f"{layer.key}/{run_id}"
+        with self.lock:
+            summary = self.summaries.get(key)
+        summary = summary or RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary()
+        if summary.get("status") not in ("failed", "died"):
+            return None, 400, f"run {run_id} is {summary.get('status')}: only a failed or died run is started again"
+        with self.lock:
+            others = [s for s in self.summaries.values() if s["layer"] == layer.key and s.get("replaces") == run_id]
+        if others:
+            newest = max(others, key=lambda s: s.get("started") or 0)
+            return None, 409, f"run {run_id} is replaced by {newest['id']} already"
+        state = read_json(layer.path / "agents" / run_id / "state.json")
+        state = state if isinstance(state, dict) else {}
+        adw = str(state.get("adw") or "")
+        definition = state.get("definition") if isinstance(state.get("definition"), dict) else {}
+        if layer.adw(adw) is not None:
+            target = {"kind": "workflow", "name": adw}
+        elif adw.startswith(COMMAND_PREFIX):
+            steps = [s for s in definition.get("steps") or [] if isinstance(s, dict)]
+            name = str(steps[0].get("command") or "") if steps else ""
+            target = {"kind": "command", "name": name or adw[len(COMMAND_PREFIX):]}
+        else:
+            return None, 400, f"run {run_id} ran {adw or 'an unknown workflow'}, which the layer no longer declares"
+        prompt = read_text(layer.path / "agents" / run_id / "request.md", cap=MAX_START_BODY).strip() \
+            or str(state.get("prompt") or "").strip()
+        if not prompt and target["kind"] == "workflow":
+            return None, 400, f"run {run_id} recorded no prompt to start again"
+        klass = str(state.get("klass") or "") if state.get("class_fixed") else ""
+        return {"target": target, "prompt": prompt, "class": klass or None,
+                "model_set": str(state.get("model_set") or "") or None, "models": {}, "issue": "none",
+                "replaces": run_id}, 0, ""
 
     @staticmethod
     def layer_usage(layer: Layer, now: float) -> dict[str, Any]:
@@ -3709,6 +4383,9 @@ class Model:
                 self.aggs.forget(str(layer.path / "agents" / key.split("/", 1)[1]))
                 self.hub.publish("run-removed", {"key": key})
                 changed_layer = True
+            if (changed_layer or layer.key not in self.attention_pending or self.attention_pending[layer.key]
+                    or self.ticks % ATTENTION_EVERY == 0):
+                self.refresh_attention(layer)   # merged, settled or started again: a run changes bucket
             if changed_layer or layer.key not in self.slots or self.ticks % 4 == 0:
                 if locks is None:
                     locks = proc_locks()
@@ -3749,6 +4426,9 @@ class Model:
         parent = self.parents.get(summary["key"])
         if parent:
             extra["fanout_parent"] = parent
+        item = self.attention.get(summary["key"])
+        if item:
+            extra.update(item)
         return {**summary, **extra} if extra else summary
 
     def containers(self) -> dict[str, Any]:
@@ -3786,7 +4466,7 @@ class Model:
         if layer is None:
             return None
         with self.lock:
-            runs = [s for s in self.summaries.values() if s["layer"] == layer_key]
+            runs = [{**s, **self.attention.get(s["key"], {})} for s in self.summaries.values() if s["layer"] == layer_key]
         adws = []
         for adw in layer.ir.get("adws") or []:
             if not isinstance(adw, dict):
@@ -3833,6 +4513,7 @@ def aggregate(runs: list[dict[str, Any]]) -> dict[str, Any]:
             "failed": sum(1 for r in finished if r["status"] == "failed"),
             "handed_over": sum(1 for r in finished if r["status"] == "handed-over"),
             "running": sum(1 for r in runs if r.get("status") == "running"),
+            "needs_you": sum(1 for r in runs if r.get("bucket") == "needs-you"),
             "pass_rate": (passed / len(finished)) if finished else None,
             "cost_total": round(sum(costs), 6) if costs else 0.0,
             "cost_median": statistics.median(costs) if costs else None,
@@ -4126,24 +4807,26 @@ def load_tool_finder(al: Path | None) -> Any:
     return None
 
 
-def safe_git(repo: Path, *args: str, timeout: float | None = None, errors: list[str] | None = None) -> str | None:
+def safe_git(repo: Path, *args: str, timeout: float | None = None, errors: list[str] | None = None,
+             input: bytes | None = None) -> str | None:  # noqa: A002 — subprocess's own name
     """git in a repository that may be hostile: no fsmonitor, untracked cache or hooks from its config,
     no optional locks (the index is never rewritten), no prompt, its own process group killed after
-    `timeout` seconds. → stdout, or None on an error or a timeout (recorded in `errors`)."""
+    `timeout` seconds; `input` is its stdin (e.g. a diff for patch-id). → stdout, or None on an error
+    or a timeout (recorded in `errors`)."""
     limit = WORKSPACE_GIT_TIMEOUT if timeout is None else timeout
     argv = ["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null",
             "--no-optional-locks", "-C", str(repo), *args]
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
     try:
-        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                env=env, start_new_session=True)
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL if input is None else subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, start_new_session=True)
     except OSError:
         if errors is not None:
             errors.append("git not found")
         return None
     try:
-        out, _ = proc.communicate(timeout=limit)
+        out, _ = proc.communicate(input=input, timeout=limit)
     except subprocess.TimeoutExpired:
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)
@@ -5265,9 +5948,11 @@ class Handler(BaseHTTPRequestHandler):
         origin, host = self.headers.get("Origin"), (self.headers.get("Host") or "").strip()
         return bool(origin and host) and origin == f"http://{host}"
 
-    def do_POST(self) -> None:  # noqa: N802 — three writes: the local model setting, starting work, and the workspace actions
+    def do_POST(self) -> None:  # noqa: N802 — the writes: the local model setting, starting work, settling a run, the workspace actions
         path = urllib.parse.urlsplit(self.path).path
         try:
+            if path == "/api/settle":
+                return self._settle()
             if path == "/api/models":
                 return self._set_models()
             if path == "/api/start":
@@ -5429,10 +6114,29 @@ class Handler(BaseHTTPRequestHandler):
         model_.hub.publish("layers", model_.layer_list())
         return self._json({"ok": True, "note": note, "models": view})
 
+    def _settle(self) -> None:
+        """POST /api/settle {layer, run, as: landed|superseded|abandoned, by, note, who}: a person's record
+        that a finished run needs nothing more (agents/<id>/settlement.json), behind every write guard."""
+        body = self._write_guard(MAX_WRITE_BODY)
+        if body is None:
+            return None
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        keys = {"layer", "run", "as", "by", "note", "who"}
+        if not isinstance(data, dict) or not set(data) <= keys or not isinstance(data.get("layer"), str) \
+                or not isinstance(data.get("run"), str):
+            return self._error(400, 'expected {"layer", "run", "as": landed|superseded|abandoned, "by", "note", "who"}')
+        code, answer = self.server.model.settle(data["layer"], data["run"], data)
+        return self._json(answer, code)
+
     def _start(self) -> None:
         """POST /api/start {layer, target: {kind, name} | text: "/NAME args", prompt, class, model_set,
         models: {tier: id}, issue: none|start|trigger, request_key, confirm_duplicate, confirm_ships}:
-        checked here against what the page offers, then started by the layer's own launcher."""
+        checked here against what the page offers, then started by the layer's own launcher. With
+        {layer, again: RUN, request_key, confirm_duplicate, confirm_ships} instead, the failed run RUN is
+        started again from its own records (Model.again_request) and the new run records `replaces`."""
         body = self._write_guard(MAX_START_BODY)
         if body is None:
             return None
@@ -5455,9 +6159,14 @@ class Handler(BaseHTTPRequestHandler):
         status = start_status(layer, model_)
         if not status["enabled"]:
             return self._error(409, status["why"])
-        request, problem = self._start_request(layer, data)
-        if request is None:
-            return self._error(400, problem)
+        if "again" in data:
+            request, problem, code_ = self._again_request(layer, data)
+            if request is None:
+                return self._error(code_, problem)
+        else:
+            request, problem = self._start_request(layer, data)
+            if request is None:
+                return self._error(400, problem)
         code, result, stderr = start_via_layer(layer, request)
         outcome = result.get("status")
         url = f"#/run/{layer.key}/{result.get('run_id')}" if result.get("run_id") else ""
@@ -5549,6 +6258,20 @@ class Handler(BaseHTTPRequestHandler):
                               409 if result.get("reason") in ("not-open", "nothing-to-promote", "already-open") else 400)
         tail = "\n".join(stderr.strip().splitlines()[-12:])
         return self._json({"error": f"the layer's promote.py failed (exit {code})", "stderr": tail}, 502)
+
+    def _again_request(self, layer: Layer, data: dict[str, Any]) -> tuple[dict[str, Any] | None, str, int]:
+        """The body {layer, again: RUN, request_key, confirm_duplicate, confirm_ships} (no target, no prompt)
+        → (the request rebuilt from RUN's records, "", 0) or (None, why, HTTP status)."""
+        if not set(data) <= {"layer", "again", "request_key", "confirm_duplicate", "confirm_ships"}:
+            return None, "start again takes layer, again, request_key, confirm_duplicate and confirm_ships only", 400
+        key = data.get("request_key")
+        if not isinstance(key, str) or not START_KEY.fullmatch(key):
+            return None, "request_key: 8 to 64 letters, digits, - or _", 400
+        request, code, why = self.server.model.again_request(layer, data.get("again"))
+        if request is None:
+            return None, why, code
+        return {**request, "request_key": key, "confirm_duplicate": data.get("confirm_duplicate") is True,
+                "confirm_ships": data.get("confirm_ships") is True}, "", 0
 
     def _start_request(self, layer: Layer, data: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
         """The body of POST /api/start, checked against the layer's startables → (request, "") or (None, why)."""
@@ -5644,7 +6367,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._layer(query)
             if path == "/api/startable":
                 return self._startable(query)
-            if path in ("/api/start", "/api/models", "/api/promotion"):
+            if path in ("/api/start", "/api/models", "/api/promotion", "/api/settle"):
                 return self._error(405, "POST only")
             if path == "/api/workspace":
                 return self._workspace(query)
