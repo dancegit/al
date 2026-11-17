@@ -142,7 +142,31 @@ def _claude_env(env_stack: Any, step_directory: Path | None = None) -> dict[str,
 
 
 LOGIN_REFUSED = ("authentication_error", "OAuth token revoked", '"api_error_status":401')
-LOGIN_RETRY_SECONDS = 15.0
+LOGIN_RETRY_SECONDS = 15.0     # the shortest pause before another attempt
+LOGIN_ATTEMPTS = 4
+LOGIN_WAIT_SECONDS = 900.0     # how long to wait for the machine's login to be renewed before trying anyway
+
+
+def _login_stamp() -> tuple[float, int] | None:
+    """(mtime, size) of the agent CLI's credential file on this machine, None without one."""
+    try:
+        info = (Path.home() / ".claude" / CREDENTIALS).stat()
+    except OSError:
+        return None
+    return info.st_mtime, info.st_size
+
+
+def _wait_for_new_login(before: tuple[float, int] | None) -> float | None:
+    """Wait until the credential file differs from `before` (it was renewed), at least
+    LOGIN_RETRY_SECONDS and at most LOGIN_WAIT_SECONDS. → seconds waited, or None when it never changed."""
+    started = time.monotonic()
+    time.sleep(LOGIN_RETRY_SECONDS)
+    while time.monotonic() - started < LOGIN_WAIT_SECONDS:
+        if _login_stamp() != before:
+            return time.monotonic() - started
+        time.sleep(min(10.0, max(LOGIN_RETRY_SECONDS, 0.01)))
+    return None
+
 
 def claude_argv(layer: Any, agent: dict[str, Any], choice: models.Choice, cap: float | None) -> list[str]:
     """The `claude -p` command line. --effort and --max-budget-usd are the CLI's own flags. With
@@ -170,22 +194,27 @@ def _run_claude(layer: Any, agent: dict[str, Any], prompt: str, choice: models.C
     # The prompt goes in on stdin: templates start with `---` front matter, which the CLI would
     # parse as an option, and long prompts would hit the argv size limit.
     argv = claude_argv(layer, agent, choice, cap)
-    for attempt in (1, 2):
+    for attempt in range(1, LOGIN_ATTEMPTS + 1):
+        login_before = _login_stamp()
         try:
             stdout = _run_process(env_stack.wrap_agent(argv), cwd=cwd, env=_claude_env(env_stack, raw_path.parent),
                                   stdin_text=prompt,
                                   timeout=int(agent["timeout"]), step=step, raw_path=raw_path)
             return parse_stream_json_result(stdout, step)
         except StepFailed as exc:
-            # the login was renewed elsewhere while this call ran: the work is not wrong, the login is
-            # stale. One more attempt with the renewed login, then fail with the reason in plain words.
+            # The login was revoked while this call ran: the work is not wrong, the login is stale.
+            # The machine's own login is renewed only when something on it next asks for one, which has
+            # been seen to take ten minutes. So wait for the login on this machine to change, then try
+            # again; give up after LOGIN_ATTEMPTS with the reason in plain words.
             if not any(mark in str(exc) for mark in LOGIN_REFUSED):
                 raise
-            if attempt == 2:
-                raise StepFailed(step, "the agent's login was refused twice (authentication error): log in again "
-                                       "on this machine with the agent CLI, then resume the run") from exc
-            print(f"[agent] {step}: the agent's login was refused; trying once more with the current login", flush=True)
-            time.sleep(LOGIN_RETRY_SECONDS)
+            if attempt == LOGIN_ATTEMPTS:
+                raise StepFailed(step, f"the agent's login was refused {LOGIN_ATTEMPTS} times (authentication error): "
+                                       "log in again on this machine with the agent CLI, then resume the run") from exc
+            waited = _wait_for_new_login(login_before)
+            print(f"[agent] {step}: the agent's login was refused; "
+                  + (f"the login on this machine was renewed after {waited:.0f}s, trying again" if waited is not None
+                     else f"no renewed login after {LOGIN_WAIT_SECONDS:.0f}s, trying again anyway"), flush=True)
     raise AssertionError("unreachable")
 
 

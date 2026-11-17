@@ -536,6 +536,7 @@ def test_a_refused_login_is_tried_once_more_and_then_named(monkeypatch, tmp_path
     from adw_modules import agents, models
 
     monkeypatch.setattr(agents, "LOGIN_RETRY_SECONDS", 0)
+    monkeypatch.setattr(agents, "LOGIN_WAIT_SECONDS", 0.05)
     monkeypatch.setattr(agents, "claude_argv", lambda *a, **k: ["claude"])
     monkeypatch.setattr(agents, "_claude_env", lambda stack, directory=None: {})
     monkeypatch.setattr(agents, "parse_stream_json_result", lambda out, step: out)
@@ -558,7 +559,7 @@ def test_a_refused_login_is_tried_once_more_and_then_named(monkeypatch, tmp_path
         raise StepFailed("build", "agent exited 1: OAuth token revoked")
 
     monkeypatch.setattr(agents, "_run_process", always)
-    with pytest.raises(StepFailed, match="login was refused twice"):
+    with pytest.raises(StepFailed, match="login was refused 4 times"):
         agents._run_claude(None, agent, "p", choice, tmp_path, stack, "build", tmp_path / "raw")
 
     def other(*_a, **_k):
