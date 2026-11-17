@@ -1086,6 +1086,7 @@
       "template": "meta-adw"
     }
   ],
+  "hosts": [],
   "layer": {
     "dir": "agentic",
     "id": "in-repo",
@@ -1121,6 +1122,7 @@
       "tagSyntax": "braces"
     }
   ],
+  "registry": null,
   "reviews": [
     {
       "bodyCmd": "",

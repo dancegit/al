@@ -161,3 +161,14 @@ def test_sandbox_unknown_env_or_workflow_exits_2(app, podman, in_repo) -> None:
     assert cp.returncode == 2 and "podman environments: box" in cp.stderr
     cp = al("sandbox", layer, "doctor", "--workflow", "nope", env=podman["env"], ok=False)
     assert cp.returncode == 2 and "workflows: change" in cp.stderr
+
+
+def test_push_and_pull_are_actions_of_al_sandbox(app, podman) -> None:
+    layer = _layer(app)
+    text = al("sandbox", layer, "--help").stdout
+    for action in ("build", "doctor", "shell", "prune", "status", "push", "pull"):
+        assert action in text
+    cp = al("sandbox", "push", layer, ok=False)
+    assert cp.returncode == 2, cp.stdout + cp.stderr
+    cp = al("sandbox", layer, "push", "--dry-run", env=podman["env"], ok=False)
+    assert cp.returncode != 0 and "no (registry" in cp.stderr, cp.stdout + cp.stderr

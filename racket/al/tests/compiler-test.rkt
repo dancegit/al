@@ -624,7 +624,7 @@
 
 (define keys-before-delivery
   '(agents artefacts budget codebase commands concurrency dashboard description environments experts forge
-    hops layer llmTxt name notifiers promptInputs reviews schemaVersion services storage triggers voice adws))
+    hops hosts layer llmTxt name notifiers promptInputs registry reviews schemaVersion services storage triggers voice adws))
 
 (test-case "delivery: no stage declared = the IR of before"
   (for ([ir (list (compile-layer-datum (layer plan simple-adw))
@@ -1040,3 +1040,53 @@
   (check-equal? (may-commit-of '(command c #:template custom #:file "x.md" #:may-commit #t)) #t)
   (check-rejects (layer plan '(command r #:template review #:output json #:may-commit #t) simple-adw)
                  #rx"#:may-commit #t on template review"))
+;; ---------------------------------------------------------------------------------- host, registry
+
+(define host-base
+  (list '(layer in-repo) '(environment worktree) '(environment podman) '(trigger cron) plan simple-adw))
+(define (host-layer . clauses) (apply in-repo-layer ".." (append host-base clauses)))
+
+(test-case "host and registry compile to hosts[] and registry"
+  (define ir (compile-layer-datum
+              (host-layer '(registry #:address-env "AL_REGISTRY")
+                          '(host #:id server #:provision home-manager #:units (cron dashboard) #:dashboard-port 8770
+                                 #:linger #t #:images pull))))
+  (define h (car (hash-ref ir 'hosts)))
+  (check-equal? (hash-ref h 'id) "server")
+  (check-equal? (hash-ref h 'provision) "home-manager")
+  (check-equal? (hash-ref h 'units) '("cron" "dashboard"))
+  (check-equal? (hash-ref h 'dashboardPort) 8770)
+  (check-equal? (hash-ref h 'linger) #t)
+  (check-equal? (hash-ref h 'images) "pull")
+  (check-equal? (hash-ref h 'fallbackBuild) #t)
+  (define r (hash-ref ir 'registry))
+  (check-equal? (hash-ref r 'addressEnv) "AL_REGISTRY")
+  (check-equal? (hash-ref r 'usernameEnv) "")
+  (check-equal? (hash-ref r 'passwordEnv) "")
+  (check-equal? (hash-ref r 'tlsVerify) #t)
+  (define plain (compile-layer-datum (apply in-repo-layer ".." host-base)))
+  (check-equal? (hash-ref plain 'hosts) '())
+  (check-equal? (hash-ref plain 'registry) 'null)
+  (define defaults (car (hash-ref (compile-layer-datum (host-layer '(host))) 'hosts)))
+  (check-equal? (hash-ref defaults 'id) "host")
+  (check-equal? (hash-ref defaults 'provision) "none")
+  (check-equal? (hash-ref defaults 'images) "build"))
+
+(test-case "host rules"
+  (check-rejects (host-layer '(host #:id server) '(host #:id server)) #rx"id server already used")
+  (check-rejects (host-layer '(host #:id "srv.example.org")) #rx"host name")
+  (check-rejects (host-layer '(host #:id server #:units (webhook))) #rx"#:units: `webhook` is not declared")
+  (check-rejects (host-layer '(host #:id server #:dashboard-port 70000)) #rx"#:dashboard-port must be 0 or 1–65535")
+  (check-rejects (host-layer '(host #:id server #:units (cron) #:dashboard-port 8770)) #rx"needs the dashboard unit")
+  (check-rejects (host-layer '(host #:id server #:images pull)) #rx"#:images pull needs a \\(registry")
+  (check-rejects (in-repo-layer ".." '(layer in-repo) '(trigger cron) plan simple-adw '(host #:id server #:images load))
+                 #rx"#:images load needs a podman environment")
+  (check-rejects `(agentic-layer #:name "t" ,base-codebase (layer sibling) ,plan ,simple-adw (host #:id server))
+                 #rx"needs \\(layer in-repo")
+  (check-rejects (host-layer '(host server)) #rx"\\(host …\\): unexpected server; fields are given as #:keyword value")
+  (check-rejects (host-layer '(host #:id server #:ram 4)) #rx"unknown field #:ram"))
+
+(test-case "registry rules"
+  (check-rejects (host-layer '(registry #:address-env "registry.example.org")) #rx"looks like a host name")
+  (check-rejects (host-layer '(registry #:username-env "REG_USER")) #rx"#:username-env and #:password-env")
+  (check-rejects (host-layer '(registry) '(registry)) #rx"only one \\(registry"))

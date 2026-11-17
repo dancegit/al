@@ -552,6 +552,25 @@
    "`best`: of the passing candidates, the one with the fewest resolve attempts, then the smallest diff, then the earliest; `first`: the first to pass; `all`: every candidate must pass and all are merged in order."]
   [max-parallel integer 0 "Candidates running at once; 0 = #:count."])
 
+(define-record host
+  "(host #:id ID …): what a machine that runs this layer must have, written with keywords only and declared once per kind of machine. From it `al gen` writes three committed provisioning files under the layer, env/hosts/<id>/home-manager.nix, env/hosts/<id>/nixos.nix and env/hosts/<id>/provision.sh, which hold no host name, user, address or secret: those are only known on the host. `al deploy --as ID --provision` shows the plan, asks once and applies it; `al deploy --status` lists the drift."
+  [id symbol "host" "Name of this kind of machine: lowercase letters, digits and dashes, no dots (it is not a host name). `al deploy --as ID` picks it."]
+  [provision (enum none home-manager nixos script) none
+   "How the machine is provisioned: `none` = al installs nothing and only checks; `home-manager` = a Home Manager module; `nixos` = a NixOS module (privileged rebuild); `script` = a POSIX shell script for Debian/Ubuntu, Fedora and Arch."]
+  [units (list-of (enum cron webhook dashboard)) () "Units kept running on this machine; empty = every unit the layer declares."]
+  [dashboard-port integer 0 "Port of the dashboard on this machine; 0 = the layer's own (dashboard #:port)."]
+  [linger boolean #t "Enable lingering, so the units keep running after the user logs out."]
+  [images (enum build pull load) build
+   "Where the sandbox image comes from: `build` = the host builds it at the first run; `pull` = from the (registry …), as pushed by `al sandbox push`; `load` = streamed over the ssh connection by `al deploy`."]
+  [fallback-build boolean #t "When the image on the host was built from another env/Containerfile (its recipe hash differs): #t = untag it so the host builds at the first run; #f = stop the deploy."])
+
+(define-record registry
+  "(registry #:address-env VAR …): the container registry `al sandbox push|pull` and hosts with #:images pull use. It holds only the NAMES of environment variables, whose values come from the environment, `local.env` in the layer or `$XDG_CONFIG_HOME/al/<layer name>.env`. Declared at most once."
+  [address-env string "AL_REGISTRY" "NAME of the variable holding the registry address and repository prefix, e.g. registry.example.org/team. Never the address itself."]
+  [username-env string "" "NAME of the variable holding the registry user; empty = no login."]
+  [password-env string "" "NAME of the variable holding the registry password or token; given together with #:username-env."]
+  [tls-verify boolean #t "Verify the registry's TLS certificate."])
+
 ;; ---------------------------------------------------------------------------------------
 ;; Derived lists and the semantic rules the compiler enforces (also printed in the reference)
 ;; ---------------------------------------------------------------------------------------
@@ -679,4 +698,6 @@
     "#:back-merge names declared stages other than FROM and TO."
     "A stage #:frozen period is \"YYYY-MM-DD..YYYY-MM-DD\" with valid dates, the first not after the second."
     "#:may-commit #t is rejected on a read-only template (review, classify, question, pull-request, branch-name, summarize): those steps never commit."
+    "(host #:id ID …) is written with keywords only and may be declared several times, each with a unique #:id of lowercase letters, digits and dashes (no dots: an id is not a host name). It needs (layer in-repo …). Every name in #:units is a unit the layer declares (a cron or webhook trigger, a dashboard other than none); #:dashboard-port is 0 or 1–65535, and a non-zero port needs the dashboard unit. #:images pull needs a (registry …); #:images pull and load need a podman environment."
+    "(registry …) is declared at most once. #:address-env, #:username-env and #:password-env take the NAME of an environment variable in capitals; a value that looks like a URL, an e-mail address or a host name is rejected. #:username-env and #:password-env are given both or neither."
     "Kinds marked planned compile but are refused by the generator."))

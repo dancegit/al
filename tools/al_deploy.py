@@ -1,7 +1,7 @@
 """`al deploy` and `al dashboard --remote`: run a layer on another machine.
 
-    al deploy LAYER --to HOST [--path DIR] [--dry-run] [--no-enable]
-    al deploy LAYER --to HOST [--path DIR] --status
+    al deploy LAYER --to HOST [--path DIR] [--as ID] [--provision [--yes]] [--dry-run] [--no-enable]
+    al deploy LAYER --to HOST [--path DIR] [--as ID] --status
     al dashboard [LAYER] --remote HOST [--port N] [--remote-port N] [--open]
 
 What is generated where:
@@ -14,6 +14,11 @@ What is generated where:
   the committed agentic-layer.json with the host's home directory, deployment directory and login
   PATH (all read in preflight) and writes them only on the host, outside the checkout, so the
   checkout stays clean and nothing machine-specific can be committed.
+- generated where `al gen` ran, committed, machine-neutral: env/hosts/<id>/{home-manager.nix,
+  nixos.nix,provision.sh} of each (host …) declaration (tools/al_provision.py). With --provision,
+  deploy shows the plan for the declared style, asks once (--yes skips the question) and applies
+  it; the Nix styles get a host-local wrapper (~/.config/al/<name>/home.nix or nixos.nix) that
+  holds the host's paths and user name, written only on the host.
 - not on the host, not needed to run: bin/al, .al-manifest.local.json, systemd/ in the layer (the
   machine-specific files `al gen` writes locally).
 
@@ -27,6 +32,13 @@ the search of tools/al_tools.py (a setting in ~/.config/al/tools.env or <layer n
 PATH, the per-user install folders), as one sh function (`al_tools.shell_finder`). Their folders go
 in front of the login PATH in the units' Environment=PATH=, and the paths are recorded in
 ~/.config/al/<name>-tools.json on the host; `--status` reports a tool that moved or vanished since.
+When deploy provisions the host first, the units' PATH and the record come from the preflight that
+runs after provisioning, so they hold the tools provisioning installed (~/.local/bin for the script
+style); the Home Manager and NixOS modules set their own units' PATH from the Nix profile.
+
+A (host …) declaration's provisioning (tools/al_provision.py, above) and its sandbox image
+(#:images build|pull|load, tools/al_sandbox.py) use the runtime's recipe hash of the committed env/,
+so the image a host pulls or loads is al-<name>:<hash>, the one its runs ask for.
 
 Everything that touches the host goes through a Transport. SshTransport runs the person's own
 `ssh HOST` with no option that overrides their configuration (no key, user, port or host-key
@@ -72,8 +84,8 @@ class AlError(Exception):
 # The POSIX programs the remote scripts call (besides shell builtins and the tools preflight checks
 # for). The scripts use nothing else; tests/tools/deploy_host.py builds a host's bin/ from this.
 REMOTE_TOOLS = ("sh", "cat", "sed", "grep", "df", "id", "mkdir", "chmod", "rm", "ls", "head", "dirname",
-                "test", "env", "tr", "git")
-CHECKED_TOOLS = ("uv", "podman", "systemctl", "loginctl", "claude", "codex")
+                "test", "env", "tr", "git", "mktemp")
+CHECKED_TOOLS = ("uv", "podman", "systemctl", "loginctl", "claude", "codex", "getsubids", "home-manager", "nixos-rebuild")
 # what preflight resolves on the host with al_tools.shell_finder: fact key → (program, setting)
 HOST_TOOLS = {"git": ("git", "AL_GIT"), "uv": ("uv", "AL_UV"), "racket": ("racket", "AL_RACKET"), "al": ("al", "AL_TOOL")}
 NOT_FOUND = "not found (looked at the setting, the login PATH and the per-user folders)"
@@ -108,6 +120,21 @@ class Transport:
     def tunnel_argv(self, local_port: int, remote_port: int) -> list[str]:
         raise NotImplementedError
 
+    def run_file(self, script: str, path: str, *, timeout: float = 3600) -> subprocess.CompletedProcess:
+        """Run `script` with the bytes of the local file `path` on its standard input (podman load)."""
+        raise NotImplementedError
+
+    def _run_file(self, argv: list[str], path: str, timeout: float, **kw: Any) -> subprocess.CompletedProcess:
+        try:
+            with open(path, "rb") as handle:
+                done = subprocess.run(argv, stdin=handle, capture_output=True, timeout=timeout, **kw)
+        except subprocess.TimeoutExpired as exc:
+            raise AlError(f"{self.label}: no answer within {int(timeout)} s") from exc
+        except OSError as exc:
+            raise AlError(f"cannot run {argv[0]}: {exc}") from exc
+        return subprocess.CompletedProcess(argv, done.returncode, done.stdout.decode(errors="replace"),
+                                           done.stderr.decode(errors="replace"))
+
     def _run(self, argv: list[str], stdin: str | None, timeout: float, **kw: Any) -> subprocess.CompletedProcess:
         try:
             return subprocess.run(argv, input=stdin, stdin=subprocess.DEVNULL if stdin is None else None,
@@ -138,6 +165,9 @@ class SshTransport(Transport):
     def git_url(self, path: str) -> str:
         return f"{self.host}:{path}"
 
+    def run_file(self, script: str, path: str, *, timeout: float = 3600) -> subprocess.CompletedProcess:
+        return self._run_file(self.argv(script), path, timeout)
+
     def tunnel_argv(self, local_port: int, remote_port: int) -> list[str]:
         return ["ssh", "-N", "-T", "-o", "ExitOnForwardFailure=yes",
                 "-L", f"127.0.0.1:{int(local_port)}:127.0.0.1:{int(remote_port)}", self.host]
@@ -155,6 +185,10 @@ class LocalTransport(Transport):
 
     def git_url(self, path: str) -> str:
         return path
+
+    def run_file(self, script: str, path: str, *, timeout: float = 3600) -> subprocess.CompletedProcess:
+        return self._run_file(["sh", "-c", script], path, timeout, cwd=self.root,
+                              env={"HOME": self.root, "PATH": self.path, "LANG": "C"})
 
     def tunnel_argv(self, local_port: int, remote_port: int) -> list[str]:
         raise AlError("no tunnel to a directory (AL_DEPLOY_LOCAL_HOST is set)")
@@ -193,15 +227,16 @@ class Remote:
             with open(self.trace, "a") as handle:
                 handle.write(line + "\n")
 
-    def read(self, script: str, why: str, *, after_change: bool = False) -> subprocess.CompletedProcess:
+    def read(self, script: str, why: str, *, after_change: bool = False, stdin: str | None = None) -> subprocess.CompletedProcess:
         """Run a command that changes nothing. after_change: it reads what a change produced, so
-        under dry_run (where the change did not happen) it is shown and not run."""
+        under dry_run (where the change did not happen) it is shown and not run. stdin: e.g. a
+        script fed to `sh -s`."""
         self.log.append(("read", script, why))
         if self.dry_run and after_change:
             self._show("would read", "host", script, why)
             return _done()
         self._show("read", "host", script, why)
-        return self.transport.run(script)
+        return self.transport.run(script, stdin=stdin)
 
     def change(self, script: str, why: str, stdin: str | None = None) -> subprocess.CompletedProcess:
         if self.read_only:
@@ -212,6 +247,17 @@ class Remote:
             return _done()
         self._traced(f"host$ {script}")
         return self.transport.run(script, stdin=stdin)
+
+    def change_file(self, script: str, path: str, why: str) -> subprocess.CompletedProcess:
+        """A change whose standard input is a local file (an image for `podman load`)."""
+        if self.read_only:
+            raise RuntimeError(f"a change in a read-only session: {script}")
+        self.log.append(("change", script, why))
+        self._show("would run", "host", f"{script} < (a local file: {why})", why)
+        if self.dry_run:
+            return _done()
+        self._traced(f"host$ {script}")
+        return self.transport.run_file(script, path)
 
     def local_change(self, argv: list[str], why: str) -> subprocess.CompletedProcess:
         """A command on this machine that changes the host (git push)."""
@@ -275,8 +321,10 @@ def used_agents(ir: dict) -> list[dict]:
     return [a for a in agents if a["id"] in used]
 
 
-def required_env(ir: dict) -> list[EnvNeed]:
-    """What the layer reads from the environment when it runs, from the IR alone. Names only."""
+def required_env(ir: dict, decl: dict | None = None) -> list[EnvNeed]:
+    """What the layer reads from the environment when it runs, from the IR alone. Names only.
+    The (registry …) variables are needed on a host only when its declaration `decl` pulls the
+    sandbox image (#:images pull)."""
     needs: list[EnvNeed] = []
     forge = ir.get("forge") or {}
     if forge.get("kind", "none") != "none" and forge.get("tokenEnv"):
@@ -290,7 +338,15 @@ def required_env(ir: dict) -> list[EnvNeed]:
     if dashboard.get("kind", "none") != "none" and dashboard.get("tokenEnv"):
         needs.append(EnvNeed(dashboard["tokenEnv"], "dashboard access token; the deployed dashboard listens on loopback only", False))
 
-    handled = {("forge", "tokenEnv"), ("dashboard", "tokenEnv"), ("triggers", "secretEnv")}
+    registry = ir.get("registry") if isinstance(ir.get("registry"), dict) else None
+    if registry and decl and decl.get("images") == "pull":
+        needs.append(EnvNeed(registry["addressEnv"], "registry address the host pulls the sandbox image from", True))
+        for key, why in (("usernameEnv", "registry user"), ("passwordEnv", "registry password")):
+            if registry.get(key):
+                needs.append(EnvNeed(registry[key], why, True))
+
+    handled = {("forge", "tokenEnv"), ("dashboard", "tokenEnv"), ("triggers", "secretEnv"),
+               ("registry", "addressEnv"), ("registry", "usernameEnv"), ("registry", "passwordEnv")}
 
     def walk(family: str, node: Any, ident: str) -> None:
         if isinstance(node, dict):
@@ -367,6 +423,7 @@ class Facts:
     origin: str
     repository: str
     notes: list[str] = field(default_factory=list)
+    decl: dict | None = None        # the (host …) declaration this host is (--as), or None
 
 
 def load_ir(layer: Path) -> dict:
@@ -403,16 +460,36 @@ def local_facts(layer: Path, al: Any) -> Facts:
     return Facts(layer, ir, app, ir["name"], layer_rel, branch, commit, origin, repository, notes)
 
 
-def unit_kinds(ir: dict, al: Any) -> list[str]:
-    """One unit per kind the layer declares, whether or not #:systemd is set: deploying means keep these running."""
+def host_decl(ir: dict, as_id: str | None) -> dict | None:
+    """The (host …) declaration a deploy is for: --as ID, else the only one; None when the layer
+    declares none."""
+    hosts = ir.get("hosts") or []
+    ids = [h["id"] for h in hosts]
+    if as_id:
+        found = next((h for h in hosts if h["id"] == as_id), None)
+        if not found:
+            raise AlError(f"--as {as_id}: the layer declares no (host #:id {as_id} …); declared: {', '.join(ids) or 'none'}")
+        return found
+    if not hosts:
+        return None
+    if len(hosts) > 1:
+        raise AlError(f"the layer declares several hosts ({', '.join(ids)}): say which one this is with --as ID")
+    return hosts[0]
+
+
+def unit_kinds(ir: dict, al: Any, decl: dict | None = None) -> list[str]:
+    """One unit per kind the layer declares, whether or not #:systemd is set: deploying means keep
+    these running. A host declaration's #:units narrows them."""
     kinds = [k for k in ("cron", "webhook") if any(t.get("kind") == k for t in ir.get("triggers") or [])]
     if (ir.get("dashboard") or al.DEFAULT_DASHBOARD)["kind"] != "none":
         kinds.append("dashboard")
+    if decl and decl.get("units"):
+        kinds = [k for k in kinds if k in decl["units"]]
     return kinds
 
 
 def unit_names(facts: Facts, al: Any) -> list[str]:
-    return [f"al-{facts.name}-{kind}.service" for kind in unit_kinds(facts.ir, al)]
+    return [f"al-{facts.name}-{kind}.service" for kind in unit_kinds(facts.ir, al, facts.decl)]
 
 
 def agent_logins(ir: dict) -> list[EnvNeed]:
@@ -495,6 +572,12 @@ def preflight_script(facts: Facts, path: str | None = None) -> str:
     lines.append('if command -v podman >/dev/null 2>&1; then echo "podman=$(command -v podman) $(podman --version 2>/dev/null | head -n 1)"; '
                  'else echo "podman="; fi')
     lines.append("echo \"rootless=$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)\"")
+    for tool in ("home-manager", "nixos-rebuild"):
+        lines.append(f'echo "{tool}=$(command -v {tool} 2>/dev/null)"')
+    lines += ['echo "user=$(id -un)"',
+              'if getsubids "$(id -un)" >/dev/null 2>&1 || grep -q "^$(id -un):" /etc/subuid 2>/dev/null; then echo subids=yes; else echo subids=no; fi']
+    for tool in ("uv", *(n.bin for n in agent_logins(facts.ir))):
+        lines.append(f'echo "local.{tool}=$("$HOME/.local/bin/{tool}" --version 2>/dev/null | head -n 1)"')
     for need in agent_logins(facts.ir):
         lines.append(f'if test -s "$HOME/{need.file}"; then echo "login.{need.bin}=yes"; else echo "login.{need.bin}=no"; fi')
     env_file = f'"$HOME/.config/al/{facts.name}.env"'
@@ -542,6 +625,11 @@ def preflight_rows(facts: Facts, host: HostFacts) -> list[Row]:
     else:
         rows.append(Row("podman", "MISSING", f"{host['podman']} (rootless: {host['rootless'] or 'unknown'})" if host["podman"] else "not found on the login PATH",
                         "install podman and make rootless work: podman info must say rootless: true (subuid/subgid for the user)"))
+    if needs_podman(facts.ir):
+        rows.append(Row("subuid/subgid", "ok", f"ranges for {host['user'] or 'the user'}") if host["subids"] != "no" else
+                    Row("subuid/subgid", "MISSING", f"no ranges for {host['user'] or 'the user'}",
+                        "rootless podman needs subuid/subgid ranges: sudo usermod --add-subuids 100000-165535 "
+                        '--add-subgids 100000-165535 "$USER" on the host'))
     for need in agent_logins(facts.ir):
         tool(f"agent CLI {need.bin}", f"agent.{need.bin}", host_fix(need.bin))
         named = sorted(set(need.any_of) & host.envnames)
@@ -586,7 +674,7 @@ def racket_needed(facts: Facts, host: HostFacts) -> bool:
 def secret_rows(facts: Facts, host: HostFacts) -> tuple[list[list[str]], list[str]]:
     """(the secrets table, the required plain variables that are missing). Names only."""
     rows, missing, names = [], [], host.envnames
-    for need in required_env(facts.ir):
+    for need in required_env(facts.ir, facts.decl):
         if need.bin:
             present = "set" if host[f"login.{need.bin}"] == "yes" or set(need.any_of) & names else "missing"
         elif need.name.startswith("checked by hand"):
@@ -620,6 +708,35 @@ class Action:
     failed: str = ""                # what to say when it fails
 
 
+INCOMING = "al-deploy-incoming"
+
+
+def update_script(directory: str, source: str, branch: str, remote_tracking: bool) -> str:
+    """Fast-forward the checkout at `directory` to `branch` of `source` (a path or URL; "" = the
+    checkout's origin) without fetching inside it. A sandboxed run's worktree has a detached HEAD
+    whose commit lives only in that run's quarantine object store (agents/<id>/objects), and the
+    connectivity check after a fetch walks every worktree's HEAD, so a fetch in the checkout fails
+    while such a run is in flight. Instead: fetch into a temporary bare repository
+    (<directory>/.git/al-deploy-incoming) that borrows the checkout's objects through
+    objects/info/alternates and has no worktrees, move exactly the new objects into the checkout
+    with pack-objects | index-pack --strict (as gitsafe.import_objects does), and fast-forward to
+    the fetched commit. Nothing reads a run's quarantine; the temporary repository always goes."""
+    d, b = shlex.quote(directory), shlex.quote(branch)
+    inc = shlex.quote(f"{directory}/.git/{INCOMING}")
+    src = shlex.quote(source) if source else f'"$(git -C {d} remote get-url origin)"'
+    lines = [f"inc={inc};",
+             "trap 'rm -rf \"$inc\"' EXIT;",
+             'rm -rf "$inc" && git init -q --bare "$inc" &&',
+             f'echo {shlex.quote(directory + "/.git/objects")} > "$inc/objects/info/alternates" &&',
+             f'git -C "$inc" fetch -q {src} +refs/heads/{b}:refs/heads/{b} &&',
+             f'new=$(git -C "$inc" rev-parse --verify refs/heads/{b}) && old=$(git -C {d} rev-parse HEAD) &&',
+             f'if git -C {d} merge-base --is-ancestor "$new" "$old" 2>/dev/null; then :; else',
+             f'{{ echo "$new"; echo "^$old"; }} | git -C "$inc" pack-objects -q --revs --stdout | git -C {d} index-pack --stdin --strict >/dev/null;',
+             "fi &&",
+             f'git -C {d} -c gc.auto=0 merge -q --ff-only "$new"' + (f' && git -C {d} update-ref refs/remotes/origin/{b} "$new"' if remote_tracking else "")]
+    return " ".join(lines)        # one line: --dry-run shows it, and the trace records it, as one command
+
+
 def plan_repository(facts: Facts, host: HostFacts, remote: Remote) -> tuple[list[Action], list[str]]:
     """(what puts the default branch's commit into the deployment directory, notes). Reads only."""
     directory, branch = host.directory, facts.branch
@@ -647,14 +764,15 @@ def plan_repository(facts: Facts, host: HostFacts, remote: Remote) -> tuple[list
         send = Action("local", ["git", "-C", str(facts.app), "push", remote.transport.git_url(directory + ".git"), f"{branch}:{branch}"],
                       f"push {branch} to the host over the ssh connection", diverged)
         if existing:
-            actions += [send, Action("change", f"git -C {d} pull --ff-only origin {b}", f"fast-forward the deployment to {branch}", diverged)]
+            actions += [send, Action("change", update_script(directory, directory + ".git", branch, False),
+                                     f"fast-forward the deployment to {branch}", diverged)]
         else:
             actions += [Action("change", f"git init --bare {bare} && git --git-dir {bare} symbolic-ref HEAD refs/heads/{b}",
                                "a bare repository on the host that receives the push"),
                         send,
                         Action("change", f"git clone {bare} {d} && git -C {d} checkout {b}", "the checkout the layer runs in")]
     elif existing:
-        actions.append(Action("change", f"git -C {d} fetch origin && git -C {d} merge --ff-only origin/{b}",
+        actions.append(Action("change", update_script(directory, "", branch, True),
                               f"fast-forward the deployment to the remote's {branch}", diverged))
     else:
         actions.append(Action("change", f"git clone {shlex.quote(facts.origin)} {d} && git -C {d} checkout {b}",
@@ -685,13 +803,19 @@ def apply_repository(actions: list[Action], facts: Facts, host: HostFacts, remot
 def host_units(facts: Facts, host: HostFacts, directory: str, al: Any) -> dict[str, str]:
     """The unit files for this host: the generator's unit text (al.systemd_unit) with the host's
     layer path and login PATH. They exist only on the host, under ~/.config/systemd/user/."""
-    dashboard = facts.ir.get("dashboard") or al.DEFAULT_DASHBOARD
+    decl = facts.decl
+    ir = provision_module().with_host_port(facts.ir, decl)
+    dashboard = ir.get("dashboard") or al.DEFAULT_DASHBOARD
     units = {}
-    for kind in unit_kinds(facts.ir, al):
-        loopback = "--bind 127.0.0.1" if kind == "dashboard" and dashboard["kind"] == "local" else ""
+    for kind in unit_kinds(facts.ir, al, decl):
+        extra = []
+        if kind == "dashboard" and dashboard["kind"] == "local":
+            extra.append("--bind 127.0.0.1")
+        if kind == "dashboard" and decl and decl.get("dashboardPort"):
+            extra.append(f"--port {int(decl['dashboardPort'])}")
         units[f"al-{facts.name}-{kind}.service"] = al.systemd_unit(
-            kind, facts.name, f"{directory}/{facts.layer_rel}", facts.ir, header=UNIT_HEADER, path_env=unit_path(host),
-            env_file=f"%h/.config/al/{facts.name}.env", extra_args=loopback)
+            kind, facts.name, f"{directory}/{facts.layer_rel}", ir, header=UNIT_HEADER, path_env=unit_path(host),
+            env_file=f"%h/.config/al/{facts.name}.env", extra_args=" ".join(extra))
     return units
 
 
@@ -717,17 +841,22 @@ def units_table(text: str) -> str:
     return table(["unit", "enabled", "active"], rows) + f"\n  linger: {linger}"
 
 
-def install_units(remote: Remote, facts: Facts, host: HostFacts, units: dict[str, str], enable: bool) -> None:
+def install_units(remote: Remote, facts: Facts, host: HostFacts, units: dict[str, str], enable: bool, write: bool = True) -> None:
+    """write: put the unit files and reload; False when the host's Home Manager module owns them
+    (#:provision home-manager), so deploy only (re)starts them."""
     def must(done: subprocess.CompletedProcess, what: str) -> None:
         if done.returncode != 0:
             tail = " ".join((done.stderr or done.stdout or "").strip().splitlines()[-3:])
             raise AlError(f"failed on the host: {what}" + (f": {tail}" if tail else ""))
 
-    for filename, text in units.items():
-        must(put(remote, f"{host.home}/.config/systemd/user/{filename}", text), f"write {filename}")
     names = " ".join(shlex.quote(u) for u in units)
-    must(remote.change("systemctl --user daemon-reload", "make systemd read the new units"), "systemctl --user daemon-reload")
-    if enable:
+    if write:
+        for filename, text in units.items():
+            must(put(remote, f"{host.home}/.config/systemd/user/{filename}", text), f"write {filename}")
+        must(remote.change("systemctl --user daemon-reload", "make systemd read the new units"), "systemctl --user daemon-reload")
+    if not write:
+        must(remote.change(f"systemctl --user restart {names}", "restart the units the Home Manager module defines"), "start the units")
+    elif enable:
         must(remote.change(f"systemctl --user enable {names}", "start the units with the user's session"), "enable the units")
         must(remote.change(f"systemctl --user restart {names}", "start them now (an update takes effect)"), "start the units")
     if host["linger"] != "yes":
@@ -738,6 +867,314 @@ def install_units(remote: Remote, facts: Facts, host: HostFacts, units: dict[str
     status = remote.read(units_status_script(list(units)), "what the units are doing now", after_change=True)
     if not remote.dry_run:
         print("units:\n" + units_table(status.stdout))
+
+
+# ------------------------------------------------------------------------------------------
+# provisioning: a (host …) declaration made true on the host
+# ------------------------------------------------------------------------------------------
+
+WRAPPER_HEADER = "# Written by al deploy for this host's paths and user. Not committed anywhere; the next deploy replaces it."
+
+
+def _tools_module(name: str) -> Any:
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    return __import__(name)
+
+
+def provision_module() -> Any:
+    return _tools_module("al_provision")
+
+
+def sandbox_module() -> Any:
+    return _tools_module("al_sandbox")
+
+
+def committed(facts: Facts, rel: str) -> bytes:
+    """A file of the layer as committed on the deployed branch (what the host gets), as bytes."""
+    done = subprocess.run(al_tools.argv(["git", "-C", str(facts.app), "show", f"{facts.branch}:{facts.layer_rel}/{rel}"]),
+                          capture_output=True, stdin=subprocess.DEVNULL)
+    if done.returncode != 0:
+        raise AlError(f"{facts.layer_rel}/{rel} is not committed on {facts.branch}: run al gen, commit the layer, then deploy")
+    return done.stdout
+
+
+@dataclass
+class Plan:
+    style: str                      # script | home-manager | nixos
+    lines: list[str]                # the plan as printed
+    privileged: list[str]           # every privileged command in it
+    nothing: bool                   # nothing to do
+    script: str = ""                # provision.sh (script style)
+
+
+def wrapper_path(facts: Facts, host: HostFacts, style: str) -> str:
+    return f"{host.home}/.config/al/{facts.name}/" + ("home.nix" if style == "home-manager" else "nixos.nix")
+
+
+def wrapper_text(facts: Facts, host: HostFacts, style: str) -> str:
+    """The host-local Nix file that imports the committed module and sets what only the host knows."""
+    decl, name = facts.decl or {}, facts.name
+    module = f"{host.directory}/{facts.layer_rel}/env/hosts/{decl['id']}/{'home-manager.nix' if style == 'home-manager' else 'nixos.nix'}"
+    quoted = json.dumps(module)
+    if style == "home-manager":
+        body = (f'  services."al-{name}".enable = true;\n'
+                f'  services."al-{name}".checkout = {json.dumps(host.directory)};\n')
+        hint = f"your Home Manager configuration: imports = [ {wrapper_path(facts, host, style)} ];"
+    else:
+        body = (f'  services."al-{name}-host".enable = true;\n'
+                f'  services."al-{name}-host".user = {json.dumps(host["user"])};\n')
+        hint = f"your NixOS configuration: imports = [ {wrapper_path(facts, host, style)} ];"
+    return f"{WRAPPER_HEADER}\n# Import it from {hint}\n{{ ... }}: {{\n  imports = [ (/. + {quoted}) ];\n{body}}}\n"
+
+
+def plan_provision(remote: Remote, facts: Facts, host: HostFacts, al: Any) -> tuple[Plan, list[Row]]:
+    """What --provision would do on this host, from a read only: (the plan, the drift rows)."""
+    decl = facts.decl or {}
+    style = decl.get("provision", "none")
+    rows = provision_rows(facts, host, al)
+    if style == "script":
+        text = committed(facts, f"env/hosts/{decl['id']}/provision.sh").decode()
+        done = remote.read("sh -s -- --check", "the provisioning plan (provision.sh --check changes nothing)", stdin=text)
+        if done.returncode != 0:
+            tail = "\n".join((done.stderr or done.stdout).strip().splitlines()[-5:])
+            raise AlError("provision.sh --check failed on the host" + (f":\n{tail}" if tail else ""))
+        lines = done.stdout.rstrip("\n").splitlines()
+        privileged = [line.strip()[len("privileged: "):] for line in lines if line.strip().startswith("privileged: ")]
+        return Plan(style, lines, privileged, "provisioning: nothing to do" in done.stdout, text), rows
+    tool = "home-manager" if style == "home-manager" else "nixos-rebuild"
+    if not host[tool]:
+        raise AlError(f"#:provision {style}: {tool} is not on the host's login PATH; install Nix and "
+                      + ("Home Manager" if style == "home-manager" else "use a NixOS host") + ", or declare #:provision script")
+    path = wrapper_path(facts, host, style)
+    if style == "home-manager":
+        lines = [f"provisioning plan ({style}):",
+                 f"  write {path} (imports the checkout's env/hosts/{decl['id']}/home-manager.nix, sets checkout = {host.directory})",
+                 "  home-manager switch (it must import that file; the units are the module's)"]
+        return Plan(style, lines, [], False), rows
+    lines = [f"provisioning plan ({style}):",
+             f"  write {path} (imports the checkout's env/hosts/{decl['id']}/nixos.nix, sets user = {host['user']})",
+             "  nixos-rebuild switch (the system configuration must import that file)",
+             "    privileged: sudo -n nixos-rebuild switch"]
+    return Plan(style, lines, ["nixos-rebuild switch"], False), rows
+
+
+def apply_provision(remote: Remote, facts: Facts, host: HostFacts, plan: Plan) -> None:
+    """Make the plan true. script: provision.sh --yes. Nix styles: the host-local wrapper, then the switch."""
+    if plan.style == "script":
+        done = remote.change("sh -s -- --yes", "apply the provisioning plan (provision.sh --yes)", stdin=plan.script)
+        if not remote.dry_run:
+            out = (done.stdout or "").rstrip("\n")
+            plan_lines = set(plan.lines)
+            for line in out.splitlines():
+                if line not in plan_lines:
+                    print(line)
+        if done.returncode == 3:
+            raise AlError(f"privilege was refused on {remote.label}: nothing else was changed (no repository update, no unit); "
+                          "run the privileged commands above as a privileged user on the host, then deploy again"
+                          + ("".join(f"\n  sudo {c.removeprefix('sudo -n ')}" for c in plan.privileged)))
+        if done.returncode != 0:
+            tail = "\n".join((done.stderr or done.stdout).strip().splitlines()[-5:])
+            raise AlError(f"provisioning failed on {remote.label}" + (f":\n{tail}" if tail else ""))
+        return
+    must = put(remote, wrapper_path(facts, host, plan.style), wrapper_text(facts, host, plan.style))
+    if must.returncode != 0:
+        raise AlError(f"failed on the host: write {wrapper_path(facts, host, plan.style)}")
+    if plan.style == "home-manager":
+        done = remote.change("home-manager switch", "build and activate the user's Home Manager configuration")
+    else:
+        if not remote.dry_run:
+            print("+ sudo -n nixos-rebuild switch", flush=True)
+        done = remote.change("sudo -n nixos-rebuild switch", "build and activate the system configuration (privileged)")
+    if done.returncode != 0:
+        tail = "\n".join((done.stderr or done.stdout).strip().splitlines()[-5:])
+        what = "home-manager switch" if plan.style == "home-manager" else "sudo nixos-rebuild switch"
+        raise AlError(f"{what} failed on {remote.label}" + (f":\n{tail}" if tail else "")
+                      + ("" if plan.style == "home-manager" else "\nrun it as a privileged user on the host: sudo nixos-rebuild switch"))
+
+
+def import_hint(facts: Facts, host: HostFacts, style: str) -> str:
+    path = wrapper_path(facts, host, style)
+    if style == "home-manager":
+        return f"add to your Home Manager configuration on the host, then deploy again:\n  imports = [ {path} ];"
+    return f"add to the NixOS configuration of the host (/etc/nixos/configuration.nix), then deploy again:\n  imports = [ {path} ];"
+
+
+def provision_rows(facts: Facts, host: HostFacts, al: Any, units_text: str = "", recipe: str | None = None,
+                   recipe_wanted: str = "") -> list[list[str]]:
+    """Provisioning drift: [fact, wanted, on host, ok | drift] for what the declaration wants. Reads nothing itself."""
+    prov = provision_module()
+    decl = facts.decl or {}
+    style = decl.get("provision", "none")
+    pinned = committed_pins(facts) if style == "script" else {}
+    rows: list[list[str]] = []
+
+    def row(fact: str, wanted: str, actual: str, ok: bool) -> None:
+        rows.append([fact, wanted, actual or "-", "ok" if ok else "drift"])
+
+    def version(tool: str, key: str) -> None:
+        found = host[f"local.{tool}"] or host[key].partition(" ")[2] or ("" if not host[key] else host[key])
+        if style == "script":
+            want = pinned.get(tool) or prov.load_pins()[tool]["version"]
+            ok = want in host[f"local.{tool}"] or want in host[key]
+            row(tool, want, (found or "missing")[:40], ok)
+        else:
+            row(tool, "installed", (found or "missing")[:40], bool(host[key] or host[f"local.{tool}"]))
+
+    if prov.needs_podman(facts.ir):
+        row("podman rootless", "yes", "yes" if host["podman"] and host["rootless"] == "true" else "no",
+            bool(host["podman"]) and host["rootless"] == "true")
+        row("subids", "yes", host["subids"] or "unknown", host["subids"] == "yes")
+    version("uv", "uv")
+    for kind in prov.agent_kinds(facts.ir):
+        tool = prov.AGENT_PIN[kind]
+        version(tool, f"agent.{tool}")
+    if decl.get("linger", True):
+        linger = host["linger"] or parse_facts(units_text).get("linger", "")
+        row("linger", "yes", linger or "no", linger == "yes")
+    wanted = unit_names(facts, al)
+    if units_text:
+        states = {line.split()[1]: line.split()[2:] for line in units_text.splitlines() if line.startswith("unit ") and len(line.split()) > 1}
+        running = [u for u in wanted if states.get(u, []) == ["enabled", "active"] or states.get(u, [None, None])[-1:] == ["active"]]
+        row("units", f"{len(wanted)} active", f"{len(running)} active", len(running) == len(wanted))
+    if recipe is not None:
+        row("image recipe", recipe_wanted[:12], recipe[:12] or "none", recipe == recipe_wanted)
+    return rows
+
+
+def committed_pins(facts: Facts) -> dict[str, str]:
+    """{program: version} as the committed provision.sh of the declaration pins them (what was
+    generated, so drift compares the host with the declaration, not with this machine's pins file)."""
+    try:
+        text = committed(facts, f"env/hosts/{(facts.decl or {})['id']}/provision.sh").decode()
+    except (AlError, KeyError):
+        return {}
+    return dict(re.findall(r"bin='?([\w.-]+)'?; version='?([\w.+-]+)'?", text))
+
+
+def confirm(question: str) -> bool | None:
+    """One question on the terminal; None when there is no terminal to ask."""
+    if not sys.stdin.isatty():
+        return None
+    try:
+        return input(question).strip().lower() in ("y", "yes")
+    except EOFError:
+        return None
+
+
+# ------------------------------------------------------------------------------------------
+# the sandbox image on the host
+# ------------------------------------------------------------------------------------------
+
+def plan_images(facts: Facts, al: Any) -> tuple[str, str] | None:
+    """(mode, the layer's recipe hash) when the host should get or check the sandbox image, else None.
+    The hash is the runtime's (al_sandbox.recipe_hash_in) over env/ as committed on the deployed
+    branch: what the host gets, and so the image its runs ask for."""
+    decl = facts.decl
+    if not decl or not provision_module().needs_podman(facts.ir) or not any(e.get("kind") == "podman" for e in facts.ir.get("environments") or []):
+        return None
+    return decl.get("images", "build"), committed_recipe(facts, al)
+
+
+def committed_recipe(facts: Facts, al: Any) -> str:
+    """The runtime's recipe hash of the layer's env/ as committed on facts.branch."""
+    committed(facts, "env/Containerfile")           # a clear error when it is not committed
+    sandbox = sandbox_module()
+    with tempfile.TemporaryDirectory(prefix="al-recipe-") as directory:
+        archive = subprocess.run(al_tools.argv(["git", "-C", str(facts.app), "archive", "--format=tar", facts.branch, f"{facts.layer_rel}/env"]),
+                                 capture_output=True, stdin=subprocess.DEVNULL)
+        if archive.returncode != 0:
+            raise AlError(f"cannot read {facts.layer_rel}/env on {facts.branch}: {archive.stderr.decode(errors='replace').strip()[-300:]}")
+        unpacked = subprocess.run(["tar", "-x", "-C", directory], input=archive.stdout, capture_output=True)
+        if unpacked.returncode != 0:
+            raise AlError(f"cannot unpack {facts.layer_rel}/env: {unpacked.stderr.decode(errors='replace').strip()[-300:]}")
+        try:
+            return sandbox.recipe_hash_in(Path(directory) / facts.layer_rel, facts.ir, facts.layer, al)
+        except sandbox.SandboxError as exc:
+            raise AlError(str(exc)) from exc
+
+
+def _host_recipe(remote: Remote, facts: Facts, h: str, after_change: bool) -> str | None:
+    """The recipe label of al-<name>:<h> on the host, else of al-<name>:latest. None when neither
+    exists, or when only :latest exists and it is this recipe (the runtime tags :<h> at its first run)."""
+    done = remote.read(sandbox_module().host_verify_script(facts.name, h), "the recipe of the sandbox image on the host",
+                       after_change=after_change)
+    found = parse_facts(done.stdout)
+    if found.get("image") == "absent" or remote.dry_run and after_change:
+        return None
+    label = found.get("recipe", "")
+    label = "" if label == "<no value>" else label
+    if found.get("image") == "latest" and label == h:
+        return None
+    return label
+
+
+def _mismatch(remote: Remote, facts: Facts, found: str, h: str) -> None:
+    sandbox = sandbox_module()
+    message = f"image: recipe {sandbox.short(found)} on the host, {sandbox.short(h)} in the layer"
+    if not (facts.decl or {}).get("fallbackBuild", True):
+        raise AlError(message + "; the host declares #:fallback-build #f, so nothing is built there: "
+                      f"push the image of this recipe (al sandbox {facts.layer_rel} push) and deploy again")
+    remote.change(sandbox.host_untag_script(facts.name, h), "drop the image of another recipe so the host builds this one")
+    print(message + ": it will be built on the host at the first run")
+
+
+def apply_images(remote: Remote, facts: Facts, al: Any) -> None:
+    planned = plan_images(facts, al)
+    if not planned:
+        return
+    mode, h = planned
+    sandbox = sandbox_module()
+    image, short = sandbox.image_ref(facts.name, h), sandbox.short(h)
+    tagged = sandbox.tagged(facts.name, h)
+    if mode == "pull":
+        done = remote.change(sandbox.host_pull_script(facts.ir, h),
+                             f"pull {sandbox.tag_of(facts.ir, h)} from the registry (address and login from the host's env file), check its recipe, tag it {tagged}")
+        if remote.dry_run:
+            return
+        if done.returncode == 0:
+            print(f"image: pulled {sandbox.tag_of(facts.ir, h)}, recipe {short} checked, tagged {tagged}")
+            return
+        if done.returncode == 5:
+            _mismatch(remote, facts, parse_facts(done.stdout).get("recipe", ""), h)
+            return
+        raise AlError(f"the host could not pull {sandbox.tag_of(facts.ir, h)} (exit {done.returncode}): is it pushed "
+                      f"(al sandbox {facts.layer_rel} push) and are the registry variables set in ~/.config/al/{facts.name}.env on the host?")
+    if mode == "load":
+        if remote.dry_run:
+            remote.change_file("podman load", "", f"stream {image} (recipe {short}) over the connection")
+            remote.change(sandbox.host_load_tag_script(facts.name, h), f"check the loaded image's recipe, tag it {tagged}")
+        else:
+            try:
+                local = sandbox.ensure_local_image(facts.layer, facts.ir, print, al)
+            except sandbox.SandboxError as exc:
+                raise AlError(str(exc)) from exc
+            if local != h:
+                raise AlError(f"env/ here (recipe {sandbox.short(local)}) is not the committed one ({short}): commit it, then deploy")
+            with tempfile.TemporaryDirectory(prefix="al-image-") as directory:
+                archive = os.path.join(directory, "image.tar")
+                saved = subprocess.run(["podman", "image", "save", "-o", archive, image], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+                if saved.returncode != 0:
+                    raise AlError(f"podman image save failed: {saved.stderr.strip()[-300:]}")
+                done = remote.change_file("podman load", archive, f"stream {image} (recipe {short}) over the connection")
+            if done.returncode != 0:
+                raise AlError(f"podman load failed on {remote.label}: {(done.stderr or '').strip()[-300:]}")
+            done = remote.change(sandbox.host_load_tag_script(facts.name, h), f"check the loaded image's recipe, tag it {tagged}")
+            if done.returncode == 5:
+                _mismatch(remote, facts, parse_facts(done.stdout).get("recipe", ""), h)
+                return
+            if done.returncode != 0:
+                raise AlError(f"tagging the loaded image failed on {remote.label}: {(done.stderr or '').strip()[-300:]}")
+    found = _host_recipe(remote, facts, h, after_change=mode == "load")
+    if remote.dry_run:
+        return
+    if found is None:
+        print(f"image: none on the host yet; it will be built there at the first run (recipe {short})")
+    elif found == h:
+        print(f"image: {tagged} on the host are built from this recipe ({short})" + (", loaded over the connection" if mode == "load" else ""))
+    else:
+        _mismatch(remote, facts, found, h)
 
 
 # ------------------------------------------------------------------------------------------
@@ -754,21 +1191,55 @@ def generated_where(facts: Facts, al: Any, host: HostFacts | None = None) -> str
             + (f"found at {racket}" if racket else "not found"))
 
 
-def deploy(a: Any, al: Any) -> int:
-    facts = local_facts(a.layer, al)
-    remote = Remote(transport_for(a.to), dry_run=a.dry_run)
-    rows, host = preflight(remote, facts, a.path)
-    directory = host.directory
-    print(f"host: {remote.label}   directory: {directory}   layer: {facts.layer_rel}   commit: {facts.commit[:12]}")
-    print(generated_where(facts, al, host))
-    for note in facts.notes:
-        print(f"note: {note}")
-    print("preflight:")
+def print_preflight(rows: list[Row]) -> None:
     width = max(len(r.check) for r in rows)
     for row in rows:
         print(f"  {row.check.ljust(width)}  {row.state.ljust(10)}  {row.detail}".rstrip())
         if row.state == "MISSING":
             print(f"  {''.ljust(width)}  fix: {row.fix}")
+
+
+def deploy(a: Any, al: Any) -> int:
+    facts = local_facts(a.layer, al)
+    facts.decl = host_decl(facts.ir, getattr(a, "as_id", None))
+    style = (facts.decl or {}).get("provision", "none")
+    provisioning = bool(getattr(a, "provision", False))
+    if provisioning and not facts.decl:
+        raise AlError("--provision needs a (host #:id ID #:provision script|home-manager|nixos …) declaration in agentic.rkt")
+    if provisioning and style == "none":
+        raise AlError(f"(host #:id {facts.decl['id']}) declares #:provision none: there is nothing to provision; "
+                      "declare #:provision script, home-manager or nixos")
+    remote = Remote(transport_for(a.to), dry_run=a.dry_run)
+    rows, host = preflight(remote, facts, a.path)
+    directory = host.directory
+    print(f"host: {remote.label}   directory: {directory}   layer: {facts.layer_rel}   commit: {facts.commit[:12]}"
+          + (f"   as: {facts.decl['id']}" if facts.decl else ""))
+    print(generated_where(facts, al, host))
+    for note in facts.notes:
+        print(f"note: {note}")
+    print("preflight:")
+    print_preflight(rows)
+
+    plan = None
+    if provisioning:
+        plan, _ = plan_provision(remote, facts, host, al)
+        print("\n".join(plan.lines))
+        if plan.nothing:
+            pass                    # provision.sh said so: "provisioning: nothing to do"
+        elif not getattr(a, "yes", False) and not a.dry_run:
+            answer = confirm(f"apply this plan on {remote.label}? [y/N] ")
+            if answer is None:
+                print("al deploy: provisioning needs --yes when no terminal can answer; nothing was changed", file=sys.stderr)
+                return 4
+            if not answer:
+                raise AlError(f"nothing was changed on {remote.label}")
+        if plan.style == "script" and not plan.nothing:
+            apply_provision(remote, facts, host, plan)
+            if not a.dry_run:
+                rows, host = preflight(remote, facts, a.path)
+                print("preflight after provisioning:")
+                print_preflight(rows)
+
     secrets, missing = secret_rows(facts, host)
     if secrets:
         print("secrets (names only; al never reads or copies a value):")
@@ -777,20 +1248,34 @@ def deploy(a: Any, al: Any) -> int:
         print(f"missing on the host (al never copies secrets): {', '.join(missing)}\n"
               f"put each as NAME=value in ~/.config/al/{facts.name}.env on the host (chmod 600); the units read that file")
     misses = sum(1 for r in rows if r.state == "MISSING") + len(missing)
-    if misses and not a.dry_run:
+    nix_later = provisioning and style in ("home-manager", "nixos")
+    if misses and not a.dry_run and not (nix_later and not missing):
+        if facts.decl and style != "none" and not provisioning and any(r.state == "MISSING" for r in rows):
+            print(f"provision it: al deploy {a.layer} --to {remote.label} --as {facts.decl['id']} --provision")
         raise AlError(f"nothing was changed on {remote.label}: {misses} preflight miss(es)")
 
     actions, notes = plan_repository(facts, host, remote)
     for note in notes:
         print(f"note: {note}")
     apply_repository(actions, facts, host, remote)
+    if nix_later and plan is not None:
+        apply_provision(remote, facts, host, plan)
+        if not a.dry_run:
+            rows, host = preflight(remote, facts, a.path)
+            print("preflight after provisioning:")
+            print_preflight(rows)
+            left = sum(1 for r in rows if r.state == "MISSING")
+            if left:
+                print(import_hint(facts, host, style))
+                raise AlError(f"{left} preflight miss(es) after provisioning on {remote.label}")
+    apply_images(remote, facts, al)
     units = host_units(facts, host, directory, al)
     for trigger in facts.ir.get("triggers") or []:
         if trigger.get("kind") == "webhook" and not is_loopback(str(trigger.get("bind") or "")):
             print(f"warning: the webhook listens on {trigger['bind']}:{trigger['port']} (the layer's #:bind); "
                   "keep its secret set and put it behind a reverse proxy or a private network")
     if units:
-        install_units(remote, facts, host, units, enable=not a.no_enable)
+        install_units(remote, facts, host, units, enable=not a.no_enable, write=style != "home-manager")
     done = put(remote, tools_record(facts, host), json.dumps(host.tools, sort_keys=True) + "\n", "0600")
     if done.returncode != 0:
         print(f"warning: could not record the tools' paths in {tools_record(facts, host)}; --status cannot report drift")
@@ -849,8 +1334,15 @@ def run_lines(states: list[dict], al: Any, now: float | None = None) -> list[str
 
 
 def status(a: Any, al: Any) -> int:
-    """Two reads; nothing on the host or here is changed."""
+    """Reads only; nothing on the host or here is changed."""
     facts = local_facts(a.layer, al)
+    several = ""
+    try:
+        facts.decl = host_decl(facts.ir, getattr(a, "as_id", None))
+    except AlError:
+        if getattr(a, "as_id", None):
+            raise
+        several = ", ".join(h["id"] for h in facts.ir.get("hosts") or [])
     remote = Remote(transport_for(a.to), read_only=True)
     units = unit_names(facts, al)
     script = 'echo "home=$HOME"\n' + deployment_script(facts, a.path) + ("\n" + units_status_script(units) if units else "")
@@ -891,6 +1383,21 @@ def status(a: Any, al: Any) -> int:
         if isinstance(state, dict):
             states.append(state)
     print("\n".join(run_lines(states, al)))
+    if several:
+        print(f"provisioning: the layer declares several hosts ({several}); add --as ID for the drift table")
+    elif facts.decl:
+        pre = HostFacts(parse_facts(remote.read(preflight_script(facts, a.path), "preflight: what the host has, for the drift table").stdout))
+        planned = plan_images(facts, al)
+        recipe = wanted = None
+        if planned:
+            wanted = planned[1]
+            recipe = _host_recipe(remote, facts, wanted, after_change=False) or ""
+        drift = provision_rows(facts, pre, al, done.stdout if units else "", recipe, wanted or "")
+        print(f"provisioning (host {facts.decl['id']}, #:provision {facts.decl.get('provision', 'none')}):")
+        print(table(["fact", "wanted", "on host", ""], drift))
+        drifted = sum(1 for r in drift if r[3] != "ok")
+        if drifted and facts.decl.get("provision", "none") != "none":
+            print(f"{drifted} fact(s) drifted: al deploy {a.layer} --to {remote.label} --as {facts.decl['id']} --provision")
     return 0
 
 
@@ -919,8 +1426,8 @@ def tool_drift(host: HostFacts) -> list[str]:
 def main(a: Any, al: Any) -> int:
     try:
         if a.status:
-            if a.dry_run or a.no_enable:
-                raise AlError("--status only reads; it does not go with --dry-run or --no-enable")
+            if a.dry_run or a.no_enable or getattr(a, "provision", False) or getattr(a, "yes", False):
+                raise AlError("--status only reads; it does not go with --dry-run, --no-enable, --provision or --yes")
             return status(a, al)
         return deploy(a, al)
     except AlError as exc:
@@ -947,12 +1454,16 @@ def _dashboard_remote(a: Any, al: Any) -> int:
         raise AlError("--bind, --token and --podman configure a dashboard on this machine; --remote only opens a tunnel "
                       "to the one running on the host (loopback on both ends)")
     transport = transport_for(a.remote)
-    declared = None
+    declared, host_port = None, 0
     for d in a.dirs or [Path(".")]:
         if (Path(d) / "agentic-layer.json").is_file():
-            declared = load_ir(Path(d)).get("dashboard") or al.DEFAULT_DASHBOARD
+            ir = load_ir(Path(d))
+            declared = ir.get("dashboard") or al.DEFAULT_DASHBOARD
+            hosts = ir.get("hosts") or []
+            if len(hosts) == 1 and hosts[0].get("dashboardPort"):
+                host_port = int(hosts[0]["dashboardPort"])       # the only host declaration moves the dashboard
             break
-    remote_port = a.remote_port or int((declared or {}).get("port") or 8765)
+    remote_port = a.remote_port or host_port or int((declared or {}).get("port") or 8765)
     local_port = free_port(a.port or 8765, explicit=a.port is not None)
     argv = transport.tunnel_argv(local_port, remote_port)
     if os.environ.get("AL_DASHBOARD_DRY_RUN"):

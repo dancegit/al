@@ -2029,6 +2029,72 @@
       },
       "type": "array"
     },
+    "hosts": {
+      "items": {
+        "additionalProperties": false,
+        "description": "(host #:id ID …): what a machine that runs this layer must have, written with keywords only and declared once per kind of machine. From it `al gen` writes three committed provisioning files under the layer, env/hosts/<id>/home-manager.nix, env/hosts/<id>/nixos.nix and env/hosts/<id>/provision.sh, which hold no host name, user, address or secret: those are only known on the host. `al deploy --as ID --provision` shows the plan, asks once and applies it; `al deploy --status` lists the drift.",
+        "properties": {
+          "dashboardPort": {
+            "description": "Port of the dashboard on this machine; 0 = the layer's own (dashboard #:port).",
+            "type": "integer"
+          },
+          "fallbackBuild": {
+            "description": "When the image on the host was built from another env/Containerfile (its recipe hash differs): #t = untag it so the host builds at the first run; #f = stop the deploy.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Name of this kind of machine: lowercase letters, digits and dashes, no dots (it is not a host name). `al deploy --as ID` picks it.",
+            "type": "string"
+          },
+          "images": {
+            "description": "Where the sandbox image comes from: `build` = the host builds it at the first run; `pull` = from the (registry …), as pushed by `al sandbox push`; `load` = streamed over the ssh connection by `al deploy`.",
+            "enum": [
+              "build",
+              "pull",
+              "load"
+            ],
+            "type": "string"
+          },
+          "linger": {
+            "description": "Enable lingering, so the units keep running after the user logs out.",
+            "type": "boolean"
+          },
+          "provision": {
+            "description": "How the machine is provisioned: `none` = al installs nothing and only checks; `home-manager` = a Home Manager module; `nixos` = a NixOS module (privileged rebuild); `script` = a POSIX shell script for Debian/Ubuntu, Fedora and Arch.",
+            "enum": [
+              "none",
+              "home-manager",
+              "nixos",
+              "script"
+            ],
+            "type": "string"
+          },
+          "units": {
+            "description": "Units kept running on this machine; empty = every unit the layer declares.",
+            "items": {
+              "enum": [
+                "cron",
+                "webhook",
+                "dashboard"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "dashboardPort",
+          "fallbackBuild",
+          "id",
+          "images",
+          "linger",
+          "provision",
+          "units"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
     "layer": {
       "description": "Where the generated agentic layer lives. Only `in-repo` puts it inside the application repository; the others keep it out of the application tree.",
       "oneOf": [
@@ -2740,6 +2806,42 @@
         ]
       },
       "type": "array"
+    },
+    "registry": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "(registry #:address-env VAR …): the container registry `al sandbox push|pull` and hosts with #:images pull use. It holds only the NAMES of environment variables, whose values come from the environment, `local.env` in the layer or `$XDG_CONFIG_HOME/al/<layer name>.env`. Declared at most once.",
+          "properties": {
+            "addressEnv": {
+              "description": "NAME of the variable holding the registry address and repository prefix, e.g. registry.example.org/team. Never the address itself.",
+              "type": "string"
+            },
+            "passwordEnv": {
+              "description": "NAME of the variable holding the registry password or token; given together with #:username-env.",
+              "type": "string"
+            },
+            "tlsVerify": {
+              "description": "Verify the registry's TLS certificate.",
+              "type": "boolean"
+            },
+            "usernameEnv": {
+              "description": "NAME of the variable holding the registry user; empty = no login.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "addressEnv",
+            "passwordEnv",
+            "tlsVerify",
+            "usernameEnv"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "reviews": {
       "description": "PITER · Review: how the result is judged and what happens after.",
@@ -3504,11 +3606,13 @@
     "experts",
     "forge",
     "hops",
+    "hosts",
     "layer",
     "llmTxt",
     "name",
     "notifiers",
     "promptInputs",
+    "registry",
     "reviews",
     "schemaVersion",
     "services",

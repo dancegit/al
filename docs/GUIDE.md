@@ -1165,6 +1165,113 @@ changed. The paths are recorded in `~/.config/al/<name>-tools.json` on the host,
 `drift: uv moved: was …, now …; run al deploy again so the units' PATH follows` or
 `drift: claude vanished: was …`.
 
+## Running a layer on another machine
+
+A layer that is committed with its repository (`(layer in-repo …)`) can run on a server. Say in
+`agentic.rkt` what that machine must have, once per kind of machine:
+
+```racket
+(registry #:address-env "AL_REGISTRY")
+(host #:id server #:provision script #:units (cron dashboard) #:dashboard-port 8770 #:images pull)
+(host #:id nix #:provision home-manager #:images load)
+```
+
+`al gen` then writes three files for each host under `env/hosts/<id>/`, and you commit them with the
+layer: `home-manager.nix` (a Home Manager module), `nixos.nix` (a NixOS module) and `provision.sh` (a
+shell script for Debian/Ubuntu, Fedora and Arch). None of them names a host, a user, an address or a
+secret. `#:provision` picks the one `al deploy` uses:
+
+- `script`: the shell script installs the missing distribution packages (podman and its rootless
+  helpers, git, curl), adds the user's subuid/subgid ranges and turns on lingering, each through
+  `sudo -n`. Without privilege it installs uv and the agent CLI at pinned versions into
+  `~/.local/bin`, after checking their sha256. `sh provision.sh --check` shows the plan and changes
+  nothing.
+- `home-manager`: `al deploy` writes `~/.config/al/<name>/home.nix` on the host, a small file that
+  imports the module from the checkout and sets the checkout's path, then runs `home-manager switch`.
+  You import that file from your Home Manager configuration once; the module then owns the units.
+- `nixos`: the same with `~/.config/al/<name>/nixos.nix`, and `sudo -n nixos-rebuild switch`.
+
+`al deploy LAYER --to HOST --as ID --provision` reads what the host has, prints the plan with every
+privileged command, asks once (`--yes` skips the question; without a terminal it stops with exit 4)
+and applies it. Then it checks the host again and deploys. The units' PATH comes from the tools that
+second check finds, so it holds what provisioning installed (`~/.local/bin` for the script style), and
+those paths are what `~/.config/al/<name>-tools.json` records. Without `--provision`, deploy installs
+nothing and prints the command that would. On a Debian host that lacks podman, uv and the agent CLI:
+
+```
+provisioning plan for notes (host server):
+  packages (debian): missing podman uidmap slirp4netns
+    privileged: sudo -n apt-get install -y --no-install-recommends podman uidmap slirp4netns
+  subids: ok
+  uv 9.9.1: missing; installs into ~/.local/bin (sha256 checked)
+  claude 9.9.2: missing; installs into ~/.local/bin (sha256 checked)
+  linger: off (the units would stop when alhostuser logs out)
+    privileged: sudo -n loginctl enable-linger alhostuser
+provisioning: 4 item(s) to do; nothing was changed (--check)
+installed uv 9.9.1 into ~/.local/bin
+installed claude 9.9.2 into ~/.local/bin
++ sudo -n apt-get install -y --no-install-recommends podman uidmap slirp4netns
++ sudo -n loginctl enable-linger alhostuser
+provisioning: done
+preflight after provisioning:
+…
+image: pulled notes:recipe-8061e87a059a, recipe 8061e87a059a checked, tagged al-notes:8061e87a059a and al-notes:latest
+units:
+  unit                        enabled  active
+  al-notes-cron.service       enabled  active
+  al-notes-dashboard.service  enabled  active
+  linger: yes
+```
+
+A second run finds nothing to do and says `provisioning: nothing to do`. When the host refuses
+privilege, deploy stops before it touches the repository or the units, and prints the privileged
+commands for a person to run.
+
+`al deploy … --as ID --status` adds a drift table: what the declaration wants next to what the host
+has. It changes nothing:
+
+```
+provisioning (host server, #:provision script):
+  fact             wanted        on host
+  podman rootless  yes           yes                        ok
+  subids           yes           yes                        ok
+  uv               9.9.1         uv 9.9.1 (fake)            ok
+  claude           9.9.2         9.9.2 (Claude Code, fake)  ok
+  linger           yes           no                         drift
+  units            2 active      2 active                   ok
+  image recipe     8061e87a059a  8061e87a059a               ok
+1 fact(s) drifted: al deploy …/notes/agentic --to deploy-host.example --as server --provision
+```
+
+**The sandbox image.** By default (`#:images build`) every host builds the image from
+`env/Containerfile` at its first run. With a `(registry …)`, one machine builds and tests the image,
+and every host uses exactly that one. It is the image a run asks for, `al-<name>:<recipe hash>`
+(see `al sandbox LAYER status`): the hash covers `env/Containerfile`, the files it copies from `env/`
+and the base image, and the image carries it as its label `al.recipe`:
+
+```
+$ al sandbox agentic push
+image: al-notes:8061e87a059a is missing; building it from env/Containerfile
+…
+pushed al-notes:8061e87a059a to the registry as notes:recipe-8061e87a059a (recipe 8061e87a059a)
+```
+
+The registry declaration holds only names of variables. Put the address (and, with
+`#:username-env` / `#:password-env`, the login) in the environment or in `local.env`, and on the host
+in `~/.config/al/<name>.env`. A host with `#:images pull` pulls the image of the layer's recipe. With
+`#:images load`, `al deploy` sends the image over the ssh connection and no registry is needed.
+Either way the host checks the label first and then tags the image `al-<name>:<hash>` and
+`al-<name>:latest`. If the label differs, the host untags both and builds its own at the first run:
+
+```
+image: recipe eeeeeeeeeeee on the host, 8061e87a059a in the layer: it will be built on the host at the first run
+```
+
+With `#:fallback-build #f` the deploy stops instead.
+
+A deploy also works while runs are in flight on the host. The checkout is updated through a
+temporary repository, so commits that live only in a run's private object store never get in the way.
+
 ## When something goes wrong
 
 | What you see | What it means | What to do |
