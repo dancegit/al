@@ -50,7 +50,7 @@ Real runs with Claude Opus 5.5, each started from a one-paragraph request:
 
 | Codebase | Request | Outcome | Time | Cost |
 |---|---|---|---|---|
-| flask | add a specific test (three separate runs) | shipped, first attempt each time | 2–3 min | about $0.70 |
+| flask | add a specific test (three separate runs) | gate passed first attempt each time; the result waited on a branch for one manual fast-forward | 2–3 min | about $0.70 |
 | Notes web app | dark theme | pull request with screenshots; a person merged | 111 s | $0.47 |
 | Notes web app | search box | two reviewer agents approved on a recorded video; merged | 273 s | $1.31 |
 | Staffing app | enforce 11 hours of rest between shifts | two reviewers approved; merged | 405 s | $2.34 |
@@ -121,7 +121,8 @@ Measured:
 - **First-attempt outcomes:** every real feature run produced correct work first time (flask
   3 of 3; Notes 3 of 3 for each request; staffing app 1 of 1). The planted defect was rejected
   2 of 2.
-- **Human involvement:** one action for a zero-touch change (writing the request); two for a
+- **Human involvement:** one action for a zero-touch change (writing the request), plus one
+  fast-forward in the flask runs, where `main` was checked out in the application; two for a
   human-reviewed one (the request and the merge).
 - **Defects caught per verification layer:** listed above. The layer that caught the most was
   running things for real rather than against stand-ins.

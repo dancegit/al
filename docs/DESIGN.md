@@ -2,9 +2,10 @@
 
 ## The idea in one paragraph
 
-Tactical Agentic Coding says the agentic layer is "a ring around your codebase": templates, plans,
-HOPs and ADWs, kept in a separate directory, specific to *this* codebase ("an effective ADW is not
-generic"). Building that ring by hand for every repository does not scale, and letting an LLM
+Tactical Agentic Coding describes the agentic layer as something built around a codebase rather
+than inside it: templates, plans, HOPs and ADWs, kept in a separate directory. Its workflows are
+written for *this* codebase; one that would fit any repository does little for any of them.
+Building that layer by hand for every repository does not scale, and letting an LLM
 free-write it gives you prose nobody checks. `al` puts a small compiler in the middle. The LLM
 writes only two things — a descriptive `LLM.txt` and a short `#lang al` program — and the compiler
 plus a deterministic generator do the rest. The compiler is the closed loop for the layer itself:
@@ -36,8 +37,8 @@ application repo ──al scout──▶ LLM.txt (draft) ──LLM + scout-codeb
 | One agent, one prompt, one purpose | Every `(run …)` step is a fresh headless agent with one command |
 | Each step does only its own job, and the runtime checks it | `adw_modules/discipline.py` compares HEAD, the refs, the main checkout and the layer's top level before and after every step that may not commit; a difference fails the step as a step-discipline violation and is undone where that is safe (`step.discipline` event) |
 | Always add feedback loops (request → validate → resolve) | `(check NAME #:cmd test #:resolve resolve-test #:retries 3)` |
-| Review = "is what we built what we asked for? prove it", severities blocker / tech_debt / skippable | `review` command returns that JSON; artefacts (logs, junit, images, video keyframes) are collected, stored and handed to the reviewer |
-| ZTE: SDLC + ship, "only if all phases pass", start with chores | `(review auto …)`: agent verdict AND deterministic gates (required checks, allowed classes, max diff, protected paths) → merge/deploy, else fall back to a human PR |
+| Review asks whether the result is what was requested, and wants evidence for the answer; severities blocker / tech_debt / skippable | `review` command returns that JSON; artefacts (logs, junit, images, video keyframes) are collected, stored and handed to the reviewer |
+| ZTE: SDLC + ship; shipping happens only when every stage passed; begin with chores | `(review auto …)`: agent verdict AND deterministic gates (required checks, allowed classes, max diff, protected paths) → merge/deploy, else fall back to a human PR |
 | Work collects in stages that people accept as a whole | `(delivery sprint\|gitflow\|…)` / `(cycle …)` / `al promote` + `al decide`: the stages work collects in, branches only people may change, a presentation pack and recorded acceptance before merge, version, tag, deploy (see "How work is delivered", "Promotion between stages") |
 | Isolation via worktrees + ports; layer separate from app | `environment worktree` creates `trees/<adw-id>` under the layer; the app's working tree is never written |
 | The sandbox is built once per recipe and checked before work starts | image `al-<layer>:<recipe hash>`, built only when the recipe changed; a preflight before the first step; `al sandbox LAYER build\|update\|doctor\|shell\|status\|prune\|push\|pull` (see "Sandbox image") |
@@ -457,7 +458,8 @@ container …)`), a dev container made of compose services, devenv and `shell.ni
 (complete the deterministic draft; every command must cite evidence), `author-layer`
 (LLM.txt + reference → `agentic.rkt`, compile, repair), `repair-layer`, `review-layer`.
 Inside each generated layer the meta HOPs (`meta-command`, `meta-adw`, `meta-expert`) let agents
-extend the layer through the same compiler-checked path — "fix the system, not the output".
+extend the layer through the same compiler-checked path: what gets corrected is the layer, so the
+next run is right too, rather than one run's output.
 
 Fabric patterns are a library of methods: `#:fabric (review_code)` on a command vendors the pattern
 into the layer and the command applies it, while the command's own Report contract stays in charge

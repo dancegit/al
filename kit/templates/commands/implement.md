@@ -29,7 +29,7 @@ PLAN_FILE: $1
 
 ## Relevant Files
 
-The plan's own Relevant Files section takes precedence; these are the codebase defaults.
+The files the plan's steps name take precedence; these are the codebase defaults.
 
 {{relevant_files}}
 
@@ -47,9 +47,9 @@ Protected paths:
 
 1. Read PLAN_FILE and every file it names.
 2. Implement the steps in order.
-3. Run the plan's validation commands, then the Validation Commands below, from the worktree root, each with its output saved to its own log, `${artefacts_dir}/validation/NN-NAME.log` (NN its position, NAME a short slug of the command), and note its exit code. Add `-rs` to every pytest command so the log ends with the test summary and the reason of each skip; for another test runner keep its summary line. A re-run overwrites the command's log.
+3. Run every command under the plan's `How it is proven`, then the Validation Commands below, from the worktree root, each with its output saved to its own log, `${artefacts_dir}/validation/NN-NAME.log` (NN its position, NAME a short slug of the command), and note its exit code. Add `-rs` to every pytest command so the log ends with the test summary and the reason of each skip; for another test runner keep its summary line. A re-run overwrites the command's log.
 4. On any failure: read the output, find the cause, fix the code, re-run from the first command. Repeat until every command exits 0.
-5. Re-read the plan once more and confirm each step and each acceptance criterion is satisfied by the diff.
+5. Re-read the plan once more and confirm each step and each checkable result is satisfied by the diff.
 
 ## Validation Commands
 

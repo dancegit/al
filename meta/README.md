@@ -30,4 +30,4 @@ A compile error at any point goes to step 4. Generate only on `verdict: pass`.
 
 - `LLM.txt` is the only source of codebase facts; `docs/AL-DSL.llms.txt` is the whole language. Anything in neither does not exist.
 - The compiler is the closed loop for coherence; `review-layer` is the closed loop for truth.
-- Fix the system, not the output: when a generated layer misbehaves, correct `LLM.txt` or `agentic.rkt` and regenerate; do not hand-edit the generated files.
+- Correct the layer rather than what it produced: when a generated layer misbehaves, correct `LLM.txt` or `agentic.rkt` and regenerate; do not hand-edit the generated files.

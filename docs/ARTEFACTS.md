@@ -25,8 +25,8 @@ here; the link under each opens the original file.
 
 ![Recording: the new search box filtering notes](demo/webdemo/b-feature.gif)
 
-Play the original: [`b-feature.mp4`](demo/webdemo/b-feature.mp4) ·
-[`b-feature.webm`](demo/webdemo/b-feature.webm) (exactly as the run recorded it)
+Play the original: [`b-feature.mp4`](https://github.com/dancegit/al/releases/download/media-v1/demo-webdemo-b-feature.mp4) ·
+[`b-feature.webm`](https://github.com/dancegit/al/releases/download/media-v1/demo-webdemo-b-feature.webm) (exactly as the run recorded it)
 
 What to look for, as the reviewer: typing "milk" leaves one note; "WATER" in capitals still matches;
 "xyz" shows "No notes match"; clearing the box brings the list back. Those are the acceptance criteria
@@ -36,14 +36,14 @@ of the request, and the video either shows them or it does not.
 
 ![Recording: workers needing rest are shown as unavailable with the reason](demo/rotademo/a-rest-rule.gif)
 
-Play the original: [`a-rest-rule.mp4`](demo/rotademo/a-rest-rule.mp4)
+Play the original: [`a-rest-rule.mp4`](https://github.com/dancegit/al/releases/download/media-v1/demo-rotademo-a-rest-rule.mp4)
 
 **Expired registrations are labelled and cannot be selected** (healthcare staffing app, 17 seconds).
 This is the recording from *after* two reviewer agents rejected a flawed first version and an agent fixed it.
 
 ![Recording: an expired worker is greyed out and labelled](demo/rotademo/c-expired-badge.gif)
 
-Play the original: [`c-expired-badge.mp4`](demo/rotademo/c-expired-badge.mp4)
+Play the original: [`c-expired-badge.mp4`](https://github.com/dancegit/al/releases/download/media-v1/demo-rotademo-c-expired-badge.mp4)
 
 How a video comes to exist: your codebase has a command that drives the application and saves a
 recording (the demo applications use a short Playwright script,

@@ -19,7 +19,8 @@ podman image exists "$IMAGE" || { echo "image $IMAGE not present"; exit 2; }
 podman run -d --name "$NAME" -p "127.0.0.1:$PORT:3000" -e FORGEJO__security__INSTALL_LOCK=true \
   -e FORGEJO__database__DB_TYPE=sqlite3 -e FORGEJO__server__ROOT_URL="$BASE/" -e FORGEJO__log__LEVEL=Warn "$IMAGE" >/dev/null || exit 2
 for _ in $(seq 1 60); do curl -fsS "$BASE/api/v1/version" >/dev/null 2>&1 && break; sleep 1; done
-podman exec -u git "$NAME" forgejo admin user create --username adw --password 'adw-Passw0rd!' --email adw@example.org --admin --must-change-password=false >/dev/null
+# throwaway account in a container that is deleted at exit; the password is fake by design
+podman exec -u git "$NAME" forgejo admin user create --username adw --password 'fake-Passw0rd-1!' --email adw@example.org --admin --must-change-password=false >/dev/null
 TOKEN="$(podman exec -u git "$NAME" forgejo admin user generate-access-token --username adw --token-name al --scopes all --raw | tail -1)"
 api POST /user/repos -d '{"name":"notes","default_branch":"main","private":false}' >/dev/null
 mkdir -p "$TMP/notes" && cp -r "$ROOT/tests/webdemo/app/." "$TMP/notes/" && cd "$TMP/notes" && git init -q -b main \
@@ -32,7 +33,9 @@ PR=null; for _ in $(seq 1 15); do   # the forge needs a moment to see the pushed
   PR="$(echo "$RESP" | jq -r .number)"; [ "$PR" != null ] && break; sleep 1; done
 [ "$PR" != null ] || { echo "PR not created: $RESP" | cut -c1-300; exit 2; }
 L="$TMP/layer"; A="$L/artefacts/demo0001"; mkdir -p "$A/recording/.keyframes" "$A/screenshots"
-cp "$ROOT/docs/demo/webdemo/b-feature.webm" "$A/recording/session.webm"
+VIDEO="${AL_MEDIA_DIR:-$ROOT/media/media-v1}/demo-webdemo-b-feature.webm"   # a release asset, not in the tree (docs/media.json)
+[ -s "$VIDEO" ] || { echo "missing $VIDEO: download it from the release named in docs/media.json (tools/release_media.sh lists the files)"; exit 2; }
+cp "$VIDEO" "$A/recording/session.webm"
 cp "$ROOT"/docs/demo/webdemo/b-keyframes/session-0[2468].png "$A/recording/.keyframes/"
 cp "$ROOT/docs/demo/webdemo/a-after.png" "$A/screenshots/01-home.png"
 cd "$ROOT"

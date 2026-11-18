@@ -356,6 +356,13 @@ Limits: `al sandbox LAYER build` and `push` need the base image a run or `al ver
 (they say so when it is missing); the flake wrapper carries your shell's inputs and `shellHook` but not plain attributes set
 on the shell derivation.
 
+
+A plan written by one of the plan prompts has six sections: `What is asked and why`, `What exists today`,
+`The change, step by step`, `How it is proven` (its `Commands` and its `Checkable results`, which a
+promotion shows as the change's acceptance criteria), `What could go wrong` and `What is left out`
+(where a `REQUIRES HUMAN` line goes). A patch plan has four of them. Plans written in the earlier layout
+(`Step by Step Tasks`, `Acceptance Criteria`, …) are still read.
+
 ## Step 7 — Prove the commands are true
 
 The compiler proves the layer is consistent. It cannot know whether `make test` really works in the
@@ -596,6 +603,84 @@ would prune 11 runs; agents/<id> and artefacts/<id> are kept
 
 It never deletes the target branch, a stage branch, the default branch, or a branch checked out in
 another worktree, and it notes what it removed in the run's `settlement.json`.
+
+## Numbers from the runs (`al kpis`)
+
+`al kpis` counts what the run records say, for a layer as a whole. It reads `agents/<id>` and git
+(nothing is fetched), changes nothing, and prints no run id, title, prompt, branch, address or path,
+so the output can be shown to others. This is a layer with 27 dry runs of one workflow:
+
+```bash
+tools/al kpis ~/code/myapp.al
+```
+
+```text
+Numbers from the run records: 27 runs
+
+Runs by outcome
+  outcome              runs  share  why
+  passed                  1     4%
+  handed over            14    52%  review-rejected 14
+    landed afterwards     8    30%
+  failed                  6    22%  setup 5, run 1
+  waiting                 1     4%
+  running                 5    19%
+  all                    27         27 dry
+
+Attempts per step
+  step       records  mean  max  first attempt
+  build           16  1.00    1            94%
+  plan            17  1.00    1           100%
+  preflight        5  1.00    1             0%
+
+Review rounds
+  runs reviewed  mean  max  more than one round
+  0                 -    -                    0
+
+How often a person acted
+                           count
+  runs needing a person       20
+  actions by a person         20
+    handed over               14
+    waited at an approval      1
+    settled by a person        0
+    started again by hand      5
+  zero-touch runs              1
+
+Time and cost by workflow and class
+  workflow    class  agent  runs  median time  total time  median cost  total cost  without cost
+  plan-build  chore  dry      27       6m 00s      1h 42m            -           -             -
+
+Changes on the default branch
+                                    count
+  changes on the default branch         9
+    shipped by the gate                 1
+    handed over, landed afterwards      8
+```
+
+What is counted:
+
+- **Outcome.** Every run is passed, handed over, failed (failed or died), waiting or running. *Landed
+  afterwards* are the handed-over runs whose work is on its target branch, or that a person settled as
+  landed (see the previous section).
+- **Why.** A fixed category, never the recorded text. For a hand-over, each recorded reason by its
+  leading keyword: `review-rejected`, `required-check`, `class-not-allowed`, `change-too-large`,
+  `protected-path`, `no-container`, `other`. For a failure, the kind of the failed step (`run`, `check`,
+  `review`, `ship`, `setup`), or `step-discipline`, `budget`, `usage-limit`, `died`.
+- **Attempts per step.** From the step records, per step name of the definition; *first attempt* is
+  the share of records that passed without a second attempt.
+- **Review rounds.** For the runs that were reviewed: mean, max, and how many needed more than one.
+- **How often a person acted.** One action for each of: the run was handed over, it waited at an
+  approval step, it has a settlement record, it was started again by hand. *Zero-touch runs* passed
+  and were shipped by the gate.
+- **Time and cost.** Median and total per workflow and class, over finished runs. Dry runs are their
+  own rows and have no cost; a real run without a recorded cost is counted under *without cost*.
+- **Changes on the default branch.** Runs whose work is on the layer's default branch: shipped by the
+  gate, or handed over and landed afterwards.
+
+`--since 2026-11-01` keeps the runs that started on or after that day (UTC). `--json` prints the same
+numbers as data, `--md` as a Markdown document: `tools/al kpis ~/code/myapp.al --md > docs/KPIS.md`.
+Using both, or a date in another form, is exit 2.
 
 ## Start work from the dashboard or the command line
 

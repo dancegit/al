@@ -1,7 +1,8 @@
 """The showcase manifest: one `Clip` per recorded feature, in order, and the limits every clip and the
 folder it lands in must keep. Standard library only (the tests read it without Pillow).
 
-  number, name   the files are docs/showcase/<NN>-<name>.mp4 / .gif / .png
+  number, name   the files are docs/showcase/<NN>-<name>.gif / .png in the tree, and the video
+                 showcase-<NN>-<name>.mp4 in the ignored media folder (a release asset, docs/media.json)
   kind           "browser" (the dashboard in Chrome) or "terminal" (real tools/al output, rendered)
   card           the one-line caption card the clip opens with
   proves         what the clip shows to be true (docs/showcase/README.md)

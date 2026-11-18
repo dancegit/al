@@ -90,9 +90,9 @@ Protected paths:
 
 1. Read PLAN_FILE and every file it names.
 2. Execute its steps in order.
-3. Validate: run every validation command the file lists, then the Validation Commands below, from the worktree root.
+3. Validate: run every command under the plan's `How it is proven` (or, in a file of another shape, every validation command it lists), then the Validation Commands below, from the worktree root.
 4. On any failure: read the output, find the cause, fix the code, re-run from the first command. Repeat until every command exits 0.
-5. Re-read PLAN_FILE and confirm each step and each acceptance criterion is satisfied by the diff.
+5. Re-read PLAN_FILE and confirm each step and each checkable result is satisfied by the diff.
 
 ## Validation Commands
 

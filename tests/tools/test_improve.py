@@ -13,8 +13,8 @@ ADW = "abcd0001"
 def plan(change: str, what_changes: str) -> dict:
     """The plan step: a plan file in the workflow's own specs/, as plan-layer-change asks for."""
     text = (f"# Layer change: {change}\n\n## Request\n{change}\n\n## Summary\n{change} (scripted plan).\n\n"
-            f"## What changes for you\n{what_changes}\n\n## How\nThe smallest change.\n\n## Step by Step Tasks\n"
-            "### Change the layer\n- as scripted\n\n## Validation Commands\n- definition\n\n## Notes\nnone\n")
+            f"## What changes for you\n{what_changes}\n\n## How\nThe smallest change.\n\n## The change, step by step\n"
+            "### Change the layer\n- as scripted\n\n## How it is proven\n- definition\n\n## What is left out\nnone\n")
     return {"layer_files": {"specs/layer-change.md": text}, "output": "specs/layer-change.md"}
 
 
@@ -83,7 +83,9 @@ def test_a_dsl_change_ends_in_a_reviewable_pull_request(in_repo, app, tmp_path) 
 
 def kit_plan_chore_with_rollback() -> str:
     kit = (KIT / "templates/commands/plan-chore.md").read_text()
-    return kit.replace("## Notes\n<tests added", "## Rollback\n<exactly how to undo the change: the commands or edits, in order>\n\n## Notes\n<tests added")
+    edited = kit.replace("## What is left out\n<tests not added", "## Rollback\n<exactly how to undo the change: the commands or edits, in order>\n\n## What is left out\n<tests not added")
+    assert edited != kit, "the anchor is the first line of the chore template's last plan section"
+    return edited
 
 
 def test_an_ejected_and_edited_template_ends_in_a_pull_request(in_repo, app, tmp_path) -> None:

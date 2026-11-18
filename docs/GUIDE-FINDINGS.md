@@ -112,7 +112,7 @@ wrote a note; the commit step committed; the gate chose "a human decides" and wr
 
 ![The finished run in the layer's dashboard](demo/al-for-al/run.png)
 
-Watched live: [`dashboard-live.mp4`](demo/al-for-al/dashboard-live.mp4) (85 s, waiting time cut) and
+Watched live: [`dashboard-live.mp4`](https://github.com/dancegit/al/releases/download/media-v1/demo-al-for-al-dashboard-live.mp4) (85 s, waiting time cut) and
 [`dashboard-live.gif`](demo/al-for-al/dashboard-live.gif). It shows the Now view with the run in flight,
 the workflow graph, the build step's transcript in follow mode, the `test-tools` log while it grows, the
 finished run with time and cost, and the history. Recorded in the host's Chrome with Playwright by
@@ -326,7 +326,7 @@ own work in progress is reported as if the layer had done it.
 **T7. The live log of a check shows each chunk on its own line.** While `pytest -q` runs, the Step view
 shows `....` then one `.` per line; the finished log (and the file `checks/test-tools.1.log`) has the dots
 on one line. Reproduce: open a check with dotted progress output while it runs
-(`demo/al-for-al/dashboard-live.mp4`, from 0:46 to 0:58).
+(the release asset `demo-al-for-al-dashboard-live.mp4`, from 0:46 to 0:58).
 
 **T8. The workflow graph does not fit a 1280-pixel window for a 14-step workflow.** `commit` is cut in
 half and `review` and `ship` are off screen until the graph is scrolled sideways; nothing indicates that

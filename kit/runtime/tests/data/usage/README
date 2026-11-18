@@ -1,0 +1,10 @@
+Transcripts of the agent CLI (stream-json, one event per line) that the usage tests replay. Ids are
+placeholders. The files contain no key and no token: `apiKeySource` holds the *name* of an environment
+variable (or `none`), never a value. `test_usage.py` and `kit/dashboard/tests/test_usage_models.py` read
+that field and these file names, so neither is renamed.
+
+api-key.jsonl                  a call billed to an API key: `apiKeySource` names the variable, no usage-window event
+documented-minimal.jsonl       the smallest usage-window event of the public SDK reference
+subscription.jsonl             a subscription call: a seven-day window event with the status `allowed`
+subscription-five-hour.jsonl   a subscription call with a five-hour window and the status `allowed_warning` (derived)
+subscription-rejected.jsonl    a subscription call the CLI refused: the seven-day window with the status `rejected`

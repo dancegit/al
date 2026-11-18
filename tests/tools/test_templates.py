@@ -163,3 +163,37 @@ def test_implement_reports_each_validation_command_with_exit_code_and_log() -> N
     assert "${artefacts_dir}/validation/" in text and "-rs" in text
     report = text[text.index("## Report"):]
     assert "exit code" in report and "log" in report
+
+
+SIX = ["## What is asked and why", "## What exists today", "## The change, step by step", "## How it is proven",
+       "## What could go wrong", "## What is left out"]
+PLAN_LAYOUT = {
+    "plan-chore": SIX + ["### Commands", "### Checkable results"],
+    "plan-bug": SIX + ["### How to reproduce", "### Cause", "### Add regression test", "### Tests", "### Commands",
+                       "### Checkable results"],
+    "plan-feature": SIX + ["### New files", "### Tests", "### Commands", "### Checkable results"],
+    "plan-patch": ["## What is asked and why", "## The change, step by step", "## How it is proven", "## What is left out"],
+    "plan-layer-change": ["## Request", "## Summary", "## What changes for you", "## How", "## The change, step by step",
+                          "## How it is proven", "## What is left out"],
+}
+EARLIER_LAYOUT = ["Step by Step Tasks", "Testing Strategy", "Acceptance Criteria", "Implementation Plan", "User Story",
+                  "Problem Statement", "Solution Statement", "Root Cause Analysis", "Steps to Reproduce", "Issue Summary",
+                  "Chore Description", "Bug Description", "Feature Description"]
+
+
+def test_plan_templates_use_our_own_layout() -> None:
+    for name, headings in PLAN_LAYOUT.items():
+        text = (KIT / "templates" / "commands" / f"{name}.md").read_text()
+        start = text.index("```md\n", text.index("## Plan Format"))
+        block = text[start:text.index("\n```\n", start)]
+        found = [line for line in block.splitlines() if line.startswith("## ")]
+        assert found == [h for h in headings if h.startswith("## ")], f"{name}: the plan's sections, in order"
+        for heading in headings:
+            assert f"\n{heading}\n" in block, f"{name}: {heading} is missing from its Plan Format"
+        assert "{{validation_commands}}" in block[block.index("## How it is proven"):], name
+        for old in EARLIER_LAYOUT:
+            assert old not in text, f"{name} still names {old!r}, a section of the earlier layout"
+        outside = text[:start] + text[start + len(block):]
+        for section in ("## Variables", "## Instructions", "## Relevant Files", "## Plan Format", "## Validation Commands",
+                        "## Report"):
+            assert f"\n{section}\n" in outside, f"{name}: the prompt's own section {section} keeps its name"

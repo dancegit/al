@@ -318,7 +318,7 @@ retries listed in `summary.json` → `attempts`, cost $12.00.
 |---|---|
 | `before.png` | The shifts board of the untouched app, from its own e2e capture |
 | `a-run.log`, `b-run.log`, `c-run.log` | The runs' logs, with temp paths replaced by `<tmp>` |
-| `a-rest-rule.mp4` / `.gif` | Scenario A's recorded e2e session (H.264 yuv420p, and an 800 px GIF under 1.5 MB) |
+| `a-rest-rule.gif`, [`demo-rotademo-a-rest-rule.mp4`](https://github.com/dancegit/al/releases/download/media-v1/demo-rotademo-a-rest-rule.mp4) | Scenario A's recorded e2e session: an 800 px GIF under 1.5 MB in this folder, and the H.264 yuv420p video as a release asset (`docs/media.json`; locally `media/media-v1/`) |
 | `a-keyframes-sheet.png`, `c-keyframes-sheet.png` | The 8 keyframes the reviewers read, 4×2 |
 | `a-pr-page.png`, `c-pr-page.png` | The merged PR pages in real Chrome (host `google-chrome`) |
 | `a-pr-merged.png`, `c-pr-final.png` | Readable crops: title, Merged state, review verdict (and "Why a human is needed" for C). Taken with Playwright Chromium in the demo image, as clips stacked with a visible rule. |
@@ -331,7 +331,7 @@ retries listed in `summary.json` → `attempts`, cost $12.00.
 | `c-planted-diff.patch` | The planted commit, taken from the PR head on the forge (identical files to `planted/planted.patch`) |
 | `c-fix-diff.patch` | What changed after the planted commit: the patch loop's fix |
 | `c-before-fix.png` / `c-after-fix.png` | The assign dropdown of shift 8, opened with `reveal`. Before: at the planted commit, with Chloe Martin (expired) selected, which shows she can be chosen. After: on merged `main`, where she is greyed out as "Chloe Martin (Expired)". Both are captured by the app's own `e2e/capture.py` with `ROTA_E2E_SCENARIO=helpers/dropdown_scenario.py`. |
-| `c-expired-badge.mp4` / `.gif` | Scenario C's final e2e session (after the fix) |
+| `c-expired-badge.gif`, [`demo-rotademo-c-expired-badge.mp4`](https://github.com/dancegit/al/releases/download/media-v1/demo-rotademo-c-expired-badge.mp4) | Scenario C's final e2e session (after the fix); the video is a release asset as well |
 | `attempt1/` | Kept records of the first attempts of B and C (logs, `REQUIRES HUMAN` lines, both review rounds of C attempt 1) |
 | `summary.json` | Per scenario: issue text, run id, wall-clock seconds, cost, agent steps, review rounds, gate decision and reasons, PR number and final state, commits, outcome and assertion counts, plus totals and every attempt with the reason for each retry |
 

@@ -6,6 +6,7 @@ delivered into the sprint by real runs of the layer (the mock agent), one with a
 state.json, events.jsonl, approval.md and the pack under artefacts/<id>/pack/."""
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import subprocess
@@ -119,7 +120,7 @@ def build_promotion_site(root: Path, *, open_promotion: bool = True) -> dict:
     shot = _attach(layer, "tiny.png", "artefacts/0000c001/screenshots/cart.png")
     _record(layer, "0000c001", {"id": "screenshots", "type": "image", "step": "test",
                                 "path": "artefacts/0000c001/screenshots/cart.png", "bytes": shot.stat().st_size})
-    video = _attach(layer, "tiny.webm", "artefacts/0000c002/recording/search.webm")
+    video = _attach(layer, "tiny.webm.b64", "artefacts/0000c002/recording/search.webm")
     frame = _attach(layer, "tiny.png", "artefacts/0000c002/recording/search.keyframes/frame-001.png")
     _record(layer, "0000c002", {"id": "recording", "type": "video", "step": "test",
                                 "path": "artefacts/0000c002/recording/search.webm", "bytes": video.stat().st_size,
@@ -134,10 +135,14 @@ def build_promotion_site(root: Path, *, open_promotion: bool = True) -> dict:
 
 
 def _attach(layer: Path, data_file: str, rel: str) -> Path:
-    """A copy of tests/data/<data_file> at <layer>/<rel>, as `artefacts.collect` leaves one."""
+    """A copy of tests/data/<data_file> at <layer>/<rel>, as `artefacts.collect` leaves one. A `.b64`
+    file is decoded first: the video fixture is kept as base64 text, so no tracked file is a video."""
     target = layer / rel
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(DATA / data_file, target)
+    if data_file.endswith(".b64"):
+        target.write_bytes(base64.b64decode((DATA / data_file).read_text()))
+    else:
+        shutil.copy(DATA / data_file, target)
     return target
 
 
@@ -161,7 +166,7 @@ def deliver(layer: Path, adw_id: str, name: str, prompt: str, criteria: list[str
     plan = f"specs/plan-{adw_id}.md"
     text = f"# Plan: {prompt}\n\nAdds {name}.\n\n"
     if criteria:
-        text += "## Acceptance Criteria\n\n" + "".join(f"- {c}\n" for c in criteria)
+        text += "## How it is proven\n\n### Checkable results\n\n" + "".join(f"- {c}\n" for c in criteria)
     (mock / "plan.json").write_text(json.dumps({"layer_files": {plan: text}, "output": plan}))
     (mock / "build.json").write_text(json.dumps({"files": {name: f"{name.split('.')[0].upper()} = 1\n"}}))
     done = script(layer, "adw_demo.py", prompt, "--class", "feature", "--adw-id", adw_id)

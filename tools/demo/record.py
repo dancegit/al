@@ -9,8 +9,10 @@ marked `replay` print a saved log of a real run (labelled as a replay on screen)
 
   tools/demo/record.py tools/demo/scenes.toml --out docs/demo [--only SCENE …] [--no-run]
 
-Per scene: <out>/<id>.gif, <out>/<id>.mp4 and <out>/logs/<id>.txt (the captured output).
-All scenes: <out>/tour.mp4 with title cards. `--no-run` re-renders from the captured logs.
+Per scene: <out>/<id>.gif and <out>/logs/<id>.txt (the captured output) in the tree, and the video
+in the ignored media folder under its release asset name (`tools/media.py`: demo-<id>.mp4).
+All scenes: demo-tour.mp4 in the media folder, with title cards. No video is written into the tree;
+a person uploads the media folder with tools/release_media.sh. `--no-run` re-renders from the captured logs.
 Needs ffmpeg and a monospace TTF (AL_DEMO_FONT, else fontconfig's default monospace).
 """
 from __future__ import annotations
@@ -30,6 +32,26 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+import media  # noqa: E402  (tools/media.py: where the videos are)
+
+
+def scene_video(media_dir: Path, name: str) -> Path:
+    """Where the video `docs/demo/<name>.mp4` of old now lives: the media folder, under its asset name."""
+    return media_dir / media.asset_name(f"docs/demo/{name}.mp4")
+
+
+def video_input(path: str) -> Path:
+    """The file of a `video = "…"` entry. A path under docs/ ending in a video suffix is a release
+    asset: it is read from the media folder. A missing input is an error that says where to get it."""
+    if path.startswith("docs/") and path.lower().endswith(media.VIDEO_SUFFIXES):
+        found = media.media_dir() / media.asset_name(path)
+        if not found.is_file():
+            sys.exit(f"missing video {found}: it is the asset {found.name} of the release "
+                     f"{media.load()['release']} ({media.url(found.name)}); tools/release_media.sh lists the "
+                     "files of the release and their state in the media folder")
+        return found
+    return ROOT / path
 COLS, ROWS, FPS = 110, 30, 10
 BG, FG, DIM, GREEN, RED, YELLOW, BLUE = "#0d1117", "#c9d1d9", "#6e7681", "#3fb950", "#f85149", "#d29922", "#58a6ff"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\r")
@@ -204,7 +226,7 @@ def media_frames(title: str, media: dict, caption: str):
     if "video" in media:
         speed = float(media.get("speed", 1.0))
         with tempfile.TemporaryDirectory() as tmp:
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(ROOT / media["video"]),
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(video_input(media["video"])),
                             "-vf", f"setpts=PTS/{speed},fps={FPS}", str(Path(tmp) / "%05d.png")], check=True)
             stills = sorted(Path(tmp).glob("*.png"))
             last = None
@@ -336,6 +358,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("scenes", type=Path)
     ap.add_argument("--out", type=Path, default=ROOT / "docs/demo")
+    ap.add_argument("--media", type=Path, default=media.media_dir(),
+                    help="where the videos go, under their release asset names (default: the ignored media folder)")
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--no-run", action="store_true", help="re-render from <out>/logs/*.json without running commands")
     a = ap.parse_args()
@@ -345,6 +369,8 @@ def main() -> int:
     spec = tomllib.loads(a.scenes.read_text())
     out = a.out.resolve()
     (out / "logs").mkdir(parents=True, exist_ok=True)
+    videos = a.media.resolve()
+    videos.mkdir(parents=True, exist_ok=True)
     parts: list[Path] = []
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
@@ -377,9 +403,9 @@ def main() -> int:
             sid = scene["id"]
             raw = out / "logs" / f"{sid}.json"
             if a.only and sid not in a.only:
-                if (out / f"{sid}.mp4").exists():
+                if scene_video(videos, sid).exists():
                     parts.append(clip(f"card-{sid}", scene_card(scene)))
-                    parts.append(out / f"{sid}.mp4")
+                    parts.append(scene_video(videos, sid))
                 continue
             print(f"scene {sid}: {scene['title']}")
             if a.no_run and raw.exists():
@@ -398,10 +424,11 @@ def main() -> int:
             frames = work / f"frames-{sid}"
             frames.mkdir()
             count = render(scene, recorded, frames)
-            encode(frames, out / f"{sid}.mp4", out / f"{sid}.gif")
-            print(f"    {count / FPS:.0f}s  mp4 {(out / f'{sid}.mp4').stat().st_size // 1024} KB  gif {(out / f'{sid}.gif').stat().st_size // 1024} KB")
+            mp4 = scene_video(videos, sid)
+            encode(frames, mp4, out / f"{sid}.gif")
+            print(f"    {count / FPS:.0f}s  mp4 {mp4.stat().st_size // 1024} KB  gif {(out / f'{sid}.gif').stat().st_size // 1024} KB")
             parts.append(clip(f"card-{sid}", scene_card(scene)))
-            parts.append(out / f"{sid}.mp4")
+            parts.append(mp4)
         if spec.get("outro"):
             o = spec["outro"]
             parts.append(clip("outro", [(card(o["title"], o.get("subtitle", ""), o.get("note", ""), o.get("bullets")), float(o.get("seconds", 9)))]))
@@ -409,11 +436,11 @@ def main() -> int:
         listing.write_text("".join(f"file '{p}'\n" for p in parts))
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
                         "-c:v", "libx264", "-preset", "slow", "-crf", "30", "-tune", "animation", "-pix_fmt", "yuv420p",
-                        "-movflags", "+faststart", str(out / "tour.mp4")], check=True)
-    tour = out / "tour.mp4"
+                        "-movflags", "+faststart", str(scene_video(videos, "tour"))], check=True)
+    tour = scene_video(videos, "tour")
     seconds = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(tour)],
                              capture_output=True, text=True).stdout.strip()
-    print(f"tour.mp4: {float(seconds):.0f}s, {tour.stat().st_size // 1024} KB")
+    print(f"{tour}: {float(seconds):.0f}s, {tour.stat().st_size // 1024} KB")
     return 0
 
 

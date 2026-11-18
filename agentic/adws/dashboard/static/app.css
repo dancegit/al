@@ -471,8 +471,8 @@ table.inner td { padding: 2px 8px 2px 0; vertical-align: top; }
 /* Repos (the workspace) and Job */
 .repos { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 12px; align-items: start; }
 .repo-side { position: sticky; top: calc(var(--top) + 12px); display: flex; flex-direction: column; gap: 8px; }
-.repo-tools { display: flex; gap: 6px; }
-.repo-filter { flex: 1; background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 5px; color: var(--text); padding: 4px 8px; }
+.repo-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.repo-filter { flex: 1; min-width: 120px; background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 5px; color: var(--text); padding: 4px 8px; }
 .repo-list { display: flex; flex-direction: column; max-height: calc(100vh - var(--top) - 80px); overflow: auto;
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); }
 .repo-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; color: var(--text); border-bottom: 1px solid var(--border); }
@@ -513,6 +513,43 @@ code.cmd { font: 12px/1.5 var(--mono); color: var(--text-2); background: #0b0e13
 .choices .multi { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--mono); }
 .choices .multi label { display: inline-flex; align-items: center; gap: 4px; }
 .choices .fact { grid-column: 2 / -1; color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+.choices .choice-help { grid-column: 2 / -1; color: var(--text-2); font-size: 12px; }
+/* Where a new layer goes (create, adopt, guided generation) */
+a.toggle { text-decoration: none; white-space: nowrap; }
+.placement-picker { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.placement { display: grid; grid-template-columns: auto auto 1fr; gap: 2px 10px; align-items: center; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 5px; cursor: pointer; }
+.placement:has(input:checked) { border-color: var(--accent); background: rgba(110, 168, 254, .08); }
+.placement.off { cursor: not-allowed; opacity: .75; }
+.placement .placement-label { font-weight: 600; }
+.placement .placement-path { color: var(--text-2); overflow-wrap: anywhere; }
+.placement .placement-explain, .placement .checks, .placement .why { grid-column: 2 / -1; }
+.placement .checks { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; }
+.placement .checks .check.ok { color: var(--passed); }
+.placement .checks .check.bad { color: var(--failed); }
+.placement .checks .check.ok::before { content: "✓ "; }
+.placement .checks .check.bad::before { content: "✗ "; }
+.placement-line { margin-top: 6px; color: var(--text-2); }
+/* Guided generation (#/generate) */
+.wizard { max-width: 980px; }
+.wizard h3 { margin: 0 0 4px; }
+.wizard h4 { margin: 12px 0 4px; color: var(--text-2); font-weight: 600; }
+.wizard-steps { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 8px 0 12px; padding: 0; }
+.wizard-steps li { padding: 3px 12px; border: 1px solid var(--border); border-radius: 999px; color: var(--dim); font-size: 12px; }
+.wizard-steps li.done { color: var(--passed); border-color: rgba(63, 185, 80, .4); }
+.wizard-steps li.current { color: var(--text); border-color: var(--accent); background: rgba(110, 168, 254, .14); }
+.wizard-repos { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.wizard-repo { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; cursor: pointer; }
+.wizard-repo:has(input:checked) { border-color: var(--accent); background: rgba(110, 168, 254, .08); }
+.wizard-repo.off { cursor: not-allowed; opacity: .6; }
+.wizard-adopt { margin-top: 10px; }
+.wizard .why { color: var(--waiting); overflow-wrap: anywhere; margin-top: 8px; }
+.wizard .why.error { color: var(--failed); }
+.wizard .writes { margin: 0; padding-left: 18px; }
+.wizard-summary { border-collapse: collapse; margin-top: 8px; }
+.wizard-summary th { text-align: left; font-weight: 400; color: var(--text-2); padding: 3px 16px 3px 0; vertical-align: top; white-space: nowrap; }
+.wizard-summary td { padding: 3px 0; overflow-wrap: anywhere; }
+.wizard-nav { display: flex; gap: 8px; margin-top: 14px; }
 .result-card .card-row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 4px 0; border-top: 1px solid var(--border); }
 .result-card .card-key { color: var(--text-2); }
 .result-card .card-value { overflow-wrap: anywhere; }

@@ -18,6 +18,8 @@ export LC_ALL=C.UTF-8
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HERE="$ROOT/tests/webdemo"
 OUT_FINAL="${AL_WEBDEMO_OUT:-$ROOT/docs/demo/webdemo}"
+# videos are not kept in the tree: they go to the ignored media folder under their release asset names (docs/media.json)
+MEDIA="${AL_MEDIA_DIR:-$ROOT/media/media-v1}"
 ONLY="${AL_WEBDEMO_ONLY:-ab}"
 NAME="al-webdemo-forgejo"; IMAGE="codeberg.org/forgejo/forgejo:11"
 LAYER_NAME="notes-demo"; BOX_IMAGE="al-$LAYER_NAME:latest"; BASE_IMAGE="docker.io/library/python:3.12-slim"
@@ -78,7 +80,8 @@ podman run -d --name "$NAME" -p "127.0.0.1:$PORT:3000" \
   -e FORGEJO__server__ROOT_URL="$BASE/" -e FORGEJO__log__LEVEL=Warn "$IMAGE" >/dev/null || { echo "forgejo did not start"; exit 2; }
 for _ in $(seq 1 60); do curl -fsS "$BASE/api/v1/version" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS "$BASE/api/v1/version" >/dev/null || { echo "forgejo not reachable"; exit 2; }
-podman exec -u git "$NAME" forgejo admin user create --username adw --password 'adw-Passw0rd!' --email adw@example.org --admin --must-change-password=false >/dev/null
+# throwaway account in a container that is deleted at exit; the password is fake by design
+podman exec -u git "$NAME" forgejo admin user create --username adw --password 'fake-Passw0rd-1!' --email adw@example.org --admin --must-change-password=false >/dev/null
 TOKEN="$(podman exec -u git "$NAME" forgejo admin user generate-access-token --username adw --token-name al --scopes all --raw | tail -1)"
 [ -n "$TOKEN" ] || { echo "no token"; exit 2; }
 api POST /user/repos -d '{"name":"notes","default_branch":"main","private":false,"description":"Notes: the al web demo app"}' | jq -e '.private == false' >/dev/null \
@@ -183,14 +186,14 @@ FRAMES=("$LAYER/artefacts/$B/recording/e2e-results/session.keyframes/"*.png)
 [ "${#FRAMES[@]}" = 8 ] && [ -s "${FRAMES[0]}" ] && ok "8 keyframes extracted from the session video" || bad "keyframes: ${#FRAMES[@]}"
 VIDEO="$LAYER/artefacts/$B/recording/e2e-results/session.webm"
 if [ -s "$VIDEO" ]; then
-  cp "$VIDEO" "$OUT/b-feature.webm"
-  ffmpeg -loglevel error -y -i "$VIDEO" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -crf 26 "$OUT/b-feature.mp4"
+  mkdir -p "$MEDIA"; cp "$VIDEO" "$MEDIA/demo-webdemo-b-feature.webm"
+  ffmpeg -loglevel error -y -i "$VIDEO" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -crf 26 "$MEDIA/demo-webdemo-b-feature.mp4"
   for fps in 8 6 4; do
     ffmpeg -loglevel error -y -i "$VIDEO" -vf "fps=$fps,scale=800:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=bayer" "$OUT/b-feature.gif"
     [ "$(stat -c %s "$OUT/b-feature.gif")" -le 1572864 ] && break
   done
-  DUR="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUT/b-feature.mp4")"
-  ok "video: $(printf '%.1f' "$DUR")s; mp4 $(du -k "$OUT/b-feature.mp4" | cut -f1) KB, gif $(du -k "$OUT/b-feature.gif" | cut -f1) KB"
+  DUR="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$MEDIA/demo-webdemo-b-feature.mp4")"
+  ok "video: $(printf '%.1f' "$DUR")s; mp4 $(du -k "$MEDIA/demo-webdemo-b-feature.mp4" | cut -f1) KB, gif $(du -k "$OUT/b-feature.gif" | cut -f1) KB"
 else bad "no session video in artefacts/$B"; fi
 mkdir -p "$OUT/b-keyframes" && cp "${FRAMES[@]}" "$OUT/b-keyframes/" 2>/dev/null
 jq '{gate: .ship.gate, shipped: .ship.shipped, target: .ship.target, combined_verdict: .review.verdict,

@@ -31,15 +31,15 @@ Languages: rust, zsh. Entry document: `README.md`. Default branch: `master`.
 
 - You are in `${worktree}`, a git worktree of the application. Read it, do not modify it. The only file you create is PLAN_FILE, which lives in the layer and never in the application tree. Never switch branches, push, or touch the main checkout.
 - Research before writing: read `README.md`, then the Relevant Files, then follow the code until you can name every file the chore touches.
-- Think hard about the smallest change that fully satisfies PROMPT. A chore changes no behaviour users rely on; if PROMPT needs a behaviour change, say so in Notes and plan only the chore part.
+- Think hard about the smallest change that fully satisfies PROMPT. A chore changes no behaviour users rely on; if PROMPT needs a behaviour change, say so under What is left out and plan only the chore part.
 - Write PLAN_FILE in the Plan Format: keep every heading, replace every `<placeholder>`, add no sections (unless a codebase-specific instruction below says otherwise). `<descriptive-name>` is 3-6 lowercase hyphenated words.
 - Be surgical: list only files that must change, name the function or block in each, and leave unrelated code, formatting and dependencies alone.
-- Tests: name every test to add or update, with its path. If the chore needs none, state why in Notes.
-- Keep the commands already present under `## Validation Commands` in the Plan Format unchanged and in order; add chore-specific commands only after them.
-- If the result is user-visible, name in Notes the artefacts that will prove it (screenshots, video, reports) and the step that produces them.
-- Never plan a change under a protected path. If the chore cannot be done without one, plan everything else and add a line starting `REQUIRES HUMAN` to Notes naming the path and the reason.
+- Tests: name every test to add or update, with its path. If the chore needs none, state why under What is left out.
+- Keep the commands already present under `### Commands` in the Plan Format unchanged and in order; add chore-specific commands only after them. Checkable results are observable: each one maps to a command, a test or a named artefact.
+- If the result is user-visible, name under Checkable results the artefacts that will prove it (screenshots, video, reports) and the step that produces them.
+- Never plan a change under a protected path. If the chore cannot be done without one, plan everything else and add a line starting `REQUIRES HUMAN` under What is left out naming the path and the reason.
 - A plan covers building and validating only: no step commits, merges, pushes, tags, releases or opens a pull request; delivery is the workflow's. Integration work (bringing in another branch or patch) is planned as 'apply onto the worktree, uncommitted', e.g. `git merge --no-commit --squash <ref>`, `git checkout <ref> -- <path>` or `git apply`.
-- A new dependency is added with `(not specified — do not add dependencies without flagging it)` and listed in Notes with its justification.
+- A new dependency is added with `(not specified — do not add dependencies without flagging it)` and listed under What could go wrong with its justification.
 - Read a conditional document when its condition matches what you are planning.
 
 ## Relevant Files
@@ -97,30 +97,38 @@ Codebase-specific instructions below take precedence over the defaults in this s
 ```md
 # Chore: <chore name>
 
-## Chore Description
+## What is asked and why
 <what must be done and why, in enough detail that the prompt is no longer needed>
 
-## Relevant Files
-<bullet per existing file: path, then why it is relevant and what changes in it>
+## What exists today
+<bullet per existing file: path, then why it matters here and what changes in it>
 
-## Step by Step Tasks
+## The change, step by step
 IMPORTANT: execute every step in order, top to bottom.
 
 ### <step title>
 - <one concrete action per bullet: file, symbol, change>
 
-### Run validation
-- Run every command under Validation Commands and fix until all pass.
+### Run the proof
+- Run every command under How it is proven and fix until all pass.
 
-## Validation Commands
+## How it is proven
+
+### Commands
 Execute every command from the worktree root; all must exit 0.
 
 - `cargo fmt --all --check` — every Rust file in the workspace is formatted as rustfmt.toml requires
 - `cargo test --verbose --workspace --features pcre2` — unit tests, doc tests and the integration target pass for every workspace crate, each integration test once on the default regex engine and once on PCRE2; builds target/debug/rg
 <additional chore-specific commands, each with what it proves; delete this line if none>
 
-## Notes
-<tests added or why none; new dependencies; artefacts that prove a user-visible result; REQUIRES HUMAN lines; anything the implementer must know>
+### Checkable results
+<bullet per observable result, each tied to a command, a test or a named artefact>
+
+## What could go wrong
+<risks; new dependencies with their justification; anything the implementer must know; "Nothing known" if none>
+
+## What is left out
+<tests not added and why; REQUIRES HUMAN lines; follow-ups; "Nothing" if none>
 ```
 
 ## Codebase-specific instructions

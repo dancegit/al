@@ -31,16 +31,16 @@ Languages: go. Entry document: `README.md`. Default branch: `master`.
 
 - You are in `${worktree}`, a git worktree of the application. Read it and run read-only commands to reproduce; do not modify it. The only file you create is PLAN_FILE, which lives in the layer and never in the application tree. Never switch branches, push, or touch the main checkout.
 - Research before writing: read `README.md`, then the Relevant Files, then trace the failing path through the code.
-- Reproduce first. Record the exact steps and the observed versus expected result. If you cannot reproduce, say so under Steps to Reproduce and state what evidence the analysis rests on.
-- Think hard about the root cause: the earliest point where state or logic goes wrong, cited as `path:line`. A symptom is not a root cause.
-- Plan the minimal fix at the root cause. No refactoring, no drive-by cleanups, no new abstractions.
-- Tests: plan a regression test that fails before the fix and passes after it; name its path. List any existing test that must change and why.
+- Reproduce first. Record the exact steps and the observed versus expected result. If you cannot reproduce, say so under How to reproduce and state what evidence the analysis rests on.
+- Think hard about the cause: the earliest point where state or logic goes wrong, cited as `path:line` under Cause. A symptom is not a cause.
+- Plan the minimal fix at the cause. No refactoring, no drive-by cleanups, no new abstractions.
+- Tests: plan a regression test that fails before the fix and passes after it; name its path under Tests and give it a step. List any existing test that must change and why.
 - Write PLAN_FILE in the Plan Format: keep every heading, replace every `<placeholder>`, add no sections (unless a codebase-specific instruction below says otherwise). `<descriptive-name>` is 3-6 lowercase hyphenated words.
-- Keep the commands already present under `## Validation Commands` in the Plan Format unchanged and in order; add the reproduction command and bug-specific commands after them.
-- If the bug is user-visible, name in Notes the artefacts that will prove the fix (screenshots, video, reports) and the step that produces them.
-- Never plan a change under a protected path. If the fix cannot avoid one, plan everything else and add a line starting `REQUIRES HUMAN` to Notes naming the path and the reason.
+- Keep the commands already present under `### Commands` in the Plan Format unchanged and in order; add the reproduction command and bug-specific commands after them. Checkable results are observable: each one maps to a test, a command or a named artefact.
+- If the bug is user-visible, name under Checkable results the artefacts that will prove the fix (screenshots, video, reports) and the step that produces them.
+- Never plan a change under a protected path. If the fix cannot avoid one, plan everything else and add a line starting `REQUIRES HUMAN` under What is left out naming the path and the reason.
 - A plan covers building and validating only: no step commits, merges, pushes, tags, releases or opens a pull request; delivery is the workflow's. Integration work (bringing in another branch or patch) is planned as 'apply onto the worktree, uncommitted', e.g. `git merge --no-commit --squash <ref>`, `git checkout <ref> -- <path>` or `git apply`.
-- A new dependency is a last resort; add it with `(not specified — do not add dependencies without flagging it)` and justify it in Notes.
+- A new dependency is a last resort; add it with `(not specified — do not add dependencies without flagging it)` and justify it under What could go wrong.
 - Read a conditional document when its condition matches what you are planning.
 
 ## Relevant Files
@@ -90,28 +90,19 @@ Codebase-specific instructions below take precedence over the defaults in this s
 ```md
 # Bug: <bug name>
 
-## Bug Description
-<symptoms, expected behaviour, actual behaviour>
+## What is asked and why
+<one paragraph: the symptoms, the expected and the actual behaviour, and the fix, with why it addresses the cause rather than the symptom>
 
-## Problem Statement
-<the precise problem this plan solves>
+## What exists today
+<bullet per existing file: path, then why it matters here and what changes in it; then a bullet per file to create with its purpose, if any>
 
-## Solution Statement
-<the fix, and why it addresses the cause rather than the symptom>
-
-## Steps to Reproduce
+### How to reproduce
 <numbered steps or one command; observed result; expected result>
 
-## Root Cause Analysis
+### Cause
 <the defect, cited as path:line, and the chain from it to the symptom>
 
-## Relevant Files
-<bullet per existing file: path, then why it is relevant and what changes in it>
-
-### New Files
-<bullet per file to create, with its purpose; "None" if none>
-
-## Step by Step Tasks
+## The change, step by step
 IMPORTANT: execute every step in order, top to bottom.
 
 ### <step title>
@@ -120,18 +111,29 @@ IMPORTANT: execute every step in order, top to bottom.
 ### Add regression test
 - <test path, what it asserts, why it fails before the fix>
 
-### Run validation
-- Run every command under Validation Commands and fix until all pass.
+### Run the proof
+- Run every command under How it is proven and fix until all pass.
 
-## Validation Commands
+## How it is proven
+
+### Tests
+<test path, then what it asserts; existing tests that change and why>
+
+### Commands
 Execute every command from the worktree root; all must exit 0.
 
 - `make vet` — go vet reports nothing for all packages except /examples/
 - `make test` — tests of packages gin, ginS, binding, render pass with go test -v -covermode=count; writes coverage.out
 <the reproduction command, now passing, and any bug-specific commands with what each proves>
 
-## Notes
-<new dependencies; artefacts that prove a user-visible fix; REQUIRES HUMAN lines; risks and anything the implementer must know>
+### Checkable results
+<bullet per observable result, each tied to a test, a command or a named artefact>
+
+## What could go wrong
+<risks; new dependencies with their justification; anything the implementer must know; "Nothing known" if none>
+
+## What is left out
+<REQUIRES HUMAN lines; related defects not fixed here; follow-ups; "Nothing" if none>
 ```
 
 ## Codebase-specific instructions

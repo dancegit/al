@@ -10,3 +10,5 @@ ISA.md
 kit/dashboard/shots/
 kit/dashboard/shots-proof/
 kit/runtime/proof/
+/media/
+tests/quickstart/*.log

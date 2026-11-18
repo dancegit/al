@@ -51,14 +51,25 @@ def test_acceptance_criteria_come_from_the_plan(make_layer, app_repo):
     layer = sprint_layer(make_layer, app_repo)
     (layer / "specs").mkdir()
     (layer / "specs" / "feature.md").write_text(
-        "# Feature: cart\n\nA cart.\n\n## Acceptance Criteria\n\n- The cart holds items\n- It survives a reload,\n"
-        "  also offline\n\n## Notes\n\n- not a criterion\n")
+        "# Feature: cart\n\nA cart.\n\n## How it is proven\n\n### Commands\n\n- `make test` is not a criterion\n\n"
+        "### Checkable results\n\n- The cart holds items\n- It survives a reload,\n"
+        "  also offline\n\n## What is left out\n\n- not a criterion\n")
     (layer / "specs" / "bug.md").write_text("# Bug: crash\n\n## Steps\n\n- open it\n")
     loaded = ir.load(layer)
     assert promotion.criteria(loaded, "specs/feature.md") == ["The cart holds items",
                                                                 "It survives a reload, also offline"]
     assert promotion.criteria(loaded, "specs/bug.md", "Fix the crash on start\nmore") == [
         "The request: Fix the crash on start"]
+
+
+def test_criteria_reads_plans_in_the_old_layout(make_layer, app_repo):
+    layer = sprint_layer(make_layer, app_repo)
+    (layer / "specs").mkdir()
+    (layer / "specs" / "feature.md").write_text(
+        "# Feature: cart\n\nA cart.\n\n## Acceptance Criteria\n\n- The cart holds items\n- It survives a reload,\n"
+        "  also offline\n\n## Notes\n\n- not a criterion\n")
+    assert promotion.criteria(ir.load(layer), "specs/feature.md") == ["The cart holds items",
+                                                                       "It survives a reload, also offline"]
 
 
 def test_each_criterion_lists_the_proof_that_covers_it():
