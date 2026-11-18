@@ -10,6 +10,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -437,6 +439,31 @@ def test_author_refuses_a_definition_without_the_in_repo_clause(tmp_path):
     assert (layer / "agentic.rkt").is_file()
     cp = al("author", layer, "--agent", "mock", "--mock", mock_file(tmp_path), "--accept-existing", ok=False)
     assert cp.returncode == 1 and '(layer in-repo #:dir "agentic")' in cp.stderr
+
+
+def test_author_accepts_a_central_layer_inside_another_repository(tmp_path):
+    app = ff.bare_repo(tmp_path)
+    al("init", app)
+    home = tmp_path / "layers"   # a versioned layers home: a git repository that is not the application
+    home.mkdir()
+    subprocess.run(["git", "init", "-q", str(home)], check=True)
+    layer = home / "shop"
+    shutil.move(str(tmp_path / "fern.al"), str(layer))
+    shutil.rmtree(layer / ".git", ignore_errors=True)
+    definition = (MOCK_DEFINITION.replace("(layer sibling)", f'(layer central #:home "{home}")')
+                  .replace("${root}", "../../fern"))
+    mock = mock_file(tmp_path, definition)
+    prefs = "The codebase root, relative to the layer folder, is ../../fern."
+    cp = al("author", layer, "--agent", "mock", "--mock", mock, "--preferences", prefs)
+    assert "agentic.rkt compiles" in cp.stdout
+    assert "in-repo" not in cp.stdout + cp.stderr
+    cp = al("author", layer, "--agent", "mock", "--mock", mock, "--preferences", prefs, "--accept-existing")
+    assert "accepted" in cp.stdout
+    (layer / ".gitignore").write_text("/trees/\n")   # as `al gen` leaves one: the mark alone must not decide
+    cp = al("author", layer, "--agent", "mock", "--mock", mock, "--accept-existing")
+    assert cp.returncode == 0 and "accepted" in cp.stdout
+    ir = json.loads(al("compile", layer).stdout)
+    assert ir["layer"]["kind"] == "central"
 
 
 def test_create_in_repo_never_overwrites_a_definition(tmp_path):

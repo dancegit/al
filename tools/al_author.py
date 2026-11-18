@@ -437,13 +437,16 @@ def layer_facts(al: Any, layer: Path, app: Path | None) -> dict[str, Any]:
     return al.facts_for_layer(facts)
 
 
-def app_of(al: Any, layer: Path) -> tuple[Path | None, str]:
+def app_of(al: Any, layer: Path, explicit: bool = False) -> tuple[Path | None, str]:
     """(the application of LAYER, the layer's directory in it): `<name>.al` with a git checkout `<name>`
-    beside it → (that checkout, ""); a layer inside a git repository → (the repository, its relative
-    directory); else (None, "")."""
+    beside it → (that checkout, ""); a layer made by `al init APP --in-repo` (it has the `.gitignore` that
+    command writes) inside a git repository, when no --preferences name the codebase (EXPLICIT) → (the
+    repository, its relative directory); else (None, "")."""
     if layer.name.endswith(".al"):
         app = layer.with_name(layer.name.removesuffix(".al"))
         return (app, "") if (app / ".git").exists() else (None, "")
+    if explicit or not (layer / ".gitignore").is_file():
+        return None, ""
     top = al.git(layer, "rev-parse", "--show-toplevel")
     if top:
         root = Path(top).resolve()
@@ -456,11 +459,17 @@ def placement_clause(in_repo_dir: str) -> str:
     return f"(layer in-repo #:dir {_rkt(in_repo_dir)})" if in_repo_dir else "(layer sibling)"
 
 
-def placement_problem(ir: dict, in_repo_dir: str) -> str:
-    """Why the compiled definition does not fit a layer inside the repository, or ""."""
+def placement_problem(ir: dict, in_repo_dir: str, layer: Path, app: Path | None) -> str:
+    """Why the compiled definition does not fit a layer inside the repository, or "". The definition is only
+    held to the in-repo clause when its codebase root, resolved from LAYER, is the repository the layer is in
+    (APP): a central layer that merely lies below some other git repository is left alone."""
     declared = ir.get("layer") if isinstance(ir, dict) else None
     declared = declared if isinstance(declared, dict) else {}
     if not in_repo_dir or (declared.get("kind") == "in-repo" and declared.get("dir") == in_repo_dir):
+        return ""
+    codebase = ir.get("codebase") if isinstance(ir, dict) else None
+    root = codebase.get("root") if isinstance(codebase, dict) else None
+    if app is None or not isinstance(root, str) or (layer / root).resolve() != app.resolve():
         return ""
     return f"agentic.rkt must declare {placement_clause(in_repo_dir)}: the layer is inside the repository"
 
@@ -480,7 +489,7 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
         raise AuthorError(f"{definition} already exists; it is never overwritten")
     if not (layer / "LLM.txt").is_file():
         raise AuthorError(f"{layer} has no LLM.txt: create the layer with `al init APP` first")
-    app, in_repo_dir = app_of(al, layer)
+    app, in_repo_dir = app_of(al, layer, explicit=bool(preferences))
     if app is None and not preferences:
         raise AuthorError(f"cannot tell where the application is (no git checkout {layer.name.removesuffix('.al')} "
                           "beside the layer): say it with --preferences, e.g. \"The codebase root, relative to the "
@@ -508,7 +517,7 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
             raise
         except Exception as exc:  # noqa: BLE001 — AlError of tools/al: the compiler's own text
             raise AuthorError(f"{exc}\n{REPAIR_HINT}") from exc
-        problem = placement_problem(ir, in_repo_dir)
+        problem = placement_problem(ir, in_repo_dir, layer, app)
         if problem:
             raise AuthorError(f"{problem}\n{REPAIR_HINT}")
         say(f"agentic.rkt already exists and compiles; accepted (no agent was asked); next: al gen {layer}")
@@ -549,7 +558,7 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
         raise
     except Exception as exc:  # noqa: BLE001 — AlError of tools/al: the compiler's own text
         raise AuthorError(f"{exc}\n{REPAIR_HINT}") from exc
-    problem = placement_problem(ir, in_repo_dir)
+    problem = placement_problem(ir, in_repo_dir, layer, app)
     if problem:
         raise AuthorError(f"{problem}\n{REPAIR_HINT}")
     say(f"agentic.rkt compiles; next: al gen {layer}")
