@@ -109,6 +109,13 @@ Supporting families: `agent` (claude-code, codex, custom, mock), `forge` (none, 
 `storage` (local, s3-compatible), `artefact` (log, junit, coverage, image, video, audio, trace,
 html, file), `voice` (Kokoro TTS + faster-whisper), `notify` (none, email, command), `layer` placement.
 
+A declared `voice` also gives the dashboard a voice helper: a separate local service (`adws/voice/serve.py`,
+loopback only, a token only the dashboard knows, models fetched once by `al voice LAYER setup` and checked
+against `models.json`) recognises and speaks, and the dashboard proxies to it so `dashboard.py` stays
+standard-library; the helper's agent runs with no tools and can only read runs through a fixed registry and
+propose a card. A proposal starts only after the person answers yes and clicks Approve, both enforced by the
+server (same browser session, unchanged digest, within two minutes).
+
 Defaults when a family is omitted: cli prompt, manual trigger, worktree, human review, Claude Code,
 no forge, local storage, no notifications. The smallest layer is 12 lines (`racket/al/examples/minimal.rkt`).
 
@@ -540,10 +547,10 @@ of the output format.
 racket/al/         #lang al: meta.rkt (meta-DSL), vocab.rkt, compiler.rkt, schema.rkt, reference.rkt, tests/
 schemas/           agentic-layer-v1.schema.json      (generated)
 docs/              AL-DSL.llms.txt (generated), DESIGN.md
-tools/al           init | scout | adopt | compile | gen | check | explain | eject | improve | dashboard | verify | cycle | promote | decide | integrate
+tools/al           init | scout | adopt | compile | gen | check | explain | eject | improve | dashboard | verify | cycle | promote | decide | integrate | voice
 tools/al_delivery.py  read-only detection of the branching style in use (`al scout`'s `## Delivery`)
 kit/templates/     command, HOP and expert templates   kit/schemas/  JSON output contracts
-kit/runtime/       adw_modules (generic IR interpreter; promotion.py behind a layer's adws/promote.py, integrate.py behind adws/integrate.py), triggers, voice, dispatch
+kit/runtime/       adw_modules (generic IR interpreter; promotion.py behind a layer's adws/promote.py, integrate.py behind adws/integrate.py), triggers, voice (incl. serve.py, the dashboard's speech service), dispatch
 meta/              LLM.txt template + the meta commands
 tests/             acceptance script over the testbeds
 testbeds/ layers/  cloned public repos and their generated layers (git-ignored)

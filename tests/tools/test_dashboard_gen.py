@@ -10,7 +10,8 @@ from pathlib import Path
 from conftest import KIT, LAYER_TEMPLATE, al, commit, git, manifest, sh, status
 
 DASHBOARD = ["adws/dashboard.py", "adws/dashboard/dashboard.py", "adws/dashboard/static/index.html",
-             "adws/dashboard/static/app.js", "adws/dashboard/static/app.css"]
+             "adws/dashboard/static/app.js", "adws/dashboard/static/app.css", "adws/dashboard/static/voice.js",
+             "adws/dashboard/static/voice-worklet.js"]
 PODMAN = ["adws/dashboard/Containerfile", "adws/dashboard/run-in-podman.sh"]
 
 

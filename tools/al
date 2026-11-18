@@ -115,6 +115,10 @@
                                    nixpkgs in env/flake.lock
   al verify  LAYER [--cmd NAME …] [--timeout S] [--json]
                                    run the layer's codebase cmds on a throwaway worktree, in the ADWs' environment
+  al voice   LAYER setup|doctor [--json]
+                                   the dashboard's voice helper ((voice kokoro …)): setup downloads the speech
+                                   models recorded in adws/voice/models.json once and checks every sha256;
+                                   doctor checks the files, loads both engines and measures their speed
   al notify-test LAYER [--event needs-human|failed|passed|shipped]
                                    send one marked test message through every (notify …) of the layer and report
                                    per notifier whether it was accepted
@@ -791,7 +795,8 @@ LOCAL_MANIFEST = ".al-manifest.local.json"  # generated files that name this mac
 GENERATOR = "al 0.2"
 IMPROVE_DIR = ".al-improve"                 # run state of `al improve` inside a layer
 DASHBOARD_KIT = KIT / "dashboard"
-DASHBOARD_FILES = ("dashboard.py", "static/index.html", "static/app.js", "static/app.css")
+DASHBOARD_FILES = ("dashboard.py", "static/index.html", "static/app.js", "static/app.css", "static/voice.js",
+                   "static/voice-worklet.js")
 DASHBOARD_PODMAN_FILES = ("Containerfile", "run-in-podman.sh")
 
 # adws/dashboard.py: the same text for every machine (paths are resolved when it runs), so it is
@@ -2274,6 +2279,8 @@ def check_layer(layer: Path) -> list[str]:
     if dash != "none":
         need += ["adws/dashboard.py", *(f"adws/dashboard/{f}" for f in DASHBOARD_FILES)]
         need += [f"adws/dashboard/{f}" for f in DASHBOARD_PODMAN_FILES] if dash == "podman" else []
+    if ir.get("voice"):
+        need += ["adws/voice/serve.py", "adws/voice/models.json", "adws/adw_modules/helper.py"]
     for rel in need:
         if not (layer / rel).is_file():
             problems.append(f"missing {rel}")
@@ -3505,6 +3512,51 @@ def sandbox_cli(a: argparse.Namespace) -> int:
     return 0
 
 
+def _voice_service_module(serve: Path):
+    """The layer's adws/voice/serve.py as a module: its file checks are standard library only (the speech
+    packages are imported lazily), so `al voice` reads the model files' state without them."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("al_layer_voice_serve", serve)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def voice_cli(a: argparse.Namespace) -> int:
+    """al voice LAYER setup|doctor [--json]: the layer's own adws/voice/serve.py. `setup` (downloads and
+    checksums, standard library only) and a `doctor` that finds files missing run with this Python, so nothing
+    but the recorded model files is fetched; a full `doctor` loads the engines with `uv run --script`."""
+    layer = a.layer.absolute()
+    ir_path = layer / "agentic-layer.json"
+    if not ir_path.is_file():
+        raise AlError(f"{layer} is not a generated layer: run `al gen {layer}` first")
+    try:
+        ir = json.loads(ir_path.read_text())
+    except ValueError as exc:
+        raise AlError(f"{ir_path}: {exc}") from exc
+    if not ir.get("voice"):
+        print(f"al voice: layer {ir.get('name', layer.name)} declares no (voice …): there is no voice helper "
+              "(add (voice kokoro) to agentic.rkt and run `al gen`)", file=sys.stderr)
+        return 2
+    serve = layer / "adws/voice/serve.py"
+    if not serve.is_file() or not (layer / "adws/voice/models.json").is_file():
+        raise AlError(f"{layer} was generated before `al voice`: run `al gen {layer}`")
+    args = ["--layer", str(layer)]
+    if a.action == "setup":
+        return subprocess.call([sys.executable, str(serve), "setup", *args])
+    args += ["--json"] if a.json else []
+    module = _voice_service_module(serve)
+    try:
+        paths = module.cache_paths(module.load_manifest(), module.stt_model_of(str(layer), None))
+        ready = not module.missing_files(module.verify(paths, checksum=False))
+    except module.NotRecorded:
+        ready = False                   # the service's own doctor names the recorded models (exit 2)
+    if not ready:                       # it reports the files and exits before importing any engine
+        return subprocess.call([sys.executable, str(serve), "doctor", *args])
+    uv = tools_module().need(("uv",), layer)["uv"]
+    return subprocess.call([uv, "run", "--quiet", "--script", str(serve), "doctor", *args])
+
+
 def run_cli(a: argparse.Namespace) -> int:
     """al run LAYER /NAME [ARGS …]: one start through the layer's launch.start, attached by default."""
     layer = a.layer.resolve()
@@ -3975,6 +4027,18 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--dry-run", action="store_true", help="say what it would do; change nothing")
     q = actions.add_parser("pull", help="pull the image of this recipe from the registry, check its al.recipe label, tag it")
     q.add_argument("--dry-run", action="store_true", help="say what it would do; change nothing")
+    p = sub.add_parser("voice", help="set up and check the dashboard's voice helper (speech models, engines)",
+                       description="The voice helper of a layer that declares (voice kokoro …) runs speech "
+                       "recognition (faster-whisper) and speech (Kokoro) on this machine. `setup` downloads only the "
+                       "files recorded in adws/voice/models.json into ~/.cache/al/ ($AL_VOICE_CACHE, "
+                       "$AL_KOKORO_CACHE) and checks every sha256; after it the service runs offline.")
+    p.add_argument("layer", type=Path)
+    actions = p.add_subparsers(dest="action", required=True)
+    actions.add_parser("setup", help="download the speech models once and verify their checksums "
+                       "(a second setup downloads nothing)")
+    q = actions.add_parser("doctor", help="files, device, load times and measured speed of both engines; "
+                           "exit 1 when something is missing")
+    q.add_argument("--json", action="store_true", help="print the report as JSON")
     p = sub.add_parser("notify-test", help="send one marked test message through every notifier of a layer")
     p.add_argument("layer", type=Path)
     p.add_argument("--event", default="needs-human", choices=("needs-human", "failed", "passed", "shipped"))
@@ -4135,6 +4199,8 @@ def main(argv: list[str] | None = None) -> int:
             return notify_test(a.layer.resolve(), a.event)
         elif a.cmd == "sandbox":
             return sandbox_cli(a)
+        elif a.cmd == "voice":
+            return voice_cli(a)
     except tools_module().ToolMissing as e:
         return tool_missing(a.cmd, e)
     except CompilerUnavailable as e:

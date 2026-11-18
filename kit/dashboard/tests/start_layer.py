@@ -11,6 +11,8 @@ with that path (a mock script cannot name a file after the run id); `build` writ
              person and can be resumed), for the stand-in's tests
   commands   classify, plan-chore, plan-bug, plan-feature; hop implement
   forge      forgejo at `forge_url` (tests/fake_forgejo.py), or none
+  voice      with voice=True: `(voice kokoro)` with its defaults, kit/runtime/voice/ copied to adws/voice/
+             and mock/helper.json (tests/voice_fixtures.py DEFAULT_RULES) for the dashboard's voice helper
 """
 from __future__ import annotations
 
@@ -21,6 +23,10 @@ from pathlib import Path
 
 KIT = Path(__file__).resolve().parents[2]
 RUNTIME = KIT / "runtime"
+VOICE_IR = {"id": "kokoro", "kind": "kokoro", "status": "stable", "sttModel": "base.en", "sttDevice": "auto",
+            "ttsVoice": "af_heart", "ttsSpeed": 100, "ttsLang": "en-us", "recordSeconds": 8, "speakSummaries": True,
+            "dashboardHelper": True, "listenMode": "hold", "helperAgent": "", "helperModelSet": "base",
+            "interrupt": True, "maxUtteranceSeconds": 30}
 HEADER = '#!/usr/bin/env -S uv run --quiet --script\n# /// script\n# requires-python = ">=3.11"\n# dependencies = []\n# ///\n'
 TEXT = {"description": "", "file": "", "focus": [], "fabric": [], "relevant": [], "validation": []}
 # what tools/al writes as adws/integrate.py for every layer (its INTEGRATE_SCRIPT; tests/tools/test_integrate_gen.py
@@ -154,11 +160,13 @@ def build_app(root: Path) -> Path:
 
 
 def build_layer(root: Path, name: str, app: Path, forge_url: str | None, *, with_launch: bool = True,
-                port_base: int = 28600, with_integrate: bool = True, change=None) -> Path:
+                port_base: int = 28600, with_integrate: bool = True, change=None, voice: bool = False) -> Path:
     """`change(ir)` may alter the definition before it is written; `with_integrate=False` gives a layer
     generated before the kit workflow `integrate` existed."""
     layer = root / f"{name}.al"
     data = ir(name, app, forge_url, port_base)
+    if voice:
+        data["voice"] = dict(VOICE_IR)
     if change is not None:
         change(data)
     (layer / "commands").mkdir(parents=True)
@@ -189,13 +197,19 @@ def build_layer(root: Path, name: str, app: Path, forge_url: str | None, *, with
     mock = layer / "mock"
     mock.mkdir()
     (mock / "build.json").write_text(json.dumps({"files": {"NOTES.md": "built\n"}, "output": "built"}))
+    if voice:
+        import voice_fixtures
+        shutil.copytree(RUNTIME / "voice", adws / "voice", ignore=shutil.ignore_patterns("__pycache__"))
+        voice_fixtures.helper_mock(layer, voice_fixtures.DEFAULT_RULES)
     return layer
 
 
 def build_site(root: Path, forge_url: str | None) -> dict[str, Path]:
-    """root/app plus three layers on it: notes (forgejo at forge_url), bare (forge none) and old
-    (generated before starting from the dashboard: no adw_modules/launch.py)."""
+    """root/app plus four layers on it: notes (forgejo at forge_url), bare (forge none), old
+    (generated before starting from the dashboard: no adw_modules/launch.py) and talk (forge none,
+    with `(voice kokoro)`, its voice service and the mock helper)."""
     app = build_app(root)
     return {"app": app, "notes": build_layer(root, "notes", app, forge_url, port_base=28600),
             "bare": build_layer(root, "bare", app, None, port_base=28650),
-            "old": build_layer(root, "old", app, None, with_launch=False, port_base=28700)}
+            "old": build_layer(root, "old", app, None, with_launch=False, port_base=28700),
+            "talk": build_layer(root, "talk", app, None, port_base=28750, voice=True)}

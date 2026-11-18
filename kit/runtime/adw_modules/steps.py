@@ -21,7 +21,7 @@ from . import skips
 from . import slots
 from .agents import run_agent
 from .budget import BudgetExceeded
-from .errors import LayerError, StepFailed, StepWaiting
+from .errors import LayerError, RunStopped, StepFailed, StepWaiting
 from .templates import render_step_arg
 from .usage import LimitReached
 
@@ -57,6 +57,14 @@ def _kill_group(process: subprocess.Popen) -> None:
         pass  # the group exited between the timeout and the kill; nothing left to stop
 
 
+def _reap(process: subprocess.Popen) -> None:
+    """Collect a killed child without letting a second signal or a slow exit mask the first error."""
+    try:
+        process.wait(timeout=10)
+    except BaseException:  # noqa: BLE001 — best effort; the caller re-raises what stopped it
+        pass
+
+
 def _as_text(data: bytes) -> str:
     """Decode command output the way text-mode pipes did: UTF-8, universal newlines."""
     return data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
@@ -82,6 +90,10 @@ def run_command(argv: list[str], cwd: Path, env: dict[str, str], timeout: int,
             _kill_group(process)
             output, _ = process.communicate(timeout=30)
             return 124, output + f"\ncommand timed out after {timeout}s\n"
+        except BaseException:  # the run was stopped (RunStopped) or interrupted: never leave the command running
+            _kill_group(process)
+            _reap(process)
+            raise
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("wb", buffering=0) as log:
@@ -99,6 +111,10 @@ def run_command(argv: list[str], cwd: Path, env: dict[str, str], timeout: int,
             _kill_group(process)
             process.wait(timeout=30)
             code, note = 124, f"\ncommand timed out after {timeout}s\n"
+        except BaseException:
+            _kill_group(process)
+            _reap(process)
+            raise
     output = _as_text(log_path.read_bytes()) + note
     if log_path.read_bytes() != output.encode("utf-8"):
         log_path.write_text(output, encoding="utf-8")
@@ -328,8 +344,8 @@ def run_run(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> Non
             output = run_agent(layer, state, name, command_name, args, model_set, env_stack,
                                str(step.get("agent") or ""), tier_from)
             break
-        except (BudgetExceeded, LimitReached):
-            raise  # a spending or usage limit is never retried
+        except (BudgetExceeded, LimitReached, RunStopped):
+            raise  # a spending or usage limit, or a person's stop, is never retried
         except StepFailed as exc:
             if attempt == retries:
                 raise
@@ -444,6 +460,7 @@ def _last_progress_line(log_path: Path) -> str:
 
 
 SCRIPT_TAIL = 4000  # characters of a script's output kept as the step's output ($out.NAME)
+ANSWER_FILE = "answer.md"  # a person's answer to a waiting run (launch.resume), exported as ADW_ANSWER_FILE
 
 
 def run_script(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> None:
@@ -458,9 +475,11 @@ def run_script(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> 
     command = layer.cmd(step["cmd"])
     args = [render_step_arg(str(value), step_variables(state), state.outputs) for value in step.get("args", [])]
     resuming = bool((state.scripts.get(name) or {}).get("waiting"))
+    answer = Path(layer.layer_dir) / "agents" / state.adw_id / ANSWER_FILE   # written by launch.resume(answer=…)
     context = {"ADW_ID": state.adw_id, "ADW_PROMPT": state.prompt, "ADW_CLASS": state.klass,
                "ADW_PLAN": state.plan, "ADW_BRANCH": state.branch, "ADW_WORKTREE": str(env_stack.cwd),
-               "ADW_LAYER_DIR": str(layer.layer_dir), "ADW_STEP": name, "ADW_RESUME": "1" if resuming else ""}
+               "ADW_LAYER_DIR": str(layer.layer_dir), "ADW_STEP": name, "ADW_RESUME": "1" if resuming else "",
+               "ADW_ANSWER_FILE": str(answer) if answer.is_file() else ""}
     # exported in the shell line itself, so they reach the command in a container too
     exports = " ".join(f"{key}={shlex.quote(str(value))}" for key, value in context.items())
     line = f"export {exports}; {command['run']}" + "".join(f" {shlex.quote(arg)}" for arg in args)
@@ -553,6 +572,9 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
     # a rejected review is finished: re-running it on --resume would repeat its agent calls and commits
     if record.get("status") in ("passed", REJECTED):
         return
+    stopped = getattr(state, "stopped_by", "")
+    if stopped:  # a stop that a step swallowed while it ran still ends the run before the next step
+        raise RunStopped(name, stopped)
     when = str(step.get("when", "always"))
     if when.startswith("class-") and state.klass != when.removeprefix("class-"):
         stamp = _timestamp()

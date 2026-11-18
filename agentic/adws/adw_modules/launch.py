@@ -22,6 +22,12 @@ as replaced by the new one.
 
 Steps 1-6 hold agents/.starts.lock, so two starts with one key (a double click, a retried request)
 start one run. The launched process is detached (its own session) unless the caller attaches.
+
+The run controls the dashboard uses too (`adws/dispatch.py --resume ID [--answer]` / `--stop ID`):
+`resume()` continues a waiting, failed or handed-over run (detached, exactly as `start()` launches),
+optionally with a person's answer to a waiting run in agents/<id>/answer.md (ADW_ANSWER_FILE of its
+script steps); `stop()` sends SIGTERM to a running run's process group on this host, and the runner
+ends it `failed`, "stopped by a person" (runner._on_term).
 """
 from __future__ import annotations
 
@@ -29,6 +35,8 @@ import hashlib
 import json
 import os
 import re
+import signal
+import socket
 import subprocess
 import tempfile
 import time
@@ -54,7 +62,11 @@ ISSUE_MODES = ("none", "start", "trigger")
 DECIDER_MODES = ("off", "suggest", "auto")   # decide.MODES: the stand-in's mode for one run (--decider)
 TITLE_CHARS = 80
 EXIT = {"started": 0, "issue-created": 0, "error": 1, "invalid": 2, "refused": 3,
-        "confirm-duplicate": 4, "confirm-ships": 4}
+        "confirm-duplicate": 4, "confirm-ships": 4, "resumed": 0, "stopping": 0}
+RUN_ID_RE = re.compile(r"^[0-9a-fA-F]{8}$")
+ANSWER_FILE = "answer.md"          # steps.ANSWER_FILE: a person's answer to a waiting run
+MAX_ANSWER = 8 * 1024              # bytes of UTF-8
+RESUMABLE = ("waiting", "failed", "handed-over")
 
 
 @dataclass(frozen=True)
@@ -368,3 +380,118 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
             return result
         except KeyboardInterrupt:   # the run shares the terminal and got the interrupt too: wait for it to end
             continue
+
+
+# ---------------------------------------------------------------- run controls
+
+def _alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True   # someone else's process with that pid: alive, and not ours to signal
+    return True
+
+
+def _load_run(layer: Any, run_id: str) -> tuple[Any, str]:
+    """(the run's state, "") or (None, why not)."""
+    if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
+        return None, "a run id is 8 hexadecimal characters"
+    if not (state_module.run_dir(layer.layer_dir, run_id) / "state.json").is_file():
+        return None, f"no run {run_id} in this layer"
+    try:
+        return state_module.load(layer.layer_dir, run_id), ""
+    except LayerError as exc:
+        return None, str(exc)
+
+
+def resume_argv(layer_dir: Path, state: Any) -> list[str]:
+    """How a run continues: its workflow's script, `dispatch.py --command NAME` for a single-command
+    run, or `promote.py run FROM TO` for a promotion run; always `--resume --adw-id ID`."""
+    promotion = (state.definition or {}).get("promotion")
+    if isinstance(promotion, dict) and promotion.get("from"):
+        argv = ["uv", "run", "--quiet", str(Path(layer_dir) / "adws" / "promote.py"), "run",
+                str(promotion["from"]), str(promotion.get("to") or "")]
+    elif str(state.adw).startswith(COMMAND_PREFIX):
+        argv = ["uv", "run", "--quiet", str(Path(layer_dir) / "adws" / "dispatch.py"), "--command",
+                str(state.adw)[len(COMMAND_PREFIX):]]
+    else:
+        argv = inputs.adw_argv(Path(layer_dir), str(state.adw), None)
+    return argv + ["--resume", "--adw-id", state.adw_id]
+
+
+def _write_answer(path: Path, answer: str) -> None:
+    """agents/<id>/answer.md, readable by its owner only, replaced atomically."""
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(handle, "w", encoding="utf-8") as fh:
+        fh.write(answer.rstrip("\n") + "\n")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def resume(layer: Any, run_id: str, answer: str | None = None, spawn: Callable[..., Any] = _spawn) -> dict[str, Any]:
+    """Continue run `run_id` (waiting, failed or handed-over, and no process of it alive) detached, as
+    start() launches; with `answer` (a waiting run only, at most MAX_ANSWER bytes) the person's answer
+    is written to agents/<id>/answer.md first. → {"status": resumed | invalid | refused | error, …}."""
+    base = {"layer": layer.name, "run_id": run_id}
+    with _ledger_lock(layer):   # two resumes of one run (a double click) launch it once
+        state, why = _load_run(layer, run_id)
+        if state is None:
+            return _result("invalid", error=why, **base)
+        here = state.host in ("", socket.gethostname())
+        if state.status == "running" or (here and state.status in RESUMABLE and _alive(int(state.pid or 0))):
+            return _result("refused", error=f"run {run_id} is running", **base)
+        if state.status not in RESUMABLE:
+            return _result("invalid", error=f"run {run_id} is {state.status}; only a waiting, failed or "
+                                            "handed-over run can be resumed", **base)
+        run = state_module.run_dir(layer.layer_dir, run_id)
+        if answer is not None:
+            if state.status != "waiting":
+                return _result("invalid", error=f"run {run_id} is {state.status}; only a waiting run takes an answer",
+                               **base)
+            if not isinstance(answer, str) or not answer.strip():
+                return _result("invalid", error="the answer is empty", **base)
+            if len(answer.encode("utf-8")) > MAX_ANSWER:
+                return _result("invalid", error=f"the answer is over {MAX_ANSWER} bytes", **base)
+            _write_answer(run / ANSWER_FILE, answer)
+        argv = resume_argv(Path(layer.layer_dir), state)
+        with (run / LAUNCH_LOG).open("ab") as log:
+            try:
+                process = spawn(argv, cwd=str(layer.layer_dir), stdin=subprocess.DEVNULL, stdout=log,
+                                stderr=subprocess.STDOUT, start_new_session=True)
+            except OSError as exc:
+                log.write(f"could not start {argv[0]}: {exc}\n".encode("utf-8"))
+                return _result("error", error=f"could not start {argv[0]}: {exc}", **base)
+        # until the resumed run writes its own state: running, owned by the launched process, so a
+        # second resume is refused and a reader sees it started (a launch that never comes up shows
+        # as died, and launch.log says why)
+        state.status, state.ended = "running", ""
+        state.pid, state.host, state.heartbeat = int(getattr(process, "pid", 0) or 0), socket.gethostname(), \
+            state_module.now()
+        state.save(layer.layer_dir)
+    return _result("resumed", answered=answer is not None, **base)
+
+
+def stop(layer: Any, run_id: str) -> dict[str, Any]:
+    """SIGTERM to the process group of run `run_id` when it is running on this host and its process is
+    alive; the runner ends it `failed`, "stopped by a person". → {"status": stopping | invalid, …}."""
+    base = {"layer": layer.name, "run_id": run_id}
+    state, why = _load_run(layer, run_id)
+    if state is None:
+        return _result("invalid", error=why, **base)
+    pid = int(state.pid or 0)
+    if state.status != "running" or state.host != socket.gethostname() or not _alive(pid):
+        return _result("invalid", error="not running here", **base)
+    try:
+        group = os.getpgid(pid)
+        if group == os.getpgrp():   # never this process's own group (a run attached to our terminal)
+            os.kill(pid, signal.SIGTERM)
+        else:
+            os.killpg(group, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError) as exc:
+        return _result("invalid", error=f"not running here ({exc.strerror or exc})", **base)
+    return _result("stopping", pid=pid, **base)

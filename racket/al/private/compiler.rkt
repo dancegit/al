@@ -647,6 +647,7 @@
            (when (eq? (family-name fam) 'budget) (hash-set! clause-of 'budget-clause (car c)))
            (when (eq? (family-name fam) 'stand-in) (hash-set! clause-of 'stand-in-clause (car c)))
            (when (eq? (family-name fam) 'cycle) (hash-set! clause-of 'cycle-clause (car c)))
+           (when (eq? (family-name fam) 'voice) (hash-set! clause-of 'voice-clause (car c)))
            (when (eq? (family-name fam) 'agent) (hash-set! clause-of (cons 'agent (hash-ref o 'id)) (car c)))
            (when (eq? (family-name fam) 'notify) (hash-set! clause-of (cons 'notify (hash-ref o 'id)) (car c)))
            (when (eq? (family-name fam) 'toolchain) (hash-set! clause-of (cons 'toolchain (hash-ref o 'id)) (car c)))
@@ -911,6 +912,22 @@
     (define (hop? name) (findf (lambda (x) (equal? (hash-ref x 'name) name)) hops))
     (define (agent-tiers agent)
       (and (hash-has-key? agent 'models) (map (lambda (m) (hash-ref m 'tier)) (hash-ref agent 'models))))
+    ;; the dashboard's voice helper: utterance length, its agent and that agent's tier
+    (when voice
+      (parameterize ([current-clause (hash-ref clause-of 'voice-clause #f)])
+        (define secs (hash-ref voice 'maxUtteranceSeconds))
+        (unless (<= 5 secs 120)
+          (fail "(voice kokoro): #:max-utterance-seconds is 5–120, got ~a" secs))
+        (define wanted (hash-ref voice 'helperAgent))
+        (define agent-ids (map (lambda (o) (hash-ref o 'id)) (opts 'agent)))
+        (unless (or (string=? wanted "") (member wanted agent-ids))
+          (fail "(voice kokoro): #:helper-agent `~a` is not a declared agent; declared: ~a" wanted (names agent-ids)))
+        (define helper (if (string=? wanted "") (car (opts 'agent)) (opt 'agent wanted)))
+        (define tier (hash-ref voice 'helperModelSet))
+        (define tiers (agent-tiers helper))
+        (when (and tiers (not (member tier tiers)))
+          (fail "(voice kokoro): #:helper-model-set `~a` is not a tier of agent `~a`; it declares: ~a"
+                tier (hash-ref helper 'id) (names tiers)))))
     ;; every tier a workflow can use must be declared on the agent that runs it
     (define (check-tiers who ag rv steps)
       (define (use agent-id tier why)

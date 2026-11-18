@@ -60,6 +60,9 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | `--jobs-dir DIR` | where actions are recorded (default `$XDG_STATE_HOME/al/dashboard-jobs`, else `~/.local/state/al/dashboard-jobs`) |
 | `--al PATH` | the al tool the actions run (default: `tools/al` of the checkout this kit belongs to, else `al` on `PATH`) |
 | `--author-agent claude-code\|mock`, `--author-mock FILE` | the agent `al author` uses in the create and adopt actions (`--author-mock` for tests: `--agent mock --mock FILE`) |
+| `--no-voice` | no voice helper panel and no speech service (implied by `--in-container`) |
+| `--voice-dir DIR` | where voice conversations are kept (default `$XDG_STATE_HOME/al/dashboard-voice`, else `~/.local/state/al/dashboard-voice`) |
+| `--voice-fake FILE` | tests: run the speech service with its fake engines and the transcripts of FILE (`{"transcripts": [...]}`) |
 
 ## What you see
 
@@ -321,11 +324,40 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
   default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'`: it may show its own
   pictures and recordings and its inline style, and can run no script at all.
 
+## Voice helper
+
+A layer that declares `(voice kokoro)` (with `#:dashboard-helper`, the default) gets a voice helper panel on
+its layer page and on the panel of a repository whose layer is watched. The person speaks (hold to talk, or
+always listen with voice-activity detection) or types; the helper answers aloud and in text, and proposes
+work as a **card**. How to use it: "Talk to the dashboard" in `docs/GUIDE.md`.
+
+- **Speech service.** Speech runs in a separate uv script, the layer's `adws/voice/serve.py`
+  (faster-whisper, Kokoro int8 ONNX with 4 threads, the Silero VAD bundled in faster-whisper), so
+  `dashboard.py` stays standard-library. The dashboard starts it on demand per layer
+  (`uv run --script adws/voice/serve.py serve --layer L --port 0`, its own session), bound to `127.0.0.1`,
+  with a random token in `AL_VOICE_TOKEN` that only the dashboard knows (never on a command line or in the
+  page), and proxies to it; it is stopped after 10 idle minutes and when the dashboard stops. The service
+  loads models only from the cache `al voice LAYER setup` verified, never downloads, and refuses (and logs)
+  every non-loopback connection. Without the models the panel says "voice is not set up" and shows the
+  command.
+- **The helper's mind** is the layer's own agent, run through `adws/dispatch.py --helper --json` (the
+  prompt on stdin): claude-code with every tool disabled (`--tools ""`, `--strict-mcp-config`,
+  `--max-turns 1`) in an empty temporary directory, or the mock agent's `mock/helper.json`. It answers with
+  one JSON object per turn. Its only tools are a fixed, read-only registry inside the dashboard
+  (`HELPER_TOOLS`: `list_runs`, `run_summary`, `run_documents`, `startables`, `repo_state`, `queue`,
+  `propose`); it cannot read files, run processes or write. Recognised speech is quoted to it as data.
+- **Proposals.** `propose` validates an action (`start`, `retry`, `resume`, `answer`, `stop`, or a `scout`,
+  `check` or `explain` job) and creates a card whose summary the server writes. The person's "yes", "no"
+  or a change is classified by the server, never by the agent: yes confirms the card, a change supersedes it.
+- **Transcript** in `<voice-dir>/<conversation>.jsonl` (mode 0600). Audio stays in memory unless **Keep
+  recordings** is ticked; then utterances are written under the layer's `agents/voice/<conversation>/`.
+
 ## Safety
 
-- **Four writes, guarded** (and the stand-in's three, below). Only GET and HEAD, plus `POST /api/models`, `POST /api/start`,
-  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, and `POST /api/promotion` and `POST /api/integrate`, which start runs through the layer's own scripts), and `POST /api/decider`, `POST /api/decision` and `POST /api/standin`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle` or `/api/integrate` is
-  405 too), and no endpoint stops a run or changes its records (a settlement is a file of its own). All four writes pass one guard
+- **Writes, guarded** (and the stand-in's three, below). Only GET and HEAD, plus `POST /api/models`, `POST /api/start`,
+  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, and `POST /api/promotion` and `POST /api/integrate`, which start runs through the layer's own scripts), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
+  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle` or `/api/integrate` is
+  405 too). No endpoint changes a run's records (a settlement is a file of its own), and only an approved voice proposal can resume, answer or stop a run. All four writes pass one guard
   (`Handler._write_guard`): the token as for every request, but from the `Authorization` header or
   the cookie only (a token in the query string is refused); a loopback `Host` when there is no
   token; an `Origin` header equal to `http://<Host>` (a missing one is refused); the
@@ -455,6 +487,21 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
   dashboard restart; one whose runner is gone is rewritten as `interrupted`, never shown as running.
   `--no-actions` (403 "actions are off") and `--read-only` turn actions off; without the al tool they are
   409 and every button says where it looked. No action in `--in-container` or `al dashboard --podman`.
+- **The voice routes** (`/api/voice/session`, `service`, `utterance`, `listen`, `turn`, `speak`, `cancel`,
+  `recordings`) pass the same guard as the writes, in the same order and with the same messages, except
+  the `--read-only` refusal, plus the per-browser `al_voice_session` cookie (HttpOnly, SameSite=Strict);
+  `recordings` is refused under `--read-only`. They talk and listen; none of them starts anything. A layer
+  without `(voice …)` answers 404.
+- **Approval.** `POST /api/voice/approve {layer, proposal, digest}` is the one write of the voice helper. It
+  passes the full write guard and the session cookie, and succeeds only for a proposal of the same browser
+  session (403 otherwise) that the person confirmed by answering yes (409 "not confirmed: answer yes first"),
+  unchanged since (409 "changed after confirmation"), within two minutes of the yes (410), once (409 on a
+  second click). `--read-only` refuses every card; `--no-start` (and a container without
+  `--allow-start-in-container`) refuses start, retry, resume, answer and stop; `--no-actions` refuses jobs
+  (403; the conversation keeps working and the card says why). A start or retry goes through the same code as
+  `POST /api/start`, a job through the same code as `POST /api/action`, a resume, answer or stop through the
+  layer's own `adws/dispatch.py --resume/--stop --json` (a stop sends SIGTERM to the run's process group on
+  this host; the run ends `failed`, "stopped by a person").
 - **Served files** are limited to a watched layer's `agents/`, `artefacts/`, `specs/`, its
   `agentic-layer.json` / `agentic.rkt` and `EXPLAIN.md`. Traversal (`..`, encoded or not), absolute
   paths, NUL bytes and anything whose real path leaves that tree (symlinked files or directories)
@@ -717,9 +764,22 @@ default for a repository with a setup, and the reason shown when actions are off
 `generate-wizard-job.png`. `tests/tools/test_dashboard_workspace.py` (at the
 repository root) runs the same flows end to end with the real al and the mock author agent, a create
 inside the repository included.
+`tests/test_voice_helper.py` covers proposals (confirm then approve, every refusal, expiry with an injected
+clock, single use, the flags per action kind, retry as a start), `classify_answer`, the fixed tool
+registry and that speech cannot widen it, `speakable`, `parse_helper_reply`, the four-tool loop limit,
+`is_echo` and where conversations are kept; `tests/test_voice_server.py` runs the routes against the speech
+service in fake mode (`--voice-fake`, `tests/voice_fixtures.py`): status, guards, a card from an utterance,
+yes without Approve starting nothing, Approve starting a mock run, every refusal, the job, resume, answer
+and stop cards, speak and cancel, echo, recordings and the service's start and reaping.
+`tests/test_browser_voice.py` (Chrome with a fake microphone and fake engines, 1280 and 390 px) checks every
+panel state, hold to talk, always listen, approve, barge-in, the synthesizer following the audio, reduced
+motion, `--read-only` and hostile text; with `AL_DASHBOARD_SHOTS=DIR` it saves `voice-*.png` and
+`voice-exchange-{1280,390}.webm`. `tests/test_browser_voice_real.py` (markers `voice`, `slow`;
+`AL_VOICE_REAL=1` and the models set up) runs the same flow with the real engines.
 `tests/test_writes_together.py` runs both features in one server: `--read-only` refuses all three
 writes, `--no-start` and `--no-actions` each refuse only their own, each write has its body limit,
-and both features' GET routes and banner states are there.
+and both features' GET routes and banner states are there; the voice helper's Approve follows the same
+flags per kind of card while its conversation keeps working.
 
 ## Demo scripts (`demo/`)
 

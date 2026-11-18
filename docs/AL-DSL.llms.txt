@@ -40,6 +40,7 @@ pairs, e.g. `#:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:eff
 - #:ship deploy needs #:deploy-cmd on the review option or on every stage the ADW delivers to.
 - prompt-input `issue`, trigger `forge-actions`, and webhook issue events need a forge other than `none`.
 - prompt-input `voice` and trigger `voice` need a (voice …) declaration.
+- (voice kokoro …): #:max-utterance-seconds is 5–120; #:helper-agent, when given, names a declared agent; #:helper-model-set is a tier of the helper's agent (the first declared agent when #:helper-agent is empty).
 - An ADW's environment stack has at most one option per kind; `host` cannot be combined with `worktree`; an ADW with run steps that write needs `worktree`.
 - claude-code #:permission-mode bypassPermissions is only accepted for ADWs whose environment stack contains a podman option with #:agent-inside #t (the agent itself must be sandboxed).
 - An ADW whose review option is `auto` with #:ship merge or deploy must have a podman option in its environment stack: nothing ships untouched from an unsandboxed environment.
@@ -249,6 +250,12 @@ Declare at most one. Default when omitted: none.
   - `#:stt-device` (auto | cpu | cuda; default auto) — Inference device for recognition.
   - `#:record-seconds` (integer; default 8) — Push-to-talk recording length when no silence detection is available.
   - `#:speak-summaries` (boolean; default #t) — Speak the run summary when an ADW finishes.
+  - `#:dashboard-helper` (boolean; default #t) — Show the voice helper panel on the dashboard: talk about this layer's runs; it proposes work, and a person starts it with a click on Approve.
+  - `#:listen-mode` (hold | always; default hold) — The panel's listening mode until a person switches it (remembered per browser): `hold` to talk, or `always` listen with voice-activity detection.
+  - `#:helper-agent` (string; default "") — Agent id the helper thinks with; empty = the first declared agent. It must be claude-code or mock, which run with no tools.
+  - `#:helper-model-set` (string; default "base") — Model tier of the helper's agent.
+  - `#:interrupt` (boolean; default #t) — In always-listen mode, speaking over the helper stops its playback.
+  - `#:max-utterance-seconds` (integer; default 30) — Longest utterance that is recognised, 5–120 seconds.
 
 ### `dashboard`
 

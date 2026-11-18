@@ -318,6 +318,35 @@
     return data;
   };
 
+  // static/voice.js (the voice helper panel) builds its nodes with these same helpers
+  window.alUi = Object.freeze({ h, api });
+
+  /** Whether a layer's page shows the voice helper panel: the server's `voice.panel` (a layer that declares
+   * (voice …) with the dashboard helper on, outside --no-voice / a container); when speech cannot run here
+   * the panel says why (not set up: the `al voice NAME setup` command). */
+  function voiceShown(voice) {
+    return !!(voice && window.alVoice && (voice.panel || voice.available));
+  }
+
+  /** The voice panel of a page: mounts once per (layer, repository) and survives the page's re-renders. */
+  function voiceSlot() {
+    const host = h("div", { class: "voice-host" });
+    let mounted = null, mountedKey = "";
+    return {
+      host,
+      show(voice, layerKey, repoKey) {
+        const wanted = voiceShown(voice) ? `${layerKey}|${repoKey || ""}` : "";
+        if (wanted === mountedKey) return;
+        if (mounted) mounted.destroy();
+        mounted = null;
+        mountedKey = wanted;
+        clear(host);
+        if (wanted) mounted = window.alVoice.panel(host, { layer: layerKey, repo: repoKey || "" });
+      },
+      destroy() { if (mounted) mounted.destroy(); mounted = null; mountedKey = ""; },
+    };
+  }
+
   const modelNotes = new Map();   // layer key -> {text, error}: the last answer, kept when the block is rebuilt
 
   /** One layer's block of the "Models" panel: which model each tier means, why, and a switch. */
@@ -3287,14 +3316,18 @@
     const key = route.parts[1];
     replace(crumbs, h("a", { href: "#/layers", text: "layers" }), " / ", h("span", { text: key }));
     const content = h("div", {}, h("div", { class: "empty", text: "loading…" }));
-    main.append(content);
+    const voice = voiceSlot();
+    const rest = h("div", {});   // re-rendered below the voice panel, which keeps its state
+    main.append(content, voice.host, rest);
     const load = async () => {
       let data;
       try { data = await api(`/api/layer?layer=${enc(key)}`); } catch (error) {
         replace(content, h("div", { class: "empty", text: `No such layer: ${key}` }));
+        clear(rest);
         return;
       }
       const layer = data.layer, st = data.stats;
+      voice.show(layer.voice || (store.layer(key) || {}).voice, key, "");
       const explain = data.explain ? h("button", { class: "toggle", type: "button", text: "what this layer does, in plain words", onclick: () => {
         const overlay = document.getElementById("overlay");
         replace(overlay, h("div", { class: "panel", onclick: (e) => e.stopPropagation() }, h("div", { class: "card-head" }, h("h3", { text: data.explain }), h("span", { class: "spacer" }),
@@ -3308,7 +3341,8 @@
             h("a", { class: "toggle", href: `/files/${enc(key)}/agentic-layer.json`, target: "_blank", rel: "noopener", text: "agentic-layer.json" }),
             h("a", { class: "toggle", href: routeHash(["runs"], { layer: key }), text: "all runs" }))),
           h("div", { class: "figures" }, [["runs", st.count], ["pass rate", fmt.pct(st.pass_rate)], ["total cost", fmt.cost(st.cost_total)], ["median time", fmt.dur(st.duration_median)]]
-            .map(([label, value]) => h("div", { class: "stat" }, h("div", { class: "label", text: label }), h("div", { class: "value", text: value }))))),
+            .map(([label, value]) => h("div", { class: "stat" }, h("div", { class: "label", text: label }), h("div", { class: "value", text: value }))))));
+      replace(rest,
         (data.promotions || []).length ? h("div", { class: "card promotions-section" },
           h("div", { class: "card-head" }, h("h3", { text: "Promotions" }), h("span", { class: "dim", text: "a stage moves into the next once people accept it" }),
             h("span", { class: "spacer" }), h("span", { class: "promotion-note", role: "status" })),
@@ -3344,7 +3378,7 @@
     };
     load();
     const off = store.on(throttle((kind) => { if (kind !== "slots" && kind !== "containers") load(); }, 3000));
-    return { destroy: off };
+    return { destroy() { off(); voice.destroy(); } };
   }
 
   // =========================================================================== views: Repos (the workspace) and Job
@@ -3565,7 +3599,10 @@
   function ReposView(main, crumbs, route) {
     const filter = h("input", { type: "search", class: "repo-filter", placeholder: "filter repositories  /", "aria-label": "filter repositories" });
     const list = h("div", { class: "repo-list", role: "listbox", "aria-label": "repositories" });
-    const panel = h("div", { class: "repo-panel" });
+    const panelTop = h("div", {});
+    const panelRest = h("div", {});
+    const voice = voiceSlot();     // between the repository's card and its al panel; kept across re-renders
+    const panel = h("div", { class: "repo-panel" }, panelTop, voice.host, panelRest);
     const refresh = h("button", { type: "button", class: "toggle", "data-role": "refresh", text: "refresh", title: "rescan the workspace" });
     const guided = h("a", { class: "toggle", href: "#/generate", "data-role": "guided", text: "generate a layer…",
       title: "guided generation: repository, placement, options, review" });
@@ -3603,12 +3640,16 @@
 
     async function loadPanel() {
       if (!selected) {
-        replace(panel, h("div", { class: "empty", text: store.workspace.enabled ? "Choose a repository." : "" }));
+        replace(panelTop, h("div", { class: "empty", text: store.workspace.enabled ? "Choose a repository." : "" }));
+        clear(panelRest);
+        voice.show(null);
         return;
       }
       let data;
       try { data = await api(`/api/repo?repo=${enc(selected)}`); } catch (_error) {
-        replace(panel, h("div", { class: "empty", text: `No repository ${selected} in the workspace.` }));
+        replace(panelTop, h("div", { class: "empty", text: `No repository ${selected} in the workspace.` }));
+        clear(panelRest);
+        voice.show(null);
         return;
       }
       loaded = data;
@@ -3655,7 +3696,8 @@
           commands,
           h("div", { class: "why", text: action.available ? "" : action.why }));
       });
-      replace(panel,
+      voice.show(layer && layer.voice, layer && layer.key, repo.key);
+      replace(panelTop,
         h("div", { class: "card" },
           h("div", { class: "card-head" }, h("h2", { text: repo.name }), stateBadge(repo.state), h("span", { class: "mono dim", text: repo.branch }),
             repo.dirty ? h("span", { class: "badge warn", text: "uncommitted changes" }) : null, h("span", { class: "spacer" }),
@@ -3665,7 +3707,8 @@
           repo.layer ? h("div", { class: "repo-layer" }, "layer: ", h("span", { class: "mono", text: repo.layer }),
             layer ? [" · ", h("a", { href: `#/layer/${enc(layer.key)}`, text: "workflows and runs" }), " ",
               h("span", { class: "piter" }, layer.adws.map((name) => h("span", { class: "badge", text: name })))]
-              : h("span", { class: "faint", text: repo.layer_generated ? " (not watched yet)" : " (not generated yet: run gen)" })) : null),
+              : h("span", { class: "faint", text: repo.layer_generated ? " (not watched yet)" : " (not generated yet: run gen)" })) : null));
+      replace(panelRest,
         h("div", { class: "card al-panel" }, h("div", { class: "card-head" }, h("h3", { text: "al" }),
           h("span", { class: "dim", text: "each button runs exactly the command line shown under it" }),
           repo.state === "none" || repo.state === "setup" ? [h("span", { class: "spacer" }),
@@ -3709,7 +3752,7 @@
     renderList();
     loadPanel();
     return {
-      destroy: off,
+      destroy() { off(); voice.destroy(); },
       searchInput: filter,
       accepts: (r) => r.view === "repos" || r.view === "repo",
       route(r) {
@@ -4216,7 +4259,8 @@
   function help() {
     const overlay = document.getElementById("overlay");
     const keys = [["1 · 2 · 3 · 4", "Now · Runs · Layers · Repos"], ["j / k", "next / previous run, step or transcript event"], ["Enter", "open the selection / expand an event"],
-      ["/", "search (runs or transcript)"], ["f", "follow the running step's transcript or log"], ["Esc", "back / close"], ["?", "this help"]];
+      ["/", "search (runs or transcript)"], ["f", "follow the running step's transcript or log"], ["Esc", "back / close"], ["?", "this help"],
+      ["Space", "voice helper: hold to talk (focus in its panel)"], ["Esc", "voice helper: stop speaking"], ["M", "voice helper: close the microphone"]];
     replace(overlay, h("div", { class: "panel", onclick: (e) => e.stopPropagation() }, h("h3", { text: "Keyboard" }),
       h("div", { class: "shortcuts" }, keys.map(([k, v]) => [h("span", {}, h("kbd", { text: k })), h("span", { text: v })])),
       h("p", { class: "dim", text: "Every view is a link: copy the address bar to share a run, a step or a filtered transcript." })));
