@@ -11,7 +11,7 @@ generator then produces the rest deterministically, in a folder beside the repos
 > **Not yet shown** — large or ambiguous tasks · GitHub end to end · a real team's repository.\
 > [Full status](#status)
 
-**[Watch the 13-minute tour][tour]** (link to be added) — it explains the idea and shows every part running for real.
+**[Watch the 13-minute tour][tour]** — it explains the idea and shows every part running for real.
 
 [tour]: https://github.com/dancegit/al/releases/download/media-v1/demo-tour.mp4
 
