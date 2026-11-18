@@ -332,6 +332,75 @@ worktree, branch, commit, sandbox=None) -> (bool, str)` (today's `_merge_locally
 of the rule (`al/promote/`) until then. `review.py` could offer `run_reviewers(layer, state, option, round,
 env_stack)`, so agent approvers need no run-scoped IR copy (next to the `patch_round` follow-up above).
 
+## Integrating a handed-over run
+
+A workflow whose auto review merges hands a run to a person when the merge is not possible: `ship.py`
+falls back with `merge-conflict:…` or `ship-failed:…`, and the run ends `handed-over`. `al integrate
+LAYER RUN` (the layer's `adws/integrate.py run`, `adw_modules/integrate.py`) starts an **integration
+run**, built like a promotion run: an ordinary run of a synthetic ADW named `integrate`, recorded in
+`state.definition`, with the agent, review option, environment and `deliverTo` of the *original run's
+workflow*. Its steps are `prepare` and `resolve` (kind `integrate`, dispatched from
+`steps._execute_step`), that workflow's own `check` steps with `whenAffected` set, its `review` step, an
+`approve` step (kind `integrate`) when the layer asks for a person, and its `ship` step. There is no
+second engine and no change to a protected module:
+
+- **prepare** runs in the run's worktree, which the ordinary worktree environment cut from the target
+  branch's head: `git -c merge.conflictStyle=diff3 merge --no-commit --squash <tip>` through
+  `delivery.tree_git` (sandboxed: through `gitsafe`). It records the conflicted files, which are
+  generated, and the commits and runs that touched each one between the merge base and the target head.
+- **resolve** renders the kit prompt `commands/resolve-conflicts.md` and runs it with `agents.run_prompt`
+  on the heavy tier. The IR does not declare this command: the runtime holds its record
+  (`integrate.COMMAND`), as `decide.py` holds the decider's, and `al gen` writes the prompt into every
+  layer; a command of that name the layer declares wins. Afterwards the runtime checks what the agent
+  did: `HEAD` has not moved, every conflicted file is reported as resolved or regenerated, no file the
+  integration changed holds a marker line, and no test of either side is gone. A conflict the agent
+  reports as `undecidable` fails the step with the question.
+- **review** is `review.run_review` unchanged. It hands `state.plan` to the reviewers, so `prepare` and
+  `resolve` set `state.plan` to an *integration brief* (`specs/integrate-<id>.md`): the change was
+  reviewed before, why it could not merge, the original request and plan, the conflicts and their
+  resolutions, and the two diffs to read (against the target head: what lands; against the run's tip:
+  what the integration changed in the reviewed work).
+- **ship** is `ship.ship` unchanged. It titles the commit from the run's prompt, whose first line is
+  `Integrate run <ORIG> (<its request>) onto <target>`, so the commit names the original run. If the
+  target moved again meanwhile, the gate's own `merge-conflict` fallback applies and nothing lands.
+
+**Records.** The integration run's `state.json` has `integration` (`run`, `branch`, `tip`, `target`,
+`target_head`, `base`, `workflow`, `by`, `clean`, `conflicts`, `report`, `seen_before`, `brief`,
+`approval`, `result`, `why`). The original run gets `agents/<orig>/integration.json` (`run`, `status`
+queued | running | waiting | landed | failed, `why`, `commit`, `target`, `by`, `at`, earlier ones under
+`previous`), and, when the work landed, `agents/<orig>/settlement.json` in the dashboard's format with
+`as: landed`, `by: <integration run>`, `via: integrate`: the run is settled without a person. The
+dashboard's `attention()` reads both, so the original is under Landed with a link, under Running while
+it is being integrated, and stays under Needs you with the reason when the integration did not land.
+
+**Eligibility is rules, not a model.** `integrate.eligible()` refuses with a classified reason
+(`integrate.REASONS`) before any worktree exists: the workflow is switched off, the run is unknown, not
+handed over, settled or landed, its review rejected it, its reasons name neither a conflict nor a moved
+target, its workflow changes the layer or has no ship step, its branch is gone or a person changed it,
+it touches a protected path, or it is being integrated already. `integrate.preview()` adds a dry merge
+that writes nothing into the application (`git merge-tree --write-tree` with `GIT_OBJECT_DIRECTORY`
+set to a temporary directory and the repository's objects as its alternate). The stand-in decider
+therefore needs no agent call to start an integration: `integrate.after_run()` (called by the runner
+beside `decide.after_run`) starts it, detached, when the run ended handed over and is eligible, the
+decider's mode is `auto` and the settings say `"decider": true`.
+
+**One at a time.** `integrate.run()` holds `agents/.integrate.lock` (an flock, so it dies with the
+process) around `runner.main`. A second request waits, keeping its skeleton `state.json` alive; because
+a worktree is created only inside the runner, it starts at the target head that already holds the
+first one's result, and eligibility is checked again once it holds the lock.
+
+**Why the settings are a file of the layer.** `templates/integrate.json` (`enabled`, `approval`,
+`decider`, `generated`) is committed layer source that `al gen` never writes. A clause of the language
+(`(integrate #:approval person #:generated (…))`) would be the natural home, but it changes
+`racket/al/private/vocab.rkt`, which a person owns. Follow-up for a person: add the clause and let
+`integrate.settings()` read it from the IR first. Two more, neither needed: `ship.py` could add a
+trailer `Integrates: <ORIG>` to the commit when `state.integration` is set, and `review.py` could pass
+the conflict report to the review command as a third argument instead of relying on the brief.
+
+**Lessons.** `integrate.conflict_report()` counts, over the layer's integration runs, how often each
+file conflicted and which pairs conflicted together (`al integrate LAYER --conflicts`); each brief and
+summary names the files that conflicted before.
+
 ## Separation from the application
 
 The layer is its own directory (default `<app>.al`, its own git repo). The app is referenced by
@@ -471,10 +540,10 @@ of the output format.
 racket/al/         #lang al: meta.rkt (meta-DSL), vocab.rkt, compiler.rkt, schema.rkt, reference.rkt, tests/
 schemas/           agentic-layer-v1.schema.json      (generated)
 docs/              AL-DSL.llms.txt (generated), DESIGN.md
-tools/al           init | scout | adopt | compile | gen | check | explain | eject | improve | dashboard | verify | cycle | promote | decide
+tools/al           init | scout | adopt | compile | gen | check | explain | eject | improve | dashboard | verify | cycle | promote | decide | integrate
 tools/al_delivery.py  read-only detection of the branching style in use (`al scout`'s `## Delivery`)
 kit/templates/     command, HOP and expert templates   kit/schemas/  JSON output contracts
-kit/runtime/       adw_modules (generic IR interpreter; promotion.py behind a layer's adws/promote.py), triggers, voice, dispatch
+kit/runtime/       adw_modules (generic IR interpreter; promotion.py behind a layer's adws/promote.py, integrate.py behind adws/integrate.py), triggers, voice, dispatch
 meta/              LLM.txt template + the meta commands
 tests/             acceptance script over the testbeds
 testbeds/ layers/  cloned public repos and their generated layers (git-ignored)
@@ -944,6 +1013,11 @@ to its check, a re-check and the reviewers to the review step).
 | `promotion.tagged` / `promotion.deployed` | `tag`, `commit` / `environment`, `exit` |
 | `promotion.back-merge` | `stage`, `branch`, `conflict`, `resolved`, `published` |
 | `promotion.closed` | `id`, `result`, `tag`, `changes` (id → status) |
+| `integrate.queued` | `behind` (the integration run that holds the layer's lock) |
+| `integrate.lock` / `integrate.unlock` | `holder` (this run), `waited` / `held` (seconds): one integration of a layer at a time |
+| `integrate.prepared` | `run` (the run it integrates), `target`, `target_head`, `base`, `conflicts` (files), `generated` (files) |
+| `integrate.resolved` | `resolved`, `regenerated`, `undecidable` (files, from the agent's report) |
+| `integrate.result` | `run`, `result` (landed / staged / pull-request / failed / waiting), `why`, `commit`, `target` |
 | `step.discipline` | after a `run` step that may not commit: `step`, `ok`, `head_before`, `head_after`, `branch_before`, `branch_after`, `refs` (`created`, `moved`, `deleted`), `main_checkout` (new status lines), `layer_entries` (new top-level names), `violations` (kinds: `committed`, `head-moved`, `ref-created`, `ref-moved`, `ref-deleted`, `main-checkout-changed`, `layer-entry`), `texts`, `restored`, `not_restored`; after a step that may commit (the `commit` template or `#:may-commit #t`): `step`, `ok`, `left_out_restored` (the uncommitted paths under the layer directory or a protected path it restored). The same facts are in the step's record in `state.json` (`discipline`, or `left_out` on a commit step) |
 
 Two more things make a run observable from outside. A check's log file grows while the check runs

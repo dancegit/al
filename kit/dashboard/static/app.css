@@ -187,6 +187,7 @@ svg text { font-family: var(--sans); }
 .g-node .t-ship { fill: var(--ship); } .g-node .t-fan-out, .g-node .t-candidate { fill: var(--fan); }
 .g-node .t-script { fill: var(--script); }
 .g-node .t-promote { fill: var(--promote, #b07cd8); }
+.g-node .t-integrate { fill: var(--integrate, #4fb6a8); }
 .g-node.t-script-node .box { stroke-dasharray: 4 2; }
 .g-node .t-setup { fill: var(--setup); }
 .g-node.t-setup-node .box { stroke-dasharray: 2 2; }
@@ -714,6 +715,28 @@ tr.group-member td:first-child { box-shadow: inset 2px 0 0 rgba(242, 85, 90, .5)
 .settle-fields select, .settle-fields input, .settle-fields textarea { font: inherit; padding: .3rem .4rem; background: var(--panel-2);
   color: var(--text); border: 1px solid var(--border-2); border-radius: 5px; }
 .btn.start-again, .btn.start-all { border-color: rgba(88, 166, 255, .5); }
+/* "Resolve with an agent": the button, its preview, the evidence for a settlement */
+.btn.integrate { border-color: rgba(79, 182, 168, .6); }
+.btn.primary.integrate { background: rgba(79, 182, 168, .18); }
+table.needs-you td.next .btn.integrate { display: block; margin-top: 4px; font-family: inherit; white-space: nowrap; }
+.settle-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 8px; }
+.settle-evidence:empty { display: none; }
+.settle-evidence { border: 1px solid var(--border-2); border-radius: 5px; padding: 8px 10px; margin-bottom: 8px; background: var(--panel-2); max-width: 46rem; }
+.settle-evidence ul { margin: 4px 0; padding-left: 1.2rem; }
+.settle-evidence .evidence-head { font-weight: 600; }
+.settle-evidence .evidence-proposal { color: var(--passed); }
+.integrate-card { border-color: rgba(79, 182, 168, .45); }
+.integrate-preview .kv dd { margin-bottom: 4px; }
+.integrate-preview ul.conflicts { margin: 0; padding-left: 1.2rem; }
+.integrate-preview ul.conflicts .badge { white-space: normal; }
+.integrate-preview .kv dd, .integrate-card .card-head { min-width: 0; overflow-wrap: anywhere; }
+.integrate-card .card-head { flex-wrap: wrap; }
+.integrate-preview .clean { color: var(--passed); }
+.integrate-preview select { font: inherit; padding: .3rem .4rem; background: var(--panel-2); color: var(--text); border: 1px solid var(--border-2); border-radius: 5px; max-width: 100%; }
+.integrate-preview .buttons { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.integrate-refused .refusal { overflow-wrap: anywhere; }
+.integrate-note { margin-top: 6px; }
+.integration-fact { overflow-wrap: anywhere; }
 @media (max-width: 760px) {
   .settle-fields { grid-template-columns: 1fr; }
   table.needs-you td.reason, table.needs-you td.next { min-width: 18ch; max-width: 24ch; }

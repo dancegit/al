@@ -95,6 +95,11 @@ class ADWState:
     # branch, commit, committed, files, count, left_uncommitted, artefacts, too_large, skipped, diff} or
     # {changed: None, error}; empty, and then left out of state.json, for every other run
     kept: dict[str, Any] = field(default_factory=dict)
+    # an integration run (integrate.py): {run, branch, tip, target, target_head, base, workflow, by, clean,
+    # conflicts: [{file, generated, regenerate, touched_by}], report: {resolved, regenerated, undecidable},
+    # seen_before, brief, approval: {required, by, at}, result, why, stopped}; empty, and then left out of
+    # state.json, for every other run
+    integration: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -134,6 +139,8 @@ class ADWState:
                 data.pop("check_results", None)  # a run without a check writes the state.json of before
             if not data.get("kept"):
                 data.pop("kept", None)  # only a run of a workflow without a ship step has one
+            if not data.get("integration"):
+                data.pop("integration", None)  # only an integration run has one
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")

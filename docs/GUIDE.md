@@ -534,6 +534,9 @@ A run leaves it when its work is done, even when nobody told al:
   or brought in with other changes (every file it changed is the same on the target). The dashboard
   works this out from git, read only and without fetching, and says how ("landed in 1a2b3c4 (patch-id)").
   If you merged on the forge and have not fetched, `al runs … --forge` asks the forge as well.
+- **Landed by an integration.** A handed-over run that could not merge and that an agent brought onto
+  its target with `al integrate` ("landed by 1b71fb25 (integration)", with a link to that run; see
+  "Resolve with an agent" below).
 - **Superseded.** A later run that landed and named the run's branch or id in its request, or contains its
   branch, settles it as "superseded by" that run.
 - **Replaced.** A failure that was started again ("Start again" on the run page, **Start all again** on
@@ -681,6 +684,165 @@ What is counted:
 `--since 2026-11-01` keeps the runs that started on or after that day (UTC). `--json` prints the same
 numbers as data, `--md` as a Markdown document: `tools/al kpis ~/code/myapp.al --md > docs/KPIS.md`.
 Using both, or a date in another form, is exit 2.
+
+### Resolve with an agent: `al integrate`
+
+A workflow that merges by itself hands a run to you when it could not merge: the target branch moved
+while the run worked, or the merge conflicts. The review had passed; what is left is merging the branch,
+resolving the conflicts, running the suites again and settling the run. `al integrate` has an agent do
+that, in a run of its own, so the checks, the review and the gate apply to the result exactly as to
+any other change. Every generated layer has this workflow (`adws/integrate.py` and the prompt
+`commands/resolve-conflicts.md`); the definition does not declare it. Its steps:
+
+1. **prepare**: a fresh worktree at the head of the run's target branch, with the run's branch applied
+   and left uncommitted (`git merge --no-commit --squash`, three-way conflict markers). The conflicted
+   files are recorded: which are generated, and which commits or runs changed each one on the target
+   since the run's base.
+2. **resolve**: an agent on the heavy tier resolves every conflict so that the behaviour of both sides
+   stays, and reports each resolution. A generated file is not merged by hand: its command is run again.
+   When the two sides really disagree, the agent stops and says what a person must decide. When the
+   branch applies cleanly, no agent runs.
+3. **checks**: the checks of the run's own workflow, each only when the change touches what it covers.
+4. **review**: the review of the run's own workflow, on a brief (`specs/integrate-<id>.md`) that says
+   the change was reviewed before, lists the conflicts and their resolutions, and names the two diffs to
+   read.
+5. **ship**: the same gate and ship step as every run.
+
+When it lands, the original run is settled as landed by the integration run, and each links to the
+other. When it does not, both say why and the original stays under **Needs you**. Look first with
+`--preview`, which starts nothing and writes nothing:
+
+```console
+$ al integrate pantry.al f0000001 --preview
+run:        f0000001 (Give stock a discount)
+branch:     chore/f0000001-give-stock-a-discount at da9720a
+target:     main at 3e7fade
+conflicts:  2: INDEX.md (generated), stock.py
+steps:      prepare, resolve, test, review, ship
+approval:   none
+
+$ al integrate pantry.al f0000001
+[adw 1b71fb25] integrate start: class=chore dry_run=False
+[adw 1b71fb25] step prepare (integrate) start
+[adw 1b71fb25] prepare: 2 conflicted files (1 generated); target main at 3e7fade
+[adw 1b71fb25] step prepare (integrate) passed: prepare: 2 conflicted files (1 generated); target main at 3e7fade
+[adw 1b71fb25] step resolve (integrate) start
+[adw 1b71fb25] step resolve (integrate) passed: 1 resolved, 1 regenerated
+[adw 1b71fb25] step test (check) start
+[adw 1b71fb25] step test (check) passed: exit 0, log agents/1b71fb25/checks/test.1.log
+[adw 1b71fb25] step review (review) start
+[adw 1b71fb25] review verdict: pass after 1 round(s): …
+[adw 1b71fb25] step ship (ship) start
+[adw 1b71fb25] gate: action merge
+[adw 1b71fb25] step ship (ship) passed: ok
+…
+=== ADW summary ===
+adw:       integrate 1b71fb25
+status:    passed
+…
+ship:      merge -> main (shipped=True)
+integrate: run f0000001 onto main at 3e7fade (2 conflicted files: 1 resolved, 1 regenerated)
+…
+integrate:  run f0000001 onto main: landed in 62e4708; f0000001 settled as landed by 1b71fb25
+
+$ al runs pantry.al --view landed
+2 landed (4 need you, 0 running, 2 landed, 1 settled)
+f0000006  handed-over  ship-it         Label the shelves                       landed in 4b3cb6e (patch-id) on main, 2026-11-02
+f0000001  handed-over  ship-it         Give stock a discount                   landed by 1b71fb25 (integration)
+```
+
+The run is named by its id or by its branch. `--detach` starts it and returns (`started integration
+run ID of RUN; log agents/ID/launch.log`), `--model-set TIER` puts every agent step of the integration
+on one tier, and `--json` prints the result as JSON. The commit on the target is titled `<class>:
+Integrate run RUN (its request) onto <target> [adw ID]`. Exit codes: 0 the integration ran to its end
+(landed, or handed over by its own review or gate), 1 it failed, 2 bad use, 3 refused, 75 waiting for
+your approval. `al runs` suggests the command for every run it applies to:
+
+```console
+$ al runs pantry.al
+…
+f0000002  handed-over  ship-it         Add a price table                       ship-failed:git push . HEAD:refs/heads/main failed: ! [rejected] HEAD -> main (non-fast-forward)
+          → merge chore/f0000002-add-a-price-table into main, or al integrate pantry.al f0000002, or al settle pantry.al f0000002 --as …
+```
+
+It is refused, before any worktree exists, when it is not the agent's to do. The reason is printed and
+the exit code is 3:
+
+```console
+$ al integrate pantry.al f0000003
+al integrate: review-rejected: the review of run f0000003 rejected it: a person decides what happens with it
+$ al integrate pantry.al f0000004
+al integrate: protected-path: run f0000004 changes deploy/release.cfg, a protected path: a person merges it
+$ al integrate pantry.al f0000005
+al integrate: branch-changed: a person changed chore/f0000005-round-the-total since the run ended: a775419 is not the run's 1e2ed1a
+```
+
+The other refusals: the run was not handed over or not because of a conflict or a moved target, it is
+settled or has landed already, it is being integrated right now, its workflow changes the layer or has
+no ship step, its branch is gone. During the run, the resolve step fails (and nothing lands) when the
+agent reports a conflict it cannot decide (`undecidable`), leaves a conflict marker or a file it did
+not report (`markers-remain`), drops a test of either side, or commits (`head-moved`). An integration
+never force-pushes and never changes the original run's branch: the work is applied in a worktree of
+its own, and the target moves only through the ordinary ship step. One integration of a layer runs at
+a time; a second one waits and starts from the first one's result.
+
+The settings are a file of the layer, `templates/integrate.json`. It is layer source: you commit it,
+and `al gen` never writes it. Without the file the defaults apply (enabled, no approval, no generated
+files named):
+
+```json
+{
+  "version": 1,
+  "enabled": true,
+  "approval": "person",
+  "decider": false,
+  "generated": [
+    {"path": "INDEX.md", "regenerate": "./index.sh"},
+    {"path": "docs/api/**", "regenerate": "make api-docs"}
+  ]
+}
+```
+
+`"generated"` names files that are written by a command; a file whose first five lines say `@generated`,
+`DO NOT EDIT` or `Generated by` counts as generated too, and the agent then looks for its generator.
+With `"approval": "person"` the integration stops before ship and waits for you (exit 75); `al
+integrate LAYER RUN --approve` (`--who NAME`, default your `git config user.name`) lets it ship.
+`"enabled": false` switches the workflow off. `al integrate LAYER` alone shows the settings, `--set
+enabled=…`, `--set approval=none|person` and `--set decider=true|false` change them, and `--reset`
+removes the file:
+
+```console
+$ al integrate pantry.al
+integrate: enabled (templates/integrate.json)
+approval:  none
+decider:   may not start it
+generated: INDEX.md (./index.sh)
+usage: al integrate LAYER RUN|BRANCH [--model-set TIER] [--detach] [--dry-run] [--preview] [--approve [--who NAME]] [--json]
+       al integrate LAYER [--conflicts | --set KEY=VALUE … | --reset] [--json]
+```
+
+Every integration records which files conflicted. `--conflicts` adds them up, so you see which files
+to split or to mark as generated; the brief and the summary of a later integration name the files that
+conflicted before:
+
+```console
+$ al integrate pantry.al --conflicts
+1 integration had conflicts
+files:
+  INDEX.md  1 time  (generated)
+  stock.py  1 time
+together:
+  INDEX.md + stock.py  1 time
+a file that conflicts often: split it, or mark it generated in templates/integrate.json
+```
+
+In the dashboard the same is the **Resolve with an agent** button: in the **Next** column of the Needs
+you list and on the run's page, beside Settle. It shows first what will happen (the branch and its tip,
+the target and its head, the conflicted files, the steps) and starts only when you confirm. Beside it,
+**Check if it has landed** and **Find what replaced it** look up the evidence for a settlement and fill
+the Settle form in; nothing is written until you click Settle. To change how the agent resolves
+conflicts, copy the prompt into the layer with `al eject LAYER command resolve-conflicts` and edit the
+copy.
 
 ## Start work from the dashboard or the command line
 
@@ -1961,6 +2123,13 @@ settings: ~/code/myapp.al/agents/settings/decider.json (local to this machine, n
 `al decider LAYER` alone shows the mode and where it comes from, and `--reset` turns it off again.
 `AL_DECIDER=auto` in the environment wins over the setting, and `--decider MODE` on one run wins over
 both (`uv run adws/adw_change.py "…" --decider auto`).
+
+In mode **auto** the decider can also start `al integrate` for a run that ended handed over because it
+could not merge (see "Resolve with an agent"). That is off until the layer says so with `"decider":
+true` in `templates/integrate.json` (`al integrate LAYER --set decider=true`). It needs no agent call:
+whether a run can be integrated is decided by rules, the same ones `al integrate` applies. The run's
+log then ends with `decider: integrating with an agent: run <id>`. In mode **suggest** nothing is
+started.
 
 A suggestion, as `decision.md` records it:
 

@@ -312,7 +312,7 @@ the sandbox, step discipline). How each idea lands in this repository, and why a
 
 ```
 racket/al/        the language: vocabulary, compiler, schema and reference generators, tests
-tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard · kpis
+tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard · kpis · integrate
 tools/al_*.py     al_provision (a host's provisioning files), al_sandbox (the sandbox image), …; kit/host/pins.json: pinned uv and agent CLIs
 kit/templates/    the prompts every layer starts from      kit/runtime/   what runs a workflow
 meta/             the prompts that guide an LLM through describing a codebase and writing its layer

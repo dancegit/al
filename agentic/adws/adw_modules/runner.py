@@ -13,8 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import affected, budget, checkenv, decide, delivery, envs, envsource, events, ir, models, nested_engine, notify
-from . import prepare, sandbox, skips
+from . import affected, budget, checkenv, decide, delivery, envs, envsource, events, integrate, ir, models
+from . import nested_engine, notify, prepare, sandbox, skips
 from . import state as state_module, steps
 from . import slots
 from .agents import CLASSES
@@ -286,6 +286,7 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         *([f"kept:      {_kept_line(state)}"] if state.kept.get("changed") or state.kept.get("error") else []),
         *([f"delivery:  {_delivery_line(state)}"] if state.delivery or state.kept else []),
         *([f"promotion: {_promotion_line(state)}"] if state.promotion else []),
+        *([f"integrate: {_integration_line(state)}"] if state.integration else []),
         *([f"replaces:  {state.replaces}"] if state.replaces else []),
         *([handoff] if handoff else []),
         *([f"decision:  {_decision_line(state)}"] if state.decision else []),
@@ -375,8 +376,38 @@ def _promotion_line(state: state_module.ADWState) -> str:
     return line + "".join(f"\n           note: {note}" for note in notes)
 
 
+def _integration_line(state: state_module.ADWState) -> str:
+    """What an integration run did, e.g. `run f0000001 onto main at 1a2b3c4 (2 conflicted files: 1 resolved,
+    1 regenerated; conflicted before: stock.py); waiting at approve`."""
+    i = state.integration
+    conflicts = list(i.get("conflicts") or [])
+    report = i.get("report") or {}
+    if i.get("clean"):
+        what = "applies cleanly"
+    elif not conflicts:
+        what = "not applied yet"
+    else:
+        what = (f"{len(conflicts)} conflicted file{'' if len(conflicts) == 1 else 's'}: "
+                f"{len(report.get('resolved') or [])} resolved, {len(report.get('regenerated') or [])} regenerated")
+        if report.get("undecidable"):
+            what += f", {len(report['undecidable'])} undecidable"
+    seen = ", ".join(str(item.get("file")) for item in i.get("seen_before") or [])
+    line = (f"run {i.get('run')} onto {i.get('target')}"
+            + (f" at {str(i['target_head'])[:7]}" if i.get("target_head") else "")
+            + f" ({what}{f'; conflicted before: {seen}' if seen else ''})")
+    if state.status == "waiting":
+        waiting = next((str(r.get("name")) for r in state.steps if r.get("status") == "waiting"), "")
+        line += f"; waiting at {waiting or 'a step'}"
+    elif (i.get("stopped") or {}).get("reason"):
+        line += f"; stopped at {i['stopped'].get('step')}: {str(i['stopped']['reason']).splitlines()[0][:200]}"
+    return line
+
+
 def resume_command(state: state_module.ADWState) -> str:
     """How a person (or a timer) continues a waiting run."""
+    integration = (state.definition or {}).get("integration")
+    if isinstance(integration, dict) and integration.get("run"):   # a person approves; that resumes it
+        return f"uv run adws/integrate.py approve {integration['run']} --who NAME"
     promotion = (state.definition or {}).get("promotion")
     if isinstance(promotion, dict) and promotion.get("from"):
         return (f"uv run adws/promote.py run {promotion['from']} {promotion.get('to', '')} "
@@ -670,5 +701,6 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
         finally:
             tee.close()
     decide.after_run(layer, state)  # a resume the decider chose starts once this run has ended
+    integrate.after_run(layer, state, args)  # a handed-over run the decider may integrate (integrate.py)
     _speak(layer, f"ADW {adw} {state.adw_id} {state.status}. Ship: {state.ship.get('action', 'none')}.")
     return exit_code

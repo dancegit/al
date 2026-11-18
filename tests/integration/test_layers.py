@@ -30,8 +30,11 @@ def test_pipeline(layer, bed):
     assert check.returncode == 0 and "check: ok" in check.stdout, alit.describe(check)
 
     files = sorted((lay.dir / "commands").glob("*.md")) + sorted((lay.dir / "hops").glob("*.md"))
+    # every declared command and hop, plus the prompt of the kit workflow `integrate`, which every layer
+    # gets without declaring it (commands/resolve-conflicts.md, see adw_modules/integrate.py)
     assert {f"commands/{c['name']}.md" for c in compiled["commands"]} | {f"hops/{h['name']}.md" for h in compiled["hops"]} \
-        == {f"{p.parent.name}/{p.name}" for p in files}
+        | {"commands/resolve-conflicts.md"} == {f"{p.parent.name}/{p.name}" for p in files}
+    assert (lay.dir / "adws" / "integrate.py").is_file()
     for path in files:
         left = alit.LEFTOVER.findall(path.read_text())
         assert not left, f"{path.relative_to(lay.dir)} has unfilled placeholders {sorted(set(left))}"

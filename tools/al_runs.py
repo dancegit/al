@@ -107,6 +107,8 @@ def _clip(text: str, width: int) -> str:
 def why(row: dict[str, Any]) -> str:
     """What the row says after its title: the reason, or what landed or settled the run."""
     landing = row.get("landing") or {}
+    if row.get("bucket") == "landed" and row.get("landed_by"):   # settled by an integration run (al integrate)
+        return f"landed by {row['landed_by']} (integration)"
     if row.get("bucket") == "landed" and landing.get("state") == "landed":
         when = _day(landing.get("at"))
         return f"landed in {landing.get('commit') or '?'} ({landing.get('how')}) on {landing.get('target')}" + \
@@ -122,6 +124,8 @@ def next_action(layer_dir: Path, row: dict[str, Any]) -> str:
         adw = str(row.get("adw") or "")
         target = f"/{adw}" if adw else "/NAME"   # a single-command run's adw is command:NAME, which al run takes too
         return f"al run {layer_dir} {target} --replaces {row['id']} < {layer_dir}/agents/{row['id']}/request.md"
+    if nxt.endswith("or `al integrate`, or `al settle`"):
+        nxt = nxt.replace("`al integrate`", f"al integrate {layer_dir} {row['id']}")
     if nxt.endswith("or `al settle`"):
         return nxt.replace("`al settle`", f"al settle {layer_dir} {row['id']} --as …")
     return nxt
@@ -150,7 +154,8 @@ def list_runs(layer_dir: Path, view: str = "needs-you", as_json: bool = False, f
     chosen = rows if view == "all" else [r for r in rows if r.get("bucket") == view]
     if as_json:
         keep = ("id", "status", "adw", "title", "started", "ended", "branch", "target_branch", "replaces", "bucket",
-                "reason", "next", "landing", "settled", "replaced_by", "superseded_by", "group")
+                "reason", "next", "landing", "settled", "replaced_by", "superseded_by", "group", "integration",
+                "landed_by")
         print(json.dumps([{k: r.get(k) for k in keep} for r in chosen], indent=1, sort_keys=True))
         return 0
     print(header(rows, view))

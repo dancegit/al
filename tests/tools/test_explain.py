@@ -257,3 +257,45 @@ def test_explain_names_reused_environments():
     _title, _text, bullets = explain.explain({"head": "environment"}, plain)
     assert bullets == ["`worktree`: each run gets its own git worktree; your checkout is never touched",
                        "`nix-devshell`: provides jq"]
+
+
+# --- the kit workflow integrate ------------------------------------------------------------------
+
+INTEGRATE_IR = {
+    "name": "pantry", "description": "A pantry", "codebase": {"commands": [], "paths": {"protected": []}},
+    "commands": [], "agents": [{"id": "claude", "kind": "claude-code", "modelSets": {}}],
+    "reviews": [{"id": "gate", "kind": "auto", "ship": "merge"}, {"id": "person", "kind": "human"}],
+    "adws": [{"name": "ship-it", "review": "gate", "changes": "codebase",
+              "steps": [{"kind": "check", "name": "test"}, {"kind": "review", "name": "review"},
+                        {"kind": "ship", "name": "ship"}]},
+             {"name": "plan-build", "review": "person", "changes": "codebase",
+              "steps": [{"kind": "review", "name": "review"}, {"kind": "ship", "name": "ship"}]}],
+}
+
+
+def test_explain_names_the_integrate_workflow():
+    heading, text, bullets = explain.integrate_text(INTEGRATE_IR)
+    assert heading == "Kit workflow: integrate (every layer has it)"
+    assert "It serves runs of `ship-it`" in text and "plan-build" not in text
+    assert [b.split(":")[0] for b in bullets[:5]] == ["prepare", "resolve", "checks", "review", "ship"]
+    joined = "\n".join(bullets)
+    assert "`al integrate LAYER RUN`" in joined and "**Resolve with an agent**" in joined
+    assert '`"enabled": false` switches it off' in joined and "templates/integrate.json" in joined
+    assert "never force-pushes" in joined
+    assert "pull request" not in text + joined     # true with and without a forge
+    never = explain.integrate_text({**INTEGRATE_IR, "adws": INTEGRATE_IR["adws"][1:]})[1]
+    assert "never offered" in never
+    out: list[str] = []
+    real = explain.explain
+    explain.explain = lambda block, ir: ("A block", "words", [])
+    try:
+        out = explain.markdown("pantry", "agentic.rkt", ["#lang al"],
+                               [{"head": "agent", "start": 1, "end": 1}, {"head": "dashboard", "start": 1, "end": 1}],
+                               INTEGRATE_IR, None).splitlines()
+    finally:
+        explain.explain = real
+    at = out.index("### Kit workflow: integrate (every layer has it)")
+    assert out.index("### A block") < at, "the section follows the blocks"
+    section = "\n".join(out[at:])
+    for name in ("prepare", "resolve", "checks", "review", "ship"):
+        assert f"\n- {name}: " in section

@@ -105,9 +105,9 @@ every 20 ticks):
 
 | Bucket | Runs | Row shows |
 |---|---|---|
-| **Needs you** | a waiting run; a handed-over run whose work is not on its target branch (or only partly: "partly landed: N paths differ (…)"); a failed or died run nothing replaces and nobody settled | the reason (the handover reasons, "waiting at STEP", "STEP: first line of the error") and the next action ("review PR #N", "merge BRANCH into TARGET, or `al settle`", the resume command, "Start again") |
-| **Running** | running and unknown runs | the current step |
-| **Landed** | a handed-over run whose work is on its target branch (see Landing below) | "landed in SHA (ancestor / forge / patch-id / paths), DATE" |
+| **Needs you** | a waiting run; a handed-over run whose work is not on its target branch (or only partly: "partly landed: N paths differ (…)"); a failed or died run nothing replaces and nobody settled | the reason (the handover reasons, "waiting at STEP", "STEP: first line of the error") and the next action ("review PR #N", "merge BRANCH into TARGET, or `al settle`", with "or `al integrate`" and a **Resolve with an agent** button when the run can be integrated, the resume command, "Start again"); a run whose integration failed or waits says so ("integration ID did not land: WHY", "integration ID waits for approval") |
+| **Running** | running and unknown runs; a handed-over run an integration run is bringing onto its target ("being integrated by ID") | the current step |
+| **Landed** | a handed-over run whose work is on its target branch (see Landing below); a run an integration landed (`settlement.json` with `via: integrate`) | "landed in SHA (ancestor / forge / patch-id / paths), DATE"; "landed by ID (integration)", a link to the integration run on the run's page |
 | **Settled** | a run a person settled (`al settle`, or the run page's form); a handed-over run a later landed run integrated ("superseded by B"); a failure a later run replaces ("replaced by NEW (status)") | what settled it: "superseded by B", "replaced by NEW", "AS by WHO: note" |
 | done | passed runs | (only under All) |
 
@@ -120,6 +120,25 @@ the landing result in its Status block, a **Start again** button on a failed or 
 replaces, and, on a finished run nobody settled, a **Settle this run** card: landed, superseded or
 abandoned, an optional run or commit (`by`), a note, and your name (kept in the browser like the
 promotion card's).
+
+**Resolve with an agent.** A handed-over run that could not merge (its handover reasons name a merge
+conflict or a failed ship, and its review passed) has a **Resolve with an agent** button: in the Next
+column of its Needs-you row, and above the fields of its Settle card. It opens a card that says what
+will happen, from the layer's own `adws/integrate.py preview`: the branch and its tip, the target and
+its head, the conflicted files (generated ones marked; "applies cleanly" when there are none), the
+steps of the integration, "waits for your approval before it ships" when the layer asks for that, the
+integrations queued ahead, and a tier select. **Start the integration** starts it and goes to the new
+run's page; a run the layer refuses (a protected path, a branch a person changed, …) shows the reason
+in words and no start button. The button is shown disabled, with the reason as its title, when the run
+has a conflict but cannot be offered (the layer has it switched off, or its settings file is broken);
+a layer generated before the workflow shows none. The original's page links to the integration run
+(`integration` in its Status block, the badge "landed by ID (integration)"), and the integration run's
+page links back (`integrates`). An integration that waits at its `approve` step shows an **Approve and
+ship** card with a name field. Beside the Resolve button, **Check if it has landed** and **Find what
+replaced it** ask `GET /api/settle/evidence` and list what was compared ("tip 4b8f959 of BRANCH: the
+same change (equal patch-id) is a commit of main", "run c0000002 (passed, landed) names run f0000007 in
+its request", or what differs); when something was found they fill the Settle form in and the button
+reads "Settle as landed by 4b3cb6e". They only read: the write is the Settle button's `POST /api/settle`.
 When the layer's stand-in decider looked at a stopped run (`al decider`, `agents/<id>/decision.md`),
 the run's outcome shows a **Decision** block after "Why this stopped": a badge (`auto`, `suggested`,
 `answered: go` …, `not used`, `failed`), the decider's one-line summary, its mode, action, the step it
@@ -199,6 +218,9 @@ actions run `al`, which writes what that command writes. `--read-only` turns all
 | `agents/starts.json` | written by the layer's launcher, not read by the page: the request keys of the last two days (`{key: {run_id, target, prompt_sha, at, issue}}`) behind the double-start guard; `agents/.starts.lock` serialises starts |
 | `agents/<id>/request.md`, `agents/<id>/launch.log` | a started run's prompt (mode 0600) and the output of its detached process until the run's own `run.log` takes over; both are documents of the run. "Start again" rebuilds its request from `request.md` (else `state.prompt`), the run's workflow or command, its fixed class and its tier |
 | `agents/<id>/settlement.json` | a person's settlement of a finished run (`{"as": landed\|superseded\|abandoned, "by", "note", "who", "at", "via": cli\|dashboard}`, the record before it under `"previous"`, one level; `"pruned"` after `al runs … prune`); written by `al settle` and `POST /api/settle`, atomically, mode 0600; also part of a run's signature, so a new one moves the run at once |
+| `agents/<id>/integration.json` | the integration run of a handed-over run (`{run, status: queued\|running\|waiting\|landed\|failed, why, commit, target, by, at, previous}`), written by the layer's runtime (`adw_modules/integrate.py`), never by the dashboard; part of a run's signature. A landed integration also writes the run's `settlement.json` with `"as": "landed"`, `"by": <integration run>`, `"via": "integrate"` |
+| `state.json` `integration`, `definition.integration` | an integration run: the run it integrates (`integrates` in its summary), its conflicted files and report; its graph is drawn from `definition` (workflow `integrate`, steps of kind `integrate`: prepare, resolve, approve) |
+| `adws/integrate.py`, `templates/integrate.json` | "Resolve with an agent": the script's presence and the settings (`enabled`, `approval`) decide whether the button is offered; `integrate.py preview RUN --json` is run for the preview, `run RUN --detach --json --by dashboard` and `approve RUN --who NAME --detach --json` for the writes (see Safety) |
 | `state.json` `replaces`, `branch`, `ship.commit`, `ship.pr`, `delivery.branch` | what landing and settlement need: the run a run starts again (a run whose `replaces` names another makes that one "replaced by"), the run's branch and shipped commit, its pull request, and its target branch (`delivery.branch` with stages, else `codebase.defaultBranch`, else `main`) |
 | the application repository (`codebase.root`, `AL_APP_ROOT` when set) | **Landing**, read-only: whether a handed-over run's tip (its branch, else `ship.commit`) is on the target branch's heads (`refs/heads/<target>` and every `refs/remotes/*/<target>`, read from the ref files): (1) `merge-base --is-ancestor` (landed in the oldest commit of `rev-list --ancestry-path`), (2) the forge says the pull request is merged, (3) the stable `patch-id` of the branch's change equals one of the last 500 target commits' (a squash merge), (4) every path the branch changed has the same blob on the target (an integration; some only: "partly"). git through the same hardened `safe_git` as the workspace scan, 10 s per call, never a fetch, never a write. Cached per (repository, run tip, target heads), so a new target commit recomputes; at most 8 uncached checks per tick (the others show "checking"). A later landed run whose prompt names a run's branch or id, or whose tip holds the run's tip, supersedes it |
 | `adws/dispatch.py --pr-state N --json` | the forge's answer for a run with a pull request whose local result is open: the layer's own runtime asks its forge read-only (`pr_state`, so credentials stay with the layer), kept 10 minutes per run and target heads; not asked for forge `none` or in a container |
@@ -255,7 +277,7 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
 ## Safety
 
 - **Four writes, guarded.** Only GET and HEAD, plus `POST /api/models`, `POST /api/start`,
-  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions); every other method and path is 405 (GET on `/api/models`, `/api/start` or `/api/settle` is
+  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, and `POST /api/promotion` and `POST /api/integrate`, which start runs through the layer's own scripts); every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle` or `/api/integrate` is
   405 too), and no endpoint stops a run or changes its records (a settlement is a file of its own). All four writes pass one guard
   (`Handler._write_guard`): the token as for every request, but from the `Authorization` header or
   the cookie only (a token in the query string is refused); a loopback `Host` when there is no
@@ -422,6 +444,38 @@ characters, `by` is 1–80 printable characters on one line, a comment at most 2
 shell, the dashboard's token not passed on, a 60 s limit) does the rest; a layer without it (no stages, or
 generated before promotions) answers 409 "run `al gen`".
 
+### `GET /api/integrate/preview`, `POST /api/integrate`, `GET /api/settle/evidence`
+
+`GET /api/integrate/preview?layer=K&run=ID` is read-only (the host and token checks of every GET): it
+runs the layer's own `adws/integrate.py preview ID --json` (argv list, no shell, the dashboard's token
+not passed on, a 60 s limit), which checks whether the run can be integrated and does a dry merge that
+writes nothing into the application (`git merge-tree --write-tree` with a temporary object directory).
+The answer is `{eligible, reason, why, run, branch, tip, target, target_head, clean, conflicts,
+generated, approval, ahead, steps, tiers, start: {enabled, why}}` and, when the run is eligible and
+this dashboard may start runs, a `nonce` that is valid for 10 minutes for this layer and run. A layer
+without the script answers 409 "run `al gen`".
+
+`POST /api/integrate` takes `{layer, run, action: start|approve, confirm, model_set, who}` and nothing
+else, behind the guard of every write (loopback Host or token, the token never from the URL, Origin
+naming the Host, `X-AL-Dashboard: 1`, `application/json`, at most 4 KiB, not `--read-only`), and is
+refused with `--no-start` and in a container without `--allow-start-in-container`. `start` needs the
+`nonce` of a preview as `confirm`: unknown, expired, used before or of another layer or run is 409 "the
+preview is stale: open it again". `model_set` is empty or one of the layer's tiers (400 otherwise).
+The layer's `adws/integrate.py run ID --detach --json --by dashboard` then starts the integration
+run: 202 `{"status": "started", "run_id", "original", "url": "#/run/K/NEW"}`, and the two runs are
+read again at once, so the original leaves Needs you without waiting for the next tick. A refusal of
+the layer's runtime is 409 `{"error": "<reason>: <words>", "reason"}` (the reasons of
+`adw_modules/integrate.py`: `review-rejected`, `protected-path`, `branch-changed`, `settled`,
+`already-integrating`, …). `approve` takes `who` (1–80 printable characters on one line) and runs
+`integrate.py approve ID --who NAME --detach --json`: 202, or 409 `not-waiting`.
+
+`GET /api/settle/evidence?layer=K&run=ID&kind=landed|replaced` is read-only: `{found, as, by, note,
+evidence: [lines], why}`. `landed` runs the landed check now (not bounded per tick; the forge is asked
+when the layer has one) and also accepts the commit of the run's integration run when it is in the
+target's history; `replaced` lists later runs that start it again (`replaces`), name its id or branch
+in their request, or have the same source (a task or an issue), and proposes the newest that has
+landed. An unknown kind is 400, an unknown layer or run 404. Nothing is written.
+
 ## Its own podman container
 
 ```bash
@@ -526,6 +580,27 @@ counts, landed and settled rows, a failure group's **Start all again** and the s
 `runs-landed-1280.png`, `runs-settled-1280.png`, `runs-failure-group-1280.png`,
 `runs-failure-group-started-1280.png` and `run-settle-form-1280.png`. `tests/tools/test_al_runs.py` (at
 the repository root) runs `al runs`, `al settle` and `al runs … prune` on the same scenario.
+
+`tests/integrate_fixtures.py` builds the scenario of "Resolve with an agent" as code: an invented
+application `pantry/` (a `stock.py`, an `INDEX.md` generated by `./index.sh`, a protected `deploy/`) with
+real git history, and its layer `pantry.al/` (the mock agent, a workflow that merges by itself,
+`templates/integrate.json`, a mock script for the resolve step) with nine runs: a merge conflict in a
+source file and a generated file, a branch that applies cleanly on a moved `main`, a rejected review, a
+change to the protected path, a branch a person changed, work that is on `main` by a squash merge, a run
+a later run redid, and the two runs that moved `main`. `tests/test_integrate_model.py` checks which runs
+are offered the button, the buckets while an integration runs, waits, failed or landed, the evidence
+for a settlement, the graph of an integration run, and that a settlement written by the layer's runtime
+is read by the dashboard; `tests/test_integrate_http.py` the three endpoints on a real server: the
+preview and its nonce (used once, not for another run), every write guard, `--read-only` and
+`--no-start`, a start that lands the work and moves the original to Landed, an unknown tier, the
+approval, and that the evidence endpoint writes nothing; `tests/test_browser_integrate.py` (Chrome) the
+button in the row and on the page, the preview at 1280 and 390 pixels, the whole flow from the click to
+"nothing needs you", the two evidence buttons and a refused run. With `AL_DASHBOARD_SHOTS=DIR` it saves
+`integrate-needs-you-1280.png`, `integrate-button-1280.png`, `integrate-preview-1280.png`,
+`integrate-preview-390.png`, `integrate-running-1280.png`, `integrate-landed-original-1280.png`,
+`integrate-runs-landed-1280.png`, `integrate-nothing-needs-you-1280.png`,
+`integrate-evidence-landed-1280.png` and `integrate-evidence-replaced-1280.png`.
+`tests/tools/test_al_integrate.py` (at the repository root) runs `al integrate` on the same scenario.
 
 `tests/test_workspace.py` covers the workspace scan (states, sibling layers, al scout's summary, depth,
 symlinks out of the folder, the file and time bounds, git without fsmonitor or hooks, the cache and the
