@@ -813,6 +813,7 @@
   ],
   "schemaVersion": "agentic-layer-v1",
   "services": [],
+  "standIn": null,
   "storage": {
     "accessKeyEnv": "AWS_ACCESS_KEY_ID",
     "bucket": "ripgrep-adw",

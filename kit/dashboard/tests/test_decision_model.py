@@ -1,7 +1,7 @@
 """The stand-in decider's decision on the run page: the run detail model carries `decision` (mode,
 action, from step, summary, status, last answer, decision.md), hostile text in it is data and never
-markup, and the page shows a Decision block. The dashboard stays read-only for runs: answers go
-through `al answer`, an e-mail reply or the webhook.
+markup, and the page shows a Decision block. A suggestion is answered on the page too (see
+test_standin_http.py), through the same entry as `al answer`, an e-mail reply and the webhook.
 
     uv run --with pytest --with playwright pytest kit/dashboard/tests/test_decision_model.py
 
@@ -49,7 +49,16 @@ def test_run_detail_carries_the_decision(fx):
         "mode": "suggest", "action": "resume-with", "from_step": "build", "status": "resuming", "file": "decision.md"}
     assert decision["summary"] == "The test check is flaky; run it again from build."
     assert decision["answer"] == {"kind": "go", "via": "mail", "at": "2026-11-01T10:30:00+00:00", "text": ""}
-    assert "code" not in decision and "explanation" not in decision     # the answer code stays in state.json
+    assert "code" not in decision                                       # the answer code stays in state.json
+    # what the stand-in's suggestion card shows: its kind, why, how sure it is and what it read
+    assert decision["explanation"] == "The refund test fails on a fixture."
+    assert (decision["kind"], decision["confidence"], decision["read"], decision["situation"]) == ("", None, [], "")
+    state = json.loads((fx["agents"] / RUN / "state.json").read_text())
+    state["decision"].update(kind="resume", confidence=0.75, read=["why it stopped", "PR.md"], situation="stopped")
+    (fx["agents"] / RUN / "state.json").write_text(json.dumps(state))
+    decision = _detail(fx)["decision"]
+    assert (decision["kind"], decision["confidence"], decision["read"], decision["situation"]) == (
+        "resume", 0.75, ["why it stopped", "PR.md"], "stopped")
 
 
 def test_a_hostile_decision_is_data_not_markup(fx):

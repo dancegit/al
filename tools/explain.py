@@ -331,6 +331,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         return models_text(ir)
     if head == "budget":
         return budget_text(ir)
+    if head == "stand-in":
+        return standin_text(ir)
     if head == "notify":
         return notify_text(ir)
     if head == "host":
@@ -710,6 +712,39 @@ def registry_text(ir: dict) -> tuple[str, str, list[str]]:
             ["The values of those variables are not in this file: they come from the environment or from `local.env` "
              "in the layer folder, which is never committed",
              "The image carries the hash of `env/Containerfile` and is only used when it equals the layer's"])
+
+
+STANDIN_KINDS = ("resume", "restart", "answer", "integrate", "settle", "land", "promote", "retry-job")
+STANDIN_HARD_LIMITS = [
+    "It never acts on a run a person touched since it stopped",
+    "It never overrides a rejected review",
+    "It never lands work that touches a protected path or has a failing required check",
+    "It never approves its own work",
+    "It never changes a file: a call that did is discarded",
+    "`land` and `promote` only ask the gate again; the gate and the promotion's approval rule decide",
+]
+
+
+def standin_text(ir: dict) -> tuple[str, str, list[str]]:
+    """The (stand-in KIND …) block: what the stand-in may do alone, what it only proposes, its limits."""
+    s = ir.get("standIn")
+    title = "Who stands in for a person"
+    if not isinstance(s, dict):
+        return (title, "No stand-in is declared. A person can switch one on for this machine (al decider, the "
+                       "dashboard); it may then only resume a stopped run.", [])
+    never = [k for k in s.get("never") or [] if k in STANDIN_KINDS]
+    may = [k for k in s.get("may") or [] if k in STANDIN_KINDS and k not in never]
+    proposes = [k for k in STANDIN_KINDS if k not in may and k not in never]
+    where = listing([{"dashboard": "the dashboard's Needs you list", "notify": "a notification"}.get(x, x)
+                     for x in s.get("escalateTo") or ["dashboard"]])
+    alone = (listing(may) if s.get("kind") == "auto"
+             else f"nothing until a person switches it to auto, then {listing(may) or 'nothing'}")
+    text = (f"A stand-in ({s.get('kind')}) reads what a person would read when a run needs one. "
+            f"Alone it may: {alone or 'nothing'}. It only proposes: {listing(proposes) or 'nothing'}. "
+            f"It never touches: {listing(never) or 'nothing'}. "
+            f"At most {s.get('maxActionsPerRun', 3)} actions per run and {s.get('maxPerHour', 12)} per hour; after that, "
+            f"and whenever it is unsure, the item goes to a person ({where}).")
+    return title, text, list(STANDIN_HARD_LIMITS)
 
 
 def budget_text(ir: dict) -> tuple[str, str, list[str]]:

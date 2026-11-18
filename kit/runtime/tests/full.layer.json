@@ -1422,6 +1422,23 @@
       "origin": "declared"
     }
   ],
+  "standIn": {
+    "escalateTo": [
+      "dashboard"
+    ],
+    "id": "suggest",
+    "kind": "suggest",
+    "maxActionsPerRun": 3,
+    "maxPerHour": 6,
+    "may": [
+      "resume",
+      "restart"
+    ],
+    "modelSet": "heavy",
+    "never": [],
+    "status": "stable",
+    "systemd": false
+  },
   "storage": {
     "accessKeyEnv": "AWS_ACCESS_KEY_ID",
     "bucket": "webshop-adw",

@@ -3314,6 +3314,284 @@
       },
       "type": "array"
     },
+    "standIn": {
+      "description": "A stand-in for the person a run waits for: a strong model reads what the person would read and decides, inside the scope declared here. Omitted: off, and a person may still switch it on for this machine with `al decider` or the dashboard, where it may then only resume a stopped run. It never overrides a rejected review, never lands work with a protected-path change or a failing required check, never approves its own work, never edits code and never acts on a run a person touched since it stopped; `land` and `promote` only ask the gate again.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Declared, and off until a person switches it on on this machine.",
+          "properties": {
+            "escalateTo": {
+              "description": "Where an item goes when it hands it to a person: `dashboard` = the Needs you list; `notify` = also a message through the notifiers that list needs-human.",
+              "items": {
+                "enum": [
+                  "dashboard",
+                  "notify"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "off"
+            },
+            "maxActionsPerRun": {
+              "description": "Most actions it takes on one run (and the runs that replace it), 1–20; after that the run goes to a person with the history.",
+              "type": "integer"
+            },
+            "maxPerHour": {
+              "description": "Most actions it takes in this layer per hour, 1–1000.",
+              "type": "integer"
+            },
+            "may": {
+              "description": "Decision kinds it may take alone (kind auto). Every other kind it may only suggest.",
+              "items": {
+                "enum": [
+                  "resume",
+                  "restart",
+                  "answer",
+                  "integrate",
+                  "settle",
+                  "land",
+                  "promote",
+                  "retry-job"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "modelSet": {
+              "description": "Model tier of the stand-in's calls: a tier declared on the agent of every ADW.",
+              "pattern": "^[a-z][a-z0-9-]*$",
+              "type": "string"
+            },
+            "never": {
+              "description": "Decision kinds it neither takes nor suggests: those items go to a person as they are.",
+              "items": {
+                "enum": [
+                  "resume",
+                  "restart",
+                  "answer",
+                  "integrate",
+                  "settle",
+                  "land",
+                  "promote",
+                  "retry-job"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "status": {
+              "const": "stable"
+            },
+            "systemd": {
+              "description": "Also generate a systemd user unit (systemd/al-<name>-stand-in.service) that keeps its loop running without the page.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "escalateTo",
+            "id",
+            "kind",
+            "maxActionsPerRun",
+            "maxPerHour",
+            "may",
+            "modelSet",
+            "never",
+            "status",
+            "systemd"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "It proposes; a person answers on the dashboard, with `al answer`, by mail or by webhook.",
+          "properties": {
+            "escalateTo": {
+              "description": "Where an item goes when it hands it to a person: `dashboard` = the Needs you list; `notify` = also a message through the notifiers that list needs-human.",
+              "items": {
+                "enum": [
+                  "dashboard",
+                  "notify"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "suggest"
+            },
+            "maxActionsPerRun": {
+              "description": "Most actions it takes on one run (and the runs that replace it), 1–20; after that the run goes to a person with the history.",
+              "type": "integer"
+            },
+            "maxPerHour": {
+              "description": "Most actions it takes in this layer per hour, 1–1000.",
+              "type": "integer"
+            },
+            "may": {
+              "description": "Decision kinds it may take alone (kind auto). Every other kind it may only suggest.",
+              "items": {
+                "enum": [
+                  "resume",
+                  "restart",
+                  "answer",
+                  "integrate",
+                  "settle",
+                  "land",
+                  "promote",
+                  "retry-job"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "modelSet": {
+              "description": "Model tier of the stand-in's calls: a tier declared on the agent of every ADW.",
+              "pattern": "^[a-z][a-z0-9-]*$",
+              "type": "string"
+            },
+            "never": {
+              "description": "Decision kinds it neither takes nor suggests: those items go to a person as they are.",
+              "items": {
+                "enum": [
+                  "resume",
+                  "restart",
+                  "answer",
+                  "integrate",
+                  "settle",
+                  "land",
+                  "promote",
+                  "retry-job"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "status": {
+              "const": "stable"
+            },
+            "systemd": {
+              "description": "Also generate a systemd user unit (systemd/al-<name>-stand-in.service) that keeps its loop running without the page.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "escalateTo",
+            "id",
+            "kind",
+            "maxActionsPerRun",
+            "maxPerHour",
+            "may",
+            "modelSet",
+            "never",
+            "status",
+            "systemd"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "It takes the decisions listed in #:may by itself and proposes the others.",
+          "properties": {
+            "escalateTo": {
+              "description": "Where an item goes when it hands it to a person: `dashboard` = the Needs you list; `notify` = also a message through the notifiers that list needs-human.",
+              "items": {
+                "enum": [
+                  "dashboard",
+                  "notify"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "auto"
+            },
+            "maxActionsPerRun": {
+              "description": "Most actions it takes on one run (and the runs that replace it), 1–20; after that the run goes to a person with the history.",
+              "type": "integer"
+            },
+            "maxPerHour": {
+              "description": "Most actions it takes in this layer per hour, 1–1000.",
+              "type": "integer"
+            },
+            "may": {
+              "description": "Decision kinds it may take alone (kind auto). Every other kind it may only suggest.",
+              "items": {
+                "enum": [
+                  "resume",
+                  "restart",
+                  "answer",
+                  "integrate",
+                  "settle",
+                  "land",
+                  "promote",
+                  "retry-job"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "modelSet": {
+              "description": "Model tier of the stand-in's calls: a tier declared on the agent of every ADW.",
+              "pattern": "^[a-z][a-z0-9-]*$",
+              "type": "string"
+            },
+            "never": {
+              "description": "Decision kinds it neither takes nor suggests: those items go to a person as they are.",
+              "items": {
+                "enum": [
+                  "resume",
+                  "restart",
+                  "answer",
+                  "integrate",
+                  "settle",
+                  "land",
+                  "promote",
+                  "retry-job"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "status": {
+              "const": "stable"
+            },
+            "systemd": {
+              "description": "Also generate a systemd user unit (systemd/al-<name>-stand-in.service) that keeps its loop running without the page.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "escalateTo",
+            "id",
+            "kind",
+            "maxActionsPerRun",
+            "maxPerHour",
+            "may",
+            "modelSet",
+            "never",
+            "status",
+            "systemd"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "storage": {
       "description": "Where test/review artefacts (logs, reports, screenshots, video) are kept. Local first.",
       "oneOf": [
@@ -3823,6 +4101,7 @@
     "reviews",
     "schemaVersion",
     "services",
+    "standIn",
     "storage",
     "triggers",
     "voice"

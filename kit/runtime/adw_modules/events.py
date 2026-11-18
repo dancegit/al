@@ -46,6 +46,7 @@ TYPES = (
     "decision", "decision.resume", "decision.answer",
     "integrate.queued", "integrate.lock", "integrate.unlock", "integrate.prepared", "integrate.resolved",
     "integrate.result",
+    "standin.decision", "standin.action",
 )
 
 

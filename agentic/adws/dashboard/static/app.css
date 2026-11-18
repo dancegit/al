@@ -755,3 +755,59 @@ table.needs-you td.next .btn.integrate { display: block; margin-top: 4px; font-f
 table.proof td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
 table.proof td:nth-child(3) { min-width: 190px; overflow-wrap: normal; }
 table.proof .badge { white-space: normal; }
+
+/* ---- the stand-in: its panel, a suggestion, the decisions of a run ---- */
+.standins { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 10px; }
+.standin-panel { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; }
+.standin-panel[data-mode="auto"] { border-color: rgba(110, 168, 254, .45); }
+.standin-panel .name { font-weight: 600; margin-bottom: 6px; display: flex; gap: 8px; align-items: center; }
+.standin-panel .standin-row { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 3px 0; }
+.standin-panel .standin-modes { display: flex; flex-direction: column; gap: 2px; flex: 1 1 260px; }
+.standin-panel .mode-row, .standin-panel .kind-row { display: flex; gap: 6px; align-items: baseline; cursor: pointer; overflow-wrap: anywhere; }
+.standin-panel .mode-row.on b { color: var(--accent); }
+.standin-panel .standin-scope { padding: 6px 0 4px; border-top: 1px solid var(--border); margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
+.standin-panel .label { font-size: 11.5px; }
+.standin-panel .limits { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 6px; }
+.standin-panel .counts { margin-left: auto; font-variant-numeric: tabular-nums; }
+.standin-panel .btn { padding: 3px 9px; border-radius: 4px; border: 1px solid var(--border-2); background: var(--panel-3); cursor: pointer; font-size: 12px; }
+.standin-panel .btn:hover:not(:disabled) { border-color: var(--accent); }
+.standin-panel .btn:disabled, .standin-panel input:disabled { opacity: .5; cursor: not-allowed; }
+.standin-panel .why { color: var(--waiting); padding: 4px 0; overflow-wrap: anywhere; }
+.standin-panel .why.faint { color: var(--faint); }
+.standin-panel .error { color: var(--failed); }
+.standin-panel .standin-existing { border: 1px solid rgba(214, 162, 58, .3); background: rgba(214, 162, 58, .06); border-radius: 5px; padding: 6px 8px; margin: 6px 0; }
+.standin-panel .proposals { margin: 6px 0; padding-left: 18px; }
+.standin-panel .standin-log { margin-top: 6px; max-height: 220px; overflow: auto; }
+.standin-panel .standin-log table { width: 100%; font-size: 12px; }
+.standin-panel .standin-log td { padding: 2px 6px 2px 0; vertical-align: top; overflow-wrap: anywhere; }
+.standin-panel .standin-note { min-height: 0; padding-top: 4px; overflow-wrap: anywhere; }
+.standin-panel .foot { padding-top: 4px; font-size: 11.5px; }
+.badge.st-acted, .badge.auto { color: var(--accent); border-color: rgba(110, 168, 254, .4); background: rgba(110, 168, 254, .08); }
+.badge.st-refused, .badge.st-failed { color: var(--failed); }
+.badge.st-escalated, .badge.st-suggested { color: var(--waiting); }
+.suggestion-card { border-color: rgba(110, 168, 254, .5); }
+.suggestion-card .suggestion-action { font: 600 15px/1.4 var(--mono); margin: 2px 0 6px; }
+.suggestion-card .suggestion-reason { border: 1px solid var(--border); border-radius: 5px; padding: 8px 10px; background: var(--panel-2); margin-bottom: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.suggestion-card .suggestion-reason .explanation { color: var(--text-2); margin-top: 4px; }
+.suggestion-card .suggestion-instructions, .suggestion-card .suggestion-read { margin-bottom: 6px; overflow-wrap: anywhere; }
+.suggestion-card .suggestion-change { width: 100%; margin: 4px 0 6px; }
+.suggestion-card .buttons { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.suggestion-card .why { color: var(--waiting); margin-bottom: 6px; }
+td.reason .proposal { color: var(--accent); margin-top: 2px; overflow-wrap: anywhere; }
+.standin-bar { margin: 0 0 8px; }
+.standin-bar:empty { display: none; }
+.decisions-card td { vertical-align: top; overflow-wrap: anywhere; }
+.decisions-card .who.standin { color: var(--accent); font-weight: 600; }
+.decisions-card .who.person { font-weight: 600; }
+.decisions-card .badge { margin-left: 6px; }
+.decisions-card .why-cell { max-width: 420px; }
+.tl-mark line { stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 3 2; }
+.tl-mark circle { fill: var(--accent); }
+.tl-mark.person line { stroke: var(--text); } .tl-mark.person circle { fill: var(--text); }
+.views a .count.standin { background: rgba(110, 168, 254, .18); color: var(--accent); margin-left: 4px; }
+.job-proposal { color: var(--accent); overflow-wrap: anywhere; }
+.cost-standin { color: var(--accent); }
+.standin-panel .mode-row b, .standin-panel .kind-row b { white-space: nowrap; flex: none; }
+.standin-panel .mode-row input, .standin-panel .kind-row input { flex: none; }
+.decisions-card td, .decisions-card th { white-space: normal; }
+.decisions-card .table-wrap { overflow-x: auto; }

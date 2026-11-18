@@ -5,7 +5,10 @@ the mock: with no script for a plan step it writes specs/plan-<run id>-<step>.md
 with that path (a mock script cannot name a file after the run id); `build` writes NOTES.md.
 
   workflows  plan-build (plan, build; a person reviews, never ships; started by the cron trigger
-             from issues too) and ship-it (plan, auto review, ship: merges without a person)
+             from issues too) and ship-it (plan, auto review, ship: merges without a person);
+             add_stops() adds stops (plan, build, the check `ready`, a human review, ship: the
+             check passes only once <site>/ready exists, so a run stops there with work to hand to a
+             person and can be resumed), for the stand-in's tests
   commands   classify, plan-chore, plan-bug, plan-feature; hop implement
   forge      forgejo at `forge_url` (tests/fake_forgejo.py), or none
 """
@@ -93,6 +96,33 @@ def ir(name: str, app: Path, forge_url: str | None, port_base: int) -> dict:
     }
 
 
+STOPS = {"name": "stops", "description": "Stops at a check until the site is ready; a person reviews",
+         "agent": "mock", "review": "human", "environment": ["wt"], "input": ["cli"], "trigger": [],
+         "classes": [], "changes": "codebase",
+         "steps": [{"name": "plan", "kind": "run", "command": "plan-chore", "args": ["$prompt"],
+                    "modelSet": "inherit", "agent": "", "retries": 0, "when": "always"},
+                   {"name": "build", "kind": "run", "command": "implement", "args": ["$plan"],
+                    "modelSet": "inherit", "agent": "", "retries": 0, "when": "always"},
+                   {"name": "ready", "kind": "check", "cmd": "ready", "retries": 0, "collect": []},
+                   {"name": "review", "kind": "review"}, {"name": "ship", "kind": "ship"}]}
+
+
+def add_stops(layer: Path) -> Path:
+    """Add the cmd `ready` (`test -f <site>/ready`) and the workflow `stops` (plan → build → check
+    ready → review → ship, a human review) to a built layer, so a real run stops with work to hand
+    over and resumes with the mock agent. Returns the file whose existence lets the check pass."""
+    path = layer / "agentic-layer.json"
+    data = json.loads(path.read_text())
+    ready = Path(data["codebase"]["root"]).parent / "ready"
+    data["codebase"]["commands"].append({"name": "ready", "run": f"test -f {ready}", "timeout": 30})
+    data["adws"].append(STOPS)
+    path.write_text(json.dumps(data, indent=1))
+    script = layer / "adws" / "adw_stops.py"
+    script.write_text(adw_script(STOPS))
+    script.chmod(0o755)
+    return ready
+
+
 def adw_script(adw: dict) -> str:
     """What tools/al Generator.adws() writes for one workflow."""
     steps = " → ".join(s["name"] for s in adw["steps"])
@@ -148,6 +178,8 @@ def build_layer(root: Path, name: str, app: Path, forge_url: str | None, *, with
     if not with_launch:
         (adws / "adw_modules" / "launch.py").unlink()
     (adws / "dispatch.py").write_text(HEADER + (RUNTIME / "dispatch.py").read_text())
+    if with_launch:   # a layer generated before starting from the dashboard has no stand-in script either
+        (adws / "standin.py").write_text(HEADER + (RUNTIME / "standin.py").read_text())
     for adw in data["adws"]:
         (adws / f"adw_{adw['name']}.py").write_text(adw_script(adw))
         (adws / f"adw_{adw['name']}.py").chmod(0o755)

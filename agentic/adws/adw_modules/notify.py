@@ -300,6 +300,8 @@ def _decision_lines(layer: Any, state: Any) -> list[str]:
     if decision.get("action") in ("resume", "resume-with"):
         lines.append(f"- from step: {decision.get('from_step') or '?'}")
     lines.append(f"- summary: {_reason(layer, state, str(decision.get('summary') or ''))}")
+    if isinstance(decision.get("confidence"), (int, float)) and not isinstance(decision.get("confidence"), bool):
+        lines.append(f"- confidence: {round(float(decision['confidence']) * 100)}%")
     return lines + (_answer_lines(state) if _answerable(state) else [])
 
 

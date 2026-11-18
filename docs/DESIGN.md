@@ -870,6 +870,23 @@ reports, including the code block each one introduces. The run still counts as f
 and the task list see a failure; the difference is that a person is pointed at the work and told
 what it needs. A tampered sandbox is never handed over, and nothing is merged or deployed.
 
+**The stand-in's scope.** A stand-in may take such decisions for a person, and only inside a scope
+the layer declares: `(stand-in off|suggest|auto #:may (KIND …) #:never (KIND …) #:max-actions-per-run N
+#:max-per-hour N #:escalate-to (dashboard notify))`. The kinds are the decisions a person is asked
+for: `resume`, `restart`, `answer`, `integrate`, `settle`, `land`, `promote`, `retry-job`. A kind in
+`#:may` it takes alone (mode auto), every other kind it only proposes, a kind in `#:never` it neither
+takes nor proposes; without a declaration the scope is `resume`, as before. It sits beside the review
+and the gate, never in their place: `land` runs the run's ship step again, so the same gate decides
+on the current target, and `promote` records one approval as `stand-in` and continues the promotion,
+whose approval rule decides. Limits that no setting lifts are checked in code after the model
+answered and again before the action (`adw_modules/standin.py`, `hard_limit`): it never acts on a run
+a person touched since it stopped, never overrides a rejected review, never lands work with a
+protected-path change or a failing required check, never approves its own work, and a call that
+changed a file is discarded. Every decision, the stand-in's and a person's, is one line in
+`agents/<id>/decisions.jsonl` and in `agents/stand-in/log.jsonl` (who, what, why, what it read, what
+happened next). The dashboard is its control room and goes through the layer's own
+`adws/standin.py`, as starts go through `adws/dispatch.py`.
+
 ## Telling a person
 
 Runs happen while nobody is watching, so a layer can declare notifiers: `(notify email)` sends a
@@ -1019,6 +1036,8 @@ to its check, a re-check and the reviewers to the review step).
 | `integrate.resolved` | `resolved`, `regenerated`, `undecidable` (files, from the agent's report) |
 | `integrate.result` | `run`, `result` (landed / staged / pull-request / failed / waiting), `why`, `commit`, `target` |
 | `step.discipline` | after a `run` step that may not commit: `step`, `ok`, `head_before`, `head_after`, `branch_before`, `branch_after`, `refs` (`created`, `moved`, `deleted`), `main_checkout` (new status lines), `layer_entries` (new top-level names), `violations` (kinds: `committed`, `head-moved`, `ref-created`, `ref-moved`, `ref-deleted`, `main-checkout-changed`, `layer-entry`), `texts`, `restored`, `not_restored`; after a step that may commit (the `commit` template or `#:may-commit #t`): `step`, `ok`, `left_out_restored` (the uncommitted paths under the layer directory or a protected path it restored). The same facts are in the step's record in `state.json` (`discipline`, or `left_out` on a commit step) |
+| `standin.decision` | a decision of the stand-in that did not act, or a person's answer: `entry` (its id in `decisions.jsonl`), `who` (stand-in / person), `via` (run / loop / asked / cli / mail / webhook / dashboard), `kind`, `action`, `answer`, `status` (suggested / refused / escalated / failed / skipped), `reason`, `summary` |
+| `standin.action` | an action that was taken: the same fields with `status` acted, `auto` (true when the stand-in acted alone) and `outcome` (what happened next) |
 
 Two more things make a run observable from outside. A check's log file grows while the check runs
 (its output goes straight to the file; when it ends the content is normalised exactly as before).

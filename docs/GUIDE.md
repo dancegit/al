@@ -513,6 +513,13 @@ changes the layer's local model setting, the Layers view starts work (see
 run (see the next section). Start it with `--read-only` to turn them all off, or `--no-start` to turn off
 starting only.
 
+The Now view also has a **Stand-in** panel per layer. There you switch on a stand-in that proposes,
+or takes, the routine decisions a stopped run waits on you for, see what it did in its live log, and
+pause it; a run that waits on its proposal shows **Go ahead**, **Yes, with this change** and **No, I
+decide** (see [Let a stand-in decide when a run stops](#let-a-stand-in-decide-when-a-run-stops)).
+The header shows two counts on the Runs link: how many runs need you, and how many items the
+stand-in handled today.
+
 A run's **Documents** tab lists the plan, `PR.md`, review reports and patch plans and other text the run
 wrote, as soon as each exists, with the step that produced it. **View** shows it in the page (Markdown
 rendered, or raw), **Download** saves the file, **Download all** saves them as one zip. To get the plan
@@ -2093,36 +2100,113 @@ temporary repository, so commits that live only in a run's private object store 
 ## Let a stand-in decide when a run stops
 
 Many stops need only a small decision: run a flaky check again, build again with one more
-instruction, or give up. The **stand-in decider** makes that decision for you, or proposes it. When a
-run stops and is handed to you, it makes one more agent call, on the heavy tier of the workflow's
-agent (so `al models --set heavy=…` applies). That call reads why the run stopped and what the agents
-asked for, and chooses one of four actions:
+instruction, start a run that died again, or mark a run nobody needs as abandoned. The **stand-in**
+makes that decision for you, or proposes it. It makes one agent call, on the heavy tier of the
+workflow's agent (so `al models --set heavy=…` applies), reads what you would read (why the run
+stopped, what the agents asked for, the review's verdict, the gate's reasons, the end of the log,
+its own earlier decisions) and answers with one action.
 
-- `resume`: run again from the step that stopped, unchanged;
-- `resume-with`: run again from a step it names, with instructions added to the run's request;
-- `abandon`: stop here; the hand-off stays as it is;
-- `ask-human`: it cannot decide.
+Each action belongs to a **decision kind**, one of the decisions a person is asked for today:
 
-It has two modes. With **suggest**, nothing happens until you answer: the decision goes into
-`agents/<run id>/decision.md` and into the run's `needs-human` message (e-mail or command notifier),
-whose subject ends in `[decide <run id>-<code>]`. With **auto**, a resume starts at once, at most twice
-per run. After that, and whenever the decider says `abandon` or `ask-human`, the run comes to you as
-before. A round that resumes sends no `needs-human` message, because the resumed run reports its own
-outcome. The default is **off**, which changes nothing.
+| kind | when | what the stand-in does |
+|---|---|---|
+| `resume` | a run stopped and was handed to you | runs it again from a step, unchanged (`resume`) or with an instruction (`resume-with`) |
+| `restart` | a run failed or died and nothing replaces it | starts the same request again; the new run records that it replaces the old one |
+| `answer` | a run waits at a script step | continues it, optionally with an instruction |
+| `integrate` | a handed-over run whose target moved | starts a run of the same workflow that integrates its branch onto the current target |
+| `land` | a handed-over run whose automatic review passed | runs its ship step again: the gate decides on the current target |
+| `settle` | a finished run that needs nothing more | marks it landed, superseded or abandoned; you can undo it |
+| `promote` | a promotion waits for an approval | records approve or refuse as `stand-in` and continues the promotion: its approval rule decides |
+| `retry-job` | a dashboard job failed | retries it from its first step that did not pass |
 
-The mode is a setting of this machine, like `al models`. It lives in `agents/settings/decider.json`
-and is never committed (`al check` fails if it is):
+It can also say `ask-human` (it cannot decide) or, for a stopped run, `abandon` (leave the hand-off
+as it is); both leave the item with you.
+
+It has two modes. With **suggest**, nothing happens until you answer. With **auto**, it takes the
+decisions in its **scope** by itself and proposes the others. The default is **off**, which changes
+nothing.
+
+**Declare the scope** in `agentic.rkt`. Without a declaration the scope is `resume` only, at most
+twice per run:
+
+```racket
+(stand-in auto #:model-set heavy #:may (resume restart answer integrate settle)
+          #:never (land promote) #:max-actions-per-run 3 #:max-per-hour 12
+          #:escalate-to (dashboard notify))
+```
+
+`#:may` lists the kinds it may take alone, every other kind it only proposes, and a kind in
+`#:never` it neither takes nor proposes. After `#:max-actions-per-run` actions on one run (and the
+runs that replace it) or `#:max-per-hour` in the layer, the item goes to you with the history; with
+`notify` in `#:escalate-to` you also get a message. `al explain` says it in plain words:
+
+```text
+Who stands in for a person  (lines 7–9)
+  A stand-in (auto) reads what a person would read when a run needs one. Alone it may: resume,
+  restart, answer, integrate and settle. It only proposes: retry-job. It never touches: land and
+  promote. At most 3 actions per run and 12 per hour; after that, and whenever it is unsure, the item
+  goes to a person (the dashboard's Needs you list and a notification).
+    - It never acts on a run a person touched since it stopped
+    - It never overrides a rejected review
+    - It never lands work that touches a protected path or has a failing required check
+    - It never approves its own work
+    - It never changes a file: a call that did is discarded
+    - land and promote only ask the gate again; the gate and the promotion's approval rule decide
+```
+
+Those six lines are **hard limits**: they are checked in code after the model answered and again
+before the action, and no setting lifts them.
+
+**Switch it** on this machine, like `al models`. The setting lives in `agents/settings/decider.json`
+and is never committed (`al check` fails if it is). It wins over the declared mode, and it can only
+narrow the declared scope:
 
 ```console
 $ al decider ~/code/myapp.al --set suggest
 mode: suggest (local setting)
-modes: off (a person reads every hand-off), suggest (the decider proposes, a person answers with `al answer`), auto (the decider resumes by itself, at most 2 times per run)
+scope: may resume; suggests restart, answer, integrate, settle, land, promote, retry-job
+limits: 2 actions per run, 12 per hour
+declared: not declared
+modes: off (a person reads every hand-off), suggest (the stand-in proposes, a person answers on the dashboard or with `al answer`), auto (the stand-in takes the decisions in its scope by itself, at most 2 per run, and proposes the others)
 settings: ~/code/myapp.al/agents/settings/decider.json (local to this machine, never committed); applies to runs that stop from now on; one run: --decider MODE
 ```
 
-`al decider LAYER` alone shows the mode and where it comes from, and `--reset` turns it off again.
-`AL_DECIDER=auto` in the environment wins over the setting, and `--decider MODE` on one run wins over
-both (`uv run adws/adw_change.py "…" --decider auto`).
+For a layer that declares `(stand-in auto #:may (resume restart) #:never (promote) #:max-actions-per-run 4)`:
+
+```console
+$ al decider ~/code/myapp.al --may resume
+mode: auto (layer)
+scope: may resume; suggests restart, answer, integrate, settle, land, retry-job; never promote
+limits: 4 actions per run, 12 per hour
+declared: (stand-in auto #:may (resume restart) #:never (promote))
+…
+$ al decider ~/code/myapp.al --may resume,land
+al decider: land is not in the layer's (stand-in … #:may): it offers resume, restart
+$ al decider ~/code/myapp.al --pause
+mode: auto (layer), paused
+```
+
+`al decider LAYER` alone shows all of it, `--unpause` continues after a pause and `--reset` drops the
+local setting. `AL_DECIDER=auto` in the environment wins over the setting, and `--decider MODE` on
+one run wins over both (`uv run adws/adw_change.py "…" --decider auto`; the dashboard's start form
+has the same choice).
+
+**On the dashboard** the Now view has a **Stand-in** panel per layer: the mode as three choices, the
+scope as check boxes, the limits, **Pause**, how many items it handled today and how many wait on
+you, and a live log. A run that waits on a suggestion shows it on its page with three buttons: **Go
+ahead**, **Yes, with this change** and **No, I decide**; the runs list shows `proposes: …` in the
+row. **Ask the stand-in** on a failed, died, handed-over or waiting run gets you a proposal for an
+old item, whatever the mode, and changes nothing else. The stand-in only takes items that stopped
+after it was switched on; for the older ones the panel offers **Handle the N items already
+waiting**, which first lists what it would do with each and then **Do these M**. A run's page lists
+every decision (who, what, why, what happened next) and what the stand-in's calls cost. To keep the
+loop running without the page, add `#:systemd #t` to the declaration: `al gen` writes
+`systemd/al-<name>-stand-in.service`, which runs `adws/dashboard.py --stand-in-only`.
+
+A suggestion for a stopped run also goes into `agents/<run id>/decision.md` and into the run's
+`needs-human` message (e-mail or command notifier), whose subject ends in `[decide <run id>-<code>]`.
+A round that resumes by itself sends no `needs-human` message, because the resumed run reports its
+own outcome.
 
 In mode **auto** the decider can also start `al integrate` for a run that ended handed over because it
 could not merge (see "Resolve with an agent"). That is off until the layer says so with `"decider":
@@ -2148,7 +2232,7 @@ A suggestion, as `decision.md` records it:
 The test check looks flaky: the build is fine, run it again.
 ```
 
-**Answer it** with one word. `go` applies the suggestion, `alter TEXT` applies it with your changes
+**Answer it** with one word, on the command line or with the buttons on the run's page. `go` applies the suggestion, `alter TEXT` applies it with your changes
 added (a suggestion to abandon or ask a human then becomes a resume from the step that stopped,
 with your text as the instructions), `explain` sends the decider's full explanation through the
 same notifiers, and `reject` leaves the run with you:
@@ -2185,12 +2269,14 @@ to this machine.
 It is signed like every other payload. The reply is 200 when the answer was applied, 409 when it was
 refused (wrong code, or nothing waiting), and 400 for a bad payload.
 
-**What the decider never does.** It never merges, deploys, approves a pull request or gets around the
-gate: a resumed run passes every check, the review and the shipping gate again. It is never used for
-a workflow with `#:changes layer` (a person always approves those), for a run that a spending or
-usage limit stopped (money is your decision), for a waiting run or for a fan-out candidate. If its
-own call fails or answers something invalid, the run and its hand-off stay exactly as they were. The
-dashboard shows the decision on the run page as a **Decision** block. It does not take answers.
+**What the stand-in never does.** It never merges, deploys or approves in the gate's place: a
+resumed run passes every check, the review and the shipping gate again, `land` asks that gate again,
+and `promote` adds one approval that the promotion's own rule counts. Besides the hard limits above,
+it is never used for a workflow with `#:changes layer` (a person always approves those), for a run
+that a spending or usage limit stopped (money is your decision) or for a fan-out candidate. If its
+own call fails or answers something invalid, the run and its hand-off stay exactly as they were. An
+answer on the dashboard goes through the same entry as `al answer`, a mail reply and the webhook,
+so the channels cannot disagree; `alter` does not apply to `land` or `promote`.
 
 ## Where it runs: platforms
 
@@ -2235,7 +2321,7 @@ On arm64, the images you use must exist for `linux/arm64`. `--json` prints the s
 | `al gen` says a template uses an unknown placeholder | a hand-written template has a typo in `{{…}}` | fix the name; use only the placeholder names that appear in the kit's templates (`kit/templates/`) |
 | a run waits with `waiting for a free runs slot` | the concurrency limit is reached | wait, or raise `#:max-runs` |
 | `status: failed` and a `[needs human]` pull request | the run stopped and handed over | read "Why this stopped" in it |
-| `decision:  suggest … (suggested)` in the run summary | the stand-in decider proposes a next step | `al answer LAYER RUN go`, `alter TEXT`, `explain` or `reject` |
+| `decision:  suggest … (suggested)` in the run summary | the stand-in proposes a next step | the buttons on the run's page, or `al answer LAYER RUN go`, `alter TEXT`, `explain` or `reject` |
 | `git-integrity` failure | something in the container altered git metadata it should not | inspect `trees/<run id>`; nothing was shipped |
 | `al gen` stops with "edited by hand" | a generated file was changed directly | see step 14: eject the template, or `--discard-edits` |
 | the agent cannot edit files or run commands | permission mode or allowed tools too narrow | adjust `#:permission-mode` / `#:allowed-tools` on the agent |

@@ -1,0 +1,3 @@
+{
+  "output": "I read what a person would read.\n\n```json\n{\n \"action\": \"promote\",\n \"summary\": \"Every change passed its review; approve.\",\n \"explanation\": \"EXPLANATION-MARKER nothing here needs a person.\",\n \"instructions\": \"\",\n \"from_step\": \"\",\n \"promote\": \"approve\",\n \"confidence\": 0.9\n}\n```\n"
+}

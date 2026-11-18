@@ -1,0 +1,3 @@
+{
+  "output": "I read what a person would read.\n\n```json\n{\n \"action\": \"answer\",\n \"summary\": \"What the run waited for is there; continue.\",\n \"explanation\": \"EXPLANATION-MARKER nothing here needs a person.\",\n \"instructions\": \"ANSWER-MARKER the file is in place.\",\n \"from_step\": \"\",\n \"confidence\": 0.85\n}\n```\n"
+}

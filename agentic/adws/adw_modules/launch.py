@@ -51,6 +51,7 @@ LAUNCH_LOG = "launch.log"
 COMMAND_PREFIX = "command:"
 SLASH_RE = re.compile(r"^\s*/(\S+)(?:\s+(.*))?$", re.DOTALL)   # /NAME, then the prompt
 ISSUE_MODES = ("none", "start", "trigger")
+DECIDER_MODES = ("off", "suggest", "auto")   # decide.MODES: the stand-in's mode for one run (--decider)
 TITLE_CHARS = 80
 EXIT = {"started": 0, "issue-created": 0, "error": 1, "invalid": 2, "refused": 3,
         "confirm-duplicate": 4, "confirm-ships": 4}
@@ -197,7 +198,7 @@ def _result(status: str, **fields: Any) -> dict[str, Any]:
 
 
 def _check(layer: Any, target: Target, prompt: str, request_key: str, klass: str | None, model_set: str | None,
-           model_list: list[str], issue: str) -> tuple[dict[str, Any], dict[str, Any]]:
+           model_list: list[str], issue: str, decider: str = "") -> tuple[dict[str, Any], dict[str, Any]]:
     """(the ADW to run, the overrides) or LayerError / ValueError with the reason."""
     if not isinstance(request_key, str) or not KEY_RE.fullmatch(request_key):
         raise ValueError("request key: 8 to 64 letters, digits, - or _")
@@ -218,6 +219,8 @@ def _check(layer: Any, target: Target, prompt: str, request_key: str, klass: str
         raise ValueError(f"unknown class {klass!r}; one of {', '.join(CLASSES)}")
     if issue not in ISSUE_MODES:
         raise ValueError(f"issue: one of {', '.join(ISSUE_MODES)}")
+    if decider and decider not in DECIDER_MODES:
+        raise ValueError(f"decider: one of {', '.join(DECIDER_MODES)}")
     if issue != "none" and str((layer.ir.get("forge") or {}).get("kind") or "none") == "none":
         raise ValueError("the layer has no forge (forge none): the request cannot be logged as an issue")
     if issue == "trigger":
@@ -236,16 +239,18 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
           model_set: str | None = None, models: Iterable[str] = (), issue: str = "none",
           confirm_duplicate: bool = False, confirm_ships: bool = False, dry_run: bool = False,
           detach: bool = True, spawn: Callable[..., Any] = _spawn, forge: Any = None,
-          replaces: str = "") -> dict[str, Any]:
+          replaces: str = "", decider: str = "") -> dict[str, Any]:
     """Start `target` with `prompt` once per `request_key`; see the module docstring. `models` are
-    TIER=MODEL_ID strings; `replaces` is the run this one starts again. Returns {"status": started | issue-created | confirm-duplicate |
+    TIER=MODEL_ID strings; `replaces` is the run this one starts again; `decider` is the stand-in's
+    mode for this run (`--decider MODE`), "" for the layer's. Returns {"status": started | issue-created | confirm-duplicate |
     confirm-ships | refused | invalid | error, …}; EXIT maps the status to an exit code."""
     model_list = [str(m) for m in models]
     layer_dir = Path(layer.layer_dir)
     shown = {"kind": target.kind, "name": target.name}
     base = {"layer": layer.name, "target": shown}
     try:
-        adw, over = _check(layer, target, prompt, request_key, klass, model_set or None, model_list, issue)
+        adw, over = _check(layer, target, prompt, request_key, klass, model_set or None, model_list, issue,
+                           str(decider or ""))
     except (LayerError, ValueError) as exc:
         return _result("invalid", error=str(exc), **base)
     replaces = str(replaces or "")
@@ -339,6 +344,7 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
         argv += ["--model", item]
     argv += ["--dry-run"] if dry_run else []
     argv += ["--replaces", replaces] if replaces else []
+    argv += ["--decider", str(decider)] if decider else []
     limits = slots.limits(layer)
     queued = (f"all {max(1, limits['runs'])} run slots are in use; it waits up to {limits['wait']} s"
               if slots.free_slots(layer, "runs") == 0 else "")

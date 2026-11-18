@@ -352,6 +352,7 @@
   ],
   "schemaVersion": "agentic-layer-v1",
   "services": [],
+  "standIn": null,
   "storage": {
     "dir": "artefacts",
     "id": "local",
