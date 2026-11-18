@@ -3,7 +3,7 @@
   "repository": "dancegit/al",
   "base": "https://github.com/dancegit/al/releases/download/media-v1/",
   "tour": {
-    "placeholder": "https://example.org/replace-with-the-tour-video-link",
+    "placeholder": "https://github.com/dancegit/al/releases/download/media-v1/demo-tour.mp4",
     "asset": "demo-tour.mp4"
   },
   "files": [

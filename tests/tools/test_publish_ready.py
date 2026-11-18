@@ -184,7 +184,9 @@ def test_every_video_link_is_in_the_manifest() -> None:
     readme = _read("README.md")
     tour = re.findall(r"^\[tour\]:\s*(\S+)\s*$", readme, re.M)
     assert tour == [manifest["tour"]["placeholder"]], f"the README's [tour] definition is the manifest's placeholder: {tour}"
-    assert readme.count("][tour]") >= 2 and "tour.mp4" not in readme
+    # the tour is either the release asset or a video-site link; the old tracked docs/demo/tour.mp4 is gone
+    assert readme.count("][tour]") >= 2 and "docs/demo/tour.mp4" not in readme
+    assert tour[0] == manifest["base"] + manifest["tour"]["asset"] or not tour[0].startswith("https://example.")
     assert not wrong, "\n  ".join(["video links:"] + wrong)
 
 
@@ -363,7 +365,7 @@ def test_readme_numbers_section_links_the_generated_file() -> None:
     assert (headings[at - 1], headings[at + 1]) == ("How it stays safe", "Status")
     section = _section(readme, "## Numbers")
     assert "docs/KPIS.md" in targets(section) and "docs/KPIS.md" in _tracked()
-    assert "`tools/al kpis ~/code/myapp.al`" in section and "sample" in section
+    assert "`tools/al kpis ~/code/myapp.al`" in section and ("sample" in section or "real runs" in section)
     assert re.search(r'sub\.add_parser\("kpis"', _read("tools/al"))
     assert "· kpis" in _section(readme, "## Repository map")
 

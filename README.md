@@ -13,7 +13,7 @@ generator then produces the rest deterministically, in a folder beside the repos
 
 **[Watch the 13-minute tour][tour]** (link to be added) — it explains the idea and shows every part running for real.
 
-[tour]: https://example.org/replace-with-the-tour-video-link
+[tour]: https://github.com/dancegit/al/releases/download/media-v1/demo-tour.mp4
 
 ![How it works: codebase → LLM.txt → agentic.rkt → compiler → agentic layer](docs/demo/pipeline.png)
 
@@ -279,7 +279,7 @@ How to run the test suites, fast and live: [`docs/EXAMPLES.md`](docs/EXAMPLES.md
 ## Numbers
 
 `tools/al kpis ~/code/myapp.al` counts a layer's run records: runs by outcome and why, attempts per step, review rounds, how often a person had to act, time and cost per workflow and class, changes on
-the default branch. No names, paths or prompts. [`docs/KPIS.md`](docs/KPIS.md) is its output; the committed file is a sample from test fixtures until the owner runs it on the real records.
+the default branch. No names, paths or prompts. [`docs/KPIS.md`](docs/KPIS.md) is its output for al's own layer: 45 real runs while al was built, 24 changes landed on the default branch, none of them yet without a person.
 
 ## Status
 
