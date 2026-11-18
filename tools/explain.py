@@ -153,7 +153,19 @@ def describe_step(step: dict, ir: dict | None = None) -> str:
 
 def where_it_runs(adw: dict, ir: dict) -> str:
     """Where a workflow's agent and its checks run, in plain words (the rule of the runtime's
-    EnvStack: the first podman option of the stack decides, else a Nix shell wraps both)."""
+    EnvStack: the first podman option of the stack decides, else a Nix shell wraps both); with a
+    (placement …), also on which machines."""
+    text = _where_in_the_stack(adw, ir)
+    placement = ir.get("placement") if isinstance(ir.get("placement"), dict) else None
+    if not placement:
+        return text
+    pinned = [str(reason) for reason in adw.get("pinnedHome") or []]
+    if pinned:
+        return f"{text} It runs on home only: {'; '.join(pinned)}."
+    return f"{text} It may run on: {', '.join(placement.get('hosts') or [])}."
+
+
+def _where_in_the_stack(adw: dict, ir: dict) -> str:
     environments = by_id(ir, "environments")
     stack = [environments[i] for i in adw["environment"]]
     kinds = [o["kind"] for o in stack]
@@ -339,6 +351,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         return host_text(ir)
     if head == "registry":
         return registry_text(ir)
+    if head == "placement":
+        return placement_text(ir)
     if head == "include":
         return ("More of the definition, from another file", f"These clauses are in `{block.get('target', '?')}`"
                 + (", written by `al adopt` from the codebase's existing agent setup" if "adopted/" in block.get("target", "") else "")
@@ -357,6 +371,11 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
                                        else f"Artefacts are uploaded to the S3 bucket `{s['bucket']}` and kept locally too."), []
     if head == "concurrency":
         c = ir["concurrency"]
+        placement = ir.get("placement") if isinstance(ir.get("placement"), dict) else None
+        if placement:   # the limits hold on each host; #:max-runs-per-host replaces #:max-runs when it is given
+            runs = placement.get("maxRunsPerHost") or c["maxRuns"]
+            return ("How much runs at once", f"At most {runs} runs, {c['maxAgents']} agent calls and {c['maxChecks']} checks at the same time "
+                    "on each host, shared by everything that can start a run there.", [])
         return ("How much runs at once", f"At most {c['maxRuns']} runs, {c['maxAgents']} agent calls and {c['maxChecks']} checks at the same time, "
                 "shared by everything that can start a run.", [])
     if head == "service":
@@ -702,6 +721,51 @@ def host_text(ir: dict) -> tuple[str, str, list[str]]:
                 "`al deploy LAYER --to HOST --as ID --provision` shows the plan, with every privileged command, asks once, then "
                 "applies it; `al deploy … --status` lists what drifted"]
     return ("Machines that run it", f"{len(hosts)} kind(s) of machine: " + listing([f"`{h['id']}`" for h in hosts]) + ".", bullets)
+
+
+PORTS_NOTE = ("A sandbox of this layer publishes ports: keep `#:max-runs-per-host 1`, because two runs that start in the "
+              "same instant on one host could lease the same ports")
+
+
+def placement_text(ir: dict) -> tuple[str, str, list[str]]:
+    """The (placement …) block: which machines, how one is picked, what a run on another machine may
+    do. Addresses are not in the layer, so none can be shown."""
+    p = ir.get("placement")
+    if not isinstance(p, dict):
+        return ("Where runs execute", "Every run executes on the machine that holds this layer.", [])
+    hosts = [str(h) for h in p.get("hosts") or []]
+    others = [h for h in hosts if h != "home"]
+    rule = ("the one with the lowest share of its runs in use" if p.get("prefer") == "least-loaded"
+            else "the first one with a free run")
+    if not others:
+        text = "Runs execute on `home`, the machine that holds this layer; no other machine is listed."
+    else:
+        text = (f"Runs may execute on {len(hosts)} machines: " + listing([f"`{h}`" for h in hosts])
+                + (" (`home` is the machine that holds this layer)" if "home" in hosts else "")
+                + f". When a run starts, a scheduler on the home machine asks each for its load and picks {rule}.")
+    bullets = []
+    if p.get("maxRunsPerHost"):
+        bullets.append(f"At most {p['maxRunsPerHost']} runs at once on each host")
+    reserve = p.get("reserve")
+    if isinstance(reserve, dict):
+        bullets.append(f"`{reserve['host']}` is kept for {listing(reserve.get('classes') or [])} runs whose class is fixed when they start")
+    if others:
+        bullets += [
+            "A run on another machine works in its own clone of the repository and can only push its own branch; the home "
+            "machine fetches that branch and runs the ship step itself, through its own gate: only the home machine changes "
+            "the default branch",
+            f"Each machine reads the git source from the environment variable `{p.get('sourceEnv') or 'AL_GIT_SOURCE'}` and "
+            "its own address is in `AL_HOST_<ID>` on the home machine; neither is in this file",
+            f"A host that gives no answer for {p.get('lostAfter', 120)} seconds leaves its run `lost`; "
+            "`al run LAYER --restart RUN` starts it again on another host from the last commit it pushed",
+            "`al hosts LAYER status` shows what the scheduler sees; `al host LAYER HOST doctor` checks one host"]
+        pinned = [f"`{a['name']}` ({'; '.join(a['pinnedHome'])})" for a in ir.get("adws") or [] if a.get("pinnedHome")]
+        if pinned:
+            bullets.append("Runs on home only: " + listing(pinned))
+        publishes = any(o.get("kind") == "podman" and o.get("publish") for o in ir.get("environments") or [])
+        if publishes and p.get("maxRunsPerHost") != 1:
+            bullets.append(PORTS_NOTE)
+    return ("Where runs execute", text, bullets)
 
 
 def registry_text(ir: dict) -> tuple[str, str, list[str]]:

@@ -153,6 +153,18 @@
   [max-checks integer 2 "Codebase check commands in flight at once across all runs (they are the CPU-heavy part)."]
   [wait-seconds integer 3600 "How long a run waits for a free slot before failing."])
 
+(define-family placement #:key "placement" #:letter "" #:default #f
+  "Where runs of this layer may execute. Omitted: every run executes on the machine that holds the layer, as before. Hosts are `home` (a reserved id: the machine that holds the layer) or the ids of declared (host …) clauses. The address of a host is never written in the layer file: it comes from the variable AL_HOST_<ID> (the id in capitals, `-` as `_`) in the environment, in `local.env` in the layer directory or in `$XDG_CONFIG_HOME/al/<layer name>.env`. A run on another host works in its own clone of the git source and can only push its own branch; the home machine fetches that branch and runs the workflow's (ship) step itself, through the unchanged gate.")
+(define-kind placement auto
+  "A scheduler on the home machine asks every listed host for its load, picks one by #:prefer and starts the run there. `al hosts LAYER status` shows what it sees; `al run LAYER /NAME … --on HOST` picks the host by hand."
+  [hosts (list-of symbol) #:required "Hosts runs may execute on, in declared order: `home` and/or ids of declared (host …) clauses."]
+  [prefer (enum least-loaded first) least-loaded "`least-loaded`: the host with the lowest share of its runs in use (ties: the lower load average, then a host that already has the sandbox image, then the declared order); `first`: the first listed host with a free run."]
+  [max-runs-per-host integer 0 "Runs in flight at once on each host, 1–64; replaces (concurrency #:max-runs) on every host including `home`. 0 = (concurrency #:max-runs) applies on each host."]
+  [reserve (pairs host-reserve) #:none "Keep one host for some work classes, e.g. ((host build-2) (classes (chore bug))): that host only takes runs whose class is fixed at start to one of them."]
+  [source-env string "AL_GIT_SOURCE" "NAME of the variable holding the git source: the URL runs clone the base commit from and push their own branch to (the forge's clone URL, or the home repository over ssh). Every machine holds its own value, the URL as seen from there. Never the URL itself."]
+  [layer-source-env string "AL_LAYER_SOURCE" "NAME of the variable holding the git source of a layer that is not in the application repository. Never the URL itself."]
+  [lost-after integer 120 "Seconds without an answer from a host after which its run is marked `lost`, 30–3600; `al run LAYER --restart RUN` starts it again on another host."])
+
 (define-family voice #:key "voice" #:letter "" #:default #f
   "Local speech stack used by the voice prompt input and trigger, and for spoken summaries.")
 (define-kind voice kokoro
@@ -478,7 +490,8 @@
   [description string "" "What the command proves."]
   [covers (list-of string) () "Paths this command proves something about, relative to the repository root: a directory (\"kit/dashboard\"), a file, or a glob (\"*.md\", \"docs/**\"). A cmd with #:covers is one of the layer's checks: (check NAME #:cmds affected) runs it, and `al verify` reports source paths no check covers."]
   [always boolean #t "#t = the command runs for every change. #f = where affected checks are asked for (a check step with #:when-affected #t, a gate with #:require affected) it runs only when a changed path is under its #:covers, and is recorded as not affected otherwise; needs #:covers."]
-  [reuse boolean #t "#t = a passing result is reused when the same command is asked for again on an identical tree in the same run (the gate after a passing check step, a review round that changed nothing). #f = it always runs again: for a command that is not deterministic."])
+  [reuse boolean #t "#t = a passing result is reused when the same command is asked for again on an identical tree in the same run (the gate after a passing check step, a review round that changed nothing). #f = it always runs again: for a command that is not deterministic."]
+  [needs-home boolean #f "The command needs state that exists only on the machine that holds the layer (a local database, a licence, a device): a workflow that runs it as a check or script is never placed on another host."])
 
 (define-record paths
   "Where things are: (paths #:source (…) #:tests (…) …)."
@@ -644,6 +657,11 @@
   [password-env string "" "NAME of the variable holding the registry password or token; given together with #:username-env."]
   [tls-verify boolean #t "Verify the registry's TLS certificate."])
 
+(define-record host-reserve
+  "A reservation of (placement … #:reserve …), written as pairs: ((host ID) (classes (CLASS …)))."
+  [host symbol #:required "The reserved host: one of #:hosts, not `home`."]
+  [classes (list-of (enum chore bug feature patch)) #:required "Work classes the host is kept for; at least one."])
+
 ;; ---------------------------------------------------------------------------------------
 ;; Derived lists and the semantic rules the compiler enforces (also printed in the reference)
 ;; ---------------------------------------------------------------------------------------
@@ -659,7 +677,7 @@
 (define artefact-types (map kind-name (family-kinds (find-family 'artefact))))
 
 ;; Families that hold exactly one option (emitted as an object, not an array).
-(define singleton-families '(layer forge storage voice concurrency dashboard budget stand-in cycle))
+(define singleton-families '(layer forge storage voice concurrency dashboard budget stand-in cycle placement))
 
 ;; Placeholders a stage #:branch may contain.
 (define delivery-placeholders '("{cycle}" "{version}" "{date}"))
@@ -776,6 +794,9 @@
     "#:may-commit #t is rejected on a read-only template (review, classify, question, pull-request, branch-name, summarize): those steps never commit."
     "(host #:id ID …) is written with keywords only and may be declared several times, each with a unique #:id of lowercase letters, digits and dashes (no dots: an id is not a host name). It needs (layer in-repo …). Every name in #:units is a unit the layer declares (a cron or webhook trigger, a dashboard other than none); #:dashboard-port is 0 or 1–65535, and a non-zero port needs the dashboard unit. #:images pull needs a (registry …); #:images pull and load need a podman environment."
     "(registry …) is declared at most once. #:address-env, #:username-env and #:password-env take the NAME of an environment variable in capitals; a value that looks like a URL, an e-mail address or a host name is rejected. #:username-env and #:password-env are given both or neither."
+    "(placement auto …) is declared at most once. #:hosts is not empty and has no duplicate; every name is `home` or the #:id of a declared (host …). #:max-runs-per-host is 0–64 and #:lost-after 30–3600. #:reserve names a host of #:hosts other than `home`, with at least one class. #:source-env and #:layer-source-env take the NAME of an environment variable in capitals; a value that looks like a URL, an e-mail address or a host name is rejected."
+    "`home` is a reserved host id, the machine that holds the layer: (host #:id home) is rejected. Host addresses are never in the layer file; they come from AL_HOST_<ID> in the environment or `local.env`."
+    "(cmd NAME \"…\" #:needs-home #t) needs no (placement …). With a placement, a workflow stays on `home` when a cmd it runs as a check or script, or that its review requires (#:require-checks), has #:needs-home #t; when it has a (script … #:waiting-exit …) step; when it changes the layer (#:changes layer); or when it has no `worktree` environment. `al explain` says which."
     "(toolchain nix …) is used by an environment with #:toolchain ID. An environment gives #:toolchain or #:packages, never both. With #:toolchain, a nix-devshell gives no #:nixpkgs and a podman gives no #:base-image and no #:nested-engine #t. A nix-devshell or home-manager gives one of the two. A toolchain lists at least one package or feature, and its #:env names are variable names. Feature agent-cli needs a workflow whose agent runs inside an environment using the toolchain (a nix-devshell, or podman with #:agent-inside #t); the agents of those workflows are claude-code, codex or mock."
     "Environment sources: a podman option takes its image from at most one of #:base-image, #:containerfile, #:devcontainer; #:target and #:context need #:containerfile; paths are relative to the repository root, without `..` or a leading `/`. A nix-devshell option needs #:packages or #:flake; #:shell needs #:flake. Only the first declared podman option may use #:containerfile or #:devcontainer and only the first nix-devshell option may use #:flake (the layer has one image and one flake). #:prepare names declared codebase cmds; an ADW whose worktree option prepares has no step named `prepare`."
     "Kinds marked planned compile but are refused by the generator."

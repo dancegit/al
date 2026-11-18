@@ -144,6 +144,24 @@
                        (field agent 'id "") kind))
          '())]))
 
+;; A host runs may be placed on gets the sandbox image by its recipe tag from the registry; with
+;; #:images build and no registry it can only build the image itself, at its first run.
+(define (placement-image ir)
+  (define placement (field ir 'placement #f))
+  (define podman-ids
+    (for/list ([option (in-list (field ir 'environments))] #:when (equal? (field option 'kind "") "podman"))
+      (field option 'id "")))
+  (define sandboxed?
+    (for*/or ([adw (in-list (field ir 'adws))] [id (in-list (field adw 'environment))]) (member id podman-ids)))
+  (if (and (hash? placement) (not (hash? (field ir 'registry #f))) sandboxed?)
+      (for/list ([host (in-list (field ir 'hosts))]
+                 #:when (member (field host 'id "") (field placement 'hosts))
+                 #:when (equal? (field host 'images "") "build"))
+        (format "host `~a` is listed in (placement … #:hosts …) with #:images build and no (registry …) is declared: every run placed there builds the sandbox image on that host first; declare a registry and push the image (al sandbox push)"
+                (field host 'id "")))
+      '()))
+
 (define (layer-warnings ir)
   (append (unused-environments ir) (credentials-outside ir) (scope-command ir) (nix-not-in-container ir)
-          (check-outside-sandbox ir) (require-affected-ships ir) (helper-agent-without-toolless-mode ir)))
+          (check-outside-sandbox ir) (require-affected-ships ir) (helper-agent-without-toolless-mode ir)
+          (placement-image ir)))

@@ -103,6 +103,11 @@ class ADWState:
     # the run's own `--decider MODE` (off, suggest, auto); "", and then left out of state.json, for a run
     # started without the flag: the layer's mode applies
     decider: str = ""
+    # a run that executes (or executed) on another host of a (placement …): {host, phase: remote | gate,
+    # base, branch, pushed: {sha, step, at}, delivered: {sha, branch, at, step}, lost: {at, reason},
+    # last_seen, restart_of, storage, status}; empty, and then left out of state.json, for every run
+    # that stays on the machine that holds the layer
+    remote: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -146,6 +151,8 @@ class ADWState:
                 data.pop("integration", None)  # only an integration run has one
             if not data.get("decider"):
                 data.pop("decider", None)  # only a run started with --decider has one
+            if not data.get("remote"):
+                data.pop("remote", None)  # only a run placed on another host has one
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")

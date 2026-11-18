@@ -324,7 +324,7 @@ def used_agents(ir: dict) -> list[dict]:
 def required_env(ir: dict, decl: dict | None = None) -> list[EnvNeed]:
     """What the layer reads from the environment when it runs, from the IR alone. Names only.
     The (registry …) variables are needed on a host only when its declaration `decl` pulls the
-    sandbox image (#:images pull)."""
+    sandbox image (#:images pull), the git source of a (placement …) only on a host it lists."""
     needs: list[EnvNeed] = []
     forge = ir.get("forge") or {}
     if forge.get("kind", "none") != "none" and forge.get("tokenEnv"):
@@ -345,8 +345,14 @@ def required_env(ir: dict, decl: dict | None = None) -> list[EnvNeed]:
             if registry.get(key):
                 needs.append(EnvNeed(registry[key], why, True))
 
+    placement = ir.get("placement") if isinstance(ir.get("placement"), dict) else None
+    if placement and decl and decl.get("id") in (placement.get("hosts") or []):
+        needs.append(EnvNeed(placement.get("sourceEnv") or "AL_GIT_SOURCE",
+                             "the git source runs on this host fetch from and push to", True))
+
     handled = {("forge", "tokenEnv"), ("dashboard", "tokenEnv"), ("triggers", "secretEnv"),
-               ("registry", "addressEnv"), ("registry", "usernameEnv"), ("registry", "passwordEnv")}
+               ("registry", "addressEnv"), ("registry", "usernameEnv"), ("registry", "passwordEnv"),
+               ("placement", "sourceEnv"), ("placement", "layerSourceEnv")}
 
     def walk(family: str, node: Any, ident: str) -> None:
         if isinstance(node, dict):
@@ -1366,6 +1372,10 @@ def status(a: Any, al: Any) -> int:
                 compare += f", local is {counts[1]} ahead / {counts[0]} behind"
     print(f"host: {remote.label}   directory: {host.directory}   layer: {facts.layer_rel}")
     print(f"deployed: {head[:12] or '?'}   local {facts.branch}: {facts.commit[:12]}   ({compare})")
+    placement = facts.ir.get("placement") if isinstance(facts.ir.get("placement"), dict) else None
+    if placement and facts.decl:
+        listed = facts.decl.get("id") in (placement.get("hosts") or [])
+        print("placement: listed in #:hosts" if listed else "placement: not listed")
     if int(host["dirty"] or 0):
         print(f"note: the deployment has local changes ({host['dirty']} files); the next deploy stops until they are committed or discarded")
     if units:

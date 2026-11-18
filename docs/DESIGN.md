@@ -606,6 +606,69 @@ default environment and what makes N agents on one repository safe. On top of th
   slots; the winner (fewest resolve attempts, then smallest diff) is merged into the parent run, which
   goes on to check, review and ship it. Losers' branches are removed and their ids recorded.
 
+### Runs on other hosts
+
+`(placement auto #:hosts (home build-1 build-2) …)` lets a run execute on another machine. `home`
+is the machine that holds the layer; every other name is a declared `(host …)`. Host addresses are
+not in the layer (`AL_HOST_<ID>`, read like every private value), and neither is the git source
+(`#:source-env`, default `AL_GIT_SOURCE`: one URL per machine, as seen from there). The design moves
+the existing run path instead of writing a second one:
+
+- **The scheduler** (`adw_modules/placement.py`) runs in the home process that would have run the
+  workflow. It asks every listed host for its load with one call each, at once (`adws/host.py load`
+  through `adw_modules/hostlink.py`: the person's own ssh, `BatchMode`, nothing stored), writes the
+  answers to `agents/hosts.json`, picks a host by `#:prefer` and reserves it in the same file under
+  one lock, so runs that start together spread. A workflow the compiler pinned (`pinnedHome`: a cmd
+  with `#:needs-home`, a waiting script, a layer change, no worktree) stays on `home`. A host is
+  skipped, with its reason in the `placement.decision` event, when it does not answer, runs an older
+  layer, has no login for the workflow's agent, is reserved for other classes, or when the layer on
+  the home machine is not what the git source holds.
+- **The clone.** On the host, `adws/host.py start` (`adw_modules/selfrun.py`) creates
+  `$XDG_STATE_HOME/al/<name>/runs/<id>/`, clones the base branch tip from the git source into
+  `repo/` (a real `.git` directory, shallow when the source allows it, through a local mirror cache
+  when there is one; no remote is configured and the URL is written to no file there), takes the
+  layer from that clone (an in-repo layer) or from the layer's own source at the exact revision, and
+  starts that layer's own `adws/adw_<name>.py` with `AL_SELF_CONTAINED=1`. From there the unchanged
+  environment stack, sandbox, steps and review run as at home: same worktree layout, same read-only
+  `.git` mount (now the clone's), same quarantine, same hardening flags. All runs of a host share
+  one slot directory (`AL_SLOTS_DIR`), so the limits hold per host. The sandbox image is pulled by
+  its recipe tag from the `(registry …)` and its label checked; it is built there only as a fallback.
+- **The push.** A `(ship)` step is not run on a host. The run commits what is pending, imports the
+  commit into its clone the usual way and pushes `<sha>:refs/heads/<run branch>` to the git source:
+  no `+`, no `--force`, and refused for any branch that is not the run's own (`<class>/<id>-<slug>`),
+  for the default branch and for every stage branch. The run ends `delivered`. After every step that
+  moved HEAD the branch is pushed too, with a copy of the state (`pushed-state.json`): where a lost
+  run starts again. A run that fails pushes its work the same way and makes no handoff.
+- **The take-over.** The home process (`adw_modules/remoterun.py`) then builds the normal environment
+  stack at home, fetches the pushed branch into a temporary bare repository, refuses it unless it is
+  exactly the commit the run reported, feeds the new objects through `git index-pack --strict` into
+  the run's quarantine (a sandboxed stack) or the application's store, moves the fresh worktree to
+  that commit and runs what is left of the workflow, its `(ship)` step, through the same code as a
+  resumed local run. So the gate re-runs the required checks on the final tree at home, and only the
+  home machine moves the default branch. `ship.py`, `review.py`, `gitsafe.py` and `envs.py` are
+  unchanged. A run that failed on its host fails at home right after setup, and the usual handoff
+  hands its pushed work to a person.
+- **The record is pulled, never pushed** (`adw_modules/recordsync.py`). Every two seconds the home
+  process sends its cursor and the host answers with what the cursor has not seen: append-only files
+  (`events.jsonl`, `run.log`, `raw.jsonl`, check logs) as byte ranges, written at home only when the
+  home file has exactly the size the range starts at; other files whole, replaced atomically. A
+  dropped connection is caught up from the cursor, so nothing is duplicated. Every path is checked
+  before anything is written (only this run's `agents/<id>/`, `artefacts/<id>/` and its plan files;
+  no link is followed), and `state.json` is accepted only as the state of this run and workflow, with
+  the host's paths rewritten to the home machine's. While the run is on the host the home process
+  writes nothing to `events.jsonl` and `run.log`: they are the host's bytes; its own start events
+  travel in the seed and open the host's file.
+- **Never sent:** the login copy (`agents/<id>/credentials/`), the object quarantine (`objects/`),
+  any address or URL. The host's own values (the git source, an agent token) come from its env file;
+  of those only the agent token variables of the workflow's stack reach the run's environment.
+- **Lost.** A host that gives no usable answer for `#:lost-after` seconds leaves the run `lost`, with
+  what was last received. `--restart` starts it on another host: the new clone fetches the run branch
+  too, the worktree starts at the pushed commit, and the steps recorded in the pushed state are
+  skipped. `--follow` re-attaches a home process to a run whose proxy died.
+
+Not done here: per-host port leases (two runs starting in the same instant on one host could lease
+the same block; keep `#:max-runs-per-host 1` for a sandbox that publishes ports), spreading fan-out
+candidates over hosts (they run where their parent runs), and stopping a remote run from home.
 ## Toolchains: one declaration, three consumers
 
 Before toolchains, a layer said what its environments contain three ways: nixpkgs names for the dev
@@ -802,7 +865,7 @@ out to need another flag, it is not added anywhere else: it goes to a person wit
 
 ## Isolation per run
 
-Every run is isolated on five axes, and none of them depends on runs being polite to each other:
+Every run is isolated on six axes, and none of them depends on runs being polite to each other:
 
 | Axis | Mechanism |
 |---|---|
@@ -811,6 +874,7 @@ Every run is isolated on five axes, and none of them depends on runs being polit
 | Network and ports | Each run has its own network namespace, so the app inside binds its usual ports and runs cannot collide. `#:publish (8000)` exposes a container port on `127.0.0.1` at a host port leased to that run (`ADW_PUBLISHED_8000`); nothing else is reachable from the host. Leases are tied to a live process. |
 | Services | `(service container #:id db #:image … #:ready-cmd …)` listed in `#:services` gives each run its own sidecar instances in a per-run pod (shared localhost, no mounts). Parallel runs never share a database. |
 | Privileges and resources | `--cap-drop=ALL`, `no-new-privileges`, a pids limit, memory and CPU limits, optional read-only root, per-container HOME and /tmp. Layer-wide slot pools cap runs, agent calls and checks. |
+| Machine | With `(placement …)` a run may execute on another host, in its own clone of the git source under that host's state directory. It shares nothing with the home machine but that source: it can push only its own branch there, never forced, and the home machine imports that branch strictly and decides the merge itself. Slot pools are per host. |
 
 Stale containers and pods of dead runs are removed when the next run starts, selected by label so
 one layer never touches another's.
@@ -1024,7 +1088,7 @@ to its check, a re-check and the reviewers to the review step).
 | `type` | Fields |
 |---|---|
 | `run.start` | `adw`, `adw_id`, `klass`, `dry_run`, `resumed`, `pid`, `host`, `fanout_parent` (`{run, step, index}` or null), `overrides` (`{tier, models, max_cost, from}` or null), `limits` (`{run, step, day, run_from, limit_percent, on_limit, wait_minutes}` or null) |
-| `run.end` | `status` (passed / handed-over / failed / waiting), `exit` (0 for passed and handed-over, 75 for waiting) |
+| `run.end` | `status` (passed / handed-over / failed / waiting; `delivered` for the remote part of a run on another host), `exit` (0 for passed, handed-over and delivered, 75 for waiting) |
 | `slot.wait` | `pool` (runs / agents / checks), `limit`, `who` |
 | `slot.acquire` | `pool`, `slot`, `waited` (seconds), `who` |
 | `slot.release` | `pool`, `slot`, `held` (seconds), `who` |
@@ -1066,6 +1130,12 @@ to its check, a re-check and the reviewers to the review step).
 | `integrate.prepared` | `run` (the run it integrates), `target`, `target_head`, `base`, `conflicts` (files), `generated` (files) |
 | `integrate.resolved` | `resolved`, `regenerated`, `undecidable` (files, from the agent's report) |
 | `integrate.result` | `run`, `result` (landed / staged / pull-request / failed / waiting), `why`, `commit`, `target` |
+| `placement.decision` | `host` (where the run executes; `home` is the machine that holds the layer), `reasons`, `skipped` (`[{host, reason}]`: no answer, an older layer, no login for the agent, reserved for other classes, the layer not at the git source). Only in a layer with `(placement …)` |
+| `remote.start` | `host`, `adw`, `adw_id`, `base_branch`, `restart` (true when a lost run starts again). Written by the host as the first event of the run's remote part |
+| `remote.push` | `sha`, `branch` (always the run's own), `step`, `kind` (checkpoint: a step committed / delivered: in place of the ship step / stopped: the work of a failed run) |
+| `remote.sync` | `host`, `status` (what the run's remote part ended as: delivered / failed). One per change of that status, not one per pull |
+| `remote.lost` | `host`, `reason`, `pushed` (the last pushed commit, or empty) |
+| `remote.takeover` | `host`, `sha`, `branch`: the delivered commit was fetched from the git source and the home worktree stands on it |
 | `step.discipline` | after a `run` step that may not commit: `step`, `ok`, `head_before`, `head_after`, `branch_before`, `branch_after`, `refs` (`created`, `moved`, `deleted`), `main_checkout` (new status lines), `layer_entries` (new top-level names), `violations` (kinds: `committed`, `head-moved`, `ref-created`, `ref-moved`, `ref-deleted`, `main-checkout-changed`, `layer-entry`), `texts`, `restored`, `not_restored`; after a step that may commit (the `commit` template or `#:may-commit #t`): `step`, `ok`, `left_out_restored` (the uncommitted paths under the layer directory or a protected path it restored). The same facts are in the step's record in `state.json` (`discipline`, or `left_out` on a commit step) |
 | `standin.decision` | a decision of the stand-in that did not act, or a person's answer: `entry` (its id in `decisions.jsonl`), `who` (stand-in / person), `via` (run / loop / asked / cli / mail / webhook / dashboard), `kind`, `action`, `answer`, `status` (suggested / refused / escalated / failed / skipped), `reason`, `summary` |
 | `standin.action` | an action that was taken: the same fields with `status` acted, `auto` (true when the stand-in acted alone) and `outcome` (what happened next) |

@@ -3,7 +3,7 @@
 ;; a stacked environment, artefacts on S3, and a zero-touch (auto review → merge) ADW
 ;; next to a human-reviewed one, model tiers, a second vendor as reviewer, spending limits, and a
 ;; script step that runs one of the team's own scripts, notifications when a run needs a person, and
-;; delivery into a sprint branch (with a hotfix route a person merges).
+;; delivery into a sprint branch (with a hotfix route a person merges), and a placement that says where runs execute.
 ;; The sandbox is built from a pinned Nix toolchain; the dev shell keeps the older #:packages form.
 (agentic-layer #:name "webshop" #:description "Agentic layer for the webshop monorepo"
   (codebase #:root "../webshop" #:languages (typescript python) #:default-branch "main"
@@ -14,7 +14,7 @@
          #:covers ("web" "api"))
     (cmd e2e "bun run e2e" #:timeout 1800 #:description "Playwright; writes e2e-results/"
          #:covers ("web") #:always #f)   ; only run where affected checks are asked for and web/ changed
-    (cmd deploy "./scripts/deploy.sh staging")
+    (cmd deploy "./scripts/deploy.sh staging" #:needs-home #t)   ; the deploy key is on the machine that holds the layer
     (cmd changelog "./scripts/changelog.sh" #:description "the team's own script: appends the change to CHANGELOG.md")
     (paths #:source ("web/src" "api/app") #:tests ("web/tests" "api/tests") #:docs ("docs")
            #:protected (".github" "api/migrations" "scripts/deploy.sh"))
@@ -52,6 +52,9 @@
 
   (review human)
   (concurrency slots #:max-runs 4 #:max-agents 2)
+  ;; where runs may execute: only here. Another machine is a declared (host #:id build-1 …) of an in-repo layer,
+  ;; listed as #:hosts (home build-1), and may be kept for some classes: #:reserve ((host build-1) (classes (chore bug)))
+  (placement auto #:hosts (home) #:prefer least-loaded #:max-runs-per-host 4)
   (dashboard local #:port 8765 #:also ("../storefront.al") #:systemd #t)
   (review auto #:id zero-touch #:artefacts (log junit screenshots recordings) #:agent second-opinion
           #:ship deploy #:deploy-cmd deploy #:require-checks (lint test e2e)

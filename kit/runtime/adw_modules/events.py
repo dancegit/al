@@ -47,6 +47,7 @@ TYPES = (
     "integrate.queued", "integrate.lock", "integrate.unlock", "integrate.prepared", "integrate.resolved",
     "integrate.result",
     "standin.decision", "standin.action",
+    "placement.decision", "remote.start", "remote.sync", "remote.push", "remote.lost", "remote.takeover",
 )
 
 

@@ -97,6 +97,8 @@ POOLS = ("runs", "agents", "checks")
 POOL_DEFAULTS = {"runs": ("maxRuns", 4), "agents": ("maxAgents", 2), "checks": ("maxChecks", 2)}
 EVENTS_FILE = "events.jsonl"
 USAGE_FILE = "subscription-usage.json"   # agents/subscription-usage.json: what the agent CLI last reported
+HOSTS_FILE = "hosts.json"                # agents/hosts.json: the scheduler's last survey of a placement's hosts
+HOME_HOST = "home"                       # the machine the layer is on, in a placement's list of hosts
 # mirror of kit/runtime/adw_modules/models.py; tests/tools/test_al_models.py holds them equal
 SETTINGS_FILE = "agents/settings/models.json"   # the layer's local model setting, never committed
 KNOWN_MODELS = ("claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5", "gpt-5.4",
@@ -205,6 +207,10 @@ def liveness(state: dict[str, Any], now: float, can_see_pids: bool = True) -> di
     age = now - seen
     if age <= HEARTBEAT_STALE:
         return {"died": False, "last_seen": seen}
+    remote = state.get("remote")
+    if isinstance(remote, dict) and remote.get("phase") == "remote":
+        # it executes on another host: the local pid is a proxy that may be gone; each pull refreshes the heartbeat
+        return {"died": age > HEARTBEAT_UNSEEN, "last_seen": seen}
     pid = state.get("pid") if isinstance(state.get("pid"), int) else 0
     if can_see_pids and pid > 0 and state.get("host") == socket.gethostname():
         alive = pid_alive(pid)
@@ -1516,6 +1522,14 @@ class Layer:
             return None
         return {name: (float(option[key]) if isinstance(option.get(key), (int, float)) else None)
                 for name, key in (("run", "runUsd"), ("step", "stepUsd"), ("day", "dayUsd"))}
+
+    def placement(self) -> dict[str, Any] | None:
+        """The declared placement (placement auto #:hosts …) with its hosts in declared order, or None."""
+        option = self.ir.get("placement")
+        if not isinstance(option, dict) or not isinstance(option.get("hosts"), list):
+            return None
+        hosts = list(dict.fromkeys(h for h in option["hosts"] if isinstance(h, str) and h))
+        return {**option, "hosts": hosts} if hosts else None
 
     def usage_threshold(self) -> dict[str, Any] | None:
         """The declared subscription usage threshold (#:limit-stop-percent …), or None when it is off."""
@@ -2829,6 +2843,13 @@ def attention(summaries: list[dict[str, Any]], landings: dict[str, dict[str, Any
                 again = f"integrate {row['integrates']} again, or `al settle`" if row.get("integrates") else "Start again"
                 item.update(bucket="needs-you", reason=cause if cause.startswith(f"{step}:") else f"{step}: {cause}",
                             next=again)
+        elif status == "lost":                                   # its host stopped answering (a placed run)
+            if record:
+                item.update(bucket="settled", reason=settled_reason(record))
+            else:
+                host = str(row.get("host") or "")
+                item.update(bucket="needs-you", reason=f"its host {host} stopped answering" if host else "its host stopped answering",
+                            next=f"`al run {row.get('layer') or 'LAYER'} --restart {row['id']}`")
         elif record:
             item.update(bucket="settled", reason=settled_reason(record))
         out[row["key"]] = item
@@ -3948,6 +3969,8 @@ class RunModel:
             acts_on = {"kind": "promotion", "from": str(promoted.get("from")), "to": str(promoted.get("to") or "")}
         elif adw_name.startswith(COMMAND_PREFIX):
             acts_on = {"kind": "command", "name": adw_name[len(COMMAND_PREFIX):]}
+        remote = state.get("remote") if isinstance(state.get("remote"), dict) else None
+        on_host = remote.get("host") if remote and isinstance(remote.get("host"), str) else ""
         summary = {
             **self._standin(state, agents),
             "key": f"{self.layer.key}/{self.id}", "layer": self.layer.key, "id": self.id, "adw": data["adw"].get("name"),
@@ -3982,6 +4005,10 @@ class RunModel:
             "usage": usage_view(state),
             "timing": "events" if spans is not None else "files",
             "last_seen": data["last_seen"],
+            # where it runs: the host of a placed run, the home machine in a layer that places runs, else nothing
+            "host": clip(on_host, 80) or (HOME_HOST if self.layer.placement() else ""),
+            "remote": {"phase": remote.get("phase") if isinstance(remote.get("phase"), str) else "",
+                       "last_seen": parse_time(remote.get("last_seen"))} if remote else None,
             "mtime": max([mtime(self.files.dir / "state.json") or 0, mtime(self.files.dir / "run.log") or 0]),
             **self._promotion_badge(state, status),
             **self._waiting(data),
@@ -4321,7 +4348,8 @@ class RunModel:
                       "worktree": short(state.get("worktree", "")), "ports": state.get("ports") or [],
                       "model_set": state.get("model_set", ""), "class_fixed": state.get("class_fixed"),
                       "overrides": state.get("overrides") or {}, "models": state.get("models") or {},
-                      "source": state.get("source", ""), "prompt": short(state.get("prompt", ""))},
+                      "source": state.get("source", ""), "prompt": short(state.get("prompt", "")),
+                      "remote": state.get("remote") if isinstance(state.get("remote"), dict) else None},
             "review": {"mode": review.get("mode", ""), "success": (review.get("verdict") or {}).get("success"),
                        "summary": short((review.get("verdict") or {}).get("summary", "")), "rounds": rounds},
             "ship": {k: (short(v) if isinstance(v, str) else v) for k, v in ship.items() if k != "gate"},
@@ -4641,6 +4669,7 @@ class Model:
         self.liveness_checked: dict[str, float] = {}
         self.usage_sigs: dict[str, tuple | None] = {}
         self.settings_sigs: dict[str, tuple | None] = {}
+        self.hosts_sigs: dict[str, tuple | None] = {}
         self.read_only = read_only
         self.no_start = no_start
         self.allow_start = allow_start
@@ -5058,6 +5087,7 @@ class Model:
                             "usage": self.layer_usage(layer, time.time()),
                             "models": layer.models_view(self.read_only),
                             "standin": self.standin_view(layer),
+                            "hosts": self.layer_hosts(layer, runs),
                             "start": start_status(layer, self),
                             "voice": voice_status(layer, self)})
             return out
@@ -5572,6 +5602,50 @@ class Model:
                 "api_key_source": str(data.get("api_key_source") or "")[:40], "windows": windows, "threshold": threshold}
 
     @staticmethod
+    def layer_hosts(layer: Layer, runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The hosts a layer's placement declares, in declared order: what each answered in the scheduler's
+        last survey (agents/hosts.json; its load facts are as old as `at`) and how many of this layer's
+        running runs execute there now. [] without a placement. Read-only; every value is data."""
+        placement = layer.placement()
+        if placement is None:
+            return []
+        data = read_json(layer.path / "agents" / HOSTS_FILE)
+        data = data if isinstance(data, dict) else {}
+        at = parse_time(data.get("at"))
+        survey = data.get("hosts") if at is not None and isinstance(data.get("hosts"), dict) else {}
+        pending = [p.get("host") for p in data.get("pending") or [] if isinstance(p, dict)] \
+            if at is not None and isinstance(data.get("pending"), list) else []
+        number = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None  # noqa: E731
+        limit = number(placement.get("maxRunsPerHost"))
+        live: dict[str, int] = {}
+        for run in runs:
+            if run.get("status") != "running":
+                continue
+            # a run executes on its host while its phase is `remote`; before and after (the gate) at home
+            where = run.get("host") if (run.get("remote") or {}).get("phase") == "remote" else HOME_HOST
+            live[where] = live.get(where, 0) + 1
+        out = []
+        for host in placement["hosts"]:
+            load = survey.get(host)
+            load = load if isinstance(load, dict) else {}
+            silent = "silent" in load
+            logins = load.get("logins") if isinstance(load.get("logins"), dict) else {}
+            image = load.get("image")
+            out.append({"host": host, "home": host == HOME_HOST,
+                        "state": "silent" if silent else ("ok" if load else "unknown"),
+                        "silent": clip(str(load.get("silent") or "no answer"), 200) if silent else "",
+                        "at": at, "runs": live.get(host, 0),
+                        "max_runs": number(load.get("max_runs")) if number(load.get("max_runs")) is not None else limit,
+                        "reported_runs": number(load.get("runs")), "pending": sum(1 for name in pending if name == host),
+                        "cpus": number(load.get("cpus")), "load1": number(load.get("load1")),
+                        "mem_total_kb": number(load.get("mem_total_kb")),
+                        "mem_available_kb": number(load.get("mem_available_kb")),
+                        "disk_free_kb": number(load.get("disk_free_kb")),
+                        "image": image if isinstance(image, bool) else None,
+                        "logins": {clip(str(k), 60): clip(str(v), 120) for k, v in logins.items()}})
+        return out
+
+    @staticmethod
     def layer_budget(layer: Layer, runs: list[dict[str, Any]]) -> dict[str, Any] | None:
         """The layer's limits and what its runs that started today (local date) cost so far."""
         limits = layer.budget()
@@ -5636,6 +5710,12 @@ class Model:
                 self.standin_sigs[layer.key] = both
                 self.standin_view(layer)
                 usage_changed = True
+            sig = stat_sig(layer.path / "agents" / HOSTS_FILE)   # the scheduler's survey of the hosts: the same
+            if layer.key not in self.hosts_sigs:
+                self.hosts_sigs[layer.key] = sig
+            elif self.hosts_sigs[layer.key] != sig:
+                self.hosts_sigs[layer.key] = sig
+                usage_changed = usage_changed or layer.placement() is not None
         if usage_changed:
             self.hub.publish("layers", self.layer_list())
         any_running = False
@@ -5881,13 +5961,14 @@ class Model:
 
 def aggregate(runs: list[dict[str, Any]]) -> dict[str, Any]:
     """Count, pass rate, total / median / mean cost and duration over run summaries."""
-    finished = [r for r in runs if r.get("status") in {"passed", "failed", "handed-over"}]
+    finished = [r for r in runs if r.get("status") in {"passed", "failed", "handed-over", "lost"}]
     passed = sum(1 for r in finished if r["status"] == "passed")   # a handed-over run finished, but did not pass
     costs = [float(r["cost"]) for r in runs if isinstance(r.get("cost"), (int, float))]
     durations = [float(r["duration"]) for r in finished if isinstance(r.get("duration"), (int, float))]
     return {"count": len(runs), "finished": len(finished), "passed": passed,
             "failed": sum(1 for r in finished if r["status"] == "failed"),
             "handed_over": sum(1 for r in finished if r["status"] == "handed-over"),
+            "lost": sum(1 for r in finished if r["status"] == "lost"),   # its host stopped answering: finished, not passed
             "running": sum(1 for r in runs if r.get("status") == "running"),
             "needs_you": sum(1 for r in runs if r.get("bucket") == "needs-you"),
             "pass_rate": (passed / len(finished)) if finished else None,
@@ -7348,12 +7429,14 @@ def run_job(directory: Path) -> int:
     stop.set()
     after_repo = repo_status(repo)
     earlier_unchanged = job.get("repo_unchanged") if job.get("retries") else None
-    save(status=status, exit=exit_code, ended=utc_stamp(), heartbeat=utc_stamp(),
-         changed=merge_changed(job.get("changed") or [], changed_files(before_layer, layer_files_snapshot(layer), prefix)),
-         repo_changes=sorted(set(job.get("repo_changes") or []) | (set(after_repo) - set(before_repo))),
-         repo_unchanged=after_repo == before_repo and earlier_unchanged is not False)
+    changed = merge_changed(job.get("changed") or [], changed_files(before_layer, layer_files_snapshot(layer), prefix))
+    # the lock goes before the job is recorded as ended (its `running` status still refuses another action
+    # meanwhile): whoever sees the job ended can start the next action at once
     fcntl.flock(fd, fcntl.LOCK_UN)
     os.close(fd)
+    save(status=status, exit=exit_code, ended=utc_stamp(), heartbeat=utc_stamp(), changed=changed,
+         repo_changes=sorted(set(job.get("repo_changes") or []) | (set(after_repo) - set(before_repo))),
+         repo_unchanged=after_repo == before_repo and earlier_unchanged is not False)
     return 0 if status == "passed" else 1
 
 

@@ -273,6 +273,7 @@ How to run the test suites, fast and live: [`docs/EXAMPLES.md`](docs/EXAMPLES.md
 - **The container cannot reach into your git repository.** It can read the history but cannot move branches or plant hooks; only the host does that, after checking nothing was tampered with.
 - **Shipping without a human needs everything to agree:** all checks green, the checks re-run on the final result, the reviewer finds no blocker, the task is a kind you allowed, the change is small, and no protected file was touched. Otherwise it becomes a pull request for a person.
 - **The compiler enforces the dangerous combinations.** A workflow that ships by itself must run in a container. An agent with all permissions must itself be inside one.
+- **A run on another machine can only push its own branch.** With `(placement …)` runs may execute on other hosts; the default branch is changed only by the home machine's gate, which fetches that branch, checks it is the commit the run reported and runs the checks again.
 - **A server is set up only after you have seen the plan.** `al deploy --provision` prints every privileged command before it asks and before it runs, and a host uses a sandbox image only when its recipe hash equals the layer's.
 - **A stand-in decides only inside the scope you declare, and the gate still decides what ships.** When a run needs a person, a strong model may propose the next step or, for the decisions you listed in `(stand-in auto #:may (…))`, take it: resume or restart a run, answer a waiting one, settle a finished one. Hard limits no setting lifts: it never overrides a rejected review, never lands a change to a protected path or work with a failing required check, never approves its own work, never edits code, and never acts on a run you touched since it stopped. `land` and `promote` only ask the gate and the promotion's approval rule again; every decision is recorded with its reason.
 
@@ -316,6 +317,7 @@ the sandbox, step discipline). How each idea lands in this repository, and why a
 racket/al/        the language: vocabulary, compiler, schema and reference generators, tests
 tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard · kpis · integrate · voice
 tools/al_*.py     al_provision (a host's provisioning files), al_sandbox (the sandbox image), …; kit/host/pins.json: pinned uv and agent CLIs
+kit/runtime/adw_modules/{placement,hostlink,selfrun,recordsync,remoterun}.py   runs on other hosts: scheduler, ssh, the host's run, the record pulled home, take-over
 kit/templates/    the prompts every layer starts from      kit/runtime/   what runs a workflow
 meta/             the prompts that guide an LLM through describing a codebase and writing its layer
 tests/            authored layers for the five repositories, integration tests, the live Forgejo test

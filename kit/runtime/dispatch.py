@@ -32,7 +32,9 @@ exit 0 done, 2 invalid, 3 refused (the run is running), 1 failed.
 --helper answers the dashboard's voice helper: the prompt (at most 64 KiB) on stdin, one answer of the
 layer's helper agent with no tools (adw_modules/helper.py); prints one JSON line {"status": "ok",
 "reply", "cost", "model"} or {"status": unavailable|failed|invalid, "error"}; exit 0 ok, 2 invalid,
-1 otherwise. The (PEP 723) script header is prepended by `al gen`.
+1 otherwise. In a layer with `(placement …)` the launched workflow script decides where the run
+executes and, when that is another host, stays as the run's proxy (adw_modules/remoterun.py); nothing
+here changes for that. The (PEP 723) script header is prepended by `al gen`.
 """
 import argparse
 import json

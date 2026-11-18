@@ -17,6 +17,7 @@
          (format "(~a [#:field value …]), see record `~a`"
                  (string-join (map (lambda (p) (string-upcase (symbol->string p))) (record-positional r)) " ")
                  (cadr t))]
+        [(eq? (car t) 'pairs) (format "((FIELD value) …), see record `~a`" (cadr t))]
         [(eq? (car t) 'shorthand) (format "string; shorthand for the `~a` entry of #:~a" (caddr t) (cadr t))]
         [(eq? (car t) 'enum) (string-join (map symbol->string (cdr t)) " | ")]
         [(eq? (car t) 'list-of) (format "list of ~a" (show-type (cadr t)))]
@@ -57,6 +58,7 @@
   (p "  (stage NAME #:branch \"…\" #:from STAGE #:into STAGE …) …   ; where work is delivered, see record `stage`")
   (p "  (delivery PRESET #:param value …)          ; at most one; stands for stage and cycle clauses, see Delivery presets")
   (p "  (promotion FROM -> TO #:approval human …)   ; how a stage moves into the next (al promote)")
+  (p "  (placement auto #:hosts (…) …)              ; at most one; where runs may execute, see family `placement`")
   (p "  (include \"FILE\") …)                       ; more clauses from FILE, e.g. what `al adopt` wrote")
   (p "```")
   (p)

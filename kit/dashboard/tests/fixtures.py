@@ -18,6 +18,13 @@ Runs in demo-shop.al (ADW, what it covers):
   a1000009 -        no state.json (only run.log and a prompt)
   a100000a ask      plain-text agent (codex-style output)
   a100000b zte      dry run on the mock agent (classify only)
+
+build_hosts() writes a second layer, notes.al, whose runs are placed on hosts (`(placement auto …)`):
+  b1000001 ask      running on build-1 (remote.phase remote); its local proxy pid is gone, its heartbeat is fresh
+  b1000002 ask      lost: build-2 stopped answering
+  b1000003 ask      passed on the home machine (no `remote`)
+  agents/hosts.json the scheduler's last survey: home and build-1 with their load, build-2 silent
+demo-shop.al declares no placement and keeps its runs as they are.
 """
 from __future__ import annotations
 
@@ -25,7 +32,10 @@ import base64
 import json
 import os
 import shutil
+import socket
+import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -550,6 +560,81 @@ def build(root: Path) -> dict[str, Path]:
     write(repo / "layers" / "other" / LAYER_FILE_NAME, json.dumps(other))
     write(repo / "node_modules" / "pkg" / LAYER_FILE_NAME, json.dumps(dict(IR, name="pruned")))
     return {"layer": layer, "agents": agents_dir, "repo": repo, "secret": root / "outside-secret.txt"}
+
+
+# ------------------------------------------------------------------------------ a layer with hosts
+
+HOSTS_NAME = "notes"
+HOSTS = ["home", "build-1", "build-2"]
+PLACEMENT = {"kind": "auto", "id": "auto", "hosts": HOSTS, "prefer": "least-loaded", "maxRunsPerHost": 2, "reserve": None,
+             "sourceEnv": "AL_GIT_SOURCE", "layerSourceEnv": "AL_LAYER_SOURCE", "lostAfter": 120, "status": "stable"}
+HOSTS_IR: dict[str, Any] = dict(IR, name=HOSTS_NAME, description="Fixture layer whose runs are placed on hosts",
+                                adws=[IR["adws"][3]], placement=PLACEMENT)
+REMOTE, LOST, AT_HOME = "b1000001", "b1000002", "b1000003"
+
+
+def host_load(runs: int, load1: float, available_kb: int, image: bool | None = True, login: str = "own login") -> dict:
+    return {"protocol": 1, "runs": runs, "max_runs": 2, "cpus": 8, "load1": load1, "mem_total_kb": 16_000_000,
+            "mem_available_kb": available_kb, "disk_free_kb": 120_000_000, "image": image,
+            "logins": {"claude-code": login, "mock": "not needed"}}
+
+
+def hosts_survey(now: float, age: float = 3.0) -> dict:
+    """What the scheduler writes to agents/hosts.json: build-2 gave no answer."""
+    return {"at": datetime.fromtimestamp(now - age, timezone.utc).isoformat(),
+            "hosts": {"home": host_load(0, 0.42, 9_000_000), "build-1": host_load(1, 1.37, 5_500_000, image=False,
+                                                                                  login="token ANTHROPIC_API_KEY in its env file"),
+                      "build-2": {"silent": "no answer within 10 s"}},
+            "pending": [{"host": "build-1", "run": "b1000009", "at": now - 1}]}
+
+
+def dead_pid() -> int:
+    """The pid of a process that has exited."""
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+    return done.pid
+
+
+def build_hosts(root: Path, now: float | None = None) -> dict[str, Path]:
+    """Write notes.al below root: a layer with a placement, its runs on hosts and the last survey.
+    `now` (epoch) anchors the running run's heartbeat and the survey."""
+    now = time.time() if now is None else now
+    stamp = lambda ago: datetime.fromtimestamp(now - ago, timezone.utc).isoformat()  # noqa: E731
+    layer = Path(root) / f"{HOSTS_NAME}.al"
+    if layer.exists():
+        shutil.rmtree(layer)
+    write(layer / LAYER_FILE_NAME, json.dumps(HOSTS_IR, indent=2))
+    agents_dir = layer / "agents"
+    answer = "Reading notes/store.py\nNotes are kept in notes/store.py.\n"
+
+    rid, run = REMOTE, agents_dir / REMOTE
+    for name, content, ago in (("prompt.md", "# answer\n", 85), ("raw.jsonl", answer, 2)):   # mtimes of a run under way
+        os.utime(write(run / "answer" / name, content), (now - ago, now - ago))
+    write(run / "state.json", json.dumps(dict(
+        state(rid, "ask", "Where are the notes stored?", "running", 0, None, [rec("answer", "run", "running", 0, None)]),
+        started=stamp(90), steps=[dict(rec("answer", "run", "running", 0, None), started=stamp(85))],
+        pid=dead_pid(), host=socket.gethostname(), heartbeat=stamp(2),
+        remote={"host": "build-1", "phase": "remote", "status": "running", "last_seen": stamp(2), "base": "1111111",
+                "branch": f"chore/{rid}-demo", "pushed": {"sha": "2222222", "step": "answer", "at": stamp(30)}}), indent=2))
+    write(run / "run.log", f"[adw {rid}] ask start: class=chore dry_run=False\n")
+
+    rid, run = LOST, agents_dir / LOST
+    agent(run, "answer", 100, None, answer, output=None)
+    write(run / "state.json", json.dumps(state(
+        rid, "ask", "List the note tags", "lost", 100, 400, [rec("answer", "run", "running", 100, None)],
+        remote={"host": "build-2", "phase": "lost", "status": "running", "last_seen": iso(270), "base": "1111111",
+                "branch": f"chore/{rid}-demo",
+                "lost": {"at": iso(400), "reason": "no answer from build-2 for 120 s", "host": "build-2"}}), indent=2), 400)
+    write(run / "run.log", f"[adw {rid}] ask start: class=chore dry_run=False\n", 400)
+
+    rid, run = AT_HOME, agents_dir / AT_HOME
+    agent(run, "answer", 500, 530, answer, output="Notes are kept in notes/store.py.")
+    write(run / "state.json", json.dumps(state(rid, "ask", "How are notes sorted?", "passed", 500, 531,
+                                               [rec("answer", "run", "passed", 500, 530, "By date.")]), indent=2), 531)
+    write(run / "run.log", f"[adw {rid}] ask start: class=chore dry_run=False\n", 531)
+
+    write(agents_dir / "hosts.json", json.dumps(hosts_survey(now), indent=2))
+    return {"layer": layer, "agents": agents_dir, "hosts": agents_dir / "hosts.json"}
 
 
 LAYER_FILE_NAME = "agentic-layer.json"

@@ -27,6 +27,9 @@
 ;;   (record R)        one small record R written as a list: its #:positional fields first, in order,
 ;;                     then #:keyword value pairs, e.g. (heavy "claude-fable-5-2" #:effort high).
 ;;                     In a (list-of (record R)) the first positional field is the item's key: unique.
+;;   (pairs R)         one record R written as a list of (field value) pairs, e.g.
+;;                     ((host build-2) (classes (chore bug))): every pair names a field of R and is
+;;                     checked like `#:field value`; the IR holds R as an object.
 ;;   (shorthand F KEY) a string that is shorthand for the item KEY of the (list-of (record R)) field F
 ;;                     of the same form; it is folded into F (giving KEY both ways is an error) and is
 ;;                     not emitted itself.

@@ -56,10 +56,19 @@
                                    also list the git repositories beside the layer's (or in DIR) with their al state,
                                    and run al on one from the page (scout, create, adopt, gen, check, verify, explain)
   al run     LAYER /NAME [ARGS …] [--class C] [--model-set T] [--model T=ID …] [--detach] [--dry-run] [--yes]
-             [--replaces OLD]
+             [--replaces OLD] [--on HOST]
                                    start one of the layer's workflows, or one command or hop as a recorded run
                                    that never ships, exactly as the dashboard does; ARGS (or stdin) are the prompt;
-                                   --replaces OLD starts run OLD again (it then reads as replaced by the new run)
+                                   --replaces OLD starts run OLD again (it then reads as replaced by the new run);
+                                   --on HOST: run it on that host of the layer's (placement …) instead of letting
+                                   the scheduler pick one
+  al run     LAYER --restart RUN [--on HOST] | --follow RUN
+                                   a run on another host: start a lost one again elsewhere from the last commit it
+                                   pushed, or follow one again whose proxy on this machine died
+  al hosts   LAYER status [--json] the hosts of the layer's (placement …) as its scheduler sees them now: runs,
+                                   load, memory, disk, sandbox image, agent login; a host that does not answer says so
+  al host    LAYER HOST doctor     what a run needs on HOST (git, uv, podman, the agent CLI, the git source) and
+                                   which login it has, with a fix for each thing missing
   al runs    LAYER [--view needs-you|running|landed|settled|all] [--json] [--forge]
                                    what needs you among the layer's runs, with the reason and next action of each;
                                    what landed (read from git, never fetched) or settled the others
@@ -1416,6 +1425,8 @@ if __name__ == "__main__":
         self.write("adws/integrate.py", header + INTEGRATE_SCRIPT, 0o755)
         # the stand-in's one entry for the dashboard, `al decider` and its loop (adw_modules/standin.py)
         self.write("adws/standin.py", header + (KIT / "runtime/standin.py").read_text(), 0o755)
+        if self.ir.get("placement"):   # the entry other machines call: only a layer whose runs may execute elsewhere has one
+            self.write("adws/host.py", header + (KIT / "runtime/host.py").read_text(), 0o755)
         if self.ir.get("stages"):
             self.write("adws/promote.py", header + '''"""Promotion between the layer's stages: `run FROM TO`, `decide FROM TO …`, `status FROM TO`
 (what `al promote` and `al decide` call). See adw_modules/promotion.py.
@@ -2287,6 +2298,7 @@ def check_layer(layer: Path) -> list[str]:
     need = [f"commands/{c['name']}.md" for c in ir["commands"]] + [f"hops/{h['name']}.md" for h in ir["hops"]]
     need += [f"adws/adw_{a['name']}.py" for a in ir["adws"]] + ["adws/adw_modules/runner.py", "adws/dispatch.py", "adws/standin.py", "AL-DSL.llms.txt"]
     need += ["adws/integrate.py"] + ([] if declares_kit_command(ir) else [f"commands/{KIT_COMMAND}.md"])
+    need += ["adws/host.py"] if ir.get("placement") else []
     kinds = {e["kind"] for e in ir["environments"]}
     need += [f for k, f in (("nix-devshell", "env/flake.nix"), ("home-manager", "env/home-manager.nix"), ("podman", "env/Containerfile")) if k in kinds]
     need += [f"env/hosts/{h['id']}/{f}" for h in ir.get("hosts") or [] for f in ("home-manager.nix", "nixos.nix", "provision.sh")]
@@ -3351,6 +3363,103 @@ def cmd_sandbox_update(a: argparse.Namespace) -> int:
     return 0
 
 
+def layer_placement_module(layer: Path):
+    """The layer's own scheduler and host link (adw_modules/placement.py, hostlink.py), so `al hosts`
+    and `al host` see exactly what a starting run sees."""
+    if not (layer / "agentic-layer.json").is_file() or not (layer / "adws/adw_modules/placement.py").is_file():
+        if (layer / "agentic-layer.json").is_file() and (layer / "adws/adw_modules").is_dir():
+            raise AlError(f"{layer} was generated before `al hosts`: run `al gen {layer}`")
+        raise AlError(f"{layer} is not a generated layer: run `al gen {layer}` first")
+    for name in [n for n in sys.modules if n == "adw_modules" or n.startswith("adw_modules.")]:
+        del sys.modules[name]   # another layer's runtime may have been imported before
+    sys.path.insert(0, str(layer / "adws"))
+    try:
+        from adw_modules import errors, hostlink, ir as ir_module, placement
+    except ImportError as exc:
+        raise AlError(f"cannot import the layer runtime from {layer / 'adws'}: {exc}") from exc
+    return placement, hostlink, ir_module, errors
+
+
+NO_PLACEMENT = ("declares no (placement …), so every run executes on this machine; declare one in agentic.rkt, "
+                "e.g. (placement auto #:hosts (home build-1)), and run al gen")
+
+
+def _placed_layer(layer: Path, command: str):
+    """(placement module, hostlink module, the loaded layer) of a layer that declares a placement; exits 2 otherwise."""
+    placement, hostlink, ir_module, errors = layer_placement_module(layer)
+    try:
+        loaded = ir_module.load(layer)
+    except errors.LayerError as exc:
+        raise AlError(str(exc)) from exc
+    if placement.declared(loaded) is None:
+        print(f"al {command}: {loaded.name} {NO_PLACEMENT}", file=sys.stderr)
+        raise SystemExit(2)
+    return placement, hostlink, loaded
+
+
+def hosts_cli(a: argparse.Namespace) -> int:
+    """al hosts LAYER status: one survey, printed as the table the scheduler decides from."""
+    placement, _hostlink, loaded = _placed_layer(a.layer.resolve(), "hosts")
+    found = placement.survey(loaded)
+    if a.json:
+        print(json.dumps({"layer": loaded.name, "placement": placement.declared(loaded), "hosts": found}, indent=2))
+        return 0
+    print(placement.headline(loaded))
+    print(placement.render(placement.table(found)))
+    return 0
+
+
+def host_cli(a: argparse.Namespace) -> int:
+    """al host LAYER HOST doctor: the host's own check of what a run needs there. Exit 1 when something is missing."""
+    placement, hostlink, loaded = _placed_layer(a.layer.resolve(), "host")
+    hosts = [h for h in placement.declared(loaded)["hosts"] if h != placement.HOME]
+    if a.host not in hosts:
+        print(f"al host: {a.host} is not a host of {loaded.name}'s (placement …); hosts other than home: "
+              f"{', '.join(hosts) or '(none)'}", file=sys.stderr)
+        return 2
+    try:
+        answer = hostlink.link_for(loaded, a.host).tool(loaded, a.host, "doctor", timeout=90)
+    except hostlink.HostSilent as exc:
+        print(f"host {a.host}: no answer: {exc.reason}")
+        print(f"  fix: check that `ssh` reaches it with {hostlink.env_name(a.host)}, and that the layer is deployed "
+              f"there: al deploy {a.layer} --to HOST --as {a.host}")
+        return 1
+    rows = [r for r in answer.get("rows") or [] if isinstance(r, dict)]
+    width = max([len(str(r.get("name"))) for r in rows] or [0])
+    print(f"host {a.host}:")
+    for row in rows:
+        print(f"  {'ok     ' if row.get('ok') else 'MISSING'} {str(row.get('name')).ljust(width)}  {row.get('detail')}")
+        if not row.get("ok") and row.get("fix"):
+            print(f"          fix: {row['fix']}")
+    missing = [r for r in rows if not r.get("ok")]
+    print(f"{len(missing)} missing" if missing else "a run can execute on this host")
+    return 1 if missing else 0
+
+
+def run_again_cli(a: argparse.Namespace) -> int:
+    """al run LAYER --restart RUN [--on HOST] | --follow RUN: handed to the script of the run's own workflow."""
+    layer = a.layer.resolve()
+    _placed_layer(layer, "run")
+    if a.target or a.args or (a.restart and a.follow):
+        print("al run: --restart RUN and --follow RUN take no /NAME and no prompt, and not each other", file=sys.stderr)
+        return 2
+    run_id = a.restart or a.follow
+    try:
+        adw = json.loads((layer / "agents" / run_id / "state.json").read_text()).get("adw")
+    except (OSError, ValueError):
+        adw = None
+    script = layer / "adws" / f"adw_{adw}.py"
+    if not adw or not script.is_file():
+        print(f"al run: no run {run_id} of a workflow of this layer", file=sys.stderr)
+        return 2
+    argv = tools_module().argv(["uv", "run", "--quiet", str(script), "--restart" if a.restart else "--follow", "--adw-id", run_id])
+    argv += ["--on", a.on] if a.on and a.restart else []
+    try:
+        return subprocess.run(argv, cwd=layer).returncode
+    except KeyboardInterrupt:
+        return 130
+
+
 def layer_sandbox_module(layer: Path):
     """The layer's own sandbox code (adw_modules/sandbox.py), so `al sandbox` builds, checks and
     prunes exactly as the layer's runs do."""
@@ -3579,6 +3688,11 @@ def voice_cli(a: argparse.Namespace) -> int:
 def run_cli(a: argparse.Namespace) -> int:
     """al run LAYER /NAME [ARGS …]: one start through the layer's launch.start, attached by default."""
     layer = a.layer.resolve()
+    if a.restart or a.follow:
+        return run_again_cli(a)
+    if not a.target:
+        print("al run: name what to start: /NAME (a workflow, command or hop of the layer)", file=sys.stderr)
+        return 2
     launch, ir_module, errors = layer_launch_module(layer)
     try:
         loaded = ir_module.load(layer)
@@ -3607,7 +3721,7 @@ def run_cli(a: argparse.Namespace) -> int:
         result = launch.start(loaded, target, prompt, request_key=a.request_key or secrets.token_hex(16),
                               klass=a.klass, model_set=a.model_set, models=a.model, confirm_duplicate=a.yes,
                               confirm_ships=a.yes, dry_run=a.dry_run, detach=a.detach, spawn=spawn,
-                              replaces=a.replaces or "")
+                              replaces=a.replaces or "", **({"on": a.on} if a.on else {}))
     except KeyboardInterrupt:
         return 130
     status = result["status"]
@@ -3819,9 +3933,9 @@ def main(argv: list[str] | None = None) -> int:
                        "workflow the layer declares, or one command or hop (a single-command run: one step in the "
                        "layer's normal environment, recorded like any run, never ships). /command:NAME is always the "
                        "command. Exit: the run's own exit code (0 with --detach), 2 unknown name or bad use, "
-                       "3 refused (day limit or usage threshold), 4 needs --yes.")
+                       "3 refused (day limit, usage threshold, or no host can take the run), 4 needs --yes.")
     p.add_argument("layer", type=Path)
-    p.add_argument("target", metavar="/NAME", help="a workflow, command or hop of the layer")
+    p.add_argument("target", nargs="?", metavar="/NAME", help="a workflow, command or hop of the layer")
     p.add_argument("args", nargs="*", metavar="ARGS", help="the prompt (joined with spaces); - or none: read stdin")
     p.add_argument("--class", dest="klass", choices=("chore", "bug", "feature", "patch"), help="fix the work class")
     p.add_argument("--model-set", metavar="TIER", help="every agent step of the run uses TIER")
@@ -3833,6 +3947,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="confirm a workflow that ships without a person, or the same request again within 5 minutes")
     p.add_argument("--replaces", metavar="OLD", help="this run starts run OLD again (8 hex chars); OLD then reads "
                    "as replaced by it and leaves the runs that need you")
+    p.add_argument("--on", metavar="HOST", help="run on this host of the layer's (placement …); `home` is this machine")
+    p.add_argument("--restart", metavar="RUN", help="start the lost run RUN again on another host (or --on HOST)")
+    p.add_argument("--follow", metavar="RUN", help="follow RUN on its host again after its proxy here died, and finish it")
     p = sub.add_parser("runs", help="what needs you among a layer's runs, and what landed or settled the others; prune leftovers",
                        description="List LAYER's runs that need someone (open hand-overs, waiting runs, failures nothing "
                        "replaces), each with its reason and next action; --view shows the running, landed or settled "
@@ -3893,6 +4010,14 @@ def main(argv: list[str] | None = None) -> int:
                    help="change templates/integrate.json: enabled=true|false, approval=none|person, decider=true|false")
     p.add_argument("--reset", action="store_true", help="remove templates/integrate.json (the defaults apply)")
     p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p = sub.add_parser("hosts", help="the hosts of a layer's (placement …) as its scheduler sees them")
+    p.add_argument("layer", type=Path)
+    p.add_argument("action", choices=("status",))
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("host", help="check one host of a layer's (placement …): tools, git source, agent login")
+    p.add_argument("layer", type=Path)
+    p.add_argument("host", metavar="HOST", help="a host id of (placement … #:hosts …), not home")
+    p.add_argument("action", choices=("doctor",))
     p = sub.add_parser("cycle", help="the layer's (cycle …): status, start the next stage branch, close the open one")
     p.add_argument("layer", type=Path)
     p.add_argument("action", choices=("status", "start", "close"))
@@ -4172,6 +4297,10 @@ def main(argv: list[str] | None = None) -> int:
             return runs_module().main(a, sys.modules[__name__])
         elif a.cmd == "kpis":
             return al_kpis_module().main(a, sys.modules[__name__])
+        elif a.cmd == "hosts":
+            return hosts_cli(a)
+        elif a.cmd == "host":
+            return host_cli(a)
         elif a.cmd == "deploy":
             return deploy_module().main(a, sys.modules[__name__])
         elif a.cmd in IMPROVE_COMMANDS:

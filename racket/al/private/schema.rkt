@@ -15,6 +15,7 @@
     [(eq? (car type) 'enum) (hasheq 'type "string" 'enum (map symbol->string (cdr type)))]
     [(eq? (car type) 'list-of) (hasheq 'type "array" 'items (type->schema (cadr type)))]
     [(eq? (car type) 'record) (rec (cadr type))]
+    [(eq? (car type) 'pairs) (rec (cadr type))]
     [(memq (car type) '(ref optional-ref)) (hasheq 'type "string")]))
 
 (define (field-schema f)
@@ -79,7 +80,7 @@
                    'llmTxt (hasheq 'type "string")
                    'codebase
                    (rec 'codebase
-                        #:extra (hasheq 'commands (array-of (rec 'cmd #:extra name-prop))
+                        #:extra (hasheq 'commands (array-of (rec 'cmd #:extra name-prop #:optional '(needsHome)))
                                         'paths (rec 'paths)
                                         'conditionalDocs (array-of (rec 'conditional-doc))))
                    'commands (array-of (rec 'command #:extra name-prop))
@@ -90,8 +91,11 @@
                    'adws
                    (array-of
                     (rec 'adw
-                         #:optional '(deliverTo)
-                         #:extra (hash-set name-prop 'steps
+                         #:optional '(deliverTo pinnedHome)
+                         #:extra (hash-set (hash-set name-prop 'pinnedHome
+                                                     (hasheq 'type "array" 'items (hasheq 'type "string")
+                                                             'description "Only with a (placement …): why the workflow always runs on `home`, one sentence each; empty = it may run on any listed host."))
+                                           'steps
                                            (array-of (hasheq 'oneOf (list (step 'step-run "run")
                                                                           (step 'step-check "check")
                                                                           (step 'step-script "script")
@@ -120,9 +124,9 @@
           'type "object"
           'additionalProperties #f
           ;; stages, cycle, delivery and promotions exist only in the IR of a layer that declares a stage,
-          ;; and toolchains only in the IR of a layer that declares one
+          ;; toolchains and placement only in the IR of a layer that declares one
           'required (sort (for/list ([k (in-list (hash-keys props))]
-                                     #:unless (or (memq k '(stages cycle delivery promotions))
+                                     #:unless (or (memq k '(stages cycle delivery promotions placement))
                                                   (member (symbol->string k)
                                                           (for/list ([fam (in-list (all-families))] #:when (memq (family-name fam) optional-families))
                                                             (family-key fam)))))

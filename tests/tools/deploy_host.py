@@ -113,6 +113,26 @@ class Host:
         path.chmod(0o755)
         return path
 
+    def runtime(self) -> "Host":
+        """Make the host able to run a layer's scripts: `python3`, the programs a run calls, and a `uv`
+        that runs `uv run [--quiet] SCRIPT ARGS…` with this python (any other use answers like the stub)."""
+        for tool in ("bash", "sleep", "true", "false", "echo", "date", "uname", "cut", "wc", "sort", "basename", "touch",
+                     "tail", "cp", "mv", "find", "xargs", "tee", "readlink"):
+            real = shutil.which(tool)
+            if real and not (self.bin / tool).exists():
+                (self.bin / tool).symlink_to(real)
+        self.stub("python3", f'exec {sys.executable} "$@"\n', log=False)
+        self.stub("uv", 'if [ "$1" = run ]; then shift; [ "$1" = --quiet ] && shift; '
+                        f'exec {sys.executable} "$@"; fi\necho "uv 0.0.0-stub"\n')
+        return self
+
+    def vanish(self) -> None:
+        """Every command on the host fails from now on (its programs are gone); back() undoes it."""
+        self.bin.rename(self.root / ".hostbin.gone")
+
+    def back(self) -> None:
+        (self.root / ".hostbin.gone").rename(self.bin)
+
     def remove(self, tool: str) -> None:
         (self.bin / tool).unlink()
 
@@ -225,6 +245,13 @@ test_pins.__test__ = False      # a helper, not a test
 
 def make_host(tmp_path: Path) -> Host:
     return Host(tmp_path / "host-home")
+
+
+def make_hosts(tmp_path: Path, ids: tuple[str, ...] | list[str]) -> dict[str, Host]:
+    """{id: Host(tmp_path/hosts/<id>)}: the homes of the hosts of a (placement …), where the runtime's
+    hostlink finds them with AL_HOSTS_LOCAL=tmp_path/hosts."""
+    (tmp_path / "hosts").mkdir(exist_ok=True)
+    return {ident: Host(tmp_path / "hosts" / ident) for ident in ids}
 
 
 FAKE_SSH = '''#!/usr/bin/env python3
