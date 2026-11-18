@@ -409,9 +409,47 @@ def _integrate(layer: Any, worktree: Path, client: Any, sandbox: gitsafe.Sandbox
     _merge(worktree, local, sandbox)
     staging = f"refs/heads/al/ship/{default}"
     if _default_checked_out(Path(layer.app_root), default, sandbox) and _ref_exists(worktree, staging, sandbox):
+        if _staging_landed(worktree, staging, local, sandbox):
+            # Everything a person was asked to take from the staging branch is on the default branch
+            # already (they fast-forwarded, or merged it some other way). Comparing with the staging
+            # branch would charge this run with every commit made on the default branch since: move
+            # the staging branch up to the default branch instead, so it is current again.
+            _advance_staging(worktree, staging, local, sandbox)
+            return local
+        if not _is_ancestor(worktree, local, staging, sandbox):
+            # Both moved: the staging branch holds unlanded work and the default branch has commits the
+            # staging branch lacks. Gate against the default branch: the earlier shipments are then
+            # part of what this run's result carries, which is the truth, and nothing of the default
+            # branch's own history is charged to the run.
+            _merge(worktree, staging, sandbox)
+            return local
         _merge(worktree, staging, sandbox)  # stack on earlier unmerged shipments instead of clobbering them
         return staging
     return local
+
+
+def _is_ancestor(worktree: Path, older: str, newer: str, sandbox: gitsafe.Sandbox | None = None) -> bool:
+    args = ["merge-base", "--is-ancestor", older, newer]
+    if sandbox is not None:
+        return gitsafe.run_app(sandbox, args, "ship", check=False).returncode == 0
+    result = subprocess.run(["git", "-C", str(worktree), *args], capture_output=True, text=True,
+                            timeout=GIT_TIMEOUT, check=False)
+    return result.returncode == 0
+
+
+def _staging_landed(worktree: Path, staging: str, default: str, sandbox: gitsafe.Sandbox | None = None) -> bool:
+    """True when every commit on the staging branch is on the default branch."""
+    return _is_ancestor(worktree, staging, default, sandbox)
+
+
+def _advance_staging(worktree: Path, staging: str, default: str, sandbox: gitsafe.Sandbox | None = None) -> None:
+    """Fast-forward the staging branch to the default branch (it is an ancestor, so nothing is lost)."""
+    head = (gitsafe.run_app(sandbox, ["rev-parse", default], "ship").stdout if sandbox is not None
+            else _git(worktree, ["rev-parse", default])).strip()
+    if sandbox is not None:
+        gitsafe.update_ref(sandbox, staging, head, "ship", "al: staging branch caught up with the default branch")
+    else:
+        _git(worktree, ["update-ref", "-m", "al: staging branch caught up with the default branch", staging, head])
 
 
 def _never_commit(layer: Any, state: Any) -> list[str]:

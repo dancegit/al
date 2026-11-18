@@ -37,7 +37,7 @@
   "adws/adw_modules/review.py": "2bf943ec26cd3e79399beb71f25a4f8a117ee46206e7ac097eeebd8c2c983bab",
   "adws/adw_modules/runner.py": "05f22d6f115ac136b7768d58e636b83cb1a5ffe3a71e7bfd66517f961c9b6a4f",
   "adws/adw_modules/sandbox.py": "fd675aad5719b2e16c770570d62e29d99e06cb49767c2979f2e9658cd41e9138",
-  "adws/adw_modules/ship.py": "c7f758aa775fdf2e8373bb05710597006ef72695ad9d0cac8511c19ef9895bc7",
+  "adws/adw_modules/ship.py": "9a6348bf72b26907b9d04defa30b0245b8e0051213f90d75a9fa7f4dfd56bfaf",
   "adws/adw_modules/skips.py": "91cf1e92207e825e5c13a51e85dd6f1745739b28fbe9679b0b6b53959210a116",
   "adws/adw_modules/slots.py": "b6ed1e541c2707b68a1708c3aafa234e735d7b35536279552562ef4d0e6d8826",
   "adws/adw_modules/standin.py": "9e23377d84057c6035740b1a695013634d629ee379619e32e852f28b81964998",

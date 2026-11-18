@@ -168,3 +168,42 @@ def test_forge_pr_path_calls_create_pr(make_layer, app_repo, monkeypatch):
     assert "## Review verdict" in calls[0][3]
     assert _git(bare, "rev-parse", f"refs/heads/{saved['branch']}") == saved["ship"]["commit"]
     assert _git(app_repo, "status", "--porcelain") == ""
+
+
+def _commit_on_main(app_repo: Path, name: str, lines: int) -> None:
+    (app_repo / name).write_text("".join(f"line {i}\n" for i in range(lines)))
+    _git(app_repo, "add", name)
+    _git(app_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", f"a person's change: {name}")
+
+
+def test_a_landed_staging_branch_is_moved_up_and_not_charged_to_the_next_run(make_layer, app_repo):
+    """A person took the first run's result (fast-forward), then main moved on with large changes of its
+    own. The second run is gated on its own small change, not on main's history since the first run."""
+    layer = _layer(make_layer, app_repo)
+    _script(layer, "build", {"files": {"feature.py": "FEATURE = True\n"}})
+    assert main("demo", layer, ["Add a feature", "--adw-id", "1234abcd"]) == 0
+    _git(app_repo, "merge", "--ff-only", "-q", "al/ship/main")                 # the person takes it
+    _commit_on_main(app_repo, "big.txt", 400)                                   # main moves on: more than
+    _commit_on_main(app_repo, "bigger.txt", 400)                                # the gate's 100-line limit
+    _script(layer, "build", {"files": {"second.py": "SECOND = True\n"}})
+    assert main("demo", layer, ["Add a second feature", "--adw-id", "5678abcd"]) == 0
+    state = json.loads((layer / "agents/5678abcd/state.json").read_text())
+    assert state["status"] == "passed", state["ship"]
+    assert set(state["ship"]["gate"]["changed_files"]) == {"second.py"}
+    assert state["ship"]["gate"]["diff_lines"] < 100
+    assert _git(app_repo, "show", "al/ship/main:big.txt").startswith("line 0")  # it carries main's own history
+    assert _git(app_repo, "show", "al/ship/main:second.py") == "SECOND = True"
+
+
+def test_unlanded_staging_work_with_main_moved_is_gated_against_main(make_layer, app_repo):
+    """The staging branch still holds a first run nobody took, and main moved meanwhile: the second run
+    carries the first one's work (that is what ships) but none of main's own new commits."""
+    layer = _layer(make_layer, app_repo)
+    _script(layer, "build", {"files": {"feature.py": "FEATURE = True\n"}})
+    assert main("demo", layer, ["Add a feature", "--adw-id", "1234abcd"]) == 0
+    _commit_on_main(app_repo, "big.txt", 400)
+    _script(layer, "build", {"files": {"second.py": "SECOND = True\n"}})
+    assert main("demo", layer, ["Add a second feature", "--adw-id", "5678abcd"]) == 0
+    state = json.loads((layer / "agents/5678abcd/state.json").read_text())
+    changed = set(state["ship"]["gate"]["changed_files"])
+    assert "big.txt" not in changed and {"feature.py", "second.py"} <= changed
