@@ -74,7 +74,7 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | **Kept on a branch** | on the run page of a workflow without a ship step: the branch its work was committed on, the commit, how many files changed, each kept file as a link to its copy in `artefacts/<id>/kept-files/`, the whole change as `changes.diff` (the files and the diff open in the Documents viewer), the files too large to copy (they are on the branch only); "nothing changed" when the run left nothing, "keeping failed" with the reason when the worktree was kept instead |
 | **Repos** (`4`) | the workspace: every git repository of the folder(s), searchable, with its state badge (`layer`: an `agentic.rkt` in it or in a sibling `NAME.al`; `setup`: rule files, prompts, workflow scripts or a hand-built suite, the same detection as `al scout`; `none`), branch, a mark for uncommitted changes and its last activity; **refresh** rescans. A selected repository (`#/repo/<key>`) shows al scout's "Existing agent setup" summary, its layer with a link to its workflows and runs, its jobs, and the **al** panel: one button per action with the exact command line(s) it runs, disabled with the reason when it does not apply (`needs the al tool; looked for …`, `--read-only`, `--no-actions`, the state), and a tools table: what `al doctor` sees on this machine (racket, raco, uv, git, the author agent's CLI: where each was found, or the sentence saying where al looked, and its version; kept 5 minutes). **create** and **adopt** have a placement picker above their command lines: **beside the repository** (`<folder>/<name>.al`) or **inside the repository** (`<repository>/agentic`), each with what it means, the resulting path and three checks (exists and is kept / will be created; writable; not a layer yet), disabled with its reason when it cannot be used; the command lines are those of the selected placement. A writing action first shows what it runs and writes (for adopt the dry run's diff, line by line; for create and adopt the placement with its path and the detected choices, each editable, with a sentence saying what it decides and its fact) and runs on **Confirm**. **generate a layer…** beside **refresh**, and **guided** in the al panel of a repository without a layer, open guided generation (below) |
 | **Job** | one action (`#/job/<id>`), in the order a person reads it: the header (repository, action, for a create or adopt its placement (`placement: inside the repository`), status, exit code, duration, why it failed, `needs a person: N` when the author left items out, **Download full output**); once it ended, the **outcome** card: for a passed job what was created (the layer with the files added, changed and removed) or adopted, what is `UNVERIFIED` and the next action (the last `next: …` line the steps printed); for a passed create or adopt the same card also holds the **result card** of its `result` step (forge clause, workflows, adopted rules, commands and suite workflows, what was left behind, unverified commands, the next steps, the first of which is the next action; paths as the job shows them), for a failed or interrupted job the failing step, the reason in one sentence (a generic "exited N" is replaced by the step's last error), up to 12 last relevant lines, **Retry from STEP** (asks first; the steps from the first that did not pass run again in the same job, a retried `author` with `--accept-existing`) and **Download log**; the **steps row**, one chip per step with status, exit code and time, a failed step's reason, and under the running one what it is doing right now ("reading the CI files", "compiling, attempt 2", "writing agentic.rkt", or a plain step's last line); the **activity** of the selected step (the running one, else the failed one, else the last agent step, so `author` rather than `scout`; a click picks another and the address keeps it as `?step=`): an agent step's journal with its messages as Markdown, one line per tool call (tool, target, result size, duration), errors in red, the final report and the totals, hooks, start-up, rate limits and other bookkeeping only with **show everything**; a plain step's own output as text (ANSI stripped); both the latest rows with **show earlier** and a search box, and the step's log (an agent step's **raw events**) and journal to download; the author's **Decisions** and **Left out and why** cards; the layer's files it added, changed or removed, and whether the repository changed (for a layer written inside the repository, when only `agentic/` changed: "the layer was written inside the repository: N path(s); commit agentic/ with the code", not a warning); its documents (`LLM.txt` of scout, `preview.diff.txt` of an adopt preview, `choices.json` of a create or adopt preview, `result.json`, `verify.json`, `EXPLAIN.md`); and, collapsed, **Full output** (every step as it ran, ANSI colours; an agent step condensed), opened by itself for a job from before the `steps/` files |
-| **Layers** (`3`) | a **Start work** panel (below), then each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists |
+| **Layers** (`3`) | a **Start work** panel (below), then each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists. After the declared workflows comes everything else the layer can run, from the runtime's registry: the group **Kit workflows** (`integrate`, one `promote-FROM-TO` per declared promotion or `promote` when the layer has no stages, `improve`, `decider`), each card with a `kit` mark, what it is for, the input it takes, how it is started, its setting, its steps (a graph when the registry has a definition) and its runs; an entry that is off (its setting says so, or its script is missing) is dimmed, marked `off`, with what turns it on. Then **Commands (single-command runs)** with the runs recorded as `command:NAME`, and **Suite commands** (the codebase commands `script` steps run) |
 
 The **Start work** panel (on the Layers view; a layer chooser when several are watched) takes a
 request, any workflow of the layer (adopted ones included) or a single command or hop (one recorded
@@ -86,6 +86,16 @@ now", or "let the trigger start it" for a workflow a cron or webhook trigger sta
 workflow that merges or deploys without a person, and the same request again within five minutes,
 open a confirmation dialog. Then the page opens the new run. When starting is off, the panel says why
 (`--read-only`, `--no-start`, the container, or a layer generated before this feature: "run `al gen`").
+The list has a third group, **Kit workflows**, and the `/NAME` menu lists them marked `kit`. A kit
+workflow takes no prompt: choosing `integrate` replaces the prompt box with a picker of the handed-over
+runs it applies to (id, title, target branch), or with the reason when there is none (switched off in
+`templates/integrate.json`, `adws/integrate.py` missing, or no run handed over because of a merge
+conflict or a moved target); choosing a run shows the same preview and confirmation as **Resolve with an
+agent** on the run's page, including the runtime's refusal of a run the picker listed (a protected path,
+a changed branch). Choosing a promotion shows its two stages with **Promote** and **Dry run**. An entry a
+person does not start from the page (`improve`, `decider`, anything that is off) is listed disabled,
+with the reason. A run of a kit workflow carries a `kit` mark beside its name on the run page and a link
+to what it acts on: the run it integrates, the promotion's stages, or the command of a single-command run.
 
 **Guided generation (`#/generate`, `#/generate/<key>` with the repository chosen)** leads through create
 or adopt in four steps: the repository (those with a layer are disabled, "already has a layer"; for one
@@ -215,6 +225,8 @@ actions run `al`, which writes what that command writes. `--read-only` turns all
 | `artefacts/<id>/manifest.json` | artefacts when `state.json` has none |
 | `commands/<name>.md`, `hops/<name>.md` | the `argument-hint` of their front matter, shown next to `/name` in the Start work panel (regular files inside those directories only) |
 | `adws/dispatch.py`, `adws/adw_modules/launch.py` | starting work: their presence enables the Start work panel; `dispatch.py --start --json` is run (see Safety) |
+| `adws/adw_modules/registry.py` | what the layer can run (its workflows, the kit's, its commands): loaded by path into the dashboard's process (standard library only, no side effects), the layer's own copy first, else the copy beside the dashboard (`../runtime/adw_modules/` in the kit checkout, `../adw_modules/` in a generated layer). The module is cached by path and mtime, the built registry by the signature of `agentic-layer.json`, `templates/integrate.json`, `agents/settings/decider.json` and `adws/`. A copy that does not load falls back to the next; with none (the dashboard's container and a layer generated before the registry) the declared workflows and commands are listed with the line "generated before the registry: run al gen NAME" |
+| `templates/integrate.json`, `agents/settings/decider.json` | whether `integrate` and the stand-in decider are on (read by the registry, with the runtime's rules: a missing file is the default, a broken one is a problem line, never an error page) |
 | `agents/starts.json` | written by the layer's launcher, not read by the page: the request keys of the last two days (`{key: {run_id, target, prompt_sha, at, issue}}`) behind the double-start guard; `agents/.starts.lock` serialises starts |
 | `agents/<id>/request.md`, `agents/<id>/launch.log` | a started run's prompt (mode 0600) and the output of its detached process until the run's own `run.log` takes over; both are documents of the run. "Start again" rebuilds its request from `request.md` (else `state.prompt`), the run's workflow or command, its fixed class and its tier |
 | `agents/<id>/settlement.json` | a person's settlement of a finished run (`{"as": landed\|superseded\|abandoned, "by", "note", "who", "at", "via": cli\|dashboard}`, the record before it under `"previous"`, one level; `"pruned"` after `al runs … prune`); written by `al settle` and `POST /api/settle`, atomically, mode 0600; also part of a run's signature, so a new one moves the run at once |
@@ -444,6 +456,28 @@ characters, `by` is 1–80 printable characters on one line, a comment at most 2
 shell, the dashboard's token not passed on, a 60 s limit) does the rest; a layer without it (no stages, or
 generated before promotions) answers 409 "run `al gen`".
 
+### `GET /api/startable`, `GET /api/layer`: what a layer can run
+
+Both are built from the registry (`load_registry`), so they list the same things. `GET
+/api/startable?layer=K` answers `{layer, workflows, commands, kit, forge, issue, tiers, classes,
+collisions, problems, start}`: `workflows` and `commands` as before; `kit` is one object per kit entry:
+`{name, kind, purpose, steps, input: {kind: run|stages|request, …}, start: {by_hand, how, command, why},
+ships, setting: {where, key, on, turn_on}|null, off, available, script, page_start: {enabled, why}}`. The
+entry whose input is a run (`integrate`) also has `candidates`: the layer's runs in Needs you for which
+the page offers the integration, newest first, as `{id, title, target, reasons}`, and `none_why` when the
+list is empty; a promotion entry has `open`, `approval`, `approvers` and `method`. A listed candidate
+can still be refused by the runtime's preview. `POST /api/start` answers a kit name with 400 and the
+entry's sentence (`integrate takes a handed-over run: choose it in the form`), never "no workflow named";
+starting stays with `POST /api/integrate` (the preview's nonce) and `POST /api/promotion`.
+
+`GET /api/layer?layer=K` keeps `adws` (the declared workflows) and adds `kit` (each kit entry with
+`graph` or `steps`, `stats` and `recent` of the runs whose workflow it is), `commands` (the single-command
+entries with their runs), `suite` (`{name, purpose, used_by, why}`) and `problems` (the registry's). A
+run summary has `kit` (true for a run of a kit workflow) and `acts_on`: `{kind: "run", id}`,
+`{kind: "promotion", from, to}`, `{kind: "command", name}` or null. A run's steps are drawn from the
+definition the run recorded when it has one (a kit run records its own), else the declared workflow,
+else the registry entry.
+
 ### `GET /api/integrate/preview`, `POST /api/integrate`, `GET /api/settle/evidence`
 
 `GET /api/integrate/preview?layer=K&run=ID` is read-only (the host and token checks of every GET): it
@@ -601,6 +635,20 @@ button in the row and on the page, the preview at 1280 and 390 pixels, the whole
 `integrate-runs-landed-1280.png`, `integrate-nothing-needs-you-1280.png`,
 `integrate-evidence-landed-1280.png` and `integrate-evidence-replaced-1280.png`.
 `tests/tools/test_al_integrate.py` (at the repository root) runs `al integrate` on the same scenario.
+
+`tests/test_registry_views.py` checks, on the same scenario and on the promotion site, that both views
+and the start form's data contain the kit entries beside the declared ones, that the picker lists only
+the runs `integrate` applies to and says why when there are none (switched off, a broken settings file,
+the script missing, nothing handed over), that `integrate` starts from the form's data on a handed-over
+run, that a kit name is never a free-text start, that a kit run's page draws its steps with and without
+a recorded definition, and what a layer without a registry module shows.
+`tests/test_browser_registry.py` (Chrome) shows the Layers view's Kit workflows group, the picker, the
+empty picker with its reason, a start from the form and the kit run's page; with
+`AL_DASHBOARD_SHOTS=DIR` it saves `layers-kit-workflows-1280.png`, `start-integrate-picker-1280.png`,
+`start-integrate-picker-empty-1280.png` and `kit-run-page-1280.png`. `tests/tools/test_registry_guard.py`
+(at the repository root) generates the full example layer and fails when a script under `adws/` or a
+workflow is missing from the registry or from what these two views return;
+`kit/runtime/tests/test_registry.py` keeps the registry equal to the kit modules it describes.
 
 `tests/test_workspace.py` covers the workspace scan (states, sibling layers, al scout's summary, depth,
 symlinks out of the folder, the file and time bounds, git without fsmonitor or hooks, the cache and the

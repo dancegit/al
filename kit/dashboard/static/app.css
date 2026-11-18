@@ -393,7 +393,7 @@ video { width: 100%; max-width: 860px; max-height: 460px; background: #000; bord
 .layer-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
 .layer-card { cursor: pointer; }
 .layer-card:hover { border-color: var(--border-2); background: var(--panel-2); }
-.adw-section { margin-top: 12px; }
+.adw-section, .run-section { margin-top: 12px; }
 .adw-stats { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--text-2); margin: 6px 0 8px; }
 .adw-stats b { color: var(--text); font-variant-numeric: tabular-nums; }
 .piter { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
@@ -755,3 +755,22 @@ table.needs-you td.next .btn.integrate { display: block; margin-top: 4px; font-f
 table.proof td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
 table.proof td:nth-child(3) { min-width: 190px; overflow-wrap: normal; }
 table.proof .badge { white-space: normal; }
+/* what a layer can run besides its declared workflows: the kit's workflows, single commands, suite commands */
+.badge.kit { color: var(--promote, #b07cd8); border-color: rgba(176, 124, 216, .5); background: rgba(176, 124, 216, .1); font-weight: 600; letter-spacing: .02em; }
+.run-section.off { opacity: .62; border-style: dashed; }
+.run-section.off .why { opacity: 1; }
+.group-head { display: flex; align-items: baseline; gap: 10px; margin: 22px 0 0; }
+.group-head h2 { margin: 0; font-size: 15px; }
+.kit-section .card-head { flex-wrap: wrap; }
+.kit-steps { margin: 4px 0 2px; overflow-wrap: anywhere; }
+.kit-turn-on, .kit-why { margin: 2px 0 6px; }
+.command-list { display: flex; flex-direction: column; gap: 4px; }
+.command-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; padding: 2px 0; border-top: 1px solid var(--border); }
+.command-row:first-child { border-top: 0; }
+.command-row.off { opacity: .6; }
+.command-row .mini-runs { margin-top: 0; }
+.start-kit { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.start-kit .start-run { min-width: 0; max-width: 100%; flex: 1; }
+.start-kit-preview .integrate-card { margin-top: 4px; }
+.start-complete .badge.kit { margin-left: 6px; }
+.registry-problems { margin-top: 8px; }

@@ -401,6 +401,30 @@ the conflict report to the review command as a third argument instead of relying
 file conflicted and which pairs conflicted together (`al integrate LAYER --conflicts`); each brief and
 summary names the files that conflicted before.
 
+## What a layer can run: the registry
+
+A layer can run more than its definition declares: `integrate` (above), one promotion run per declared
+promotion, single-command runs of its commands and hops, the stand-in decider, and the layer-change
+workflow of `al improve`. `kit/runtime/adw_modules/registry.py` is the one description of all of it.
+`registry.build(ir, layer_dir)` returns the declared workflows, then the kit rows, then the commands and
+hops, then the codebase commands that `script` steps run; every entry has the same keys (its kind, where
+it comes from, its steps, the input it takes: a request, a handed-over run, two stages; whether and how
+a person starts it; its setting and whether that is on; its script and whether it exists). The kit rows
+come from one table, `KIT`: a new kit workflow is declared there and nowhere else. The readers build no
+list of their own: `launch.catalog_names` and `launch.resolve_target` (so `al run` and `dispatch.py
+--start` answer a kit name with the command that starts it), the decider's resume (`registry.resume_argv`:
+a workflow's script, `dispatch.py --command` for a single command, `promote.py` or `integrate.py` for a
+kit run), `al explain`, and the dashboard's Layers view, start form and run page. `adws/dispatch.py
+--registry --json` prints it. The module is standard library only and imports no other runtime module,
+because the dashboard and `tools/explain.py` load it by path; the three rules it therefore repeats by
+value (the names and settings file of `integrate.py`, the names and steps of `promotion.py`, the script
+lookup of `inputs.adw_script`) are kept equal by `kit/runtime/tests/test_registry.py`.
+`tests/tools/test_registry_guard.py` generates the full example and fails when an executable script
+under `adws/` or an `(adw …)` is not in the registry, or a workflow of the registry is not in what the
+dashboard's two views return. The names a kit run records (`integrate`, `promote-FROM-TO`) are reserved:
+`al gen` and `al compile` refuse a declared workflow of that name (a check of `tools/al`; the compiler
+itself does not have the rule yet).
+
 ## Separation from the application
 
 The layer is its own directory (default `<app>.al`, its own git repo). The app is referenced by

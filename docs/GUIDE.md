@@ -297,6 +297,11 @@ This prints the layer back in plain language, block by block: the commands, wher
 where agents work, who decides, and each workflow's steps. It includes the defaults the author did not
 write down. If a sentence there is not what you want, that is the block to change in `agentic.rkt`.
 For a document and an animation: `al explain ~/code/myapp.al --md layer.md --gif layer.gif`.
+The document's first paragraph also names what the kit adds to every layer (`The kit adds 4 more a
+person or a run can start: integrate, promote, improve and decider.`), and its section **Kit workflows
+(every layer gets them; not declared in the definition)** has one line per entry: what it is for, the
+command that starts it, its setting and whether it is on. With stages declared, `promote` is one entry
+per promotion (`promote-sprint-main`).
 The seven example layers are explained this way in [`docs/layers`](layers/README.md).
 
 ## Step 6 — Generate the layer
@@ -900,7 +905,10 @@ $ al run myapp.al /change add a search command --detach         # a workflow, in
 run 66ce8c25 started (layer: myapp, workflow change)
 
 $ al run myapp.al /nope x
-al run: no workflow or command named nope; known: /change, /plan, /tidy, /commit, /implement, /new-adw
+al run: no workflow or command named nope; known: /change, /plan, /tidy, /commit, /implement, /new-adw, /integrate (kit), /promote (kit), /improve (kit), /decider (kit)
+
+$ al run myapp.al /integrate 93f3f743                           # a kit workflow has its own command
+al run: integrate is a kit workflow that takes a handed-over run: al integrate LAYER RUN
 
 $ al run myapp.al /tidy remove the unused import --dry-run      # again, within five minutes
 al run: the same request to command tidy started run 93f3f743 6 s ago; pass --yes to start it anyway
