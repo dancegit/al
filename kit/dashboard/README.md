@@ -72,8 +72,8 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | **Documents** | what the run has written for people to read, as soon as each file exists: the plan, the `.md` / `.txt` / `.json` / `.log` outputs its steps recorded (a review's `patch-<n>` plans among them), review patch plans, `PR.md` (the handoff or PR text) and other text files in `agents/<id>/`, each reviewer's verdict (`review-*/output.txt`) and text artefacts; with the step that produced each, its size and time. **View** renders Markdown in the page (with a raw toggle), pretty-prints JSON and shows text as text; **Download** saves the exact file, **Download all** a zip of them all. A step's panel links the documents it produced (the plan on `plan-feature`). A new document appears live |
 | **Artefacts** | screenshots as thumbnails (click for full size), videos playable in the page with their keyframes, logs with their tail, all with the step that collected them |
 | **Kept on a branch** | on the run page of a workflow without a ship step: the branch its work was committed on, the commit, how many files changed, each kept file as a link to its copy in `artefacts/<id>/kept-files/`, the whole change as `changes.diff` (the files and the diff open in the Documents viewer), the files too large to copy (they are on the branch only); "nothing changed" when the run left nothing, "keeping failed" with the reason when the worktree was kept instead |
-| **Repos** (`4`) | the workspace: every git repository of the folder(s), searchable, with its state badge (`layer`: an `agentic.rkt` in it or in a sibling `NAME.al`; `setup`: rule files, prompts, workflow scripts or a hand-built suite, the same detection as `al scout`; `none`), branch, a mark for uncommitted changes and its last activity; **refresh** rescans. A selected repository (`#/repo/<key>`) shows al scout's "Existing agent setup" summary, its layer with a link to its workflows and runs, its jobs, and the **al** panel: one button per action with the exact command line(s) it runs, disabled with the reason when it does not apply (`needs the al tool; looked for …`, `--read-only`, `--no-actions`, the state), and a tools table: what `al doctor` sees on this machine (racket, raco, uv, git, the author agent's CLI: where each was found, or the sentence saying where al looked, and its version; kept 5 minutes). A writing action first shows what it runs and writes (for adopt the dry run's diff, line by line; for create and adopt the detected choices, each editable and with its fact) and runs on **Confirm** |
-| **Job** | one action (`#/job/<id>`), in the order a person reads it: the header (repository, action, status, exit code, duration, why it failed, `needs a person: N` when the author left items out, **Download full output**); once it ended, the **outcome** card: for a passed job what was created (the layer with the files added, changed and removed) or adopted, what is `UNVERIFIED` and the next action (the last `next: …` line the steps printed); for a passed create or adopt the same card also holds the **result card** of its `result` step (forge clause, workflows, adopted rules, commands and suite workflows, what was left behind, unverified commands, the next steps, the first of which is the next action; paths as the job shows them), for a failed or interrupted job the failing step, the reason in one sentence (a generic "exited N" is replaced by the step's last error), up to 12 last relevant lines, **Retry from STEP** (asks first; the steps from the first that did not pass run again in the same job, a retried `author` with `--accept-existing`) and **Download log**; the **steps row**, one chip per step with status, exit code and time, a failed step's reason, and under the running one what it is doing right now ("reading the CI files", "compiling, attempt 2", "writing agentic.rkt", or a plain step's last line); the **activity** of the selected step (the running one, else the failed one, else the last agent step, so `author` rather than `scout`; a click picks another and the address keeps it as `?step=`): an agent step's journal with its messages as Markdown, one line per tool call (tool, target, result size, duration), errors in red, the final report and the totals, hooks, start-up, rate limits and other bookkeeping only with **show everything**; a plain step's own output as text (ANSI stripped); both the latest rows with **show earlier** and a search box, and the step's log (an agent step's **raw events**) and journal to download; the author's **Decisions** and **Left out and why** cards; the layer's files it added, changed or removed, and whether the repository changed; its documents (`LLM.txt` of scout, `preview.diff.txt` of an adopt preview, `choices.json` of a create or adopt preview, `result.json`, `verify.json`, `EXPLAIN.md`); and, collapsed, **Full output** (every step as it ran, ANSI colours; an agent step condensed), opened by itself for a job from before the `steps/` files |
+| **Repos** (`4`) | the workspace: every git repository of the folder(s), searchable, with its state badge (`layer`: an `agentic.rkt` in it or in a sibling `NAME.al`; `setup`: rule files, prompts, workflow scripts or a hand-built suite, the same detection as `al scout`; `none`), branch, a mark for uncommitted changes and its last activity; **refresh** rescans. A selected repository (`#/repo/<key>`) shows al scout's "Existing agent setup" summary, its layer with a link to its workflows and runs, its jobs, and the **al** panel: one button per action with the exact command line(s) it runs, disabled with the reason when it does not apply (`needs the al tool; looked for …`, `--read-only`, `--no-actions`, the state), and a tools table: what `al doctor` sees on this machine (racket, raco, uv, git, the author agent's CLI: where each was found, or the sentence saying where al looked, and its version; kept 5 minutes). **create** and **adopt** have a placement picker above their command lines: **beside the repository** (`<folder>/<name>.al`) or **inside the repository** (`<repository>/agentic`), each with what it means, the resulting path and three checks (exists and is kept / will be created; writable; not a layer yet), disabled with its reason when it cannot be used; the command lines are those of the selected placement. A writing action first shows what it runs and writes (for adopt the dry run's diff, line by line; for create and adopt the placement with its path and the detected choices, each editable, with a sentence saying what it decides and its fact) and runs on **Confirm**. **generate a layer…** beside **refresh**, and **guided** in the al panel of a repository without a layer, open guided generation (below) |
+| **Job** | one action (`#/job/<id>`), in the order a person reads it: the header (repository, action, for a create or adopt its placement (`placement: inside the repository`), status, exit code, duration, why it failed, `needs a person: N` when the author left items out, **Download full output**); once it ended, the **outcome** card: for a passed job what was created (the layer with the files added, changed and removed) or adopted, what is `UNVERIFIED` and the next action (the last `next: …` line the steps printed); for a passed create or adopt the same card also holds the **result card** of its `result` step (forge clause, workflows, adopted rules, commands and suite workflows, what was left behind, unverified commands, the next steps, the first of which is the next action; paths as the job shows them), for a failed or interrupted job the failing step, the reason in one sentence (a generic "exited N" is replaced by the step's last error), up to 12 last relevant lines, **Retry from STEP** (asks first; the steps from the first that did not pass run again in the same job, a retried `author` with `--accept-existing`) and **Download log**; the **steps row**, one chip per step with status, exit code and time, a failed step's reason, and under the running one what it is doing right now ("reading the CI files", "compiling, attempt 2", "writing agentic.rkt", or a plain step's last line); the **activity** of the selected step (the running one, else the failed one, else the last agent step, so `author` rather than `scout`; a click picks another and the address keeps it as `?step=`): an agent step's journal with its messages as Markdown, one line per tool call (tool, target, result size, duration), errors in red, the final report and the totals, hooks, start-up, rate limits and other bookkeeping only with **show everything**; a plain step's own output as text (ANSI stripped); both the latest rows with **show earlier** and a search box, and the step's log (an agent step's **raw events**) and journal to download; the author's **Decisions** and **Left out and why** cards; the layer's files it added, changed or removed, and whether the repository changed (for a layer written inside the repository, when only `agentic/` changed: "the layer was written inside the repository: N path(s); commit agentic/ with the code", not a warning); its documents (`LLM.txt` of scout, `preview.diff.txt` of an adopt preview, `choices.json` of a create or adopt preview, `result.json`, `verify.json`, `EXPLAIN.md`); and, collapsed, **Full output** (every step as it ran, ANSI colours; an agent step condensed), opened by itself for a job from before the `steps/` files |
 | **Layers** (`3`) | a **Start work** panel (below), then each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists |
 
 The **Start work** panel (on the Layers view; a layer chooser when several are watched) takes a
@@ -86,6 +86,19 @@ now", or "let the trigger start it" for a workflow a cron or webhook trigger sta
 workflow that merges or deploys without a person, and the same request again within five minutes,
 open a confirmation dialog. Then the page opens the new run. When starting is off, the panel says why
 (`--read-only`, `--no-start`, the container, or a layer generated before this feature: "run `al gen`").
+
+**Guided generation (`#/generate`, `#/generate/<key>` with the repository chosen)** leads through create
+or adopt in four steps: the repository (those with a layer are disabled, "already has a layer"; for one
+with an agent setup a checkbox "adopt the existing agent setup", checked by default), the placement (the
+picker of the al panel, read from `GET /api/repo`; Next is disabled until a usable one is selected), the
+options (the detected choices, each with its explanation, fact and detected value; for adopt also the
+dry run's diff) and a review (repository, action, placement and path, every choice with the changed ones
+marked, "It runs", "It writes") with **Start**. It adds no endpoint: the options step sends the
+`POST /api/action` preview of the buttons and Start its confirmation, with the same `placement`, so
+every guard below applies unchanged. Back keeps the answers and the preview; another repository, action
+or placement asks for a new preview; a refusal (for example "changed since the preview") is shown with
+**detect again**. When actions are off (`--read-only`, `--no-actions`, no workspace, no al tool) the
+first step says why and there is no Next.
 
 Every run is in one bucket (`attention()` in dashboard.py, recomputed when a layer's runs change and
 every 20 ticks):
@@ -272,8 +285,9 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
   `<!-- al:claimed run=<id> -->` marker in its body, which the layer's poller and webhook skip;
   "let the trigger start it" opens it with the issue input's labels and starts nothing.
 - **Actions.** `POST /api/action {"repo": KEY, "action": NAME}` (and `"confirm": NONCE`, and for `create`
-  and `adopt` `"choices": {KEY: VALUE}`) runs `al` on a scanned repository, from this fixed allow-list only
-  (AL = the found tool, APP = the repository's real path, LAYER = its layer, else `<folder>/<name>.al`):
+  and `adopt` `"placement": "beside" | "inside"` and `"choices": {KEY: VALUE}`) runs `al` on a scanned
+  repository, from this fixed allow-list only (AL = the found tool, APP = the repository's real path,
+  LAYER = its layer, else `<folder>/<name>.al` or, for the inside placement, `<repository>/agentic`):
   `{layer, again: RUN, request_key, confirm_duplicate, confirm_ships}` (no target, no prompt) starts
   the failed or died run RUN again: the server rebuilds the request from RUN's own records (its
   workflow, or its command for a single-command run; the full prompt from `request.md`; its class when
@@ -282,22 +296,36 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
   run already replaces 409 (naming it), unless the request key is the one that started that run (a
   double click: the launcher answers with it). "Start again" of an issue-sourced run restarts from the
   recorded prompt, not from the issue.
-- **Actions.** `POST /api/action {"repo": KEY, "action": NAME}` (and `"confirm": NONCE`) runs `al` on a
-  scanned repository, from this fixed allow-list only (AL = the found tool, APP = the repository's real
-  path, LAYER = its layer, else `<folder>/<name>.al`):
+- **Actions.** `POST /api/action {"repo": KEY, "action": NAME, "placement": P, "confirm": NONCE, "choices": {…}}`
+  (`repo` and `action` always; `confirm` to confirm a preview; `placement` and `choices` for `create` and
+  `adopt` only) runs `al` on a scanned repository, from this fixed allow-list only (AL = the found tool,
+  APP = the repository's real path, LAYER = its layer, else `<folder>/<name>.al` for the placement
+  `beside`, the default, or `<repository>/agentic` for `inside`):
 
   | Action | States | Writes | argv |
   |---|---|---|---|
   | `scout` | all | no | `AL scout APP` (stdout = document `LLM.txt`) |
-  | `create` | none, setup | yes | preview: `AL create APP --choices --json` (stdout = `choices.json`); then `AL init APP`; `AL scout APP --into LAYER [--agent …] --raw`; `AL adopt LAYER --app APP`; `AL author LAYER [--agent …] --raw [--choice KEY=VALUE …]`; `AL gen LAYER`; `AL check LAYER`; `AL result LAYER --json` (stdout = `result.json`) |
+  | `create` | none, setup | yes | preview: `AL create APP --choices --json` (stdout = `choices.json`); then `AL init APP [--in-repo]` (`--in-repo` for the placement `inside`); `AL scout APP --into LAYER [--agent …] --raw`; `AL adopt LAYER --app APP`; `AL author LAYER [--agent …] --raw [--choice KEY=VALUE …]`; `AL gen LAYER`; `AL check LAYER`; `AL result LAYER --json` (stdout = `result.json`) |
   | `adopt` | setup | yes | preview: `AL adopt LAYER --app APP --dry-run --diff` (stdout = `preview.diff.txt`) and `AL create APP --choices --json` (`choices.json`); then the same seven steps as `create` |
   | `gen` | layer | yes | `AL gen LAYER` |
   | `check` | layer | no | `AL check LAYER` |
   | `verify` | layer | yes | `AL verify LAYER --json` (stdout = `verify.json`) |
   | `explain` | layer | no | `AL explain LAYER --md <job>/docs/EXPLAIN.md` |
 
-  `create` and `adopt` run the sequence of `al create` / `al adopt-all` (tools/al_create.py; a test keeps
-  the two equal): `adopt` is a clear no-op when the repository has nothing to adopt, so the author sees
+  `placement` says where `create` and `adopt` put the layer. One function, `placement_view`, computes
+  each placement's path and whether it is usable; `GET /api/repo` lists both under the action's
+  `placements` (with `path`, `exists`, `writable`, `layer`, `ok`, `problem` and that placement's command
+  lines and written paths), and the same function guards the request, so what the page shows is what
+  the server enforces. A `placement` on another action, or a value other than `beside` and `inside`, is
+  400 and starts nothing. A placement whose path is already a layer (an `agentic.rkt` or an
+  `agentic-layer.json` there), exists and is not a directory, is not writable or, for `inside`, already
+  holds tracked files of the repository is 409 with that sentence, before any job. A preview's nonce is
+  bound to its placement: a confirmation that names another one is 409 ("the placement changed since the
+  preview") and spends the nonce. The answer of a create or adopt preview has
+  `"placement": {"name", "path"}`; the job records `placement` and its page shows it.
+
+  `create` and `adopt` run the sequence of `al create` / `al adopt-all` (tools/al_create.py, with
+  `--in-repo` for `inside`; a test keeps the two equal for both placements): `adopt` is a clear no-op when the repository has nothing to adopt, so the author sees
   the adopted material when there is some. The start form shows each choice of `choices.json` (forge,
   host, repository, input, trigger, environment, review, delivery preset) with the fact that supports it;
   each is editable, a changed one is marked "changed", and only the changed ones are sent as `choices`.
@@ -514,6 +542,12 @@ job before any step, "Retry from STEP" and its refusals, the tools table, the jo
 `ok` otherwise), can replay a recorded agent stream for one (`streams`, with `job_stream`, which puts the
 test's workspace and home into it), can keep one running (`hold`), and answers `create --choices --json`
 with the start form's choices and `result --json` with a result card (`choices`, `card`).
+`tests/test_placement.py` covers the placement of create and adopt: the two paths, `placement_view` for a
+fresh repository, an existing folder, a path that is already a layer, a file or symlink there, an
+unwritable folder and tracked files under `agentic/`; the action views listing both placements; the
+default (`beside`), the preview naming the chosen path, `inside` reaching every step's argv for create
+and adopt, refused values (400), the nonce bound to the placement and an unusable placement (409), the
+same write guard, and a layer created inside listed as an in-repo layer.
 `tests/test_job_journal.py` covers the job journal: the condenser on the invented streams of
 `tests/data/job-streams/` (`author-running`, `author-finished`, `author-failed`: hooks with long output,
 tool calls, failed compiles, a report with Decisions and Left out) — hidden bookkeeping, condensed tool
@@ -532,8 +566,17 @@ the adopt preview's diff (an injected `<script>` stays text), Confirm and a job 
 disabled actions without al, a failed job's reason with its Retry button, the start form's detected choices
 (a changed review reaching the author step) and the result card; with `AL_DASHBOARD_SHOTS=DIR` it saves
 `workspace-repos.png`, `workspace-adopt-preview.png`, `workspace-job.png`, `job-missing-tool.png`,
-`job-retried.png`, `start-form-choices.png` and `result-card.png`. `tests/tools/test_dashboard_workspace.py` (at the
-repository root) runs the same flows end to end with the real al and the mock author agent.
+`job-retried.png`, `start-form-choices.png` and `result-card.png`. `tests/test_browser_generate.py` (Chrome)
+checks the placement picker of the al panel (the path, the checks and the command lines of the selected
+placement, the placement in the confirmation dialog and on the job page) and guided generation: the four
+steps to a started job with only `POST /api/action` sent and nothing but the read-only preview run before
+Start, Back keeping the answers and a new placement asking again, an unusable placement disabled, adopt by
+default for a repository with a setup, and the reason shown when actions are off; with
+`AL_DASHBOARD_SHOTS=DIR` it saves `generate-placement-panel.png`, `generate-wizard-repo.png`,
+`generate-wizard-placement.png`, `generate-wizard-options.png`, `generate-wizard-review.png` and
+`generate-wizard-job.png`. `tests/tools/test_dashboard_workspace.py` (at the
+repository root) runs the same flows end to end with the real al and the mock author agent, a create
+inside the repository included.
 `tests/test_writes_together.py` runs both features in one server: `--read-only` refuses all three
 writes, `--no-start` and `--no-actions` each refuse only their own, each write has its body limit,
 and both features' GET routes and banner states are there.

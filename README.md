@@ -242,7 +242,7 @@ You need `racket`, `uv`, `git`, and `podman` for containers.
 tools/al init ~/code/myapp            # creates ~/code/myapp.al with a draft LLM.txt and the language reference
 ```
 
-Or in one command: `tools/al create ~/code/myapp` (`tools/al adopt-all ~/code/myapp` with an agent setup) runs it all and prints a result card.
+Or in one command: `tools/al create ~/code/myapp` (`tools/al adopt-all ~/code/myapp` with an agent setup; add `--in-repo` to keep the layer in the repository, as `~/code/myapp/agentic`) runs it all and prints a result card.
 An existing agent setup (`CLAUDE.md`, `AGENTS.md`, `.claude/commands/`, an `adws/` folder) is listed by `al scout`;
 `tools/al adopt ~/code/myapp.al --app ~/code/myapp` brings it into the layer without changing your repository, and
 what needs your decision is in `adopted/REPORT.md` ([guide](docs/GUIDE.md#run-a-script-you-already-have)).

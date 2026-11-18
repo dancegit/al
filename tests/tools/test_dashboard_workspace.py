@@ -29,7 +29,7 @@ _spec.loader.exec_module(helpers)  # type: ignore[union-attr]
 dashboard = helpers.dashboard
 
 # the mock author: what a real one is told to do, including the two include lines when adopt ran before it
-DEFINITION = (LAYER_TEMPLATE.format(root="${root}", placement="(layer sibling)\n  ${includes}")
+DEFINITION = (LAYER_TEMPLATE.format(root="${root}", placement="${placement}\n  ${includes}")
               .replace('#:name "notes"', '#:name "${name}"')
               .replace('#:protected ("test.sh"))', '#:protected ("test.sh"))\n    ${codebase_includes}'))
 
@@ -191,6 +191,34 @@ def test_create_a_layer_for_the_empty_repository_end_to_end(server, ws):
     al("compile", ws / "fern.al")
     assert "change" in layer_of(server, "fern")["adws"]
     assert status(ws / "fern") == ""
+
+
+def test_create_a_layer_inside_the_repository_end_to_end(server, ws):
+    code, preview = post(server, {"repo": "fern", "action": "create", "placement": "inside"})
+    assert code == 200 and preview["placement"]["name"] == "inside", preview
+    if preview.get("job"):
+        finished(server, preview["job"])
+    code, body = post(server, {"repo": "fern", "action": "create", "placement": "inside", "confirm": preview["nonce"]})
+    assert code == 202, body
+    job = finished(server, body["job"])
+    assert [(s["name"], s["status"]) for s in job["steps"]] == [
+        (name, "passed") for name in ("init", "scout", "adopt", "author", "gen", "check", "result")]
+    assert job["placement"] == "inside"
+    ir = json.loads((ws / "fern" / "agentic" / "agentic-layer.json").read_text())
+    assert ir["layer"]["kind"] == "in-repo" and ir["layer"]["dir"] == "agentic"
+    assert not (ws / "fern.al").exists()
+    wait(lambda: states(server)["fern"] == "layer" and layer_of(server, "fern"), 60, "fern to become a watched layer")
+    fern = next(r for r in server.json("/api/workspace")["repos"] if r["name"] == "fern")
+    assert fern["state"] == "layer" and fern["layer_kind"] == "in-repo"
+    assert "change" in layer_of(server, "fern")["adws"]
+    assert job["repo_unchanged"] is False
+    assert job["repo_changes"] and all(_path_of(change).startswith("agentic/") for change in job["repo_changes"]), job["repo_changes"]
+    assert str(Path.home()) not in json.dumps(job) and str(ws) not in json.dumps(job)
+
+
+def _path_of(change: Any) -> str:
+    """The path a `repo_changes` entry names (a porcelain line "XY path", or an object with `path`)."""
+    return change["path"] if isinstance(change, dict) else str(change)[3:]
 
 
 def test_gen_check_explain_verify_on_a_layer(server, ws):

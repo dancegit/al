@@ -530,7 +530,7 @@
     const route = parseRoute();
     for (const link of document.querySelectorAll(".views a")) {
       link.classList.toggle("active", link.dataset.view === route.view || (route.view === "run" && link.dataset.view === "runs") || (route.view === "layer" && link.dataset.view === "layers")
-        || ((route.view === "repo" || route.view === "job") && link.dataset.view === "repos"));
+        || ((route.view === "repo" || route.view === "job" || route.view === "generate") && link.dataset.view === "repos"));
     }
     const group = route.view === "repo" ? "repos" : route.view;   // the Repos view keeps its list while a repository is selected
     if (current && current.name === group && current.accepts && current.accepts(route)) {
@@ -542,9 +542,9 @@
     delete main.dataset.rendered;
     const crumbs = clear(document.getElementById("crumbs"));
     const make = { now: NowView, runs: RunsView, run: RunView, layers: LayersView, layer: LayerView, repos: ReposView, repo: ReposView,
-      job: JobView }[route.view] || NowView;
+      job: JobView, generate: GenerateView }[route.view] || NowView;
     current = make(main, crumbs, route);
-    current.name = group in { now: 1, runs: 1, run: 1, layers: 1, layer: 1, repos: 1, job: 1 } ? group : "now";
+    current.name = group in { now: 1, runs: 1, run: 1, layers: 1, layer: 1, repos: 1, job: 1, generate: 1 } ? group : "now";
     main.focus({ preventScroll: true });
     window.scrollTo(0, 0);
   }
@@ -2873,6 +2873,46 @@
 
   const CHOICE_LABEL = { forge: "forge", host: "forge host", repo: "repository", input: "work comes from", trigger: "started by",
     environment: "environment", review: "review", delivery: "delivery preset" };
+  // one plain sentence per choice: what it decides
+  const CHOICE_HELP = {
+    forge: "where the repository's issues and pull requests live",
+    host: "the address of a self-hosted forge",
+    repo: "the repository on the forge, as owner/name",
+    input: "where requests for work come from: a task file or forge issues",
+    trigger: "what starts a run",
+    environment: "where agents work: a private worktree, optionally inside a container or a Nix shell",
+    review: "who decides a change is done: a person, or an agent whose verdict a person merges",
+    delivery: "the branching style runs deliver into",
+  };
+  const PLACEMENT_LABEL = { beside: "beside the repository", inside: "inside the repository" };
+  let pickerSerial = 0;
+
+  /** Where a new layer goes: one row per placement of an action view (GET /api/repo: beside the
+   * repository or inside it) with a radio (disabled when the server says it cannot be used), what it
+   * means, the resulting path, three checks and the reason it is refused. → { el, value() }; the
+   * selection is `selectedName` when usable, else the first usable one ("" when none is). */
+  function placementPicker(placements, selectedName, onChange) {
+    pickerSerial += 1;
+    const usable = placements.filter((p) => p.ok);
+    let value = usable.some((p) => p.name === selectedName) ? selectedName : usable.length ? usable[0].name : "";
+    const el = h("div", { class: "placement-picker", role: "radiogroup", "aria-label": "where the layer goes", "data-role": "placement" },
+      placements.map((p) => {
+        const radio = h("input", { type: "radio", name: `placement-${pickerSerial}`, value: p.name, checked: p.name === value, disabled: !p.ok });
+        radio.addEventListener("change", () => {
+          if (!radio.checked) return;
+          value = p.name;
+          if (onChange) onChange(value);
+        });
+        const checks = [[true, p.exists ? "exists: files there are kept" : "will be created"],
+          [p.writable, p.writable ? "writable" : "not writable"], [!p.layer, p.layer ? "already a layer" : "not a layer yet"]];
+        return h("label", { class: `placement${p.ok ? "" : " off"}`, dataset: { placement: p.name } }, radio,
+          h("span", { class: "placement-label", text: p.label }), h("span", { class: "mono placement-path", text: p.path }),
+          h("div", { class: "dim placement-explain", text: p.explain }),
+          h("div", { class: "checks" }, checks.map(([ok, text]) => h("span", { class: `check ${ok ? "ok" : "bad"}`, text }))),
+          p.problem ? h("div", { class: "why error", text: p.problem }) : null);
+      }));
+    return { el, value: () => value };
+  }
 
   /** The detected choices of a create or adopt (choices.json of the preview job): one row per choice with
    * its value (a select, or a text field for host and repository) and the fact that supports it. A row the
@@ -2902,6 +2942,7 @@
         ? Array.from(field.querySelectorAll("input:checked")).map((box) => box.value).join(",") : field.value.trim());
       const row = h("div", { class: "choice", dataset: { key } },
         h("label", { class: "choice-key", text: CHOICE_LABEL[key] || key }), field, mark,
+        CHOICE_HELP[key] ? h("div", { class: "choice-help", text: CHOICE_HELP[key] }) : null,
         h("div", { class: "fact", text: choice.fact || "" }));
       const update = () => {
         const changed = current() !== detected;
@@ -2913,11 +2954,12 @@
       rows.push({ key, detected, current });
       form.appendChild(row);
     }
-    return { el: form, changed: () => Object.fromEntries(rows.filter((r) => r.current() !== r.detected).map((r) => [r.key, r.current()])) };
+    return { el: form, changed: () => Object.fromEntries(rows.filter((r) => r.current() !== r.detected).map((r) => [r.key, r.current()])),
+      rows: () => rows.map((r) => ({ key: r.key, value: r.current(), changed: r.current() !== r.detected })) };
   }
 
   /** The confirmation of a writing action: its command lines, what it writes, (adopt) the dry run's diff and
-   * (create, adopt) the detected choices, each editable. */
+   * (create, adopt) the placement that was previewed and the detected choices, each editable. */
   function confirmAction(repo, action, preview, done) {
     const overlay = document.getElementById("overlay");
     const close = () => { overlay.hidden = true; clear(overlay); };
@@ -2934,6 +2976,7 @@
       confirm.disabled = true;
       try {
         const body = { repo: repo.key, action: action.name, confirm: preview.nonce };
+        if (preview.placement) body.placement = preview.placement.name;   // the one that was previewed
         const changed = form ? form.changed() : {};
         if (Object.keys(changed).length) body.choices = changed;
         const answer = await api.post("/api/action", body);
@@ -2948,6 +2991,9 @@
     replace(overlay, h("div", { class: "panel action-confirm", onclick: (e) => e.stopPropagation() },
       h("div", { class: "card-head" }, h("h3", { text: `${action.name} · ${repo.name}` }), h("span", { class: "spacer" }), cancel),
       h("div", { class: "dim", text: action.description }),
+      preview.placement ? h("div", { class: "placement-line", "data-role": "placement" }, "placement: ",
+        h("strong", { text: PLACEMENT_LABEL[preview.placement.name] || preview.placement.name }), " → ",
+        h("span", { class: "mono", text: preview.placement.path })) : null,
       h("h4", { text: "It runs" }), h("div", { class: "commands" }, preview.commands.map((line) => h("code", { class: "cmd", text: line }))),
       h("h4", { text: "It writes" }), h("ul", { class: "writes" }, (preview.writes.length ? preview.writes : ["nothing outside the jobs directory"]).map((path) => h("li", { class: "mono", text: path }))),
       choicesPart, diffPart,
@@ -3005,7 +3051,10 @@
     const list = h("div", { class: "repo-list", role: "listbox", "aria-label": "repositories" });
     const panel = h("div", { class: "repo-panel" });
     const refresh = h("button", { type: "button", class: "toggle", "data-role": "refresh", text: "refresh", title: "rescan the workspace" });
-    main.append(h("div", { class: "repos" }, h("div", { class: "repo-side" }, h("div", { class: "repo-tools" }, filter, refresh), list), panel));
+    const guided = h("a", { class: "toggle", href: "#/generate", "data-role": "guided", text: "generate a layer…",
+      title: "guided generation: repository, placement, options, review" });
+    main.append(h("div", { class: "repos" }, h("div", { class: "repo-side" }, h("div", { class: "repo-tools" }, filter, refresh, guided), list), panel));
+    const placed = {};   // "<repo>/<action>" → the placement picked in the al panel, kept while the panel is redrawn
     let selected = route.view === "repo" ? route.parts[1] || "" : "";
     let loaded = null;
 
@@ -3050,17 +3099,19 @@
       renderPanel(data);
     }
 
-    function runAction(repo, action, button) {
+    function runAction(repo, action, button, picker) {
       return async () => {
         button.disabled = true;
         try {
-          const answer = await api.post("/api/action", { repo: repo.key, action: action.name });
+          const body = { repo: repo.key, action: action.name };
+          if (picker) body.placement = picker.value();
+          const answer = await api.post("/api/action", body);
           if (answer.preview) confirmAction(repo, action, answer, (job) => go(`#/job/${enc(job)}`));
           else go(`#/job/${enc(answer.job)}`);
         } catch (error) {
           const note = panel.querySelector(`[data-action="${action.name}"] .why`);
           if (note) { note.className = "why error"; note.textContent = error.message; }
-        } finally { button.disabled = !action.available; }
+        } finally { button.disabled = !action.available || (!!picker && !picker.value()); }
       };
     }
 
@@ -3070,11 +3121,22 @@
       const actions = data.actions.map((action) => {
         const button = h("button", { type: "button", class: `btn${action.writes ? " writes" : ""}`, text: action.name, disabled: !action.available,
           title: action.available ? action.description : action.why });
-        button.addEventListener("click", runAction(repo, action, button));
+        const commands = h("div", { class: "commands" });
+        const show = (lines) => replace(commands, lines.map((line) => h("code", { class: "cmd", text: line })));
+        let picker = null;
+        if (action.placements) {   // create and adopt: beside or inside; the lines are those of the selected placement
+          const key = `${repo.key}/${action.name}`;
+          const of = (name) => action.placements.find((p) => p.name === name);
+          picker = placementPicker(action.placements, placed[key] || "beside", (name) => { placed[key] = name; show(of(name).commands); });
+          show((of(picker.value()) || action).commands);
+          if (!picker.value()) button.disabled = true;
+        } else show(action.commands);
+        button.addEventListener("click", runAction(repo, action, button, picker));
         return h("div", { class: `action${action.available ? "" : " off"}`, dataset: { action: action.name } },
           h("div", { class: "action-head" }, button, h("span", { class: "dim", text: action.description }),
             action.writes ? h("span", { class: "badge warn", text: "writes · asks first" }) : null),
-          h("div", { class: "commands" }, action.commands.map((line) => h("code", { class: "cmd", text: line }))),
+          picker ? picker.el : null,
+          commands,
           h("div", { class: "why", text: action.available ? "" : action.why }));
       });
       replace(panel,
@@ -3089,7 +3151,10 @@
               h("span", { class: "piter" }, layer.adws.map((name) => h("span", { class: "badge", text: name })))]
               : h("span", { class: "faint", text: repo.layer_generated ? " (not watched yet)" : " (not generated yet: run gen)" })) : null),
         h("div", { class: "card al-panel" }, h("div", { class: "card-head" }, h("h3", { text: "al" }),
-          h("span", { class: "dim", text: "each button runs exactly the command line shown under it" })),
+          h("span", { class: "dim", text: "each button runs exactly the command line shown under it" }),
+          repo.state === "none" || repo.state === "setup" ? [h("span", { class: "spacer" }),
+            h("a", { class: "toggle", href: `#/generate/${enc(repo.key)}`, "data-role": "guided-repo", text: "guided",
+              title: "generate this repository's layer step by step" })] : null),
           data.al.found ? null : h("div", { class: "why", text: `The al tool was not found; the actions need it. Looked for: ${data.al.looked.join(", ")}` }),
           toolsTable(data.al.tools || []),
           actions),
@@ -3138,6 +3203,265 @@
         loadPanel();
       },
       back() { if (selected) go("#/repos"); },
+    };
+  }
+
+  /** Guided layer generation (#/generate[/<repo>]): four steps — the repository, the placement, the
+   * options (the detected choices, each explained), a review — and Start. It sends what the create and
+   * adopt buttons send: the POST /api/action preview (when the options step opens) and its confirmation
+   * (Start); nothing else is written or run. Going back keeps the answers; another repository, action or
+   * placement asks for a new preview. */
+  function GenerateView(main, crumbs, route) {
+    const STEPS = [["repo", "Repository"], ["placement", "Placement"], ["options", "Options"], ["review", "Review"]];
+    const state = { step: "repo", repo: route.parts[1] || "", adopt: true, placement: "", detail: null,
+      preview: null, previewKey: "", form: null, diff: "", detecting: "", error: null };
+    let serial = 0;        // the latest preview asked for: an older answer is dropped
+    let loading = 0;       // the latest GET /api/repo of the placement step
+    let pending = null;    // the preview job still running (one job per repository at a time)
+    let listed = "";       // what the repository step last showed, so a store event redraws it only when it changed
+    const stepsRow = h("ol", { class: "wizard-steps", "aria-label": "steps" });
+    const body = h("div", { class: "wizard-body" });
+    const nav = h("div", { class: "actions-row wizard-nav" });
+    main.append(h("div", { class: "card wizard" },
+      h("div", { class: "card-head" }, h("h2", { text: "Generate a layer" }),
+        h("span", { class: "dim", text: "four steps; nothing is written before Start" })),
+      stepsRow, body, nav));
+
+    const entry = () => (store.workspace.repos || []).find((r) => r.key === state.repo) || null;
+    const actionName = () => { const repo = entry(); return repo && repo.state === "setup" && state.adopt ? "adopt" : "create"; };
+    const previewKey = () => `${state.repo}/${actionName()}/${state.placement}`;
+    const actionView = () => (state.detail ? state.detail.actions.find((a) => a.name === actionName()) : null);
+    const offReason = () => (!store.loaded ? "" : !store.actions.enabled ? store.actions.why || "actions are off"
+      : !store.workspace.enabled ? "no workspace: start the dashboard with --workspace DIR" : "");
+
+    function goTo(step) { state.step = step; render(); }
+
+    function button(role, text, onclick, opts = {}) {
+      return h("button", { type: "button", class: `btn${opts.primary ? " primary" : ""}`, "data-role": role, text, disabled: !!opts.disabled, onclick });
+    }
+
+    function setNav(...buttons) { replace(nav, buttons); }
+
+    function panel(name, title, hint, ...children) {
+      replace(body, h("div", { class: "wizard-panel", dataset: { step: name } },
+        h("h3", { text: title }), hint ? h("div", { class: "dim", text: hint }) : null, children));
+    }
+
+    function render() {
+      replace(crumbs, h("a", { href: "#/repos", text: "repos" }), " / ", h("span", { text: "generate a layer" }),
+        state.repo ? [" / ", h("span", { text: state.repo })] : null);
+      const at = STEPS.findIndex(([name]) => name === state.step);
+      replace(stepsRow, STEPS.map(([name, label], index) => h("li", { class: index < at ? "done" : index === at ? "current" : "",
+        dataset: { crumb: name }, "aria-current": index === at ? "step" : null },
+        h("span", { class: "num", text: String(index + 1) }), ` ${label}`)));
+      ({ repo: renderRepo, placement: renderPlacement, options: renderOptions, review: renderReview })[state.step]();
+    }
+
+    // ---- 1: the repository (and, for one with an agent setup, whether to adopt it)
+    function repoSignature() {
+      return JSON.stringify([store.loaded, offReason(), (store.workspace.repos || []).map((r) => [r.key, r.state])]);
+    }
+
+    function renderRepo() {
+      listed = repoSignature();
+      if (!store.loaded) {
+        panel("repo", "Which repository?", "", h("div", { class: "empty", text: "connecting…" }));
+        setNav();
+        return;
+      }
+      const why = offReason();
+      if (why) {
+        panel("repo", "Which repository?", "", h("div", { class: "why", text: why }));
+        setNav();
+        return;
+      }
+      const usable = () => { const repo = entry(); return !!repo && repo.state !== "layer"; };
+      const next = button("next", "Next", () => goTo("placement"), { primary: true, disabled: !usable() });
+      const adoptSlot = h("div", { class: "wizard-adopt" });
+      const showAdopt = () => {
+        const repo = entry();
+        if (!repo || repo.state === "layer") { clear(adoptSlot); return; }
+        if (repo.state !== "setup") {
+          replace(adoptSlot, h("div", { class: "dim", text: "No agent setup was found in it: a new layer is created." }));
+          return;
+        }
+        const box = h("input", { type: "checkbox", "data-role": "adopt", checked: state.adopt });
+        box.addEventListener("change", () => { state.adopt = box.checked; });
+        replace(adoptSlot, h("label", {}, box, " adopt the existing agent setup (rules, prompts, workflows)"),
+          h("div", { class: "dim", text: "Unchecked, a new layer is created and the existing setup is left as it is." }));
+      };
+      const repos = store.workspace.repos || [];
+      const rows = repos.map((repo) => {
+        const has = repo.state === "layer";
+        const radio = h("input", { type: "radio", name: "wizard-repo", value: repo.key, checked: repo.key === state.repo && !has, disabled: has });
+        radio.addEventListener("change", () => {
+          if (!radio.checked) return;
+          state.repo = repo.key;
+          history.replaceState(null, "", `#/generate/${enc(repo.key)}`);   // the address keeps the repository
+          replace(crumbs, h("a", { href: "#/repos", text: "repos" }), " / ", h("span", { text: "generate a layer" }), " / ", h("span", { text: repo.key }));
+          showAdopt();
+          next.disabled = !usable();
+        });
+        return h("label", { class: `wizard-repo${has ? " off" : ""}`, dataset: { repo: repo.key } }, radio,
+          h("span", { class: "repo-name", text: repo.name }), stateBadge(repo.state), h("span", { class: "mono dim", text: repo.dir }),
+          has ? h("span", { class: "faint", text: "already has a layer" }) : null);
+      });
+      panel("repo", "Which repository?", "A layer is generated for one repository of the workspace.",
+        rows.length ? h("div", { class: "wizard-repos", role: "radiogroup", "aria-label": "repositories" }, rows)
+          : h("div", { class: "empty", text: "no git repositories in the workspace" }),
+        adoptSlot);
+      showAdopt();
+      setNav(next);
+    }
+
+    // ---- 2: beside or inside, with the resulting path and its checks
+    async function renderPlacement() {
+      const next = button("next", "Next", () => goTo("options"), { primary: true, disabled: true });
+      setNav(button("back", "Back", () => goTo("repo")), next);
+      panel("placement", "Where does the layer go?", "", h("div", { class: "empty", text: "checking the paths…" }));
+      loading += 1;
+      const mine = loading;
+      let data = null, failure = "";
+      try { data = await api(`/api/repo?repo=${enc(state.repo)}`); } catch (error) { failure = `No repository ${state.repo} in the workspace.`; }
+      if (mine !== loading || state.step !== "placement") return;
+      state.detail = data;
+      const view = actionView();
+      if (!view || !view.placements || !view.available) {
+        panel("placement", "Where does the layer go?", "",
+          h("div", { class: "why", text: failure || (view && view.why) || `${actionName()} is not available for ${state.repo}` }));
+        return;
+      }
+      const commands = h("div", { class: "commands" });
+      const show = (name) => {
+        const placed = view.placements.find((p) => p.name === name);
+        replace(commands, (placed ? placed.commands : []).map((line) => h("code", { class: "cmd", text: line })));
+      };
+      const picker = placementPicker(view.placements, state.placement || "beside", (name) => {
+        state.placement = name;
+        show(name);
+        next.disabled = false;
+      });
+      state.placement = picker.value();
+      show(state.placement);
+      next.disabled = !state.placement;
+      panel("placement", "Where does the layer go?", `${actionName()} · ${state.repo}: the path of each placement, checked now; the server checks it again at the start.`,
+        picker.el, h("h4", { text: "It would run" }), commands);
+    }
+
+    // ---- 3: the detected choices (and, for adopt, the dry run's diff)
+    function renderOptions() {
+      const key = previewKey();
+      const next = button("next", "Next", () => goTo("review"), { primary: true, disabled: true });
+      setNav(button("back", "Back", () => goTo("placement")), next);
+      const again = () => button("detect-again", "detect again", () => { state.error = null; requestPreview(); });
+      if (state.error && state.error.key === key) {
+        panel("options", "Options", "", h("div", { class: "why error", "data-role": "preview-status" }, state.error.text,
+          state.error.job ? [" ", h("a", { href: `#/job/${enc(state.error.job)}`, text: `job ${state.error.job}` })] : null), again());
+        return;
+      }
+      if (state.preview && state.previewKey === key && state.form) {
+        panel("options", "Options", "What al author will declare, each with the fact that supports it. Change any; unchanged ones keep the detected value.",
+          state.form.el,
+          state.diff ? [h("h4", { text: "What the dry run would write" }), h("div", { class: "preview-diff" }, renderDiff(state.diff))] : null);
+        next.disabled = false;
+        return;
+      }
+      panel("options", "Options", "", h("div", { class: "dim", "data-role": "preview-status",
+        text: actionName() === "adopt" ? "running the dry run and detecting choices…" : "detecting choices…" }));
+      if (state.detecting !== key) requestPreview();
+    }
+
+    async function requestPreview() {
+      const key = previewKey();
+      const request = { repo: state.repo, action: actionName(), placement: state.placement };
+      serial += 1;
+      const mine = serial;
+      Object.assign(state, { preview: null, previewKey: key, form: null, diff: "", detecting: key, error: null });
+      if (state.step === "options") renderOptions();
+      const fail = (text, job) => { state.error = { key, text, job: job || "" }; };
+      try {
+        if (pending) { try { await pending; } catch (_error) { /* that preview's own answer reported it */ } }
+        if (mine !== serial) return;
+        const preview = await api.post("/api/action", request);
+        let job = null;
+        if (preview.job) {
+          pending = waitForJob(preview.job, (j) => j.status !== "running");
+          job = await pending;
+          pending = null;
+        }
+        if (mine !== serial) return;
+        if (job && job.status !== "passed") {
+          fail(`the preview ${job.status} (exit ${job.exit}); see`, job.id);
+        } else {
+          const names = job ? job.steps.map((step) => step.name) : [];
+          let diff = "", choices = {};
+          if (names.includes("adopt-dry-run")) diff = (await api(`/api/job/doc?id=${enc(job.id)}&name=preview.diff.txt`)).text;
+          if (names.includes("choices")) choices = JSON.parse((await api(`/api/job/doc?id=${enc(job.id)}&name=choices.json`)).text);
+          if (mine !== serial) return;
+          Object.assign(state, { preview, form: choicesForm(choices), diff });
+        }
+      } catch (error) {
+        if (mine !== serial) return;
+        fail(error.message);
+      }
+      state.detecting = "";
+      if (state.step === "options" && previewKey() === key) renderOptions();
+    }
+
+    // ---- 4: the summary, then Start (the confirmation of the preview)
+    function renderReview() {
+      const preview = state.preview;
+      if (!preview || state.previewKey !== previewKey() || !state.form) { goTo("options"); return; }
+      const repo = entry();
+      const view = actionView();
+      const status = h("div", { class: "dim", "data-role": "start-status" });
+      const againSlot = h("span", {});
+      const row = (name, label, ...value) => h("tr", { dataset: { row: name } }, h("th", { text: label }), h("td", {}, value));
+      const placed = preview.placement || { name: state.placement, path: "" };
+      const start = button("start", "Start", async () => {
+        start.disabled = true;
+        try {
+          const request = { repo: state.repo, action: actionName(), placement: state.placement, confirm: preview.nonce };
+          const changed = state.form.changed();
+          if (Object.keys(changed).length) request.choices = changed;
+          const answer = await api.post("/api/action", request);
+          go(`#/job/${enc(answer.job)}`);
+        } catch (error) {   // the confirmation is spent: only a new preview can start it
+          status.className = "why error";
+          status.textContent = error.message;
+          replace(againSlot, button("detect-again", "detect again", () => { state.preview = null; state.error = null; goTo("options"); }));
+        }
+      }, { primary: true });
+      panel("review", "Review", "Nothing has been written yet. Start runs the command lines below, in order; the first that fails stops the job.",
+        h("table", { class: "wizard-summary" }, h("tbody", {},
+          row("repository", "repository", repo ? repo.name : state.repo),
+          row("action", "action", h("strong", { text: actionName() }), view ? h("span", { class: "dim", text: ` — ${view.description}` }) : null),
+          row("placement", "placement", h("strong", { text: PLACEMENT_LABEL[placed.name] || placed.name }), " → ", h("span", { class: "mono", text: placed.path })),
+          state.form.rows().map((choice) => row(`choice-${choice.key}`, choice.key === "repo" ? "forge repository" : CHOICE_LABEL[choice.key] || choice.key,
+            h("span", { class: "mono", text: choice.value || "—" }),
+            choice.changed ? [" ", h("span", { class: "badge warn changed-mark", text: "changed" })] : null)))),
+        h("h4", { text: "It runs" }), h("div", { class: "commands" }, preview.commands.map((line) => h("code", { class: "cmd", text: line }))),
+        h("h4", { text: "It writes" }), h("ul", { class: "writes" }, (preview.writes.length ? preview.writes : ["nothing outside the jobs directory"]).map((path) => h("li", { class: "mono", text: path }))),
+        status);
+      setNav(button("back", "Back", () => goTo("options")), start, againSlot);
+    }
+
+    const off = store.on((kind) => {
+      if ((kind === "snapshot" || kind === "workspace") && state.step === "repo" && repoSignature() !== listed) render();
+    });
+    render();
+    return {
+      destroy() { off(); serial += 1; loading += 1; },
+      accepts: (r) => r.view === "generate",
+      route(r) {
+        const key = r.parts[1] || "";
+        if (key !== state.repo) { state.repo = key; state.step = "repo"; }
+        render();
+      },
+      back() {
+        const at = STEPS.findIndex(([name]) => name === state.step);
+        if (at > 0) goTo(STEPS[at - 1][0]); else go("#/repos");
+      },
     };
   }
 
@@ -3199,6 +3523,7 @@
           job.needs_person > 0 ? h("span", { class: "badge warn", "data-role": "needs-person", title: "items of the author's report left for a person (Left out and why)",
             text: `needs a person: ${job.needs_person}` }) : null),
         h("div", { class: "dim" }, h("span", { class: "mono", text: job.repo_dir }), job.layer ? [" · layer ", h("span", { class: "mono", text: job.layer })] : null,
+          job.placement ? [" · ", h("span", { "data-role": "placement", text: `placement: ${PLACEMENT_LABEL[job.placement] || job.placement}` })] : null,
           ` · started ${fmt.time(job.started || job.created)} · `,
           job.status === "running" && job.started ? h("span", { dataset: { since: job.started }, text: fmt.dur(duration) }) : fmt.dur(duration),
           job.output_bytes ? [" · ", h("a", { href: fileUrl("output.log"), download: true, "data-role": "download-output", text: "Download full output" })] : null),
@@ -3209,14 +3534,18 @@
         h("div", { class: "job-steprow", "data-role": "steps" }, job.steps.map((step) => stepChip(step, step.name === sel))));
       renderActivity(job, sel);
       const report = job.report || { decisions: [], left_out: [] };
+      // a layer inside the repository changes the repository on purpose: say what to do with it, not a warning
+      const insideOnly = job.placement === "inside" && job.repo_unchanged === false && job.repo_changes.length > 0
+        && job.repo_changes.every((line) => String(line).slice(3).startsWith("agentic/"));
       replace(reports, report.decisions.length ? reportCard("Decisions", "decisions", report.decisions) : null,
         report.left_out.length ? reportCard("Left out and why", "left-out", report.left_out) : null);
       replace(changed, h("div", { class: "card-head" }, h("h3", { text: "Changed files" })),
         job.status === "running" ? h("div", { class: "faint", text: "listed when the job ends" })
           : [job.changed.length ? h("ul", { class: "changed" }, job.changed.map((c) => h("li", {}, h("span", { class: `badge change-${c.change}`, text: c.change }), " ",
             h("span", { class: "mono", text: c.path })))) : h("div", { class: "faint", text: "no file of the layer changed" }),
-          h("div", { class: job.repo_unchanged === false ? "why" : "faint", text: job.repo_unchanged === false
-            ? `the repository's working tree changed: ${job.repo_changes.join(", ")}` : "the repository itself is unchanged" })]);
+          h("div", { class: job.repo_unchanged === false && !insideOnly ? "why" : "faint", "data-role": "repo-changes",
+            text: insideOnly ? `the layer was written inside the repository: ${job.repo_changes.length} path(s); commit agentic/ with the code`
+              : job.repo_unchanged === false ? `the repository's working tree changed: ${job.repo_changes.join(", ")}` : "the repository itself is unchanged" })]);
       replace(docs, h("div", { class: "card-head" }, h("h3", { text: "Documents" })),
         (job.docs || []).length ? h("table", { class: "docs" }, h("tbody", {}, job.docs.map((doc) => h("tr", { dataset: { doc: doc.name } },
           h("td", {}, h("span", { class: "doc-name", text: doc.name })), h("td", { class: "num", text: fmt.bytes(doc.bytes) }),

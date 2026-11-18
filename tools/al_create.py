@@ -3,7 +3,7 @@ Create and Adopt actions run (kit/dashboard/dashboard.py builds its steps from t
 tests/tools/test_create.py keeps the two equal; the dashboard adds `--raw` to scout and author, whose agent
 streams its runner condenses, while the command line shows their condensed view):
 
-  init    al init APP                                   the layer beside APP, the draft LLM.txt, scout.json
+  init    al init APP [--in-repo]                       the layer beside APP, the draft LLM.txt, scout.json
   scout   al scout APP --into LAYER [--agent A] [--raw] measured commands, forge facts, the scout agent
   adopt   al adopt LAYER --app APP                      the existing agent setup (a clear no-op when there is none)
   author  al author LAYER [agent flags] [--raw] [--choice K=V]
@@ -11,6 +11,10 @@ streams its runner condenses, while the command line shows their condensed view)
   gen     al gen LAYER
   check   al check LAYER
   result  al result LAYER --json                        the result card (on the command line: as text)
+
+With `--in-repo` the layer is put inside the repository instead of beside it: APP/agentic, as
+`al init APP --in-repo` creates it, committed with the code. Only the init step and the layer's path
+differ; every other step is the same.
 
 Each step is a `tools/al` subprocess; the first that fails stops the sequence with its exit code and
 keeps what the steps before it wrote. `adopt-all` refuses a repository with nothing to adopt (use
@@ -33,6 +37,9 @@ import al_author
 SEQUENCE_NAMES = ("init", "scout", "adopt", "author", "gen", "check", "result")
 TIMEOUTS = {"init": 300, "scout": 1800, "adopt": 600, "author": 3600, "gen": 600, "check": 600, "result": 120}
 CARD_LINES = 12
+# The directory of `al init APP --in-repo` (its --dir default). The dashboard's IN_REPO_DIR mirrors it; a
+# test keeps the two equal.
+IN_REPO_DIR = "agentic"
 
 
 class CreateError(Exception):
@@ -49,14 +56,21 @@ def choice_args(choices: dict[str, str] | None) -> list[str]:
     return [arg for key in sorted(choices or {}) for arg in ("--choice", f"{key}={(choices or {})[key]}")]
 
 
+def layer_path(app: Path, in_repo: bool = False) -> Path:
+    """Where the layer of APP goes: APP/agentic inside the repository, else the sibling APP.al."""
+    return app / IN_REPO_DIR if in_repo else app.with_name(app.name + ".al")
+
+
 def sequence(al: str, app: str, layer: str, agent_flags: list[str], choices: dict[str, str] | None = None,
-             scout_flags: list[str] | None = None, raw: bool = False) -> list[tuple[str, list[str], int]]:
+             scout_flags: list[str] | None = None, raw: bool = False,
+             in_repo: bool = False) -> list[tuple[str, list[str], int]]:
     """(name, argv, timeout) of every step, in order. `agent_flags` are al author's (--agent A [--mock F]);
     the scout step gets the same --agent, `scout_flags` (e.g. --scout-mock F) after it. With `raw` (the
-    dashboard's steps), scout ends with --raw and author has --raw after the agent flags, before the choices."""
+    dashboard's steps), scout ends with --raw and author has --raw after the agent flags, before the choices.
+    With `in_repo`, init gets --in-repo (and `layer` is APP/agentic); every other argv is unchanged."""
     agent = agent_of(agent_flags)
     argvs = {
-        "init": [al, "init", app],
+        "init": [al, "init", app, *(["--in-repo"] if in_repo else [])],
         "scout": [al, "scout", app, "--into", layer, *(["--agent", agent] if agent else []), *(scout_flags or []),
                   *(["--raw"] if raw else [])],
         "adopt": [al, "adopt", layer, "--app", app],
@@ -82,12 +96,14 @@ def nothing_to_adopt(facts: dict[str, Any]) -> bool:
 
 
 def create(al: Any, app: Path, adopt_all: bool, agent: str = "claude-code", mock: Path | None = None,
-           scout_mock: Path | None = None, choices: dict[str, str] | None = None, say=print) -> int:
-    """Run the sequence through tools/al subprocesses; the exit code of the first step that fails, else 0."""
+           scout_mock: Path | None = None, choices: dict[str, str] | None = None, say=print,
+           in_repo: bool = False) -> int:
+    """Run the sequence through tools/al subprocesses; the exit code of the first step that fails, else 0.
+    With `in_repo` the layer is APP/agentic (`al init APP --in-repo`), else the sibling APP.al."""
     app = Path(app).resolve()
     if not (app / ".git").exists():
         raise CreateError(f"{app} is not a git checkout")
-    layer = app.with_name(app.name + ".al")
+    layer = layer_path(app, in_repo)
     if (layer / "agentic.rkt").exists():
         raise CreateError(f"{layer / 'agentic.rkt'} already exists; it is never overwritten (run al gen {layer})")
     if adopt_all and nothing_to_adopt(al.scout(app)):
@@ -97,7 +113,8 @@ def create(al: Any, app: Path, adopt_all: bool, agent: str = "claude-code", mock
     agent_flags = ["--agent", agent, *(["--mock", str(Path(mock).resolve())] if mock else [])]
     scout_flags = ["--scout-mock", str(Path(scout_mock).resolve())] if scout_mock else []
     tool = str(Path(al.ROOT) / "tools" / "al")
-    for name, argv, _timeout in sequence(tool, str(app), str(layer), agent_flags, choices, scout_flags):
+    for name, argv, _timeout in sequence(tool, str(app), str(layer), agent_flags, choices, scout_flags,
+                                         in_repo=in_repo):
         if name == "result":
             argv = [a for a in argv if a != "--json"]   # the command line shows the text card
         say(f"== {name}")

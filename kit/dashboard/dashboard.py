@@ -130,7 +130,9 @@ WORKSPACE_REPO_CAP = 500       # repositories listed
 WORKSPACE_GIT_TIMEOUT = 5      # seconds per git call of the scan
 JOB_ID = re.compile(r"^[0-9a-f]{8}$")
 JOB_HEARTBEAT = 5              # seconds between a job runner's heartbeats
-ACTION_KEYS = {"repo", "action", "confirm", "choices"}
+ACTION_KEYS = {"repo", "action", "confirm", "choices", "placement"}
+PLACEMENTS = ("beside", "inside")   # where create and adopt put the layer: <name>.al beside the repository, or in it
+IN_REPO_DIR = "agentic"             # the folder of an inside layer: IN_REPO_DIR of tools/al_create.py (a test keeps them equal)
 RETRY_KEYS = {"job", "from"}
 PREFLIGHT_TIMEOUT = 10      # seconds `al doctor --for …` may take before a job's first pending step
 TOOL_ROWS_TTL = 300         # seconds the Repos view's tools table (with versions) is kept
@@ -3947,7 +3949,8 @@ class Model:
         self.author_flags = list(author_flags or [])
         self.finder = load_tool_finder(al)
         self._tool_rows: tuple[float, list[dict[str, Any]]] | None = None
-        self.previews: dict[str, tuple[str, str, tuple, float]] = {}   # nonce → (repo, action, signature, expires)
+        # nonce → (repo, action, signature, expires, placement)
+        self.previews: dict[str, tuple[str, str, tuple, float, str]] = {}
         self.action_lock = threading.Lock()
         self.workspace_version = workspace.version if workspace else 0
         self.job_sigs: dict[str, tuple | None] = {}
@@ -4081,6 +4084,7 @@ class Model:
         cfg = ActionConfig(self.al or Path("al"), self.author_flags)
         docs = Path("/<job>/docs")
         out = []
+        placements: list[dict[str, Any]] | None = None    # computed once, shared by create and adopt
         for name, action in ACTIONS.items():
             why, needs = "", ""
             if self.al is None:
@@ -4092,11 +4096,24 @@ class Model:
             elif entry.state not in action.states:
                 why = f"not for this state ({entry.state}); it is for: {', '.join(action.states)}"
             show = lambda steps: [display_argv(s.argv, self.ws_display, docs) for s in steps]  # noqa: E731
-            out.append({"name": name, "description": action.description, "writes": action.writes,
-                        "available": not why, "why": why, "needs": needs, "states": list(action.states),
-                        "commands": show(action.steps(entry, cfg, docs)),
-                        "preview": show(action.preview(entry, cfg, docs)) if action.preview else [],
-                        "paths": [p if isinstance(p, str) else self.ws_display(p) for p in action.writes_paths(entry)]})
+            paths = lambda c: [p if isinstance(p, str) else self.ws_display(p)  # noqa: E731
+                               for p in action.writes_paths(entry, c)]
+            view = {"name": name, "description": action.description, "writes": action.writes,
+                    "available": not why, "why": why, "needs": needs, "states": list(action.states),
+                    "commands": show(action.steps(entry, cfg, docs)),
+                    "preview": show(action.preview(entry, cfg, docs)) if action.preview else [],
+                    "paths": paths(cfg)}
+            if action.definition and entry.state in action.states:
+                if placements is None:
+                    app = Path(os.path.realpath(entry.path))
+                    placements = [placement_view(app, placement, self.ws_display) for placement in PLACEMENTS]
+                view["placements"] = []
+                for placed in placements:
+                    c = ActionConfig(cfg.al, cfg.author_flags, placement=placed["name"])
+                    view["placements"].append({**placed, "commands": show(action.steps(entry, c, docs)),
+                                               "preview": show(action.preview(entry, c, docs)) if action.preview else [],
+                                               "paths": paths(c)})
+            out.append(view)
         return out
 
     def job_list(self, repo: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
@@ -4144,9 +4161,12 @@ class Model:
         return self._tool_rows[1]
 
     def start_action(self, entry: RepoEntry, name: str, nonce: str | None,
-                     choices: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
+                     choices: dict[str, str] | None = None, placement: str | None = None) -> tuple[int, dict[str, Any]]:
         """Every guard, then a preview (a writing action without a confirmation) or a job. → (status, body).
-        `choices` (create and adopt only, checked against CHOICE_RULES) go to the author step."""
+        `choices` (create and adopt only, checked against CHOICE_RULES) go to the author step; `placement`
+        (create and adopt only, one of PLACEMENTS, beside when absent) is where the new layer goes: it is
+        checked by `placement_view`, as the page shows it, and a confirmation is bound to its preview's."""
+        placement = placement or "beside"
         action = ACTIONS[name]
         if self.al is None:
             return 409, {"error": f"this action needs the al tool; looked for: {', '.join(self.al_looked)}"}
@@ -4158,14 +4178,17 @@ class Model:
         app = os.path.realpath(entry.path)
         if not self.workspace.inside(app) or not os.path.lexists(os.path.join(app, ".git")):
             return 409, {"error": f"{entry.name} is no longer a git repository inside the workspace"}
-        layer = layer_of(entry)
+        layer = layer_of(entry, placement)
         if not self.workspace.inside(str(layer)) and not str(layer).startswith(app + os.sep):
             return 409, {"error": f"{entry.name}'s layer is outside the workspace"}
         if action.definition:
             problem = definition_problem(Path(app), layer, self.ws_display)
             if problem:
                 return 409, {"error": problem}
-        cfg = ActionConfig(self.al, self.author_flags, dict(choices or {}))
+            view = placement_view(Path(app), placement, self.ws_display)
+            if not view["ok"]:
+                return 409, {"error": view["problem"]}
+        cfg = ActionConfig(self.al, self.author_flags, dict(choices or {}), placement)
         with self.action_lock:
             busy = self.jobs.running_for(app)
             if busy is not None or lock_held(lock_file(self.jobs.root, app)):
@@ -4177,18 +4200,23 @@ class Model:
                 sig = confirm_signature(Path(app), layer)
                 if not nonce:
                     nonce = secrets.token_urlsafe(18)
-                    self.previews[nonce] = (entry.key, name, sig, now + PREVIEW_TTL)
+                    self.previews[nonce] = (entry.key, name, sig, now + PREVIEW_TTL, placement)
                     docs = Path("/<job>/docs")
                     body: dict[str, Any] = {
                         "preview": True, "repo": entry.key, "action": name, "nonce": nonce,
                         "commands": [display_argv(s.argv, self.ws_display, docs) for s in action.steps(entry, cfg, docs)],
-                        "writes": [p if isinstance(p, str) else self.ws_display(p) for p in action.writes_paths(entry)]}
+                        "writes": [p if isinstance(p, str) else self.ws_display(p)
+                                   for p in action.writes_paths(entry, cfg)]}
+                    if action.definition:
+                        body["placement"] = {"name": placement, "path": self.ws_display(layer)}
                     if action.preview:
                         body["job"] = self._spawn(entry, name, action.preview, cfg, layer, preview=True)
                     return 200, body
                 stored = self.previews.pop(nonce, None)
                 if stored is None or stored[0] != entry.key or stored[1] != name or stored[3] < now:
                     return 409, {"error": "this confirmation is unknown, used or expired: preview the action again"}
+                if stored[4] != placement:
+                    return 409, {"error": "the placement changed since the preview: preview the action again"}
                 if stored[2] != sig:
                     return 409, {"error": f"{entry.name} changed since the preview: preview the action again"}
             job_id = self._spawn(entry, name, action.steps, cfg, layer)
@@ -4214,7 +4242,8 @@ class Model:
                "path": self.job_path(),
                "preflight": [str(cfg.al), "doctor", str(layer),
                              "--for", ",".join(dict.fromkeys(s.argv[1] for s in steps if len(s.argv) > 1)), *agent_flag],
-               "retries": [], "choices": {} if preview else dict(cfg.choices)}
+               "retries": [], "choices": {} if preview else dict(cfg.choices),
+               "placement": cfg.placement if ACTIONS[name].definition else ""}
         uv = self.finder.find("uv") if self.finder is not None else None
         if uv is not None and not uv.path and job["steps"]:
             # the al tool starts through uv (its shebang): without it no step can run; say so at once
@@ -5337,6 +5366,7 @@ class ActionConfig:
     al: Path
     author_flags: list[str]
     choices: dict[str, str] = field(default_factory=dict)    # --choice KEY=VALUE of the author step
+    placement: str = "beside"                                # one of PLACEMENTS: where create and adopt put the layer
 
 
 # What the start form may send as `choices` (KEY → allowed values, a comma-separated list of them, or a
@@ -5379,12 +5409,53 @@ def _choice_args(choices: dict[str, str]) -> list[str]:
     return [arg for key in sorted(choices) for arg in ("--choice", f"{key}={choices[key]}")]
 
 
-def layer_of(entry: RepoEntry) -> Path:
-    """The layer an action works on: the repository's layer, else the sibling `<name>.al` al creates."""
+def placement_layer(app: Path, placement: str) -> Path:
+    """Where a new layer of the repository `app` goes: `app/agentic` inside it, else the sibling `<name>.al`."""
+    return app / IN_REPO_DIR if placement == "inside" else app.parent / f"{app.name}.al"
+
+
+def layer_of(entry: RepoEntry, placement: str = "beside") -> Path:
+    """The layer an action works on: the repository's layer, else the one al creates for `placement`
+    (the sibling `<name>.al`, or `<repository>/agentic`)."""
     if entry.layer_dir is not None:
         return Path(os.path.realpath(entry.layer_dir))
-    app = Path(os.path.realpath(entry.path))
-    return app.parent / f"{app.name}.al"
+    return placement_layer(Path(os.path.realpath(entry.path)), placement)
+
+
+PLACEMENT_TEXT = {
+    "beside": ("beside the repository", "A folder next to the repository. Nothing is written into the repository."),
+    "inside": ("inside the repository", "The folder agentic in the repository, committed with the code, so every clone "
+                                        "has the layer. Run state stays in git-ignored folders of it."),
+}
+
+
+def placement_view(app: Path, placement: str, shown: Callable[[Path], str]) -> dict[str, Any]:
+    """One placement of a new layer for the repository `app`, as the page shows it and as the server
+    enforces it: the path, whether it exists, is writable, is already a layer, and the first reason it
+    cannot be used (`problem`, "" when `ok`)."""
+    layer = placement_layer(app, placement)
+    path = shown(layer)
+    exists = os.path.lexists(layer)
+    folder = layer if exists else layer.parent
+    writable = folder.is_dir() and os.access(folder, os.W_OK | os.X_OK)
+    is_layer = (layer / "agentic.rkt").exists() or (layer / "agentic.rkt").is_symlink() or \
+        os.path.lexists(layer / LAYER_FILE)
+    problem = definition_problem(app, layer, shown) or ""
+    if not problem and is_layer:
+        problem = f"{path} is already a layer; it is never overwritten"
+    if not problem and exists and (layer.is_symlink() or not layer.is_dir()):
+        problem = f"{path} exists and is not a directory"
+    if not problem and not writable:
+        problem = f"{shown(folder)} is not writable"
+    if not problem and placement == "inside":
+        tracked = safe_git(app, "ls-files", "-z", "--", IN_REPO_DIR)
+        if tracked is None:
+            problem = f"cannot list the files of {app.name} (git failed or timed out)"
+        elif tracked.strip("\0"):
+            problem = f"{path} already has tracked files of the repository; choose beside"
+    label, explain = PLACEMENT_TEXT[placement]
+    return {"name": placement, "label": label, "explain": explain, "path": path, "exists": exists,
+            "writable": writable, "layer": is_layer, "ok": not problem, "problem": problem}
 
 
 def _steps_scout(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
@@ -5394,8 +5465,8 @@ def _steps_scout(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
 def _steps_create(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
     """Create and adopt run the same sequence as `al create` / `al adopt-all` (tools/al_create.py; a test
     keeps the two equal): init, scout, adopt (a no-op without an agent setup), author, gen, check, result."""
-    al, app, layer = str(c.al), os.path.realpath(e.path), str(layer_of(e))
-    return [Step("init", [al, "init", app], None, 300),
+    al, app, layer = str(c.al), os.path.realpath(e.path), str(layer_of(e, c.placement))
+    return [Step("init", [al, "init", app, *(["--in-repo"] if c.placement == "inside" else [])], None, 300),
             Step("scout", [al, "scout", app, "--into", layer, *_agent_flag(c), "--raw"], None, 1800, "agent"),
             Step("adopt", [al, "adopt", layer, "--app", app], None, 600),
             Step("author", [al, "author", layer, *c.author_flags, "--raw", *_choice_args(c.choices)], None, 3600, "agent"),
@@ -5409,7 +5480,7 @@ def _steps_choices(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
 
 
 def _steps_adopt_preview(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
-    return [Step("adopt-dry-run", [str(c.al), "adopt", str(layer_of(e)), "--app", os.path.realpath(e.path), "--dry-run",
+    return [Step("adopt-dry-run", [str(c.al), "adopt", str(layer_of(e, c.placement)), "--app", os.path.realpath(e.path), "--dry-run",
                                    "--diff"], "preview.diff.txt", 300), *_steps_choices(e, c, docs)]
 
 
@@ -5432,7 +5503,7 @@ class Action:
     writes: bool
     description: str
     steps: Callable[[RepoEntry, ActionConfig, Path], list[Step]]
-    writes_paths: Callable[[RepoEntry], list[Path | str]] = lambda e: []
+    writes_paths: Callable[[RepoEntry, ActionConfig], list[Path | str]] = lambda e, c: []
     preview: Callable[[RepoEntry, ActionConfig, Path], list[Step]] | None = None
     definition: bool = False     # writes agentic.rkt: refused when any definition exists
 
@@ -5440,17 +5511,19 @@ class Action:
 # The allow-list: a fixed name → the fixed argv lists it runs, built from the scanned repository only.
 ACTIONS: dict[str, Action] = {
     "scout": Action(("layer", "setup", "none"), False, "draft LLM.txt facts of the repository (read-only)", _steps_scout),
-    "create": Action(("none", "setup"), True, "create a layer beside the repository and have its definition written",
-                     _steps_create, lambda e: [layer_of(e)], preview=_steps_choices, definition=True),
+    "create": Action(("none", "setup"), True, "create a layer for the repository (beside or inside it) and have its "
+                     "definition written",
+                     _steps_create, lambda e, c: [layer_of(e, c.placement)], preview=_steps_choices, definition=True),
     "adopt": Action(("setup",), True, "create a layer that adopts the repository's existing agent setup",
-                    _steps_adopt, lambda e: [layer_of(e), layer_of(e) / "adopted", layer_of(e) / "templates" / "custom"],
+                    _steps_adopt, lambda e, c: [layer_of(e, c.placement), layer_of(e, c.placement) / "adopted",
+                                                layer_of(e, c.placement) / "templates" / "custom"],
                     preview=_steps_adopt_preview, definition=True),
     "gen": Action(("layer",), True, "compile the definition and generate the layer's files",
-                  _one("gen"), lambda e: [layer_of(e)]),
+                  _one("gen"), lambda e, c: [layer_of(e)]),
     "check": Action(("layer",), False, "verify the generated layer (read-only)", _one("check")),
     "verify": Action(("layer",), True, "run the layer's codebase cmds on a throwaway worktree",
                      _one("verify", "--json", doc="verify.json", timeout=3600),
-                     lambda e: [layer_of(e) / "agents" / "verify", "a throwaway git worktree (removed afterwards)"]),
+                     lambda e, c: [layer_of(e) / "agents" / "verify", "a throwaway git worktree (removed afterwards)"]),
     "explain": Action(("layer",), False, "explain the layer definition in plain language (read-only)", _steps_explain),
 }
 
@@ -5659,6 +5732,7 @@ def job_summary(job: dict[str, Any]) -> dict[str, Any]:
             "reason": job.get("reason") or "", "created": parse_time(job.get("created")),
             "started": parse_time(job.get("started")), "ended": parse_time(job.get("ended")),
             "layer": job.get("layer_display") or "", "repo_dir": job.get("repo_dir") or "",
+            "placement": job.get("placement") or "",
             "steps": [{"name": s.get("name"), "display": s.get("display"), "status": s.get("status"), "exit": s.get("exit"),
                        "doc": s.get("doc"), "started": parse_time(s.get("started")), "ended": parse_time(s.get("ended")),
                        "reason": s.get("reason") or ""}
@@ -6313,7 +6387,8 @@ class Handler(BaseHTTPRequestHandler):
         return body
 
     def _action(self) -> None:
-        """POST /api/action {"repo": KEY, "action": NAME[, "confirm": NONCE]}: an allow-listed al action."""
+        """POST /api/action {"repo": KEY, "action": NAME[, "confirm": NONCE][, "placement": P]}: an
+        allow-listed al action."""
         body = self._write_guard(MAX_WRITE_BODY)
         if body is None:
             return None
@@ -6325,7 +6400,7 @@ class Handler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, ValueError):
             return self._error(400, "expected a JSON object")
         usage = ('expected {"repo": KEY, "action": NAME}, and "confirm": NONCE to confirm a preview, and for create '
-                 'or adopt "choices": {KEY: VALUE}; nothing else')
+                 'or adopt "choices": {KEY: VALUE} and "placement": "beside" | "inside"; nothing else')
         if not isinstance(request, dict) or not set(request) <= ACTION_KEYS or not {"repo", "action"} <= set(request) \
                 or not all(isinstance(v, str) for k, v in request.items() if k != "choices"):
             return self._error(400, usage)
@@ -6341,6 +6416,12 @@ class Handler(BaseHTTPRequestHandler):
                 problem = choice_problem(key, value)
                 if problem:
                     return self._error(400, problem)
+        placement = request.get("placement")
+        if placement is not None:
+            if request["action"] not in CHOICE_ACTIONS:
+                return self._error(400, f"placement is for {' and '.join(CHOICE_ACTIONS)} only")
+            if placement not in PLACEMENTS:
+                return self._error(400, f"placement: one of {', '.join(PLACEMENTS)}")
         if not request["repo"] or WS_KEY_BAD.search(request["repo"]) or WS_KEY_BAD.search(request.get("confirm", "")):
             return self._error(400, usage)
         if model.workspace is None:
@@ -6348,7 +6429,8 @@ class Handler(BaseHTTPRequestHandler):
         entry = model.workspace.entry(request["repo"])
         if entry is None:
             return self._error(404, "unknown repository")
-        status, answer = model.start_action(entry, request["action"], request.get("confirm") or None, choices)
+        status, answer = model.start_action(entry, request["action"], request.get("confirm") or None, choices,
+                                             placement)
         return self._json(answer, status)
 
     def _retry(self) -> None:

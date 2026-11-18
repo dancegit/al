@@ -2,12 +2,13 @@
 
 It hands meta/commands/author-layer.md to the agent CLI with the layer's LLM.txt, exactly as a person
 does by hand, then compiles the result. It never overwrites an existing agentic.rkt and writes nothing
-into the application checkout. `--agent mock --mock FILE` writes fixed files instead (tests, no LLM):
+into the application checkout outside the layer folder (a layer inside the repository is that folder). `--agent mock --mock FILE` writes fixed files instead (tests, no LLM):
 
     {"files": {"agentic.rkt": "#lang al … #:root \\"${root}\\" …"}, "output": "text the agent printed"}
 
 `${name}` (the application's directory name), `${root}` (the application relative to the layer),
-`${forge}` (the forge clause the preferences name), `${includes}` (`(include "adopted/layer.rkt")` when
+`${forge}` (the forge clause the preferences name), `${placement}` (`(layer in-repo #:dir "agentic")` for a
+layer inside the repository, else `(layer sibling)`), `${includes}` (`(include "adopted/layer.rkt")` when
 the layer has an adopted/ folder, else empty) and `${codebase_includes}` (`(include
 "adopted/codebase.rkt")`, for inside `(codebase …)`) are substituted; every path must stay inside the layer.
 
@@ -244,9 +245,10 @@ def forge_clause(decisions: dict[str, dict[str, Any]]) -> str:
 
 
 def preferences_from_facts(facts: dict[str, Any], app_rel: str, layer: Path,
-                           choices: dict[str, str] | None = None) -> Preferences:
+                           choices: dict[str, str] | None = None, in_repo_dir: str = "") -> Preferences:
     """PREFERENCES for author-layer.md from the repository's facts: each decision as a DSL clause with
-    the fact behind it, or the default it falls back to (named, so the agent reports it)."""
+    the fact behind it, or the default it falls back to (named, so the agent reports it). `in_repo_dir`
+    (the layer's directory in the repository, "" for a layer beside it) names the in-repo placement."""
     d = decide(facts, choices)
     forge = d["forge"]["value"]
     token_env = token_envs().get(forge, "") if forge != "none" else ""
@@ -285,7 +287,10 @@ def preferences_from_facts(facts: dict[str, Any], app_rel: str, layer: Path,
     if token_env:
         lines.append(f"The forge token is read at run time from the environment variable {token_env} (the "
                      f"#:token-env default); never write a token into any file.")
-    if app_rel:
+    if in_repo_dir:
+        lines.append(f"The layer is in the repository: (codebase #:root {_rkt(app_rel)}) and "
+                     f"{placement_clause(in_repo_dir)}.")
+    elif app_rel:
         lines.append(f"The codebase root, relative to the layer folder, is {app_rel}.")
     if (Path(layer) / "adopted").is_dir():
         lines.append(INCLUDE_SENTENCE)
@@ -432,6 +437,43 @@ def layer_facts(al: Any, layer: Path, app: Path | None) -> dict[str, Any]:
     return al.facts_for_layer(facts)
 
 
+def app_of(al: Any, layer: Path, explicit: bool = False) -> tuple[Path | None, str]:
+    """(the application of LAYER, the layer's directory in it): `<name>.al` with a git checkout `<name>`
+    beside it → (that checkout, ""); a layer made by `al init APP --in-repo` (it has the `.gitignore` that
+    command writes) inside a git repository, when no --preferences name the codebase (EXPLICIT) → (the
+    repository, its relative directory); else (None, "")."""
+    if layer.name.endswith(".al"):
+        app = layer.with_name(layer.name.removesuffix(".al"))
+        return (app, "") if (app / ".git").exists() else (None, "")
+    if explicit or not (layer / ".gitignore").is_file():
+        return None, ""
+    top = al.git(layer, "rev-parse", "--show-toplevel")
+    if top:
+        root = Path(top).resolve()
+        if root in layer.parents:   # a strict ancestor: the layer is a directory of the repository
+            return root, layer.relative_to(root).as_posix()
+    return None, ""
+
+
+def placement_clause(in_repo_dir: str) -> str:
+    return f"(layer in-repo #:dir {_rkt(in_repo_dir)})" if in_repo_dir else "(layer sibling)"
+
+
+def placement_problem(ir: dict, in_repo_dir: str, layer: Path, app: Path | None) -> str:
+    """Why the compiled definition does not fit a layer inside the repository, or "". The definition is only
+    held to the in-repo clause when its codebase root, resolved from LAYER, is the repository the layer is in
+    (APP): a central layer that merely lies below some other git repository is left alone."""
+    declared = ir.get("layer") if isinstance(ir, dict) else None
+    declared = declared if isinstance(declared, dict) else {}
+    if not in_repo_dir or (declared.get("kind") == "in-repo" and declared.get("dir") == in_repo_dir):
+        return ""
+    codebase = ir.get("codebase") if isinstance(ir, dict) else None
+    root = codebase.get("root") if isinstance(codebase, dict) else None
+    if app is None or not isinstance(root, str) or (layer / root).resolve() != app.resolve():
+        return ""
+    return f"agentic.rkt must declare {placement_clause(in_repo_dir)}: the layer is inside the repository"
+
+
 def write_author_files(layer: Path, prefs: Preferences, prompt: str) -> None:
     folder = layer / AUTHOR_DIR
     folder.mkdir(parents=True, exist_ok=True)
@@ -447,9 +489,7 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
         raise AuthorError(f"{definition} already exists; it is never overwritten")
     if not (layer / "LLM.txt").is_file():
         raise AuthorError(f"{layer} has no LLM.txt: create the layer with `al init APP` first")
-    app = layer.with_name(layer.name.removesuffix(".al")) if layer.name.endswith(".al") else None
-    if app is not None and not (app / ".git").exists():
-        app = None
+    app, in_repo_dir = app_of(al, layer, explicit=bool(preferences))
     if app is None and not preferences:
         raise AuthorError(f"cannot tell where the application is (no git checkout {layer.name.removesuffix('.al')} "
                           "beside the layer): say it with --preferences, e.g. \"The codebase root, relative to the "
@@ -469,7 +509,7 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
         raise
     if definition.exists():   # accept_existing: take it when it compiles, ask no agent
         try:
-            al.compile_layer(layer)
+            ir = al.compile_layer(layer)
         except al.CompilerUnavailable as exc:
             raise al.CompilerUnavailable(f"{exc}\n{never_compiled(layer)}") from exc
         except tools.ToolMissing as exc:
@@ -477,13 +517,16 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
             raise
         except Exception as exc:  # noqa: BLE001 — AlError of tools/al: the compiler's own text
             raise AuthorError(f"{exc}\n{REPAIR_HINT}") from exc
+        problem = placement_problem(ir, in_repo_dir, layer, app)
+        if problem:
+            raise AuthorError(f"{problem}\n{REPAIR_HINT}")
         say(f"agentic.rkt already exists and compiles; accepted (no agent was asked); next: al gen {layer}")
         return 0
     if agent not in ("mock", "claude-code"):
         raise AuthorError(f"unknown agent {agent}")
     if agent == "mock" and mock is None:
         raise AuthorError("--agent mock needs --mock FILE")
-    prefs = preferences_from_facts(layer_facts(al, layer, app), app_rel, layer, choices)
+    prefs = preferences_from_facts(layer_facts(al, layer, app), app_rel, layer, choices, in_repo_dir)
     prompt = author_prompt(layer, preferences or prefs.text)
     write_author_files(layer, prefs, prompt)
     for key, d in prefs.decisions.items():
@@ -497,6 +540,7 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
         name = app.name if app is not None else layer.name.removesuffix(".al")
         adopted = (layer / "adopted").is_dir()
         output = run_mock(layer, mock, {"name": name, "root": app_rel, "forge": forge_clause(prefs.decisions),
+                                        "placement": placement_clause(in_repo_dir),
                                         "includes": INCLUDE_LAYER if adopted else "",
                                         "codebase_includes": INCLUDE_CODEBASE if adopted else ""})
         if output:
@@ -506,7 +550,7 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
     if not definition.is_file():
         raise AuthorError(f"the agent did not write {definition}")
     try:
-        al.compile_layer(layer)
+        ir = al.compile_layer(layer)
     except al.CompilerUnavailable as exc:   # the file was never checked: not its fault
         raise al.CompilerUnavailable(f"{exc}\n{never_compiled(layer)}") from exc
     except al.tools_module().ToolMissing as exc:
@@ -514,5 +558,8 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
         raise
     except Exception as exc:  # noqa: BLE001 — AlError of tools/al: the compiler's own text
         raise AuthorError(f"{exc}\n{REPAIR_HINT}") from exc
+    problem = placement_problem(ir, in_repo_dir, layer, app)
+    if problem:
+        raise AuthorError(f"{problem}\n{REPAIR_HINT}")
     say(f"agentic.rkt compiles; next: al gen {layer}")
     return 0
