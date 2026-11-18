@@ -130,6 +130,24 @@ def load_model(name: str, device: str):
     return WhisperModel(name, device="cpu", compute_type="int8")
 
 
+def load_model_dir(path: str | Path, device: str = "auto", threads: int = 4):
+    """A model from a local, already verified directory (the voice service's cache): never downloads.
+    `device` auto|cpu|cuda as in load_model; on the CPU int8 with `threads` threads."""
+    from faster_whisper import WhisperModel
+
+    where = str(path)
+    use_cuda = device == "cuda" or (device == "auto" and cuda_usable())
+    if use_cuda:
+        _preload_cuda_libs()
+        try:
+            return WhisperModel(where, device="cuda", compute_type="float16", local_files_only=True)
+        except Exception as exc:  # noqa: BLE001 - fall back on any CUDA failure
+            if device == "cuda":
+                raise
+            log(f"cuda unavailable ({exc}); falling back to cpu/int8")
+    return WhisperModel(where, device="cpu", compute_type="int8", cpu_threads=threads, local_files_only=True)
+
+
 def transcribe(path: Path, model_name: str, device: str) -> str:
     model = load_model(model_name, device)
     segments, _info = model.transcribe(str(path), language="en", beam_size=5, vad_filter=False)

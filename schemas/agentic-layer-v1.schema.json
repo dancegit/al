@@ -3739,11 +3739,39 @@
           "additionalProperties": false,
           "description": "Kokoro TTS (ONNX, local, English) + faster-whisper speech recognition, both as uv scripts.",
           "properties": {
+            "dashboardHelper": {
+              "description": "Show the voice helper panel on the dashboard: talk about this layer's runs; it proposes work, and a person starts it with a click on Approve.",
+              "type": "boolean"
+            },
+            "helperAgent": {
+              "description": "Agent id the helper thinks with; empty = the first declared agent. It must be claude-code or mock, which run with no tools.",
+              "type": "string"
+            },
+            "helperModelSet": {
+              "description": "Model tier of the helper's agent.",
+              "type": "string"
+            },
             "id": {
               "type": "string"
             },
+            "interrupt": {
+              "description": "In always-listen mode, speaking over the helper stops its playback.",
+              "type": "boolean"
+            },
             "kind": {
               "const": "kokoro"
+            },
+            "listenMode": {
+              "description": "The panel's listening mode until a person switches it (remembered per browser): `hold` to talk, or `always` listen with voice-activity detection.",
+              "enum": [
+                "hold",
+                "always"
+              ],
+              "type": "string"
+            },
+            "maxUtteranceSeconds": {
+              "description": "Longest utterance that is recognised, 5–120 seconds.",
+              "type": "integer"
             },
             "recordSeconds": {
               "description": "Push-to-talk recording length when no silence detection is available.",
@@ -3783,8 +3811,14 @@
             }
           },
           "required": [
+            "dashboardHelper",
+            "helperAgent",
+            "helperModelSet",
             "id",
+            "interrupt",
             "kind",
+            "listenMode",
+            "maxUtteranceSeconds",
             "recordSeconds",
             "speakSummaries",
             "status",

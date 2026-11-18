@@ -1032,6 +1032,54 @@ that failed onwards run again in the same job; the steps that passed, their time
 (the output gets a `--- retry from STEP ---` line). A retried `author` step runs with `--accept-existing`,
 so an `agentic.rkt` the first attempt wrote is taken when it compiles instead of asking the agent again.
 
+## Talk to the dashboard
+
+A layer that declares `(voice kokoro)` gets a **voice helper** panel on its layer page (`#/layer/NAME`) and
+on the panel of a repository whose layer is watched (`#/repo/NAME`). You speak English, or type; the helper
+answers aloud and in text. Ask it what is running, why a run failed, what can be started; it asks back when
+something is unclear, and when it knows what you want it **proposes** the run as a card: workflow or
+command, request text, class, model tier, repository and what will happen.
+
+Set it up once per machine:
+
+```bash
+al voice ~/code/myapp.al setup      # downloads the speech models, checks every sha256
+al voice ~/code/myapp.al doctor     # files, device, load times and measured speed
+```
+
+`setup` downloads only the files recorded in `adws/voice/models.json`: the faster-whisper model of
+`#:stt-model` (`base.en`, about 148 MB) into `~/.cache/al/voice/whisper/` and Kokoro's int8 model and voices
+(about 120 MB) into `~/.cache/al/kokoro/` (`$AL_VOICE_CACHE` and `$AL_KOKORO_CACHE` move them). A file whose
+checksum differs is deleted and `setup` fails with both hashes. A second `setup` downloads nothing. After
+that the speech service runs offline: it refuses every connection that is not to this machine, and never
+downloads. Until `setup` has run, the panel says "voice is not set up" and shows the command.
+
+The panel has two modes, remembered per browser (the layer's `#:listen-mode` is the default):
+
+- **Hold to talk**: hold the button, or Space while the panel has focus; release to send.
+- **Always listen**: the microphone stays open (the panel says so, with **Close microphone**, key `M`); a
+  pause ends what you said. Speaking while the helper talks stops it (`#:interrupt #f` turns that off);
+  Escape stops it too.
+
+What the helper can do: read the runs (status, failing step and its reason, cost, documents), what can be
+started and the queue, and propose a start, a retry, a resume, an answer to a waiting run, a stop, or a
+scout, check or explain job on a repository. What it cannot do: read files, run commands, or start
+anything itself. It thinks with the layer's own agent (`#:helper-agent`, else the first agent; claude-code
+runs with every tool turned off, the mock agent answers from `mock/helper.json`) at the tier
+`#:helper-model-set`; each call's cost is written to `agents/voice/helper-calls.jsonl`.
+
+**Nothing starts from speech.** A proposal starts only when you answer *yes* to the sentence the helper
+reads back and then click **Approve** on its card, within two minutes and in the same browser. Saying
+"approve" or "start it" does not start it; a change after your yes makes a new card. `--read-only`,
+`--no-start` and `--no-actions` refuse Approve for the cards they cover (the conversation keeps working,
+and the card says why); in a container the helper is off.
+
+Privacy: audio stays in memory and is never sent off the machine. Only when you tick **Keep recordings
+for this conversation** are your utterances written, as WAV files under the layer's
+`agents/voice/<conversation>/`. The transcript is kept under the dashboard's state folder
+(`~/.local/state/al/dashboard-voice`, or `--voice-dir`), never in a repository. `--no-voice` turns the panel
+off.
+
 ## Step 9 — The first real run
 
 Pick something small and well defined: a missing test, a documentation fix. Write the request as you
@@ -1246,7 +1294,9 @@ CI workflow file under `forge/` for you to copy into your repository. Runs comme
 they start and finish.
 
 **Voice.** Declare `(voice kokoro)`, `(prompt-input voice)` and `(trigger voice)`, then run
-`adws/triggers/trigger_voice.py`. Speech is recognised and spoken locally.
+`adws/triggers/trigger_voice.py`. Speech is recognised and spoken locally. To talk with the dashboard
+about runs instead, and approve what it proposes with a click, see
+[Talk to the dashboard](#talk-to-the-dashboard).
 
 ## Step 11 — Add proof
 

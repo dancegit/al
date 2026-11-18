@@ -63,6 +63,14 @@ def _kill_group(process: subprocess.Popen[str]) -> None:
         return  # already exited between the timeout and the kill
 
 
+def _reap(process: subprocess.Popen[Any]) -> None:
+    """Collect a killed child without letting a second signal or a slow exit mask the first error."""
+    try:
+        process.wait(timeout=10)
+    except BaseException:  # noqa: BLE001 — best effort; the caller re-raises what stopped it
+        pass
+
+
 def _run_process(argv: list[str], *, cwd: Path, env: dict[str, str], stdin_text: str,
                  timeout: int, step: str, raw_path: Path) -> str:
     """Run an agent CLI in its own process group, streaming stdout to raw_path; returns stdout."""
@@ -79,6 +87,10 @@ def _run_process(argv: list[str], *, cwd: Path, env: dict[str, str], stdin_text:
             _kill_group(process)
             process.wait(timeout=30)
             raise StepFailed(step, f"agent timed out after {timeout}s (process group killed)") from exc
+        except BaseException:  # the run was stopped (RunStopped) or interrupted: never leave the agent running
+            _kill_group(process)
+            _reap(process)
+            raise
     stdout = raw_path.read_text(encoding="utf-8", errors="replace")
     if process.returncode != 0:
         detail = (stderr_path.read_text(encoding="utf-8", errors="replace") or stdout)[-1000:]

@@ -127,6 +127,23 @@
     (format "review `~a` has #:require affected and #:ship ~a: a required check no changed path touches is not run before the change ships without a person; a wrong #:covers then ships unproven code"
             (field rv 'id "") (field rv 'ship ""))))
 
+(define (helper-agent-without-toolless-mode ir)
+  (define voice (field ir 'voice #f))
+  (define agents (field ir 'agents))
+  (cond
+    [(not (hash? voice)) '()]
+    [(not (eq? (field voice 'dashboardHelper #t) #t)) '()]
+    [else
+     (define wanted (field voice 'helperAgent ""))
+     (define agent (if (equal? wanted "")
+                       (and (pair? agents) (car agents))
+                       (findf (lambda (a) (equal? (field a 'id "") wanted)) agents)))
+     (define kind (field agent 'kind ""))
+     (if (member kind '("codex" "custom"))
+         (list (format "(voice kokoro): the dashboard helper needs an agent that runs with no tools (claude-code or mock); agent `~a` is ~a, so the panel will speak and listen but cannot answer. Set #:helper-agent or #:dashboard-helper #f"
+                       (field agent 'id "") kind))
+         '())]))
+
 (define (layer-warnings ir)
   (append (unused-environments ir) (credentials-outside ir) (scope-command ir) (nix-not-in-container ir)
-          (check-outside-sandbox ir) (require-affected-ships ir)))
+          (check-outside-sandbox ir) (require-affected-ships ir) (helper-agent-without-toolless-mode ir)))

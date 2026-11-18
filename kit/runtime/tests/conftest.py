@@ -65,8 +65,14 @@ def make_layer(tmp_path: Path, app_repo: Path):
 
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
     config.addinivalue_line("markers", "podman: needs a working rootless podman and a local base image")
+    config.addinivalue_line("markers", "voice: the real speech engines (runs only with AL_VOICE_REAL=1 and the models set up)")
+    config.addinivalue_line("markers", "slow: takes tens of seconds")
+    # Every skip prints its reason (as -rs would), so a log says why a test did not run.
+    if "s" not in (config.option.reportchars or ""):
+        config.option.reportchars = (config.option.reportchars or "") + "s"
 
 
 # A run's sandbox points git at the run's own object store through environment variables. Tests build

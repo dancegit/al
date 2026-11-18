@@ -250,6 +250,7 @@ tools/al verify ~/code/myapp.al       # run every declared command for real: is 
 tools/al doctor ~/code/myapp.al       # where al finds racket, uv, git and the agent CLI (exit 4 when one is missing)
 tools/al verify ~/code/myapp.al --workflow sdlc   # … only in that workflow's environment stack
 tools/al sandbox ~/code/myapp.al doctor   # podman: check the container a run gets (also status|build|shell|prune)
+tools/al voice ~/code/myapp.al setup      # (voice kokoro): fetch and verify the speech models once (also doctor)
 tools/al explain ~/code/myapp.al      # read the layer back in plain language
 tools/al check  ~/code/myapp.al       # the layer is complete and nothing leaked into your repository
 
@@ -312,7 +313,7 @@ the sandbox, step discipline). How each idea lands in this repository, and why a
 
 ```
 racket/al/        the language: vocabulary, compiler, schema and reference generators, tests
-tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard · kpis · integrate
+tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard · kpis · integrate · voice
 tools/al_*.py     al_provision (a host's provisioning files), al_sandbox (the sandbox image), …; kit/host/pins.json: pinned uv and agent CLIs
 kit/templates/    the prompts every layer starts from      kit/runtime/   what runs a workflow
 meta/             the prompts that guide an LLM through describing a codebase and writing its layer

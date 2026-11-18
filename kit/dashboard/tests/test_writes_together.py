@@ -1,6 +1,8 @@
 """The two writing features in one server: starting work (POST /api/start) and the workspace actions
 (POST /api/action), beside the Models write (POST /api/models). One write guard with a body limit per
-write; --read-only turns every write off, --no-start and --no-actions each only their own."""
+write; --read-only turns every write off, --no-start and --no-actions each only their own. The voice
+helper's one write (POST /api/voice/approve) follows the same flags per kind of card, while its
+conversation (POST /api/voice/turn) keeps working."""
 from __future__ import annotations
 
 import json
@@ -11,8 +13,10 @@ from typing import Any
 import pytest
 
 import dashboard as d
+import voice_fixtures as vf
 import workspace_fixtures as wf
 from conftest import Running
+from test_start import run_dirs, wait_state
 
 READ_ONLY = {"error": "the dashboard was started with --read-only"}
 
@@ -114,3 +118,39 @@ def test_banner_states_of_both(tmp_path: Path):
                          "--jobs-dir", str(tmp_path / "jobs")])
     assert args.no_start and args.no_actions and args.workspace == [tmp_path] and args.jobs_dir == tmp_path / "jobs"
     assert d.start_banner(args) == "off (--no-start)"
+
+
+@pytest.mark.parametrize("flag,start_refused,job_refused", [
+    ("--read-only", READ_ONLY["error"], READ_ONLY["error"]),
+    ("--no-start", "the dashboard was started with --no-start", None),
+    ("--no-actions", None, "actions are off (--no-actions)"),
+])
+def test_voice_approve_follows_each_flag(start_site, ws, al, workspace_server, tmp_path, flag, start_refused, job_refused):
+    fake = vf.fake_script(tmp_path / "voice" / "fake.json", [])
+    running = workspace_server(ws, "--layer", str(start_site["talk"]), "--voice-fake", str(fake),
+                               "--voice-dir", str(tmp_path / "voice" / "conversations"), flag, al=al)
+    try:
+        voice = vf.VoiceClient(running)
+        voice.session(repo="fern")
+        start = voice.turn("start a plan for adding a search box")["card"]   # the conversation keeps working
+        assert start["kind"] == "start" and start["approvable"] is (start_refused is None)
+        assert start["why_not"] == (start_refused or "")
+        start = voice.turn("yes")["card"]
+        code, body = voice.approve(start)
+        if start_refused:
+            assert (code, body["error"]) == (403, start_refused)
+            assert run_dirs(start_site["talk"]) == []
+        else:
+            assert code == 202, body
+            assert wait_state(start_site["talk"], body["run_id"])["status"] == "passed"
+        job = voice.turn("scout it")["card"]
+        assert job["kind"] == "job" and job["approvable"] is (job_refused is None) and job["why_not"] == (job_refused or "")
+        job = voice.turn("yes")["card"]
+        code, body = voice.approve(job)
+        if job_refused:
+            assert (code, body["error"]) == (403, job_refused)
+            assert wf.calls(al) == []
+        else:
+            assert code == 202 and body["job"], body
+    finally:
+        running.server.model.voice.stop_all()

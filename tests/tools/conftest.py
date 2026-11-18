@@ -178,11 +178,15 @@ def mock_scripts(tmp_path: Path, scripts: dict[str, dict]) -> Path:
     return directory
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "browser: drives the host's Chrome through Playwright (skipped without one)")
     config.addinivalue_line("markers", "slow: records clips with ffmpeg/Chrome (runs only with AL_SHOWCASE_RECORD=1)")
     config.addinivalue_line("markers", "podman: needs the real podman (skipped when the binary is missing); some tests also need a registry on 127.0.0.1:5000")
     config.addinivalue_line("markers", "nix: needs nix (skipped when the binary is missing)")
+    # Every skip prints its reason (as -rs would), so a log says why a test did not run.
+    if "s" not in (config.option.reportchars or ""):
+        config.option.reportchars = (config.option.reportchars or "") + "s"
 
 
 def pytest_runtest_setup(item: pytest.Item) -> None:

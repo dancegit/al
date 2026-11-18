@@ -20,6 +20,13 @@ import pytest
 import alit
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    # Every skip prints its reason (as -rs would), so a log says why a test did not run.
+    if "s" not in (config.option.reportchars or ""):
+        config.option.reportchars = (config.option.reportchars or "") + "s"
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--update-golden", action="store_true", default=False,
                      help="rewrite tests/integration/golden/ from the freshly generated layers")

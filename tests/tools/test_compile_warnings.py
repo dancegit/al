@@ -31,3 +31,19 @@ def test_compile_and_gen_print_warnings_and_succeed(app) -> None:
     assert (layer / "env" / "Containerfile").is_file()
     cp = al("check", layer)
     assert "used by no workflow" in cp.stderr and "check: ok" in cp.stdout
+
+
+def test_voice_helper_on_a_codex_agent_warns(app) -> None:
+    layer = app.parent / "notes.al"
+    layer.mkdir()
+    source = LAYER_TEMPLATE.format(root="../notes", placement="(layer sibling)")
+    source = source.replace("  (command plan ", "  (agent codex)\n  (voice kokoro)\n  (command plan ", 1)
+    (layer / "agentic.rkt").write_text(source)
+    cp = al("compile", layer)
+    assert json.loads(cp.stdout)["voice"]["dashboardHelper"] is True
+    assert ("al: warning: (voice kokoro): the dashboard helper needs an agent that runs with no tools "
+            "(claude-code or mock); agent `codex` is codex, so the panel will speak and listen but cannot answer. "
+            "Set #:helper-agent or #:dashboard-helper #f") in cp.stderr.splitlines(), cp.stderr
+    (layer / "agentic.rkt").write_text(source.replace("(voice kokoro)", "(voice kokoro #:dashboard-helper #f)"))
+    cp = al("compile", layer)
+    assert "dashboard helper" not in cp.stderr, cp.stderr

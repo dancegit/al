@@ -1439,3 +1439,34 @@
                  #rx"step name `prepare` is reserved")
   ;; without #:prepare the name is free
   (check-not-exn (lambda () (compile-layer-datum (layer-with #:steps '((check prepare #:cmd test)))))))
+
+(test-case "voice-helper-defaults"
+  (define v (hash-ref (compile-layer-datum (layer plan simple-adw '(voice kokoro))) 'voice))
+  (check-equal? (hash-ref v 'dashboardHelper) #t)
+  (check-equal? (hash-ref v 'listenMode) "hold")
+  (check-equal? (hash-ref v 'helperAgent) "")
+  (check-equal? (hash-ref v 'helperModelSet) "base")
+  (check-equal? (hash-ref v 'interrupt) #t)
+  (check-equal? (hash-ref v 'maxUtteranceSeconds) 30)
+  ;; every field that was there before keeps its default
+  (check-equal? (hash-ref v 'ttsVoice) "af_heart")
+  (check-equal? (hash-ref v 'ttsLang) "en-us")
+  (check-equal? (hash-ref v 'ttsSpeed) 100)
+  (check-equal? (hash-ref v 'sttModel) "base.en")
+  (check-equal? (hash-ref v 'sttDevice) "auto")
+  (check-equal? (hash-ref v 'recordSeconds) 8)
+  (check-equal? (hash-ref v 'speakSummaries) #t))
+
+(test-case "voice helper rules"
+  (check-rejects (layer plan simple-adw '(voice kokoro #:max-utterance-seconds 3)) #rx"5–120")
+  (check-rejects (layer plan simple-adw '(voice kokoro #:max-utterance-seconds 121)) #rx"5–120")
+  (check-rejects (layer plan simple-adw '(voice kokoro #:helper-agent "nobody")) #rx"not a declared agent")
+  (check-rejects (layer plan simple-adw '(agent claude-code) '(voice kokoro #:helper-model-set "fast"))
+                 #rx"not a tier of agent")
+  (check-not-exn (lambda () (compile-layer-datum
+                             (layer plan simple-adw '(agent mock) '(voice kokoro #:helper-model-set "anything")))))
+  (check-not-exn (lambda () (compile-layer-datum
+                             (layer plan simple-adw '(agent claude-code) '(agent mock)
+                                    '(voice kokoro #:helper-agent "mock" #:helper-model-set "anything")))))
+  (define v (hash-ref (compile-layer-datum (layer plan simple-adw '(voice kokoro #:listen-mode always))) 'voice))
+  (check-equal? (hash-ref v 'listenMode) "always"))

@@ -274,8 +274,9 @@ def test_page_is_static_with_a_strict_csp(server):
     assert not re.search(rb"https?://", body.replace(b"http://www.w3.org/2000/svg", b""))  # nothing from a CDN
 
 
-def test_page_script_never_parses_data_as_html():
-    script = (d.STATIC_DIR / "app.js").read_text()
+@pytest.mark.parametrize("name", ["app.js", "voice.js", "voice-worklet.js"])
+def test_page_script_never_parses_data_as_html(name):
+    script = (d.STATIC_DIR / name).read_text()
     assert "innerHTML" not in script and "outerHTML" not in script and "insertAdjacentHTML" not in script
     assert "document.write" not in script and "eval(" not in script and "new Function" not in script
 

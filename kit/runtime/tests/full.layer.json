@@ -1498,8 +1498,14 @@
     }
   ],
   "voice": {
+    "dashboardHelper": true,
+    "helperAgent": "",
+    "helperModelSet": "base",
     "id": "kokoro",
+    "interrupt": true,
     "kind": "kokoro",
+    "listenMode": "hold",
+    "maxUtteranceSeconds": 30,
     "recordSeconds": 8,
     "speakSummaries": true,
     "status": "stable",

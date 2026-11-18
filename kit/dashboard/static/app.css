@@ -755,3 +755,81 @@ table.needs-you td.next .btn.integrate { display: block; margin-top: 4px; font-f
 table.proof td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
 table.proof td:nth-child(3) { min-width: 190px; overflow-wrap: normal; }
 table.proof .badge { white-space: normal; }
+
+/* ---------------------------------------------------------------- voice helper (static/voice.js) */
+.voice-host:empty { display: none; }
+.voice-host { margin-bottom: 12px; }
+.repo-panel > .voice-host { margin-top: 12px; }
+.repo-panel > div:last-child > .card:first-child { margin-top: 12px; }
+.voice-panel .voice-head { flex-wrap: wrap; }
+.voice-modes { display: inline-flex; gap: 2px; border: 1px solid var(--border-2); border-radius: 5px; padding: 2px; }
+.voice-modes label { padding: 2px 8px; border-radius: 4px; cursor: pointer; color: var(--text-2); font-size: 12px; white-space: nowrap; }
+.voice-modes label:has(input:checked) { background: rgba(110, 168, 254, .16); color: var(--text); }
+.voice-modes input { margin: 0 2px 0 0; vertical-align: -2px; }
+.voice-keep-label { font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.voice-note:empty { display: none; }
+.voice-note { margin-bottom: 8px; color: var(--text-2); overflow-wrap: anywhere; }
+.voice-note.warn { color: var(--waiting); }
+.voice-note.error { color: var(--failed); }
+.voice-note code { font: 12px/1.5 var(--mono); color: var(--text); background: #0b0e13; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
+.voice-body { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 16px; align-items: start; }
+.voice-stage { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.voice-synth { width: 100%; max-width: 320px; height: auto; aspect-ratio: 320 / 140; display: block; border-radius: var(--radius); background: #0b0e13; border: 1px solid var(--border); }
+.voice-level { width: 100%; max-width: 320px; height: 18px; border-radius: 9px; background: #0b0e13; border: 1px solid var(--border); overflow: hidden; }
+.voice-level-bar { display: block; height: 100%; width: 0; background: var(--accent); }
+.voice-panel[data-state="listening"] .voice-level-bar { background: var(--passed); }
+.voice-panel[data-state="interrupted"] .voice-level-bar { background: var(--failed); }
+.voice-state { min-height: 1.45em; color: var(--text-2); text-align: center; }
+.voice-panel[data-state="interrupted"] .voice-state { color: var(--failed); }
+.voice-panel[data-state="listening"] .voice-state { color: var(--passed); }
+.voice-controls { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; }
+.voice-talk { min-width: 140px; padding: 8px 16px; font-size: 13px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.voice-talk[aria-pressed="true"] { background: rgba(63, 185, 80, .22); border-color: var(--passed); }
+.voice-mic-open { display: flex; align-items: center; gap: 8px; padding: 3px 8px; border-radius: 5px; border: 1px solid rgba(242, 85, 90, .45);
+  background: rgba(242, 85, 90, .08); color: var(--text); font-size: 12px; }
+.voice-mic-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--failed); animation: pulse 1.2s ease-in-out infinite; }
+.voice-captions { display: flex; flex-direction: column; gap: 4px; }
+.voice-caption { margin: 0; min-height: 1.45em; overflow-wrap: anywhere; }
+.voice-caption:empty { display: none; }
+.voice-caption-person { color: var(--text); }
+.voice-caption-person::before { content: "You: "; color: var(--dim); }
+.voice-caption-person.partial { color: var(--text-2); font-style: italic; }
+.voice-caption-helper { color: var(--accent); font-size: 14px; }
+.voice-caption-helper::before { content: "Helper: "; color: var(--dim); font-size: 13px; }
+.voice-dropped { color: var(--faint); text-decoration: line-through; }
+.voice-cards { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.voice-cards:empty { display: none; }
+.voice-card { border: 1px solid var(--border-2); border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--panel-2); padding: 8px 12px; }
+.voice-card.st-confirmed { border-left-color: var(--waiting); }
+.voice-card.st-approved { border-left-color: var(--passed); }
+.voice-card.st-declined, .voice-card.st-superseded, .voice-card.st-expired { opacity: .6; border-left-color: var(--pending); }
+.voice-card-head { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+.voice-card-summary { margin: 0 0 6px; color: var(--text); }
+.voice-card dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin: 0 0 6px; }
+.voice-card dt { color: var(--dim); }
+.voice-card dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.voice-card-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.voice-card .why { color: var(--waiting); padding: 4px 8px; }
+.voice-card-note:empty { display: none; }
+.voice-card-note { margin-top: 4px; }
+.voice-started { color: var(--passed); }
+.voice-transcript { list-style: none; margin: 6px 0; padding: 0; max-height: 220px; overflow-y: auto; border-top: 1px solid var(--border); }
+.voice-transcript:empty { display: none; }
+.voice-entry { padding: 3px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.voice-who { display: inline-block; min-width: 54px; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.voice-entry.voice-helper .voice-said { color: var(--text-2); }
+.voice-entry.voice-system .voice-said, .voice-entry.echo .voice-said { color: var(--faint); font-style: italic; }
+.voice-form { display: flex; gap: 8px; margin-top: 6px; }
+.voice-text { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border-2); background: #0b0e13; color: var(--text); font: inherit; }
+@media (max-width: 760px) {
+  .voice-body { grid-template-columns: minmax(0, 1fr); }
+  .voice-panel .voice-head > .dim { flex-basis: 100%; order: 3; }
+  .voice-panel .voice-head .spacer { display: none; }
+  .voice-talk { flex: 1 1 100%; min-height: 44px; }
+  .voice-text { min-height: 36px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .voice-mic-dot { animation: none; }
+  .voice-level-bar { transition: none; }
+  .voice-panel * { animation: none !important; transition: none !important; }
+}

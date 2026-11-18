@@ -32,6 +32,9 @@ NOT_COVERED_PODMAN=(
   "tools/al sandbox LAYER doctor"
   "tools/al verify LAYER --workflow sdlc (when that workflow uses a container)"
 )
+NOT_COVERED_VOICE=(
+  "tools/al voice LAYER setup"
+)
 
 # The command lines of the quick start: the lines of the section's shell blocks, comments removed.
 readme_commands() {
@@ -64,6 +67,8 @@ inside() {
         cp "$ROOT/tests/quickstart/layer.rkt" ~/code/myapp.al/agentic.rkt || failed ;;
       "tools/al verify "*" --workflow "*|"tools/al sandbox "*)
         echo "SKIP (needs podman inside the container): $line" ;;
+      "tools/al voice "*)
+        echo "SKIP (the tiny layer declares no (voice kokoro), and setup downloads speech models): $line" ;;
       "tools/al doctor "*)
         step "$line"
         status=0; out="$(eval "$line" 2>&1)" || status=$?
@@ -91,6 +96,7 @@ inside() {
   for item in "${NOT_COVERED_AGENT[@]}"; do echo "not covered: needs a real agent login: $item"; done
   for item in "${NOT_COVERED_SETUP[@]}"; do echo "not covered: the tiny app has no agent setup to adopt: $item"; done
   for item in "${NOT_COVERED_PODMAN[@]}"; do echo "not covered: needs podman inside the container: $item"; done
+  for item in "${NOT_COVERED_VOICE[@]}"; do echo "not covered: the tiny layer declares no (voice kokoro): $item"; done
 }
 
 if [ "${1:-}" = "--inside" ]; then

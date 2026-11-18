@@ -20,12 +20,19 @@ sys.path.insert(0, str(HERE))
 import dashboard  # noqa: E402
 import fixtures  # noqa: E402
 import start_layer  # noqa: E402
+import voice_fixtures  # noqa: E402
 from fake_forgejo import FakeForgejo  # noqa: E402
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "browser: drives a real Chrome through Playwright (skipped without one)")
     config.addinivalue_line("markers", "podman: needs rootless podman and python:3.12-slim locally (skipped otherwise)")
+    config.addinivalue_line("markers", "voice: needs the real speech engines and their models (AL_VOICE_REAL=1; skipped otherwise)")
+    config.addinivalue_line("markers", "slow: takes tens of seconds or more")
+    # Every skip prints its reason (as -rs would), so a log says why a test did not run.
+    if "s" not in (config.option.reportchars or ""):
+        config.option.reportchars = (config.option.reportchars or "") + "s"
 
 
 @pytest.fixture(scope="session")
@@ -115,6 +122,20 @@ def start_site(tmp_path: Path, fake_forgejo: FakeForgejo, monkeypatch: pytest.Mo
         monkeypatch.delenv(name, raising=False)
     fake_forgejo.reset()
     return start_layer.build_site(tmp_path / "site", fake_forgejo.url)
+
+
+@pytest.fixture()
+def voice_site(start_site: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+    """start_site with its voice layer `talk`, plus `fake`: the fake recogniser's script (no transcripts yet;
+    tests/voice_fixtures.py fake_script rewrites it), `voice_dir`: where conversations are kept, and
+    `cache`: an empty speech model cache (AL_VOICE_CACHE, AL_KOKORO_CACHE), so nothing real is found."""
+    for name in ("AL_VOICE_TOKEN", "AL_VOICE_NET_LOG"):
+        monkeypatch.delenv(name, raising=False)
+    cache = tmp_path / "voice-cache"
+    monkeypatch.setenv("AL_VOICE_CACHE", str(cache / "voice"))
+    monkeypatch.setenv("AL_KOKORO_CACHE", str(cache / "kokoro"))
+    fake = voice_fixtures.fake_script(tmp_path / "voice" / "fake.json", [])
+    return {**start_site, "fake": fake, "voice_dir": tmp_path / "voice" / "conversations", "cache": cache}
 
 
 @pytest.fixture()

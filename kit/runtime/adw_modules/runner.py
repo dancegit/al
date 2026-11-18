@@ -5,8 +5,10 @@ import contextlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import threading
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,10 +20,11 @@ from . import nested_engine, notify, prepare, sandbox, skips
 from . import state as state_module, steps
 from . import slots
 from .agents import CLASSES
-from .errors import LayerError, StepFailed, StepWaiting
+from .errors import LayerError, RunStopped, StepFailed, StepWaiting
 
 EXIT_WAITING = 75  # a (script …) step is waiting for something outside: run again with --resume
 HANDED_OVER = "handed-over"  # the workflow ran to its end, but a person decides (rejected review, gate fallback)
+STOPPED = "stopped by a person"  # the reason of a run ended by SIGTERM (launch.stop, the dashboard's Stop)
 
 
 class UsageError(Exception):
@@ -517,6 +520,33 @@ def _handoff_line(state: state_module.ADWState) -> str | None:
     return None
 
 
+def _on_term(state: state_module.ADWState) -> Any:
+    """The SIGTERM handler of a run (launch.stop signals the run's process group): while the run is
+    working it raises RunStopped once, which ends the run `failed` through the usual failure path
+    (hand-off, teardown, notification). A second signal (uv forwards the group's to its child) and a
+    signal after the run's outcome is decided change nothing. `state.stopped_by` also makes the next
+    step raise, in case the step that was interrupted swallowed the failure."""
+    def handler(signum: int, frame: Any) -> None:
+        if getattr(state, "stopped_by", "") or state.status != "running":
+            return
+        state.stopped_by = STOPPED
+        raise RunStopped(steps.running_step(state) or "run", STOPPED)
+    return handler
+
+
+@contextlib.contextmanager
+def _stoppable(state: state_module.ADWState):
+    """Install _on_term for the duration of the run (only the main thread can install a handler)."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.signal(signal.SIGTERM, _on_term(state))
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: argparse.Namespace,
          request: Request | None) -> int:
     exit_code = 1
@@ -561,9 +591,12 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
         state.status = "failed"
         print(f"[adw {state.adw_id}] run failed: {exc}")
         _hand_off(layer, state, adw, stack, exc)
-        decide.consider(layer, state, adw, stack, args)
-        if decide.keeps_worktree(state):  # the resume (now, or after a person's `go`) continues in it
-            stack.keep_worktree = True
+        if isinstance(exc, RunStopped):  # a person stopped it: the stand-in decider does not resume it
+            state.error = STOPPED + (f"; {state.error}" if getattr(state, "error", "") else "")
+        else:
+            decide.consider(layer, state, adw, stack, args)
+            if decide.keeps_worktree(state):  # the resume (now, or after a person's `go`) continues in it
+                stack.keep_worktree = True
         if notify.report(layer, state, force=bool(getattr(args, "notify", False)), at="handover"):
             state.save(layer.layer_dir)
     except Exception as exc:  # last-resort boundary: record the crash in state instead of leaving it "running"
@@ -694,7 +727,7 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
         if layer.delivery:
             events.emit("delivery.target", **layer.delivery)
         try:
-            with contextlib.redirect_stdout(tee):
+            with contextlib.redirect_stdout(tee), _stoppable(state):
                 exit_code = _run(layer, state, definition, args, request)
                 lines = summary_lines(layer, state)
                 print("\n".join(lines))

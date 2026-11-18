@@ -263,7 +263,7 @@ $0.68, the branch the classifier chose, and the build step's transcript filtered
 
 ![A real run: workflow graph, cost per step, and a searchable transcript](demo/dashboard/step-transcript.png)
 
-It cannot stop or change a run, agent output is displayed as text and never interpreted, and it listens
+It changes nothing on its own, agent output is displayed as text and never interpreted, and it listens
 on your own machine unless you give it a token. It can also run in its own container with no way out to
 the network. More: [`kit/dashboard/README.md`](../kit/dashboard/README.md).
 
@@ -275,6 +275,11 @@ Its **Repos** view lists the git repositories beside the layer's (`al dashboard 
 `none`, and runs the next al step on one from the page (scout, create a layer, adopt its agent setup, gen,
 check, verify, explain), showing the exact command line of each; `--no-actions` (or `--read-only`) turns
 that off ([guide](GUIDE.md#work-with-several-repositories-from-the-dashboard)).
+
+A layer with `(voice kokoro)` gets a **voice helper** panel: talk (or type) with it about runs, and it
+proposes the next run as a card that starts only after you say yes and click **Approve**; speech stays on
+the machine (`al voice LAYER setup` fetches the models once;
+[guide](GUIDE.md#talk-to-the-dashboard)).
 
 ## al, used on itself
 

@@ -54,7 +54,7 @@ Lines 6–20. What the codebase is (javascript) and the commands that prove thin
 
 ### Voice
 
-Lines 22–22. Speech in and out, both running locally (Kokoro for speech, Whisper for recognition).
+Lines 22–22. Speech in and out, both running locally (Kokoro for speech, Whisper for recognition). The dashboard gets a voice helper: you talk with it about the runs and it proposes the next one as a card, but nothing starts until you answer yes and click Approve (`al voice LAYER setup` downloads the speech models once).
 
 ```racket
   (voice kokoro)

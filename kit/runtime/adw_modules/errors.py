@@ -14,6 +14,11 @@ class StepFailed(Exception):
         super().__init__(f"{step}: {reason}")
 
 
+class RunStopped(StepFailed):
+    """A person stopped the run (SIGTERM from launch.stop, e.g. the dashboard's Stop): it ends
+    `failed` through the usual failure path, handed to a person like any failure."""
+
+
 class StepWaiting(Exception):
     """A (script …) step exited with one of its #:waiting-exit codes: the run waits for something
     outside and is resumed later (`--resume`); it neither failed nor passed."""

@@ -111,3 +111,7 @@ def test_real_checks(layer, bed):
     assert run.returncode == 0, alit.describe(run)
     assert {name: row["exit"] for name, row in report.items()} == dict.fromkeys(cmds, 0)
     _nothing_left(lay, heads_before)
+
+
+def test_skips_print_their_reason(pytestconfig) -> None:
+    assert "s" in pytestconfig.option.reportchars
