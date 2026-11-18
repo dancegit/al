@@ -2363,7 +2363,9 @@
       const fig = (label, value) => h("div", { class: "stat" }, h("div", { class: "label", text: label }), h("div", { class: "value" }, value));
       replace(head,
         h("div", {},
-          h("div", { class: "line1" }, pill(sm.status), h("h1", { text: `${sm.adw}` }), h("span", { class: "mono dim", text: sm.id }),
+          h("div", { class: "line1" }, pill(sm.status), h("h1", { text: `${sm.adw}` }),
+            sm.kit ? h("span", { class: "badge kit", title: "a workflow the kit gives every layer; the layer's definition does not declare it", text: "kit" }) : null,
+            h("span", { class: "mono dim", text: sm.id }),
             h("span", { class: "badge", text: sm.layer }), sm.klass ? h("span", { class: "badge", text: `class ${sm.klass}` }) : null,
             sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, outcomeBadge(sm),
             sm.status === "handed-over" && (sm.outcome.handover || []).length
@@ -2381,7 +2383,11 @@
               title: "the integration run that brought it onto its target", text: landedText(sm) })
               : sm.bucket === "landed" ? h("span", { class: "badge good landing", text: landedText(sm) }) : null,
             sm.bucket === "settled" ? h("span", { class: "badge settled", text: settledText(sm) }) : null,
-            sm.integrates ? h("a", { class: "badge info integrates", href: `#/run/${enc(layerKey)}/${enc(sm.integrates)}`, text: `integrates ${sm.integrates}` }) : null,
+            sm.integrates ? h("a", { class: "badge info integrates acts-on", href: `#/run/${enc(layerKey)}/${enc(sm.integrates)}`, text: `integrates ${sm.integrates}` }) : null,
+            sm.acts_on && sm.acts_on.kind === "promotion" ? h("a", { class: "badge info acts-on", href: `#/layer/${enc(layerKey)}`,
+              title: "the promotion's row on the layer's page", text: `promotes ${sm.acts_on.from} → ${sm.acts_on.to}` }) : null,
+            sm.acts_on && sm.acts_on.kind === "command" ? h("a", { class: "badge acts-on", href: `#/layer/${enc(layerKey)}`,
+              title: "a single-command run: one step, never ships", text: `command /${sm.acts_on.name}` }) : null,
             sm.settled && sm.settled.via === "stand-in" ? undoButton(sm) : null,
             startAgainButton(sm), askStandinButton(sm),
             h("button", { class: "toggle", type: "button", text: "copy link", title: "copy a deep link to this view", onclick: (e) => copyLink(e.target) })),
@@ -3100,7 +3106,10 @@
       const entries = [
         ...catalog.workflows.map((w) => ({ kind: "workflow", name: w.name, summary: w.summary, description: w.description, item: w })),
         ...catalog.commands.map((c) => ({ kind: "command", name: c.name, summary: c.summary, description: c.description, item: c })),
+        // the workflows the kit gives every layer: each takes a run or two stages, not a prompt
+        ...(catalog.kit || []).map((k) => ({ kind: "kit", name: k.name, summary: k.purpose, description: "", item: k })),
       ];
+      const kitStartable = (k) => !!(k.start && k.start.by_hand) && !k.off;
       const valueOf = (e) => `${e.kind}:${e.name}`;
       const byValue = new Map(entries.map((e) => [valueOf(e), e]));
       const prompt = h("textarea", { class: "start-prompt", rows: 4, "aria-label": "what to do",
@@ -3109,7 +3118,10 @@
         h("optgroup", { label: "Workflows" }, catalog.workflows.map((w) => h("option", { value: `workflow:${w.name}`, text: `/${w.name}` }))),
         catalog.commands.length ? h("optgroup", { label: "Single command (one step, never ships)" },
           catalog.commands.map((c) => h("option", { value: `command:${c.name}`,
-            text: `/${catalog.collisions.includes(c.name) ? "command:" : ""}${c.name} ${c.argument_hint || ""}`.trim() }))) : null);
+            text: `/${catalog.collisions.includes(c.name) ? "command:" : ""}${c.name} ${c.argument_hint || ""}`.trim() }))) : null,
+        (catalog.kit || []).length ? h("optgroup", { label: "Kit workflows" },
+          catalog.kit.map((k) => h("option", { value: `kit:${k.name}`, disabled: !kitStartable(k), title: kitStartable(k) ? k.purpose : (k.start && k.start.why) || "",
+            text: `/${k.name}${k.off ? " (off)" : kitStartable(k) ? "" : " (not started here)"}` }))) : null);
       const list = h("ul", { class: "start-complete", role: "listbox", hidden: true, "aria-label": "workflows and commands" });
       const summary = h("div", { class: "start-summary" });
       const klass = h("select", { class: "start-class", "aria-label": "class" },
@@ -3127,6 +3139,9 @@
       const unattended = h("div", { class: "start-unattended" });
       const note = h("div", { class: "start-note faint" });
       const go = h("button", { class: "btn primary start-go", type: "button", text: "Start" });
+      const kitBox = h("div", { class: "start-kit", hidden: true });
+      const inputBox = h("div", { class: "start-input" });
+      const promptOnly = [];   // what only a start with a prompt uses: hidden while a kit workflow is chosen
       let active = -1;
       let shown = [];
 
@@ -3135,9 +3150,76 @@
         const m = /^\s*\/(\S*)/.exec(prompt.value);
         return m ? m[1] : null;
       };
+      /** A kit workflow takes a handed-over run or two stages: the picker for it, in place of the prompt. */
+      function describeKit(e) {
+        const k = e.item;
+        const page = k.page_start || { enabled: false, why: "" };
+        const head = h("div", { class: "start-kit-head" }, h("span", { class: "mono", text: `/${k.name}` }), " ",
+          h("span", { class: "badge kit", text: "kit" }), k.off ? h("span", { class: "badge warn", text: "off" }) : null);
+        if (!kitStartable(k)) {
+          replace(kitBox, head, h("div", { class: "why start-none", text: (k.start && k.start.why) || "not started from the page" }),
+            k.off && k.setting ? h("div", { class: "faint kit-setting", text: `turn it on: ${k.setting.turn_on} (${k.setting.where})` }) : null);
+          return;
+        }
+        if (k.input && k.input.kind === "run") {
+          const candidates = k.candidates || [];
+          if (!candidates.length) {
+            replace(kitBox, head, h("div", { class: "why start-none", text: k.none_why || "no run to choose" }));
+            return;
+          }
+          const preview = h("div", { class: "start-kit-preview" });
+          const picker = h("select", { class: "start-run", "aria-label": "the handed-over run to integrate" },
+            h("option", { value: "", text: `choose a handed-over run (${candidates.length})` }),
+            candidates.map((c) => h("option", { value: c.id, text: `${c.id} — ${c.title || "(no title)"}${c.target ? ` → ${c.target}` : ""}` })));
+          picker.addEventListener("change", () => {
+            clear(preview);
+            if (!picker.value) return;
+            const sm = { key: `${layer.key}/${picker.value}`, id: picker.value };
+            integratePreviews.delete(sm.key);   // a fresh look: its confirmation is used once
+            preview.appendChild(integrateCard({ summary: sm }, layer.key));
+          });
+          replace(kitBox, head, h("label", { class: "start-row" }, h("span", { text: "handed-over run" }), picker),
+            h("div", { class: "faint", text: "Only runs handed over because of a merge conflict or a moved target are listed. You see what will happen before anything starts." }),
+            !page.enabled ? h("div", { class: "why start-off", text: page.why }) : null, preview);
+          return;
+        }
+        if (k.input && k.input.kind === "stages") {
+          const note = h("span", { class: "faint promotion-note", role: "status" });
+          const promote = async (dry) => {
+            try {
+              const answer = await api.post("/api/promotion", { layer: layer.key, action: k.open ? "continue" : "start", from: k.input.from, to: k.input.to, dry_run: dry });
+              location.hash = answer.url;
+            } catch (error) { replace(note, h("span", { class: "badge warn", text: error.message })); }
+          };
+          replace(kitBox, head, h("div", { class: "promotion-row start-stages" },
+            h("b", { text: `${k.input.from} → ${k.input.to}` }),
+            k.approval ? h("span", { class: "badge", text: `${k.approval}${k.approval !== "auto" && k.approvers ? ` × ${k.approvers}` : ""} · ${k.method || ""}` }) : null,
+            k.open ? h("a", { class: "badge waiting", href: `#/run/${enc(layer.key)}/${enc(k.open.id)}`, text: `open: ${k.open.id}` }) : null,
+            h("span", { class: "spacer" }),
+            h("button", { type: "button", class: "btn primary start-promote", disabled: !page.enabled, title: page.enabled ? "" : page.why,
+              text: k.open ? `Continue ${k.input.from} → ${k.input.to}` : `Promote ${k.input.from} → ${k.input.to}`, onclick: () => promote(false) }),
+            h("button", { type: "button", class: "btn start-promote-dry", disabled: !page.enabled,
+              title: page.enabled ? "build the pack and say what would happen; changes nothing" : page.why, text: "Dry run", onclick: () => promote(true) }),
+            note), !page.enabled ? h("div", { class: "why start-off", text: page.why }) : null);
+          return;
+        }
+        replace(kitBox, head, h("div", { class: "why start-none", text: (k.start && (k.start.why || k.start.command)) || "" }));
+      }
       function describe() {
         const e = chosen();
         if (!e) return;
+        const isKit = e.kind === "kit";
+        kitBox.hidden = !isKit;
+        inputBox.hidden = isKit;
+        for (const el of promptOnly) if (el) el.hidden = isKit;
+        if (isKit) {
+          summary.textContent = e.summary;
+          unattended.className = "start-unattended";
+          unattended.textContent = e.item.ships ? `Ships: ${e.item.ships}.` : "";
+          describeKit(e);
+          return;
+        }
+        issueRow.hidden = !catalog.issue.available;
         summary.textContent = e.summary + (e.description ? ` — ${e.description}` : "");
         classRow.hidden = e.kind !== "workflow";
         const options = [["none", "do not log it as an issue"], ["start", "log it as an issue and start now"]];
@@ -3154,6 +3236,13 @@
       }
       function closeList() { list.hidden = true; active = -1; shown = []; prompt.setAttribute("aria-expanded", "false"); }
       function pick(e) {
+        if (e.kind === "kit") {   // no prompt: the entry's own picker takes its place
+          prompt.value = "";
+          select.value = valueOf(e);
+          closeList();
+          describe();
+          return;
+        }
         const label = e.kind === "command" && catalog.collisions.includes(e.name) ? `command:${e.name}` : e.name;
         prompt.value = prompt.value.replace(/^\s*\/\S*\s*/, `/${label} `);
         select.value = valueOf(e);
@@ -3168,12 +3257,13 @@
         if (word === null || caret > prompt.value.indexOf("/") + 1 + word.length) return closeList();
         const forced = word.startsWith("command:");
         const stem = forced ? word.slice(8) : word;
-        shown = entries.filter((e) => e.name.startsWith(stem) && (!forced || e.kind === "command")).slice(0, 12);
+        shown = entries.filter((e) => e.name.startsWith(stem) && (!forced || e.kind === "command")).slice(0, 14);
         if (!shown.length) return closeList();
         active = Math.min(Math.max(active, 0), shown.length - 1);
         replace(list, shown.map((e, i) => h("li", { role: "option", class: i === active ? "active" : "", "aria-selected": i === active ? "true" : "false",
           dataset: { value: valueOf(e) }, onmousedown: (ev) => { ev.preventDefault(); pick(e); } },
-          h("span", { class: "mono", text: `/${e.name}` }), h("span", { class: "dim", text: e.kind === "workflow" ? " workflow" : ` ${e.item.kind}` }),
+          h("span", { class: "mono", text: `/${e.name}` }),
+          e.kind === "kit" ? h("span", { class: "badge kit", text: "kit" }) : h("span", { class: "dim", text: e.kind === "workflow" ? " workflow" : ` ${e.item.kind}` }),
           h("span", { class: "faint", text: ` — ${e.summary}` }))));
         list.hidden = false;
         prompt.setAttribute("aria-expanded", "true");
@@ -3220,6 +3310,7 @@
         return out;
       }
       async function submit(extra = {}) {
+        if (chosen().kind === "kit") return;   // a kit workflow starts from its own picker
         go.disabled = true;
         note.textContent = "";
         note.classList.remove("error");
@@ -3249,18 +3340,22 @@
         }
       }
       go.addEventListener("click", () => submit());
+      inputBox.append(prompt, list);
+      const tierRow = h("label", { class: "start-row" }, h("span", { text: "tier" }), tier);
+      const deciderRow = h("label", { class: "start-row", title: "who decides when this run stops: the layer's stand-in mode, or one for this run only" },
+        h("span", { text: "stand-in" }), decider);
+      const modelsRow = modelInputs.length ? h("div", { class: "start-models" }, modelInputs) : null;
+      const actions = h("div", { class: "start-actions" }, go, h("span", { class: "faint", text: "Ctrl+Enter" }), note);
+      promptOnly.push(classRow, tierRow, deciderRow, issueRow, modelsRow, actions);
       replace(body,
-        h("div", { class: "start-input" }, prompt, list),
+        inputBox,
         h("div", { class: "start-controls" },
           h("label", { class: "start-row" }, h("span", { text: "run" }), select),
-          classRow,
-          h("label", { class: "start-row" }, h("span", { text: "tier" }), tier),
-          h("label", { class: "start-row", title: "who decides when this run stops: the layer's stand-in mode, or one for this run only" },
-            h("span", { text: "stand-in" }), decider),
-          issueRow),
-        modelInputs.length ? h("div", { class: "start-models" }, modelInputs) : null,
-        summary, unattended,
-        h("div", { class: "start-actions" }, go, h("span", { class: "faint", text: "Ctrl+Enter" }), note));
+          classRow, tierRow, deciderRow, issueRow),
+        modelsRow,
+        summary, unattended, kitBox,
+        (catalog.problems || []).length ? h("div", { class: "why registry-problems", text: catalog.problems.join("; ") }) : null,
+        actions);
       describe();
     }
     return el;
@@ -3374,8 +3469,50 @@
             h("span", {}, "average cost ", h("b", { text: fmt.cost(adw.stats.cost_mean) })), h("span", {}, "total ", h("b", { text: fmt.cost(adw.stats.cost_total) }))),
           h("div", { class: "graph-wrap" }, renderGraph(adw.graph, { static: true })),
           h("div", { class: "mini-runs" }, adw.recent.map((run) => h("a", { href: `#/run/${enc(key)}/${enc(run.id)}`, title: run.title },
-            h("span", { class: `dot s-${run.status}` }), run.id, h("span", { class: "dim", text: fmt.cost(run.cost) })))))));
+            h("span", { class: `dot s-${run.status}` }), run.id, h("span", { class: "dim", text: fmt.cost(run.cost) })))))),
+        (data.problems || []).length ? h("div", { class: "why registry-problems", text: data.problems.join("; ") }) : null,
+        (data.kit || []).length ? h("div", { class: "group-head kit-group" }, h("h2", { text: "Kit workflows" }),
+          h("span", { class: "dim", text: "every layer gets them; the definition does not declare them" })) : null,
+        (data.kit || []).map((k) => kitSection(k)),
+        (data.commands || []).length ? h("div", { class: "card run-section commands-section" },
+          h("div", { class: "card-head" }, h("h3", { text: "Commands (single-command runs)" }),
+            h("span", { class: "dim", text: "one step in the layer's normal environment; never ships" })),
+          h("div", { class: "command-list" }, data.commands.map((c) => h("div", { class: `command-row${c.off ? " off" : ""}`, dataset: { command: c.name } },
+            h("span", { class: "mono", text: `/${c.name}` }), h("span", { class: "badge", text: c.kind }),
+            c.purpose ? h("span", { class: "dim", text: c.purpose }) : null, h("span", { class: "spacer" }),
+            c.stats.count ? h("a", { class: "toggle", href: routeHash(["runs"], { layer: key, adw: c.adw }), text: `${c.stats.count} runs` }) : h("span", { class: "faint", text: "no runs" }),
+            h("span", { class: "mini-runs" }, c.recent.slice(0, 4).map((run) => h("a", { href: `#/run/${enc(key)}/${enc(run.id)}`, title: run.title },
+              h("span", { class: `dot s-${run.status}` }), run.id))))))) : null,
+        (data.suite || []).length ? h("div", { class: "card run-section suite-section" },
+          h("div", { class: "card-head" }, h("h3", { text: "Suite commands" }),
+            h("span", { class: "dim", text: "codebase commands a script step runs; not started by hand" })),
+          h("div", { class: "command-list" }, data.suite.map((c) => h("div", { class: "command-row", dataset: { command: c.name } },
+            h("span", { class: "mono", text: c.name }), h("span", { class: "dim", text: c.why }),
+            c.purpose ? h("span", { class: "faint mono", text: c.purpose }) : null)))) : null);
     };
+    /** One workflow the kit gives every layer: its mark, what it is for, its steps, how it is started,
+     * its runs; dimmed with the setting that turns it on when it is off. */
+    function kitSection(k) {
+      const start = k.start || {};
+      const how = start.by_hand ? `started with ${start.command}${start.how === "form" ? ", or from Start work" : ""}`
+        : start.how === "cli" ? `not started from the page: ${start.command}` : "not started by hand";
+      return h("div", { class: `card run-section kit-section${k.off ? " off" : ""}`, dataset: { kit: k.name } },
+        h("div", { class: "card-head" }, h("h3", { text: k.name }), h("span", { class: "badge kit", title: "a workflow the kit gives every layer", text: "kit" }),
+          k.off ? h("span", { class: "badge warn kit-off", text: "off" }) : null,
+          h("span", { class: "dim", text: k.purpose }), h("span", { class: "spacer" }),
+          k.stats.count ? h("a", { class: "toggle", href: routeHash(["runs"], { layer: key, adw: k.name }), text: `${k.stats.count} runs` }) : h("span", { class: "faint", text: "no runs" })),
+        h("div", { class: "piter" },
+          h("span", { class: "badge", text: `input: ${(k.input && (k.input.what || k.input.kind)) || "none"}${k.input && k.input.from ? ` (${k.input.from} → ${k.input.to})` : ""}` }),
+          h("span", { class: "badge", text: how }), k.ships ? h("span", { class: "badge", text: `ships: ${k.ships}` }) : null,
+          k.setting ? h("span", { class: `badge${k.setting.on ? "" : " warn"} kit-setting`, text: `${k.setting.where} (${k.setting.key}): ${k.setting.on ? "on" : "off"}` }) : null),
+        k.off && k.setting ? h("div", { class: "why kit-turn-on", text: `turn it on: ${k.setting.turn_on}` })
+          : !start.by_hand && start.why ? h("div", { class: "faint kit-why", text: start.why }) : null,
+        k.off && !k.setting && start.why ? h("div", { class: "why kit-turn-on", text: start.why }) : null,
+        k.graph ? h("div", { class: "graph-wrap" }, renderGraph(k.graph, { static: true }))
+          : (k.steps || []).length ? h("div", { class: "kit-steps mono dim", text: k.steps.join(" → ") }) : null,
+        (k.recent || []).length ? h("div", { class: "mini-runs" }, k.recent.map((run) => h("a", { href: `#/run/${enc(key)}/${enc(run.id)}`, title: run.title },
+          h("span", { class: `dot s-${run.status}` }), run.id, h("span", { class: "dim", text: fmt.cost(run.cost) })))) : null);
+    }
     load();
     const off = store.on(throttle((kind) => { if (kind !== "slots" && kind !== "containers") load(); }, 3000));
     return { destroy() { off(); voice.destroy(); } };

@@ -675,7 +675,26 @@ def compile_layer(layer: Path) -> dict:
     if errors:
         raise AlError("IR does not match the schema (compiler/schema drift):\n" + "\n".join(
             f"  {'/'.join(map(str, e.path))}: {e.message}" for e in errors[:10]))
+    reserved = registry_module().build(ir)["reserved"]   # the names a run of a kit workflow records
+    for adw in ir.get("adws") or []:
+        if adw.get("name") in reserved:
+            name = adw["name"]
+            how = ("every layer has `integrate`: al integrate LAYER RUN" if name == "integrate"
+                   else f"this layer's promotion: al promote LAYER {' '.join(name.split('-')[1:])}")
+            raise AlError(f"workflow `{name}` takes the name of a kit workflow ({how}); rename it")
     return ir
+
+
+def registry_module():
+    """kit/runtime/adw_modules/registry.py, loaded by path: what a layer can run (its workflows, the
+    kit's, its commands) has one description, the runtime's own module."""
+    import importlib.util
+
+    path = KIT / "runtime" / "adw_modules" / "registry.py"
+    spec = importlib.util.spec_from_file_location("al_kit_registry", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 # ------------------------------------------------------------------------------------------

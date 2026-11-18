@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import budget, inputs, ir, models, slots, state as state_module
+from . import budget, inputs, ir, models, registry, slots, state as state_module
 from .agents import CLASSES
 from .errors import LayerError
 
@@ -87,23 +87,35 @@ class Target:
 
 # ---------------------------------------------------------------- what can be started
 
+def layer_registry(layer: Any) -> dict[str, Any]:
+    """What this layer can run (registry.build): its workflows, the kit's, its commands."""
+    return registry.build(layer.ir, getattr(layer, "layer_dir", None))
+
+
 def catalog_names(layer: Any) -> tuple[list[str], list[str]]:
     """(workflow names, command and hop names) of the compiled layer, in declaration order."""
-    workflows = [str(a.get("name")) for a in layer.ir.get("adws") or [] if isinstance(a, dict) and a.get("name")]
-    commands = [str(c.get("name")) for key in ("commands", "hops") for c in layer.ir.get(key) or []
-                if isinstance(c, dict) and c.get("name")]
-    return workflows, list(dict.fromkeys(commands))
+    reg = layer_registry(layer)
+    return [e["name"] for e in registry.declared(reg)], [e["name"] for e in registry.commands(reg)]
+
+
+def _kit_names(reg: dict[str, Any]) -> list[str]:
+    return [f"{e['name']} (kit)" for e in registry.kit(reg)]
 
 
 def resolve_target(layer: Any, text: str, kind: str | None = None) -> Target:
     """`/NAME rest…` → the workflow NAME when the layer declares one, else its command or hop NAME;
-    `/command:NAME rest…` is always the command. `kind` (workflow | command) forces one of the two."""
+    `/command:NAME rest…` is always the command. `kind` (workflow | command) forces one of the two.
+    A kit workflow (integrate, a promotion, improve, the decider) is not started here: the error
+    says which command starts it."""
     match = SLASH_RE.match(text or "")
     if not match:
         raise LayerError("start with /NAME (a workflow, command or hop of the layer), e.g. /plan-chore tidy the readme")
     head, rest = match.group(1), (match.group(2) or "").strip()
-    workflows, commands = catalog_names(layer)
-    if head.startswith(COMMAND_PREFIX):
+    reg = layer_registry(layer)
+    workflows = [e["name"] for e in registry.declared(reg)]
+    commands = [e["name"] for e in registry.commands(reg)]
+    forced = head.startswith(COMMAND_PREFIX)
+    if forced:
         head, kind = head[len(COMMAND_PREFIX):], "command"
     if kind not in (None, "workflow", "command"):
         raise LayerError(f"unknown kind {kind!r}: workflow or command")
@@ -111,7 +123,10 @@ def resolve_target(layer: Any, text: str, kind: str | None = None) -> Target:
         return Target("workflow", head, rest)
     if kind in (None, "command") and head in commands:
         return Target("command", head, rest)
-    known = ", ".join(f"/{n}" for n in [*workflows, *[c for c in commands if c not in workflows]]) or "(none)"
+    answer = "" if forced else registry.start_answer(reg, head)
+    if answer:
+        raise LayerError(answer)
+    known = ", ".join(registry.known_names(reg)) or "(none)"
     what = {"workflow": "workflow", "command": "command or hop"}.get(kind or "", "workflow or command")
     raise LayerError(f"no {what} named {head or '(empty)'}; known: {known}")
 
@@ -214,10 +229,16 @@ def _check(layer: Any, target: Target, prompt: str, request_key: str, klass: str
     """(the ADW to run, the overrides) or LayerError / ValueError with the reason."""
     if not isinstance(request_key, str) or not KEY_RE.fullmatch(request_key):
         raise ValueError("request key: 8 to 64 letters, digits, - or _")
-    workflows, commands = catalog_names(layer)
+    reg = layer_registry(layer)
+    workflows = [e["name"] for e in registry.declared(reg)]
+    commands = [e["name"] for e in registry.commands(reg)]
     if target.kind == "workflow":
         if target.name not in workflows:
-            raise LayerError(f"no workflow named {target.name}; known: {', '.join(workflows) or '(none)'}")
+            answer = registry.start_answer(reg, target.name)
+            if answer:
+                raise LayerError(answer)
+            raise LayerError(f"no workflow named {target.name}; known: "
+                             f"{', '.join([*workflows, *_kit_names(reg)]) or '(none)'}")
         adw = layer.validate_adw(target.name)
     elif target.kind == "command":
         if target.name not in commands:

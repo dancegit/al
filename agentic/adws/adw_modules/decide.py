@@ -576,28 +576,38 @@ def write_record(layer: Any, state: Any) -> Path:
     return path
 
 
-def resume_argv(layer: Any, state: Any) -> list[str]:
-    """The command line of the resume: the layer's own adws/ script on this interpreter, in the
-    same decider mode, a dry run again when this one was."""
-    from . import inputs
+def resume_argv(layer: Any, state: Any) -> list[str] | None:
+    """The command line of the resume: the layer's own adws/ script on this interpreter (the one the
+    registry names for this run: a workflow's script, dispatch.py for a single command, promote.py or
+    integrate.py for a kit run), in the same decider mode, a dry run again when this one was. None
+    when no script of the layer continues the run."""
+    from . import registry
 
-    argv = [sys.executable, str(inputs.adw_script(Path(layer.layer_dir), state.adw)), "--resume",
-            "--adw-id", state.adw_id, "--decider", str((state.decision or {}).get("mode") or "off")]
-    return argv + (["--dry-run"] if state.dry_run else [])
+    argv = registry.resume_argv(Path(layer.layer_dir), str(state.adw), getattr(state, "definition", None),
+                                state.adw_id, decider=str((state.decision or {}).get("mode") or "off"),
+                                dry_run=bool(state.dry_run))
+    return None if argv is None else [sys.executable, *argv]
+
+
+def _no_script(state: Any) -> str:
+    return f"no script of the layer continues a run of {state.adw}: it is a kit run that recorded no definition"
 
 
 def spawn_resume(layer: Any, state: Any) -> None:
     """Start the resume detached (its own session), its early output in agents/<id>/resume.log."""
+    argv = resume_argv(layer, state)
+    if argv is None:
+        raise LayerError(_no_script(state))
     log = state_module.run_dir(layer.layer_dir, state.adw_id) / "resume.log"
     with log.open("ab") as handle:
-        subprocess.Popen(resume_argv(layer, state), cwd=layer.layer_dir, stdin=subprocess.DEVNULL, stdout=handle,
+        subprocess.Popen(argv, cwd=layer.layer_dir, stdin=subprocess.DEVNULL, stdout=handle,
                          stderr=subprocess.STDOUT, start_new_session=True)
 
 
 def _start(layer: Any, state: Any, say: bool = True) -> None:
     if say:
         print(f"[adw {state.adw_id}] decider: resuming from {state.decision.get('from_step') or '?'}: "
-              f"{' '.join(resume_argv(layer, state)[2:])}", flush=True)
+              f"{' '.join((resume_argv(layer, state) or [])[2:])}", flush=True)
     with events.recording(layer.layer_dir, state.adw_id):
         events.emit("decision.resume", from_step=state.decision.get("from_step", ""),
                     mode=state.decision.get("mode", ""))
@@ -617,11 +627,19 @@ def after_run(layer: Any, state: Any) -> None:
         _save(layer, state)
     if (state.decision or {}).get("status") != "resuming":
         return
+    from . import registry
+
+    if resume_argv(layer, state) is None:   # nothing is started: a script that does not exist would only fail
+        print(f"[adw {state.adw_id}] decider: the run is not resumed by the decider: {_no_script(state)}; it "
+              "stays with a person", flush=True)
+        return
     try:
         _start(layer, state)
     except Exception as exc:  # noqa: BLE001 — the run has ended; say why the resume did not start
+        by_hand = registry.resume_words(Path(layer.layer_dir), str(state.adw), getattr(state, "definition", None),
+                                        state.adw_id) or "no script of the layer continues it"
         print(f"[adw {state.adw_id}] decider: the resume did not start: {type(exc).__name__}: {exc}; "
-              f"resume by hand: uv run adws/adw_{state.adw}.py --resume --adw-id {state.adw_id}")
+              f"resume by hand: {by_hand}")
 
 
 # ---------------------------------------------------------------- a person answers

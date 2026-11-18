@@ -152,6 +152,8 @@ ASK_STATUSES = ("failed", "died", "handed-over", "waiting")   # what "Ask the st
 MAX_ASK_RUNS = 200
 MAX_DECISIONS = 200               # entries of a run's decisions.jsonl the run page carries
 LAUNCH_MODULE = "adws/adw_modules/launch.py"
+REGISTRY_MODULE = "adws/adw_modules/registry.py"   # what a layer can run (kit/runtime/adw_modules/registry.py)
+DECIDER_SETTINGS = "agents/settings/decider.json"
 WINDOW_LABELS = {"five_hour": "5-hour", "seven_day": "weekly"}
 WINDOW_ORDER = ("five_hour", "seven_day")
 API_KEY_SOURCES = ("ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key")
@@ -1360,6 +1362,130 @@ def _setup_node(adw: dict[str, Any], layer_ir: dict[str, Any]) -> dict[str, Any]
             "sub": " ".join(prepare) if prepare else "postCreateCommand", "when": "always", "role": "flow"}
 
 
+# ---------------------------------------------------------------------------- what a layer can run
+# The runtime's registry (adws/adw_modules/registry.py) is the one description of what a layer can
+# run: its declared workflows, the kit's workflows, its commands. The dashboard loads that module by
+# path (standard library only, no side effects) and builds its lists from it.
+
+_REGISTRY_MODULES: dict[str, tuple[tuple[int, int, int] | None, Any]] = {}
+_REGISTRY_BUILT: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
+_REGISTRY_LOCK = threading.Lock()
+REGISTRY_BESIDE = (Path(__file__).resolve().parent.parent / "runtime" / "adw_modules" / "registry.py",   # the kit checkout
+                   Path(__file__).resolve().parent.parent / "adw_modules" / "registry.py")               # a generated layer
+
+
+def _load_registry_module(path: Path) -> Any:
+    """The module at `path`, cached by (path, mtime); None when there is none or it does not load."""
+    import importlib.util
+
+    sig = stat_sig(path)
+    if sig is None:
+        return None
+    key = str(path)
+    with _REGISTRY_LOCK:
+        cached = _REGISTRY_MODULES.get(key)
+        if cached and cached[0] == sig:
+            return cached[1]
+    module = None
+    try:
+        spec = importlib.util.spec_from_file_location(f"_al_dashboard_registry_{len(key)}_{abs(hash(key))}", path)
+        candidate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(candidate)
+        if all(callable(getattr(candidate, name, None)) for name in ("build", "entry", "kit", "start_answer")):
+            module = candidate
+    except Exception as exc:  # noqa: BLE001 — a layer's copy that does not load never takes the page down
+        print(f"[dashboard] {path}: the registry module did not load: {type(exc).__name__}: {exc}", file=sys.stderr)
+    with _REGISTRY_LOCK:
+        _REGISTRY_MODULES[key] = (sig, module)
+    return module
+
+
+def registry_module(layer: "Layer") -> Any:
+    """The registry module for a layer: its own adws/adw_modules/registry.py, else the copy beside
+    the dashboard; None when neither loads (a layer generated before the registry, seen from the
+    dashboard's container)."""
+    for path in (layer.path / REGISTRY_MODULE, *REGISTRY_BESIDE):
+        module = _load_registry_module(path)
+        if module is not None:
+            return module
+    return None
+
+
+def _registry_without_module(ir: dict[str, Any], problem: str) -> dict[str, Any]:
+    """The declared workflows and commands in the registry's shape, for a layer whose registry
+    module cannot be loaded: the lists stay as they were before the registry, with one problem line."""
+    def entry(**fields: Any) -> dict[str, Any]:
+        return {"name": "", "kind": "", "source": "declared", "purpose": "", "steps": [], "definition": None,
+                "input": {"kind": "request"}, "start": {"by_hand": True, "how": "form", "command": "", "why": ""},
+                "ships": "", "setting": None, "script": "", "available": True, "off": False, "adw": "",
+                "used_by": [], **fields}
+
+    entries = []
+    for adw in ir.get("adws") or []:
+        if isinstance(adw, dict) and isinstance(adw.get("name"), str):
+            entries.append(entry(name=adw["name"], kind="workflow", purpose=str(adw.get("description") or ""),
+                                 steps=[str(s.get("name")) for s in adw.get("steps") or [] if isinstance(s, dict)],
+                                 definition=adw, ships=ships_unattended(ir, adw), script=f"adws/adw_{adw['name']}.py",
+                                 adw=adw["name"]))
+    seen: set[str] = set()
+    for key, kind in (("commands", "command"), ("hops", "hop")):
+        for item in ir.get(key) or []:
+            if isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"] not in seen:
+                seen.add(item["name"])
+                entries.append(entry(name=item["name"], kind=kind, purpose=str(item.get("description") or ""),
+                                     steps=[item["name"]], script=LAUNCHER, adw=COMMAND_PREFIX + item["name"]))
+    return {"version": 1, "entries": entries, "scripts": {}, "reserved": [], "problems": [problem]}
+
+
+def load_registry(layer: "Layer") -> dict[str, Any]:
+    """What this layer can run (the runtime's registry.build), cached by the signature of
+    agentic-layer.json, the two setting files and adws/. Never raises: without a loadable module the
+    declared entries and a problem line."""
+    module = registry_module(layer)
+    if module is None:
+        return _registry_without_module(layer.ir, f"generated before the registry: run al gen {layer.name}")
+    sig = (layer.sig, stat_sig(layer.path / INTEGRATE_SETTINGS), stat_sig(layer.path / DECIDER_SETTINGS),
+           stat_sig(layer.path / "adws"), id(module), id(getattr(module, "KIT", None)))
+    key = str(layer.path)
+    with _REGISTRY_LOCK:
+        cached = _REGISTRY_BUILT.get(key)
+        if cached and cached[0] == sig:
+            return cached[1]
+    try:
+        built = module.build(layer.ir, layer.path)
+    except Exception as exc:  # noqa: BLE001 — a registry that cannot be built is a problem line, not a crash
+        built = _registry_without_module(layer.ir, f"the registry could not be built: {type(exc).__name__}: {exc}")
+    with _REGISTRY_LOCK:
+        _REGISTRY_BUILT[key] = (sig, built)
+    return built
+
+
+def registry_entry(reg: dict[str, Any], name: Any) -> dict[str, Any] | None:
+    """The entry called `name`, or whose runs record `name` (command:NAME); a workflow wins over a
+    kit row, a kit row over a command (the rule of registry.entry)."""
+    entries = reg.get("entries") or []
+    if isinstance(name, str) and name.startswith(COMMAND_PREFIX):
+        return next((e for e in entries if e.get("adw") == name), None)
+    order = {"workflow": 0, "kit-workflow": 1, "decider": 1, "command": 2, "hop": 2}
+    found = sorted((e for e in entries if e.get("name") == name), key=lambda e: order.get(e.get("kind"), 9))
+    return found[0] if found else None
+
+
+def kit_sentence(layer: "Layer", name: str) -> str:
+    """Why `name` is not started through the free-text start, when it is a kit entry; else ""."""
+    module, reg = registry_module(layer), load_registry(layer)
+    found = registry_entry(reg, name)
+    if module is None or found is None or found.get("source") != "kit":
+        return ""
+    return str(module.start_answer(reg, name, "form"))
+
+
+def known_startables(layer: "Layer", catalog: dict[str, Any]) -> list[str]:
+    """What a "known:" list names: the workflows and commands, then the kit entries, each with `(kit)`."""
+    names = [w["name"] for w in catalog["workflows"]] + [c["name"] for c in catalog["commands"]]
+    return [f"/{n}" for n in dict.fromkeys(names)] + [f"/{k['name']} (kit)" for k in catalog.get("kit") or []]
+
+
 @dataclass
 class Layer:
     key: str
@@ -1373,6 +1499,11 @@ class Layer:
 
     def adw(self, name: str) -> dict[str, Any] | None:
         return next((a for a in self.ir.get("adws") or [] if isinstance(a, dict) and a.get("name") == name), None)
+
+    def entry(self, name: Any) -> dict[str, Any] | None:
+        """What the registry says `name` is: a declared workflow, a kit workflow, a command (also by
+        the name its runs record, command:NAME); None when the layer cannot run it."""
+        return registry_entry(load_registry(self), name)
 
     def limits(self) -> dict[str, int]:
         option = self.ir.get("concurrency") or {}
@@ -1715,21 +1846,30 @@ def _issue_input(ir: dict[str, Any], adw: dict[str, Any]) -> str:
     return next((str(i) for i in adw.get("input") or [] if kinds.get(str(i)) == "issue"), "")
 
 
+def kit_view(entry: dict[str, Any]) -> dict[str, Any]:
+    """A kit entry as the page gets it."""
+    return {key: entry.get(key) for key in ("name", "kind", "purpose", "steps", "input", "start", "ships", "setting",
+                                           "off", "available", "script")}
+
+
 def startables(layer: Layer, decider: str = "off") -> dict[str, Any]:
-    """Everything a person may start in this layer, from the compiled IR (adopted workflows and
-    prompts included, nothing else is consulted): its workflows, and its commands and hops (each one
-    a single-command run that never ships). `decider` is the layer's stand-in mode now (what a start
+    """Everything a person may start in this layer, from the registry (adopted workflows and prompts
+    included): its workflows, its commands and hops (each one a single-command run that never
+    ships), and `kit`: the workflows the kit gives every layer, with the input each takes and
+    whether and how a person starts it. `decider` is the layer's stand-in mode now (what a start
     without its own `decider` runs with)."""
     ir = layer.ir
+    reg = load_registry(layer)
     forge_kind = str((ir.get("forge") or {}).get("kind") or "none") if isinstance(ir.get("forge"), dict) else "none"
     workflows = []
-    for adw in ir.get("adws") or []:
-        if not isinstance(adw, dict) or not isinstance(adw.get("name"), str):
+    for entry in reg["entries"]:
+        adw = entry.get("definition")
+        if entry.get("kind") != "workflow" or not isinstance(adw, dict):
             continue
         review = _review(ir, adw.get("review"))
         by_trigger = forge_kind != "none" and bool(_issue_input(ir, adw)) and _trigger_starts(ir, adw)
         workflows.append({
-            "name": adw["name"], "description": str(adw.get("description") or ""),
+            "name": entry["name"], "description": str(adw.get("description") or ""),
             "classes": list(adw.get("classes") or []), "input": list(adw.get("input") or []),
             "trigger": list(adw.get("trigger") or []), "environment": list(adw.get("environment") or []),
             "review": {"id": str(review.get("id") or adw.get("review") or ""), "kind": str(review.get("kind") or ""),
@@ -1739,24 +1879,26 @@ def startables(layer: Layer, decider: str = "off") -> dict[str, Any]:
             "ships_unattended": ships_unattended(ir, adw), "issue_trigger": by_trigger,
             "summary": workflow_summary(ir, adw)})
     commands = []
-    seen: set[str] = set()
-    for key, kind in (("commands", "command"), ("hops", "hop")):
-        for entry in ir.get(key) or []:
-            if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or entry["name"] in seen:
-                continue
-            seen.add(entry["name"])
-            commands.append({"name": entry["name"], "kind": kind, "description": str(entry.get("description") or ""),
-                             "argument_hint": argument_hint(layer, kind, entry["name"]),
-                             "tier": str(entry.get("modelSet") or ("heavy" if kind == "hop" else "base")),
-                             "output": str(entry.get("output") or entry.get("produces") or ""),
-                             "summary": command_summary(kind, entry)})
+    for entry in reg["entries"]:
+        if entry.get("kind") not in ("command", "hop"):
+            continue
+        kind, item = _command_entry(ir, entry["name"])
+        kind = kind or str(entry["kind"])
+        commands.append({"name": entry["name"], "kind": kind, "description": str(item.get("description") or ""),
+                         "argument_hint": argument_hint(layer, kind, entry["name"]),
+                         "tier": str(item.get("modelSet") or ("heavy" if kind == "hop" else "base")),
+                         "output": str(item.get("output") or item.get("produces") or ""),
+                         "summary": command_summary(kind, {"name": entry["name"], **item})})
     names = {w["name"] for w in workflows}
-    return {"workflows": workflows, "commands": commands, "forge": forge_kind,
+    return {"workflows": workflows, "commands": commands,
+            "kit": [kit_view(e) for e in reg["entries"] if e.get("source") == "kit"],
+            "forge": forge_kind,
             "issue": {"available": forge_kind != "none",
                       "trigger": [w["name"] for w in workflows if w["issue_trigger"]]},
             "tiers": declared_tiers(ir), "classes": list(START_CLASSES),
             "decider": {"modes": list(DECIDER_MODES), "layer": decider if decider in DECIDER_MODES else "off"},
-            "collisions": sorted(c["name"] for c in commands if c["name"] in names)}
+            "collisions": sorted(c["name"] for c in commands if c["name"] in names),
+            "problems": list(reg.get("problems") or [])}
 
 
 def split_slash(text: str, catalog: dict[str, Any]) -> tuple[dict[str, str], str] | None:
@@ -1791,10 +1933,12 @@ def start_request(layer: Layer, data: dict[str, Any]) -> tuple[dict[str, Any] | 
     if target is None and isinstance(data.get("text"), str):
         split = split_slash(data["text"], catalog)
         if split is None:
-            known = [w["name"] for w in catalog["workflows"]] + [c["name"] for c in catalog["commands"]]
             word = (data["text"].split() or [""])[0]
+            sentence = kit_sentence(layer, word[1:]) if word.startswith("/") else ""
+            if sentence:   # a kit workflow takes a run or two stages, not free text
+                return None, sentence
             return None, (f"no workflow or command named {clip(word, 80)!r}; known: "
-                          + ", ".join(f"/{n}" for n in dict.fromkeys(known)))
+                          + ", ".join(known_startables(layer, catalog)))
         target, rest = split
         prompt = "\n\n".join(part for part in (rest, prompt.strip()) if part)
     if not isinstance(target, dict) or target.get("kind") not in ("workflow", "command") \
@@ -1803,6 +1947,9 @@ def start_request(layer: Layer, data: dict[str, Any]) -> tuple[dict[str, Any] | 
     names = [w["name"] for w in catalog["workflows"]] if target["kind"] == "workflow" \
         else [c["name"] for c in catalog["commands"]]
     if target["name"] not in names:
+        sentence = kit_sentence(layer, target["name"]) if target["kind"] == "workflow" else ""
+        if sentence:
+            return None, sentence
         return None, f"no {target['kind']} named {clip(target['name'], 80)!r}; known: {', '.join(names) or '(none)'}"
     if target["kind"] == "workflow" and not prompt.strip():
         return None, "a workflow needs a prompt"
@@ -2860,9 +3007,11 @@ def review_rejected(state: dict[str, Any] | None, events: list[dict[str, Any]]) 
     return bool(rounds) and rounds[-1].get("success") is False
 
 
-def handover_reasons(layer_ir: dict[str, Any], state: dict[str, Any] | None, rejected: bool) -> list[str]:
+def handover_reasons(layer_ir: dict[str, Any], state: dict[str, Any] | None, rejected: bool,
+                     entry: Callable[[Any], dict[str, Any] | None] | None = None) -> list[str]:
     """Why a run that reached its end was handed to a person (the runtime's runner.handover_reasons):
-    recorded in state.ship.handed_over, else worked out for older records."""
+    recorded in state.ship.handed_over, else worked out for older records. `entry` is Layer.entry:
+    the run's workflow is looked up in the registry (a kit run has no declared one)."""
     state = state or {}
     ship = state.get("ship") if isinstance(state.get("ship"), dict) else {}
     if isinstance(ship.get("handed_over"), list):
@@ -2871,6 +3020,8 @@ def handover_reasons(layer_ir: dict[str, Any], state: dict[str, Any] | None, rej
     adw = next((a for a in layer_ir.get("adws") or [] if isinstance(a, dict) and a.get("name") == state.get("adw")), None)
     if adw is None and isinstance(state.get("definition"), dict):
         adw = state["definition"]
+    if adw is None and entry is not None:
+        adw = (entry(state.get("adw")) or {}).get("definition")
     option = _review(layer_ir, (adw or {}).get("review")) if (adw or {}).get("review") else {}
     gate = ship.get("gate") if isinstance(ship.get("gate"), dict) else {}
     if (option.get("kind") == "auto" and gate.get("ship") is False) or ship.get("fallback"):
@@ -3454,10 +3605,17 @@ class RunModel:
         events = load_events(self.files.dir / EVENTS_FILE)
         spans = event_spans(events) if any(e["type"] == "run.start" for e in events) else None
         adw_name = (state or {}).get("adw") or (facts["start"] or {}).get("adw") or "?"
-        adw = self.layer.adw(adw_name)
-        if adw is None:   # a single-command run records its synthetic ADW; anything else shows its records only
-            recorded = (state or {}).get("definition")
-            adw = recorded if isinstance(recorded, dict) and recorded.get("name") == adw_name else None
+        # the definition the run recorded when it has steps (a kit run and a single-command run record
+        # theirs: it stays the source whatever the kit version), else the declared workflow, else what
+        # the registry says a run of that name does
+        entry = self.layer.entry(adw_name)
+        recorded = (state or {}).get("definition")
+        adw = recorded if isinstance(recorded, dict) and recorded.get("steps") else None
+        if adw is not None and not adw.get("name"):
+            adw = {**adw, "name": adw_name}
+        adw = adw or self.layer.adw(adw_name)
+        if adw is None and entry is not None and isinstance(entry.get("definition"), dict):
+            adw = {**entry["definition"], "name": adw_name}
         adw = adw or {"name": adw_name, "steps": []}
         ir_steps = [s for s in adw.get("steps") or [] if isinstance(s, dict)]
         step_names = [str(s.get("name")) for s in ir_steps]
@@ -3480,7 +3638,8 @@ class RunModel:
         if alive and alive["died"]:
             status = "died"
         rejected = review_rejected(state, events)
-        handover = handover_reasons(self.layer.ir, state, rejected) if status in {"passed", "handed-over"} else []
+        handover = (handover_reasons(self.layer.ir, state, rejected, self.layer.entry)
+                    if status in {"passed", "handed-over"} else [])
         if status == "passed" and handover:   # an older record: the runtime called this run passed
             status = "handed-over"
         last_seen = alive["last_seen"] if alive else None
@@ -3553,7 +3712,8 @@ class RunModel:
                 "records": records, "status": status, "running": running, "agents": agents,
                 "activities": activities, "attempts": attempts, "run_start": run_start, "run_end": run_end,
                 "current": current_record if running else None, "live_check": live_check, "now": now,
-                "spans": spans, "last_seen": last_seen, "review_rejected": rejected, "handover": handover}
+                "spans": spans, "last_seen": last_seen, "review_rejected": rejected, "handover": handover,
+                "entry": entry}
 
     def _event_checks(self, spans: dict[str, Any], activities: list[Activity], running: bool, unfinished: str,
                       cutoff: float) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any] | None]:
@@ -3771,6 +3931,23 @@ class RunModel:
         definition = state.get("definition") if isinstance(state.get("definition"), dict) else {}
         planned = definition.get("integration") if isinstance(definition.get("integration"), dict) else {}
         integrates = str(integration.get("run") or planned.get("run") or "")
+        integrates = integrates if RUN_ID.match(integrates) else ""
+        entry = data.get("entry") or {}
+        adw_name = str(data["adw"].get("name") or "")
+        promoted = definition.get("promotion") if isinstance(definition.get("promotion"), dict) else {}
+        if not promoted and isinstance((data["adw"] or {}).get("promotion"), dict):
+            promoted = data["adw"]["promotion"]
+        # a run of a workflow the kit gives every layer, and what it acts on (the run it integrates,
+        # the promotion's two stages, the one command of a single-command run)
+        kit_run = (entry.get("source") == "kit" or isinstance(definition.get("integration"), dict)
+                   or isinstance(definition.get("promotion"), dict) or bool(integrates))
+        acts_on: dict[str, Any] | None = None
+        if integrates:
+            acts_on = {"kind": "run", "id": integrates}
+        elif promoted.get("from"):
+            acts_on = {"kind": "promotion", "from": str(promoted.get("from")), "to": str(promoted.get("to") or "")}
+        elif adw_name.startswith(COMMAND_PREFIX):
+            acts_on = {"kind": "command", "name": adw_name[len(COMMAND_PREFIX):]}
         summary = {
             **self._standin(state, agents),
             "key": f"{self.layer.key}/{self.id}", "layer": self.layer.key, "id": self.id, "adw": data["adw"].get("name"),
@@ -3821,7 +3998,8 @@ class RunModel:
             # the kit workflow `integrate`: the integration run of this (handed-over) run, and the run an
             # integration run brings onto its target
             "integration": read_integration(self.layer.path, self.id),
-            "integrates": integrates if RUN_ID.match(integrates) else "",
+            "integrates": integrates,
+            "kit": kit_run, "acts_on": acts_on,
             **extras,
         }
         summary["integrate"] = integrate_offer(self.layer, summary)
@@ -5346,12 +5524,15 @@ class Model:
         state = state if isinstance(state, dict) else {}
         adw = str(state.get("adw") or "")
         definition = state.get("definition") if isinstance(state.get("definition"), dict) else {}
-        if layer.adw(adw) is not None:
+        entry = layer.entry(adw) or {}
+        if entry.get("kind") == "workflow":
             target = {"kind": "workflow", "name": adw}
         elif adw.startswith(COMMAND_PREFIX):
             steps = [s for s in definition.get("steps") or [] if isinstance(s, dict)]
             name = str(steps[0].get("command") or "") if steps else ""
             target = {"kind": "command", "name": name or adw[len(COMMAND_PREFIX):]}
+        elif entry.get("source") == "kit":   # a kit run is started where its entry says, not as free text
+            return None, 400, f"run {run_id} ran a kit workflow: {kit_sentence(layer, adw)}"
         else:
             return None, 400, f"run {run_id} ran {adw or 'an unknown workflow'}, which the layer no longer declares"
         prompt = read_text(layer.path / "agents" / run_id / "request.md", cap=MAX_START_BODY).strip() \
@@ -5598,22 +5779,78 @@ class Model:
         view = self.standin_view(layer)
         return {"mode": str(view.get("mode") or "off"), "from": str(view.get("source") or "default")}
 
+    def startable_view(self, layer: Layer, decider: str = "off") -> dict[str, Any]:
+        """startables(layer) with what only the model knows about each kit entry: `page_start` (may
+        this dashboard start it), for the entry that takes a run its `candidates` (the handed-over
+        runs it is offered for, newest first) or `none_why`, for a promotion its open run, approval
+        and method."""
+        catalog = startables(layer, decider)
+        summaries = self._layer_summaries(layer)
+        with self.lock:
+            buckets = {key: item.get("bucket") for key, item in self.attention.items()}
+        opened = open_promotions(layer)
+        promotions = [p for p in layer.ir.get("promotions") or [] if isinstance(p, dict)]
+        for entry in catalog["kit"]:
+            kind = (entry.get("input") or {}).get("kind")
+            if entry.get("kind") != "kit-workflow" or not (entry.get("start") or {}).get("how") == "form":
+                entry["page_start"] = {"enabled": False, "why": str((entry.get("start") or {}).get("why") or "")}
+                continue
+            if kind == "run":
+                entry["page_start"] = integrate_status(layer, self)
+                found = []
+                for row in sorted(summaries, key=lambda r: -(r.get("started") or 0)):
+                    offer = integrate_offer(layer, row)
+                    if offer["offered"] and buckets.get(row["key"], "needs-you") == "needs-you":
+                        found.append({"id": row["id"], "title": row.get("title") or "",
+                                      "target": row.get("target_branch") or "",
+                                      "reasons": list((row.get("outcome") or {}).get("handover") or [])})
+                entry["candidates"] = found
+                entry["none_why"] = "" if found else (
+                    str(entry["start"].get("why") or "") if entry.get("off") or not entry["start"].get("by_hand")
+                    else "no run of this layer is handed over because of a merge conflict or a moved target")
+            elif kind == "stages":
+                status = start_status(layer, self)
+                if status["enabled"] and not (layer.path / PROMOTE_SCRIPT).is_file():
+                    status = {"enabled": False, "why": f"run `al gen {layer.name}` to add {PROMOTE_SCRIPT}"}
+                entry["page_start"] = status
+                from_, to = entry["input"].get("from"), entry["input"].get("to")
+                promo = next((p for p in promotions if p.get("from") == from_ and p.get("to") == to), {})
+                entry["open"] = next((o for o in opened if o.get("from") == from_ and o.get("to") == to), None)
+                entry["approval"], entry["method"] = promo.get("approval"), promo.get("method")
+                entry["approvers"] = promo.get("approvers")
+            else:
+                entry["page_start"] = {"enabled": False, "why": str(entry["start"].get("why") or "")}
+        return catalog
+
     def layer_detail(self, layer_key: str) -> dict[str, Any] | None:
         layer = self.layers.get(layer_key)
         if layer is None:
             return None
         with self.lock:
             runs = [{**s, **self.attention.get(s["key"], {})} for s in self.summaries.values() if s["layer"] == layer_key]
-        adws = []
-        for adw in layer.ir.get("adws") or []:
-            if not isinstance(adw, dict):
-                continue
-            mine = [r for r in runs if r.get("adw") == adw.get("name")]
-            adws.append({"name": adw.get("name"), "description": adw.get("description", ""),
-                         "environment": adw.get("environment", []), "review": adw.get("review", ""),
-                         "trigger": adw.get("trigger", []), "input": adw.get("input", []),
-                         "graph": build_graph(adw, layer.ir), "stats": aggregate(mine),
-                         "recent": sorted(mine, key=lambda r: -(r.get("started") or 0))[:8]})
+        reg = load_registry(layer)
+        recent = lambda mine: sorted(mine, key=lambda r: -(r.get("started") or 0))[:8]   # noqa: E731
+        adws, kit, commands, suite = [], [], [], []
+        for entry in reg["entries"]:
+            mine = [r for r in runs if entry.get("adw") and r.get("adw") == entry["adw"]]
+            definition = entry.get("definition") if isinstance(entry.get("definition"), dict) else None
+            if entry.get("kind") == "workflow" and definition is not None:
+                adw = definition
+                adws.append({"name": adw.get("name"), "description": adw.get("description", ""),
+                             "environment": adw.get("environment", []), "review": adw.get("review", ""),
+                             "trigger": adw.get("trigger", []), "input": adw.get("input", []),
+                             "graph": build_graph(adw, layer.ir), "stats": aggregate(mine),
+                             "recent": recent(mine)})
+            elif entry.get("source") == "kit":
+                kit.append({**kit_view(entry), "graph": build_graph(definition, layer.ir) if definition else None,
+                            "stats": aggregate(mine), "recent": recent(mine)})
+            elif entry.get("kind") in ("command", "hop"):
+                commands.append({"name": entry["name"], "kind": entry["kind"], "purpose": entry.get("purpose", ""),
+                                 "adw": entry.get("adw", ""), "off": bool(entry.get("off")),
+                                 "start": entry.get("start"), "stats": aggregate(mine), "recent": recent(mine)})
+            elif entry.get("kind") == "suite-command":
+                suite.append({"name": entry["name"], "purpose": entry.get("purpose", ""),
+                              "used_by": entry.get("used_by") or [], "why": (entry.get("start") or {}).get("why", "")})
         explain = layer.explain_file()
         opened = open_promotions(layer)
         promotions = [{"from": p.get("from"), "to": p.get("to"), "approval": p.get("approval"),
@@ -5622,6 +5859,7 @@ class Model:
                        "open": next((o for o in opened if o.get("from") == p.get("from") and o.get("to") == p.get("to")), None)}
                       for p in layer.ir.get("promotions") or [] if isinstance(p, dict)]
         return {"layer": next((l for l in self.layer_list() if l["key"] == layer_key), {}), "adws": adws,
+                "kit": kit, "commands": commands, "suite": suite, "problems": list(reg.get("problems") or []),
                 "promotions": promotions, "open_promotions": opened,
                 "promote": {"available": (layer.path / PROMOTE_SCRIPT).is_file(),
                             "start": start_status(layer, self)},
@@ -9373,8 +9611,9 @@ class Handler(BaseHTTPRequestHandler):
         layer = self.server.model.layers.get(self._q(query, "layer"))
         if layer is None:
             return self._error(404, "unknown layer")
-        mode = str(self.server.model.standin_view(layer).get("mode") or "off")
-        return self._json({"layer": layer.key, **startables(layer, mode), "start": start_status(layer, self.server.model)})
+        model = self.server.model
+        mode = str(model.standin_view(layer).get("mode") or "off")
+        return self._json({"layer": layer.key, **model.startable_view(layer, mode), "start": start_status(layer, model)})
 
     def do_HEAD(self) -> None:  # noqa: N802
         self.do_GET()

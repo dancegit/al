@@ -9,6 +9,7 @@
   dispatch.py --resume ID [--answer] [--json]   [< answer]
   dispatch.py --stop ID [--json]
   dispatch.py --helper [--json]   < prompt
+  dispatch.py --registry [--json]
 
 The first form is used by CI workflows and triggers that do not know which ADW applies. --start is
 the layer's one start path (adw_modules/launch.py): it reads the prompt from stdin, starts the run
@@ -17,6 +18,8 @@ detached and prints the result (with --json: one JSON line); exit 0 started or i
 --replaces OLD names the run the start begins again ("Start again"); --decider MODE is the stand-in's
 mode for that run (the run's own --decider; without it the layer's mode applies). --command alone runs one
 command or hop in the foreground as a recorded run (what a single-command start executes).
+--registry prints what the layer can run (adw_modules/registry.py: its workflows, the kit's
+workflows, its commands), read only; with --json the whole registry as one JSON line.
 --pr-state N asks the layer's forge, read only, whether pull request N is merged and prints one JSON
 line {"state": open|merged|closed|unknown, "commit", "at"}; exit 0, or 1 with {"state": "unknown",
 "error"} when the forge fails (the dashboard's landed check uses it, so credentials stay here).
@@ -168,6 +171,29 @@ def helper(a: argparse.Namespace) -> int:
     return done(helper_module.reply(layer, prompt))
 
 
+
+
+def registry_cli(a: argparse.Namespace) -> int:
+    from adw_modules import registry
+
+    try:
+        ir = json.loads((LAYER / "agentic-layer.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"dispatch: cannot read agentic-layer.json: {exc}", file=sys.stderr)
+        return 1
+    reg = registry.build(ir, LAYER)
+    if a.json:
+        print(json.dumps(reg), flush=True)
+        return 0
+    for entry in reg["entries"]:
+        state = "off" if entry["off"] else "by hand" if entry["start"]["by_hand"] else "not by hand"
+        how = entry["start"]["command"] or entry["start"]["why"]
+        print(f"{entry['name']:<28} {entry['kind']:<14} {entry['source']:<9} {state:<12} {how}")
+    for problem in reg["problems"]:
+        print(f"problem: {problem}")
+    return 0
+
+
 def main() -> int:
     pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre.add_argument("--command")
@@ -197,13 +223,16 @@ def main() -> int:
     ap.add_argument("--decider", choices=("off", "suggest", "auto"),
                     help="with --start: the stand-in's mode for this run")
     ap.add_argument("--pr-state", type=int, metavar="N", help="is pull request N merged? (read only)")
+    ap.add_argument("--registry", action="store_true", help="print what the layer can run (read only)")
     ap.add_argument("--json", action="store_true",
-                    help="with --start, --pr-state, --resume, --stop or --helper: print one JSON line")
+                    help="with --start, --pr-state, --resume, --stop, --helper or --registry: print one JSON line")
     ap.add_argument("--resume", metavar="ID", help="continue a waiting, failed or handed-over run, detached")
     ap.add_argument("--answer", action="store_true", help="with --resume: a person's answer to a waiting run on stdin")
     ap.add_argument("--stop", metavar="ID", help="stop a run running on this host")
     ap.add_argument("--helper", action="store_true", help="one answer of the voice helper's agent (prompt on stdin)")
     a = ap.parse_args()
+    if a.registry:
+        return registry_cli(a)
     if a.pr_state is not None:
         return pr_state(a)
     if a.helper:
