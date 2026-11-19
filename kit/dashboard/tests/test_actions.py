@@ -103,7 +103,7 @@ def test_scout_runs_the_allowed_argv_and_records_a_job(ws, al, tmp_path, workspa
     assert "argv" not in json.dumps(view) and str(tmp_path) not in json.dumps(view)
 
 
-@pytest.mark.parametrize("action", ["improve", "rm", ""])
+@pytest.mark.parametrize("action", ["delete", "rm", ""])
 def test_unknown_action_is_refused(ws, al, workspace_server, action):
     running = workspace_server(ws, al=al)
     assert post(running, {"repo": "fern", "action": action}) == (400, {"error": "unknown action"})

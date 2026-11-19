@@ -1150,6 +1150,18 @@ its state, each with the exact command line it runs:
 | check | `layer` | `al check LAYER` (read-only) |
 | verify | `layer` | `al verify LAYER --json` (writes the report and a throwaway worktree) |
 | explain | `layer` | `al explain LAYER --md …` (read-only; its output is the job's `EXPLAIN.md`) |
+| snapshot | `layer` | `al snapshot ~/code/orbit.al --note 'from the dashboard' --json` (a commit when the layer folder is its own git repository, else an archive; listed in the repository's **Snapshots** card) |
+| regen | `layer` | first `al gen ~/code/orbit.al --list-edits` (the hand-edited files it overwrites); on Confirm `al snapshot ~/code/orbit.al --note 'before regen' --json` → `al gen ~/code/orbit.al --discard-edits` |
+| reauthor | `layer` | first the detected choices, as for create; on Confirm `al snapshot ~/code/orbit.al --note 'before reauthor' --json` → `al author ~/code/orbit.al --set-aside` → `al scout ~/code/orbit --into ~/code/orbit.al` → `al author ~/code/orbit.al` → `al gen` → `al check` → `al author ~/code/orbit.al --diff-set-aside` |
+| improve | `layer` | type what to change; `al improve ~/code/orbit.al -- 'REQUEST'` (al's reviewed workflow; ends in a pull request) |
+| restore | any | from a row of the **Snapshots** card or a failed job: first `al snapshot ~/code/orbit.al --restore ID --dry-run`; on Confirm `al snapshot ~/code/orbit.al --restore ID` |
+
+No action deletes a layer folder: regen and reauthor take a snapshot first, keep `agents/` (the run
+history) and `adopted/`, and set the old `agentic.rkt` aside as `agentic.rkt.before-DATE` instead of
+removing it. Every writing action asks first, and the confirmation is bound to what you typed (the improve
+request, the snapshot id). A failed regen or reauthor offers, on its job page, to restore the snapshot its
+first step took; a passed reauthor shows what changed in `agentic.rkt`. The panel also says in one line
+each when to use gen, regen, reauthor and improve (Step 14).
 
 **Choose where the layer goes.** Create and adopt offer two placements, each with the path it leads to:
 **beside the repository** (`~/code/fern.al`, a folder next to it; nothing is written into the repository)
@@ -2259,6 +2271,43 @@ Two ways forward:
 
 Either eject the template and move your edit into it, or discard the edit with
 `al gen ~/code/myapp.al --discard-edits`. `al check` reports the same thing.
+
+### Back up, regenerate or write the definition again
+
+Take a snapshot before a big change; you can always go back to it:
+
+```bash
+al snapshot ~/code/myapp.al --note "before a big change"
+al snapshot ~/code/myapp.al --list
+al snapshot ~/code/myapp.al --restore 20261119T101500Z --dry-run
+al snapshot ~/code/myapp.al --restore 20261119T101500Z
+al gen ~/code/myapp.al --list-edits
+al author ~/code/myapp.al --set-aside
+al author ~/code/myapp.al --diff-set-aside
+```
+
+A layer folder that is its own git repository is snapshotted as a commit (by `al <al@localhost>`, with
+the message `al snapshot: NOTE`) plus an archive of `agents/`, the run history git ignores. Any other
+layer folder, such as one inside the application repository, is snapshotted as a dated archive and
+nothing is committed into the application. Each snapshot has a record in `.work/snapshots/`. Left out of
+every snapshot: `.work/`, `trees/`, `.al-improve/` and the quarantined git objects of each run
+(`agents/RUN/objects/`).
+
+A restore takes a snapshot of the current state first and prints its id, so the restore itself can be
+undone. It writes back the files that differ and removes the ones the snapshot does not have, and it only
+adds run folders back: an `agents/RUN` that exists is never touched. `--dry-run` lists what it would
+change and writes nothing. In a layer that is its own git repository the restored state is left
+uncommitted.
+
+`al gen --list-edits` lists the hand-edited generated files `--discard-edits` would overwrite, and writes
+nothing. `al author --set-aside` moves `agentic.rkt` to `agentic.rkt.before-DATE` (nothing else moves), so
+`al author` can write the definition again from the repository's facts; `--diff-set-aside` then shows
+what changed. Which one to use (the dashboard's Repos panel says the same):
+
+- gen: you changed agentic.rkt; generate the files again (stops on hand-edited generated files)
+- regen: gen stopped on hand edits you do not want; snapshot, then overwrite them
+- reauthor: the definition is old or wrong; snapshot, then have it written again from the repository's facts
+- improve: say in words what to change; al's reviewed workflow changes the definition and opens a pull request
 
 ### Run a script you already have
 

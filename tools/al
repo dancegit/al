@@ -16,6 +16,11 @@
                                    --raw: the scout agent's event stream instead of progress lines
   al compile LAYER                 agentic.rkt -> agentic-layer.json (validated against the schema)
   al gen     LAYER [--discard-edits]  compile + generate commands, HOPs, ADWs, env, triggers, forge files
+  al gen     LAYER --list-edits    list the hand-edited generated files --discard-edits would overwrite; write nothing
+  al snapshot LAYER [--note TEXT] [--json] | --list [--json] | --restore ID [--dry-run]
+                                   back up the layer folder (a commit plus an archive of agents/ when it is its own
+                                   git repository, else a dated archive; a record in LAYER/.work/snapshots/), list
+                                   the snapshots, or restore one (a snapshot of the current state is taken first)
   al explain LAYER [--md F] [--gif F]  explain the layer definition in plain language, block by block
   al check   LAYER                 verify a generated layer and that the application tree is untouched
                                    (in-repo layer: changes outside the layer are listed as notes, not failures)
@@ -29,6 +34,9 @@
                                    overrides one), then compiles it; never overwrites an agentic.rkt
                                    (--accept-existing: take one that is already there if it compiles); prints
                                    progress lines and the agent's report (--raw: the agent's event stream)
+  al author  LAYER --set-aside | --diff-set-aside
+                                   move agentic.rkt to agentic.rkt.before-DATE (no agent; the rest of the layer is
+                                   kept), or print the diff of the newest set-aside definition against agentic.rkt
   al create  APP [--in-repo] [--agent claude-code|mock] [--mock F] [--scout-mock F] [--choice KEY=VALUE …]
                                    a layer beside APP (or inside it with --in-repo) in one command, the sequence
                                    the dashboard runs: init, scout (--into), adopt, author, gen, check, result;
@@ -54,7 +62,8 @@
                                    (starting) or --no-actions (actions)
   al dashboard … [--workspace DIR …] [--workspace-depth N] [--no-workspace] [--no-actions]
                                    also list the git repositories beside the layer's (or in DIR) with their al state,
-                                   and run al on one from the page (scout, create, adopt, gen, check, verify, explain)
+                                   and run al on one from the page (scout, create, adopt, gen, check, verify, explain,
+                                   snapshot, regen, reauthor, improve, restore)
   al run     LAYER /NAME [ARGS …] [--class C] [--model-set T] [--model T=ID …] [--detach] [--dry-run] [--yes]
              [--replaces OLD] [--testing light|standard|heavy] [--approve WHAT … [--who NAME]] [--on HOST]
                                    start one of the layer's workflows, or one command or hop as a recorded run
@@ -440,6 +449,14 @@ def adopt_module():
         sys.path.insert(0, str(ROOT / "tools"))
     import al_adopt
     return al_adopt
+
+
+def snapshot_module():
+    """tools/al_snapshot.py: `al snapshot` (take, list and restore a backup of a layer folder)."""
+    if str(ROOT / "tools") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tools"))
+    import al_snapshot
+    return al_snapshot
 
 
 def explain_module():
@@ -2194,7 +2211,8 @@ Not committed (`.gitignore`, written by `al gen`): {ignored}.
                 "     on the command in agentic.rkt. Files with no template come from agentic.rkt: change that.\n"
                 f"  2. Throw the edit away:  al gen {self.layer} --discard-edits")
 
-    def generate(self, discard_edits: bool = False) -> list[str]:
+    def prepare(self) -> None:
+        """Queue every output (nothing is written yet): what `generate` and `pending_edits` start from."""
         planned = [f"{k}:{o['id']}" for k in ("promptInputs", "triggers", "environments", "reviews", "agents", "artefacts")
                    for o in self.ir[k] if o["status"] == "planned"]
         planned += [f"{k}:{self.ir[k]['kind']}" for k in ("forge", "storage", "layer") if self.ir[k]["status"] == "planned"]
@@ -2210,6 +2228,14 @@ Not committed (`.gitignore`, written by `al gen`): {ignored}.
         self.triggers_and_forge()
         self.dashboard()
         self.scaffolding()
+
+    def pending_edits(self) -> list[str]:
+        """The hand-edited generated files a `--discard-edits` would overwrite; writes nothing."""
+        self.prepare()
+        return self.hand_edits(load_manifest(self.layer))
+
+    def generate(self, discard_edits: bool = False) -> list[str]:
+        self.prepare()
         old = load_manifest(self.layer)
         edited = self.hand_edits(old)
         if edited and not discard_edits:
@@ -4242,6 +4268,15 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name); p.add_argument("layer", type=Path)
     p = sub.add_parser("gen"); p.add_argument("layer", type=Path)
     p.add_argument("--discard-edits", action="store_true", help="overwrite generated files that were edited by hand")
+    p.add_argument("--list-edits", action="store_true",
+                   help="list the hand-edited generated files `--discard-edits` would overwrite; write nothing")
+    p = sub.add_parser("snapshot", help="back up a layer folder, list its snapshots, or restore one")
+    p.add_argument("layer", type=Path)
+    p.add_argument("--note", metavar="TEXT", help="what the snapshot is for (default: \"by hand\")")
+    p.add_argument("--list", action="store_true", help="the layer's snapshots, newest first")
+    p.add_argument("--restore", metavar="ID", help="restore the snapshot ID (a snapshot of the current state is taken first)")
+    p.add_argument("--dry-run", action="store_true", help="with --restore: print what it would change; write nothing")
+    p.add_argument("--json", action="store_true", help="print the record (or the list) as JSON")
     p = sub.add_parser("eject", help="copy a kit template into the layer so changes to it survive `al gen`")
     p.add_argument("layer", type=Path); p.add_argument("kind", nargs="?", choices=("command", "hop", "expert"))
     p.add_argument("name", nargs="?"); p.add_argument("--list", action="store_true", help="every template and where it resolves from")
@@ -4526,6 +4561,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--choice", action="append", default=[], metavar="KEY=VALUE",
                    help="override one choice the facts led to (repeatable): forge, host, repo, input, trigger, "
                    "environment, review, delivery")
+    p.add_argument("--set-aside", action="store_true",
+                   help="move agentic.rkt to agentic.rkt.before-DATE and stop; no agent")
+    p.add_argument("--diff-set-aside", action="store_true",
+                   help="print the unified diff of the newest agentic.rkt.before-* against agentic.rkt")
     for name, what in (("create", "create a layer beside APP from what the repository shows: init, scout, adopt, "
                                    "author, gen, check, result"),
                        ("adopt-all", "the same sequence for a repository with an existing agent setup to adopt "
@@ -4653,7 +4692,17 @@ def main(argv: list[str] | None = None) -> int:
         elif a.cmd == "gen":
             layer = a.layer.resolve()
             tools_module().need(tools_module().NEEDS["gen"], layer)
+            if a.list_edits and a.discard_edits:
+                raise AlError("gen: --list-edits and --discard-edits exclude each other")
             gen = Generator(layer, compile_layer(layer))
+            if a.list_edits:
+                edited = gen.pending_edits()
+                width = max((len(rel) for rel in edited), default=0)
+                for rel in edited:
+                    print(f"  {rel.ljust(width)}   {eject_hint(a.layer, rel)}")
+                print(f"{len(edited)} hand-edited generated file(s) would be overwritten by al gen {a.layer} --discard-edits"
+                      if edited else f"no hand-edited generated files: the plain al gen {a.layer} is enough")
+                return 0
             try:
                 written = gen.generate(discard_edits=a.discard_edits)
             except HandEditError as exc:
@@ -4746,8 +4795,21 @@ def main(argv: list[str] | None = None) -> int:
                                     a.dry_run, a.force, diff=a.diff)
             except module.AdoptError as exc:
                 raise AlError(f"adopt: {exc}") from exc
+        elif a.cmd == "snapshot":
+            return snapshot_module().main(a, sys.modules[__name__])
         elif a.cmd == "author":
             module = author_module()
+            if a.set_aside or a.diff_set_aside:
+                given = [flag for flag, on in (("--set-aside", a.set_aside), ("--diff-set-aside", a.diff_set_aside),
+                                               ("--mock", a.mock is not None), ("--preferences", a.preferences is not None),
+                                               ("--choice", bool(a.choice)), ("--accept-existing", a.accept_existing),
+                                               ("--raw", a.raw)) if on]
+                if len(given) > 1:
+                    raise AlError(f"author: {given[0]} goes alone (not with {', '.join(given[1:])})")
+                try:
+                    return (module.set_aside if a.set_aside else module.diff_set_aside)(a.layer.resolve())
+                except module.AuthorError as exc:
+                    raise AlError(f"author: {exc}") from exc
             if a.agent == "mock" and a.mock is None:
                 raise AlError("author: --agent mock needs --mock FILE")
             try:

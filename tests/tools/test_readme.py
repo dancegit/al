@@ -10,8 +10,10 @@ into the repository, the first screen says what, why and which method, and the R
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import re
 import shlex
 from pathlib import PurePosixPath
@@ -78,7 +80,8 @@ class _Parsed(Exception):
     """Raised right after the top-level parse succeeded, so main() goes no further."""
 
 
-def test_every_shown_al_command_parses(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def _parser_module(monkeypatch: pytest.MonkeyPatch):
+    """tools/al loaded as a module, its parser patched so that a command that parses stops right there."""
     loader = importlib.machinery.SourceFileLoader("al_readme", str(ROOT / "tools" / "al"))
     spec = importlib.util.spec_from_loader("al_readme", loader)
     module = importlib.util.module_from_spec(spec)
@@ -94,20 +97,46 @@ def test_every_shown_al_command_parses(monkeypatch: pytest.MonkeyPatch, capsys: 
     # main() parses with parse_known_args (it hands a left-over RUN to `al assign` itself); parse_args
     # goes through it too, so either way a command that parses stops here and left-overs are refused
     monkeypatch.setattr(argparse.ArgumentParser, "parse_known_args", wrapper)
-    commands = _shown_commands(_readme())
-    assert len(commands) >= 8, f"the README shows too few al commands: {commands}"
+    return module
+
+
+def _refused(module, commands: list[str]) -> list[str]:
+    """The commands al's parser does not accept, each with its usage error."""
     refused = []
     for command in commands:
-        capsys.readouterr()
+        err = io.StringIO()
         try:
-            module.main(shlex.split(command)[1:])
+            with contextlib.redirect_stderr(err):
+                module.main(shlex.split(command)[1:])
         except _Parsed:
             continue
         except SystemExit as exc:
-            refused.append(f"{command}  (exit {exc.code}): {capsys.readouterr().err.strip()}")
+            refused.append(f"{command}  (exit {exc.code}): {err.getvalue().strip()}")
             continue
         refused.append(f"{command}  (main returned without parsing)")
+    return refused
+
+
+def test_every_shown_al_command_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _parser_module(monkeypatch)
+    commands = _shown_commands(_readme())
+    assert len(commands) >= 8, f"the README shows too few al commands: {commands}"
+    refused = _refused(module, commands)
     assert not refused, "commands in the README that al does not accept:\n  " + "\n  ".join(refused)
+
+
+GUIDE_BACKUP = "### Back up, regenerate or write the definition again"
+
+
+def test_guide_backup_and_redefine_commands_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = (ROOT / "docs" / "GUIDE.md").read_text(encoding="utf-8")
+    start = text.index("\n" + GUIDE_BACKUP + "\n")
+    end = text.index("\n#", start + len(GUIDE_BACKUP) + 2)
+    commands = _shown_commands(text[start:end])
+    assert len(commands) >= 6, f"the GUIDE section shows too few al commands: {commands}"
+    assert all(c.split()[1] in ("snapshot", "gen", "author") for c in commands), commands
+    refused = _refused(_parser_module(monkeypatch), commands)
+    assert not refused, "commands in the GUIDE section that al does not accept:\n  " + "\n  ".join(refused)
 
 
 def test_every_principle_links_into_the_repository() -> None:

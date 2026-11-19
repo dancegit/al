@@ -502,9 +502,10 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
   run already replaces 409 (naming it), unless the request key is the one that started that run (a
   double click: the launcher answers with it). "Start again" of an issue-sourced run restarts from the
   recorded prompt, not from the issue.
-- **Actions.** `POST /api/action {"repo": KEY, "action": NAME, "placement": P, "confirm": NONCE, "choices": {…}}`
-  (`repo` and `action` always; `confirm` to confirm a preview; `placement` and `choices` for `create` and
-  `adopt` only) runs `al` on a scanned repository, from this fixed allow-list only (AL = the found tool,
+- **Actions.** `POST /api/action {"repo": KEY, "action": NAME, "placement": P, "confirm": NONCE, "choices": {…},
+  "snapshot": ID, "request": TEXT}` (`repo` and `action` always; `confirm` to confirm a preview; `placement`
+  for `create` and `adopt` only; `choices` for `create`, `adopt` and `reauthor`; `snapshot` for `restore` and
+  `request` for `improve`, each required there and refused anywhere else) runs `al` on a scanned repository, from this fixed allow-list only (AL = the found tool,
   APP = the repository's real path, LAYER = its layer, else `<folder>/<name>.al` for the placement
   `beside`, the default, or `<repository>/agentic` for `inside`):
 
@@ -517,6 +518,11 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
   | `check` | layer | no | `AL check LAYER` |
   | `verify` | layer | yes | `AL verify LAYER --json` (stdout = `verify.json`) |
   | `explain` | layer | no | `AL explain LAYER --md <job>/docs/EXPLAIN.md` |
+  | `snapshot` | layer | yes | `AL snapshot LAYER --note 'from the dashboard' --json` (stdout = `snapshot.json`) |
+  | `regen` | layer | yes | preview: `AL gen LAYER --list-edits` (stdout = `hand-edits.txt`); then `AL snapshot LAYER --note 'before regen' --json` (`snapshot.json`); `AL gen LAYER --discard-edits` |
+  | `reauthor` | layer | yes | preview: `AL create APP --choices --json` (`choices.json`); then `AL snapshot LAYER --note 'before reauthor' --json` (`snapshot.json`); `AL author LAYER --set-aside`; `AL scout APP --into LAYER [--agent …] --raw`; `AL author LAYER [--agent …] --raw [--choice KEY=VALUE …]`; `AL gen LAYER`; `AL check LAYER`; `AL author LAYER --diff-set-aside` (stdout = `definition.diff.txt`) |
+  | `improve` | layer | yes | `AL improve LAYER -- REQUEST` |
+  | `restore` | all | yes | preview: `AL snapshot LAYER --restore ID --dry-run` (stdout = `restore.txt`); then `AL snapshot LAYER --restore ID` |
 
   `placement` says where `create` and `adopt` put the layer. One function, `placement_view`, computes
   each placement's path and whether it is usable; `GET /api/repo` lists both under the action's
@@ -541,6 +547,33 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
   passed to the author step as `--choice KEY=VALUE`, sorted by key. The job view shows the `result`
   step's `result.json` as the result card, inside the passed outcome card: the layer, its forge clause, workflows, what was adopted and
   left behind, the commands that failed or did not run, and what to do next.
+
+  `snapshot`, `regen`, `reauthor` and `improve` change a layer that exists; none of them, nor `restore`,
+  removes the layer folder, `agents/` or `adopted/`. `restore` is not a button of its own: it starts from
+  a row of the repository's **Snapshots** card or from the outcome of a failed `regen` or `reauthor`, and
+  is allowed in every state, because after a failed `reauthor` set the definition aside a beside layer is
+  no longer scanned as one: its LAYER is the repository's layer, else the first placement folder (beside,
+  then inside) whose records hold ID (`snapshot_layer`). `snapshot` must match `SNAPSHOT_ID` (the id
+  pattern of tools/al_snapshot.py; else 400 "snapshot: not a snapshot id"; missing on `restore`, 400
+  "restore needs a snapshot id"), and an id that no record of the layer names is 409 ("no snapshot ID of
+  NAME's layer"). `request` is stripped and passed as one argv element after `--`, so a request that starts
+  with `-` is never an option; missing, empty or only whitespace is 400 ("improve needs a request: say what
+  to change"), and so is one longer than `IMPROVE_REQUEST_CHARS` (2000) or holding a newline, a tab or
+  another control character. A preview's nonce is bound to the typed value: a confirmation with another
+  snapshot or request is 409 ("the request changed since the preview" / "the snapshot changed …") and
+  spends the nonce. A failed or interrupted `regen` or `reauthor` whose `snapshot` step passed has, in its
+  outcome, `restore: {snapshot, command}` (the id read from its `snapshot.json`), and a `reauthor` that got
+  past `set-aside` also `definition_aside: true`; a passed `reauthor` has `diff: "definition.diff.txt"`,
+  which the job page shows as a diff under "What changed in agentic.rkt".
+
+  `GET /api/repo` also has `help` (for state `layer`, one line each on when to use gen, regen, reauthor
+  and improve; else `[]`) and `snapshots`: the records `LAYER/.work/snapshots/ID.json` read by
+  `snapshot_list` (the file name must match `SNAPSHOT_ID` and the JSON name that id; anything else is
+  skipped), newest first, at most 50, each `{id, kind, created, note, commit (12), files, restore}` with
+  `restore` the command line `al snapshot LAYER --restore ID` as shown (no absolute path). The page shows
+  them as the **Snapshots** card, each row with a **restore…** button that opens the restore preview.
+  An action view has `param` (`"request"` for improve: the page shows a one-line field and keeps the
+  button disabled while it is empty); views are listed for every action except `restore`.
 
   Before its first step a job runs `AL doctor LAYER --for <its subcommands> [--agent …]` (10 s at most,
   not a step): a missing tool fails the first step with that sentence and skips the rest, so no agent time

@@ -31,9 +31,15 @@ decision, with its fact or the default it fell back to, is written to agents/aut
 the whole prompt to agents/author/prompt.txt. A token is never read: the forge clause names the
 variable that will hold it. The agent runs isolated (tools/al_tools.py `agent_isolation`): without
 the account's personal settings, and allowed to write only inside the layer. Standard library only.
+
+`--set-aside` moves agentic.rkt to agentic.rkt.before-YYYYMMDD-HHMMSS (UTC) and asks no agent, so the
+definition can be written again from scratch; agents/, adopted/ and the rest of the layer stay where they
+are. `--diff-set-aside` prints the unified diff of the newest set-aside definition against agentic.rkt.
 """
 from __future__ import annotations
 
+import datetime
+import difflib
 import json
 import os
 import re
@@ -563,3 +569,50 @@ def author(al: Any, layer: Path, agent: str, mock: Path | None, preferences: str
         raise AuthorError(f"{problem}\n{REPAIR_HINT}")
     say(f"agentic.rkt compiles; next: al gen {layer}")
     return 0
+
+
+# ------------------------------------------------------------------------------------------ set aside
+
+SET_ASIDE_PREFIX = "agentic.rkt.before-"
+
+
+def set_aside(layer: Path) -> int:
+    """Rename LAYER/agentic.rkt to agentic.rkt.before-YYYYMMDD-HHMMSS (UTC; -2, -3, … when that name is
+    taken). Nothing else is moved or removed."""
+    definition = layer / "agentic.rkt"
+    if not definition.is_file():
+        raise AuthorError(f"{layer} has no agentic.rkt to set aside")
+    stamp = SET_ASIDE_PREFIX + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    name, n = stamp, 1
+    while (layer / name).exists():
+        n += 1
+        name = f"{stamp}-{n}"
+    definition.rename(layer / name)
+    print(f"set aside: agentic.rkt -> {name} (agents/, adopted/ and the rest of the layer are kept)")
+    return 0
+
+
+def diff_set_aside(layer: Path) -> int:
+    """Print the unified diff of the newest agentic.rkt.before-* against agentic.rkt."""
+    aside = sorted((p for p in layer.glob(SET_ASIDE_PREFIX + "*") if p.is_file()),
+                   key=lambda p: _aside_key(p.name))
+    if not aside:
+        raise AuthorError(f"{layer} has no {SET_ASIDE_PREFIX}* (al author {layer} --set-aside writes one)")
+    old = aside[-1]
+    current = layer / "agentic.rkt"
+    new_text = current.read_text(encoding="utf-8") if current.is_file() else ""
+    diff = list(difflib.unified_diff(old.read_text(encoding="utf-8").splitlines(keepends=True),
+                                     new_text.splitlines(keepends=True), fromfile=old.name, tofile="agentic.rkt"))
+    if not diff:
+        print("the definition is unchanged")
+        return 0
+    text = "".join(line if line.endswith("\n") else line + "\n" for line in diff)
+    print(text, end="")
+    return 0
+
+
+def _aside_key(name: str) -> tuple[str, int]:
+    """agentic.rkt.before-20261119-101500-2 sorts after …-101500 (the newest by name)."""
+    stem = name[len(SET_ASIDE_PREFIX):]
+    m = re.match(r"^(\d{8}-\d{6})(?:-(\d+))?$", stem)
+    return (m.group(1), int(m.group(2) or 1)) if m else (stem, 0)
