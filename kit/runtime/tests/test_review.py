@@ -85,3 +85,26 @@ def test_blocker_patch_implement_reruns_checks_and_second_round_passes(make_laye
     assert (checks_dir / "test.2.log").exists()
     assert run_state.review["rounds"][0]["patch"]["checks_rerun"] == ["test"]
     assert run_state.review["verdict"]["success"] is True
+
+
+def test_verdict_with_criterion_and_kind_validates() -> None:
+    verdict = {"success": False, "summary": "C2 has no proof", "issues": [
+        {"severity": "blocker", "description": "the report is missing", "resolution": "write it", "artefact": "",
+         "criterion": "C2", "kind": "fixable"},
+        {"severity": "tech_debt", "description": "naming", "resolution": "rename", "artefact": "", "criterion": "",
+         "kind": "needs-declaration"},
+        {"severity": "skippable", "description": "older verdicts have neither field", "resolution": ""}]}
+    agents.validate_review_verdict(verdict, "review-1")
+    schema = json.loads((Path(__file__).resolve().parents[2] / "schemas" / "review.schema.json").read_text())
+    issue = schema["$defs"]["issue"]["properties"]
+    assert issue["criterion"]["type"] == "string"
+    assert tuple(issue["kind"]["enum"]) == agents.ISSUE_KINDS
+
+
+def test_bad_kind_is_refused() -> None:
+    bad = {"severity": "blocker", "description": "x", "resolution": "y", "artefact": "", "kind": "urgent"}
+    with pytest.raises(StepFailed, match="review issue kind must be one of"):
+        agents.validate_review_verdict({"success": False, "summary": "s", "issues": [bad]}, "review-1")
+    with pytest.raises(StepFailed, match="criterion must be a string"):
+        agents.validate_review_verdict({"success": False, "summary": "s", "issues": [
+            {**bad, "kind": "fixable", "criterion": 2}]}, "review-1")

@@ -28,6 +28,10 @@ WORK_CLASS: ${class}
 - Tests that were weakened, skipped or deleted to get a pass are a blocker.
 - Judge against the spec, not against your taste. Do not raise issues about code the diff did not touch.
 - Each issue gets a concrete `resolution`: the change that would close it, specific enough to hand to a patch planner.
+- When ARTEFACT_MANIFEST has an `evidence` entry (the plan's Proof plan: per criterion `C1`, `C2`, … the command, its result for this exact tree and the files it wrote), start from it. Rows marked proven need verification, not a hunt. A criterion without proof that the pack shows as proven is a blocker of kind `needs-declaration` saying the pack is wrong.
+- The `approvals` entry lists the decisions a person took for this run. A change covered by one is not a blocker. A change that needs an approval nobody gave is one blocker of kind `needs-person`, raised once.
+- The `round` entry says which review round this is. From round 2 on, check only that each earlier blocker (`earlier_blockers`) is resolved and that the patch broke nothing. A new finding outside the patch is `tech_debt` unless it is on the safety list (`safety`).
+- Give each issue the `criterion` it is about (`C1`, … or empty) and its `kind`: `fixable` (a patch closes it), `needs-environment` (a tool, engine, host or network the run lacks), `needs-declaration` (the layer author adds a declaration), `needs-person` (a decision only a person may take).
 {{focus}}
 
 ## Severities
@@ -73,12 +77,12 @@ Return ONLY a JSON object, no prose and no code fence:
   "success": true,
   "summary": "<2-4 sentences: what was built, whether it matches the spec, what the artefacts show>",
   "issues": [
-    {"severity": "blocker", "description": "<what is wrong, with path:line>", "resolution": "<the change that closes it>", "artefact": "<path of the artefact that shows it, or empty>"}
+    {"severity": "blocker", "description": "<what is wrong, with path:line>", "resolution": "<the change that closes it>", "artefact": "<path of the artefact that shows it, or empty>", "criterion": "<C-id or empty>", "kind": "fixable|needs-environment|needs-declaration|needs-person"}
   ],
   "artefacts_reviewed": ["<path of every artefact you opened>"]
 }
 ```
 
-`severity` is one of `blocker`, `tech_debt`, `skippable`. `success` is false if and only if at least one issue is a `blocker`. `issues` is `[]` when there are none. `artefacts_reviewed` lists every manifest entry; an entry you could not open is a blocker.
+`severity` is one of `blocker`, `tech_debt`, `skippable`; `kind` is one of `fixable`, `needs-environment`, `needs-declaration`, `needs-person`. `success` is false if and only if at least one issue is a `blocker`. `issues` is `[]` when there are none. `artefacts_reviewed` lists every manifest entry; an entry you could not open is a blocker.
 
 {{output_contract}}

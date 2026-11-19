@@ -162,6 +162,22 @@ is not shown. The block is read-only, like the rest of the run page: answers are
 `al answer LAYER RUN go|alter|explain|reject`, by replying to the notification e-mail, or with the
 webhook's `decision` payload.
 
+A run whose plan ends with a Proof plan table has a **Proof plan** card on its run page
+(`[data-role='proof-plan']`). It has a row per criterion with its state (`planned`, `proven`,
+`files-missing`, …) from the moment the plan exists, before anything is built. When the run stopped
+at `prove` or `evidence`, a stop line says why and names the party who can clear it (layer author,
+approver, person), with the fix (the exact declaration a layer author adds, or the question for an
+approver). Only for a failed run stopped for an **approver** is there an **Approve** button
+("Approve vocabulary"): it sends `POST /api/approve` (below), and the run resumes from the step that
+stopped. Below the table come the review rounds, each with what it resolved, what is still open and
+what is new, why the rounds ended, and the debt filed to the task list. The Start work panel has an
+**approve** field for workflows (comma-separated: `vocabulary, edit:PATH, dependency:NAME`), sent as
+`approvals` with the start request: pre-approvals for that run, like `al run --approve`. On the
+Layers view, a layer with runs that have a Proof plan shows a **Reviews** line: review rounds per run,
+repeated blockers, idle hours, runs stopped early, and the declaration to add first (the numbers of
+`al kpis`' Reviews and proof). All of it is shown as text, never markup. Screenshots: `proof-table.png`,
+`stopped-before-build.png`, `converged-review.png`.
+
 A run whose `script` step exited with a code the step declares as waiting (`#:waiting-exit (75)`)
 ended **waiting**: it is neither failed nor passed, its worktree is kept, and nobody is notified.
 The run list, its status filter, the graph node and the timeline show it as `waiting` (⏸), and the
@@ -620,6 +636,20 @@ run summary has `kit` (true for a run of a kit workflow) and `acts_on`: `{kind: 
 `{kind: "promotion", from, to}`, `{kind: "command", name}` or null. A run's steps are drawn from the
 definition the run recorded when it has one (a kit run records its own), else the declared workflow,
 else the registry entry.
+
+### `POST /api/approve`
+
+`{layer, run, what: [APPROVAL, …]}` and nothing else is the Approve button of a run stopped for a
+decision only a person may take. It passes the guard of every write (loopback Host or token, the token
+never from the URL, Origin naming the Host, `X-AL-Dashboard: 1`, `application/json`, not `--read-only`)
+and is refused with `--no-start` and in a container without `--allow-start-in-container` (403). `run`
+is 8 hexadecimal characters; `what` holds 1 to 20 approvals, each a word of lower-case letters, digits
+and `-`, optionally `:ARG` (`vocabulary`, `edit:PATH`, `dependency:NAME`); anything else is 400, an
+unknown layer 404. The layer's own `adws/dispatch.py --grant RUN --who dashboard --json` (argv list, no
+shell) then records the approvals (who: `dashboard`) and resumes the run from the step that stopped:
+202 `{"status": "resumed", "message", "url": "#/run/K/RUN"}`. A run that is not stopped for an
+approver is 409 `{"error", "reason", "refused": true}`; a launcher that failed is 502 with the tail of
+its stderr. `al approve` does the same from the command line.
 
 ### `GET /api/integrate/preview`, `POST /api/integrate`, `GET /api/settle/evidence`
 

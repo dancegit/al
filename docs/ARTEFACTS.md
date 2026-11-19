@@ -143,6 +143,28 @@ and what it needs from a person:
 
 ![A draft pull request marked needs human](demo/rotademo/b-pr-why-human-top.png)
 
+## Run-scoped proof and what the evidence step adds
+
+The artefacts above are declared once in `agentic.rkt`, for every run. A plan can also name proof for
+**its own run only**, without a layer change. It writes the files under `<worktree>/.al-proof/`, a
+folder the runtime creates with its own `.gitignore` (`*`), so nothing in it is ever committed. The
+plan names them with `proof:GLOB` in the Writes column of its Proof plan rows
+([guide](GUIDE.md#proof-plan-pre-approvals-and-al-approve)):
+
+```markdown
+| C2 | every screen is shown | `uv run pytest -q tests/e2e` | proof:*.png | tool:chromium |
+```
+
+Those files are collected in full with every collection, for the reviewers, without an image limit.
+
+For a run whose plan has a Proof plan, the runtime adds three entries to the reviewers' manifest:
+
+| Entry | Added by step | What it holds |
+|---|---|---|
+| `evidence` | `evidence` | the evidence pack per criterion: its command, its state (`proven`, `files-missing`, …) and the files that prove it, on the current tree |
+| `approvals` | `evidence` | who approved what and when (`al run --approve`, `al approve` or the dashboard's Approve button) |
+| `round` | `review` | the round number, the earlier rounds' blockers and the patch plan, so a later round checks those first |
+
 ## All the kinds you can declare
 
 | Kind | Typical source | Declared as |

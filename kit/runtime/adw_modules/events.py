@@ -47,6 +47,7 @@ TYPES = (
     "integrate.queued", "integrate.lock", "integrate.unlock", "integrate.prepared", "integrate.resolved",
     "integrate.result",
     "standin.decision", "standin.action",
+    "approval.granted", "proof.checked", "evidence.pack", "review.progress", "freshen.result",
 )
 
 

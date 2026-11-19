@@ -56,11 +56,13 @@
                                    also list the git repositories beside the layer's (or in DIR) with their al state,
                                    and run al on one from the page (scout, create, adopt, gen, check, verify, explain)
   al run     LAYER /NAME [ARGS …] [--class C] [--model-set T] [--model T=ID …] [--detach] [--dry-run] [--yes]
-             [--replaces OLD] [--testing light|standard|heavy]
+             [--replaces OLD] [--testing light|standard|heavy] [--approve WHAT … [--who NAME]]
                                    start one of the layer's workflows, or one command or hop as a recorded run
                                    that never ships, exactly as the dashboard does; ARGS (or stdin) are the prompt;
                                    --replaces OLD starts run OLD again (it then reads as replaced by the new run);
-                                   --testing: how deep this run's checks go (also smoke|targeted|full)
+                                   --testing: how deep this run's checks go (also smoke|targeted|full);
+                                   --approve WHAT pre-approves a decision only a person may take (vocabulary,
+                                   edit:PATH, dependency:NAME), recorded with who and when
   al testing LAYER [--set light|standard|heavy | --reset | --full-before-ship RUN] [--json]
                                    the layer's testing policy, the level on this machine (a local setting,
                                    agents/settings/testing.json, never committed), typical minutes per level and
@@ -109,6 +111,9 @@
                                    answer the decider's suggestion for RUN (go resumes it; alter TEXT resumes it with
                                    your changes; explain sends the full explanation; reject leaves it with you), or
                                    apply the replies to suggestions waiting in the mailbox of AL_DECIDE_IMAP_URL
+  al approve LAYER RUN WHAT … [--who NAME]
+                                   approve what RUN stopped for (its plan's Proof plan needs a person's decision)
+                                   and resume it; 0 resumed, 1 refused, 2 bad use
   al dashboard --remote HOST [--port N] [--remote-port N] [--open]
                                    watch a deployed layer through an ssh tunnel (loopback on both ends)
   al deploy  LAYER --to HOST [--path DIR] [--as ID] [--provision [--yes]] [--dry-run] [--no-enable] | --status
@@ -3024,21 +3029,64 @@ def layer_models_module(layer: Path):
     return models, ir_module, errors
 
 
-def layer_decide_module(layer: Path):
-    """The layer's own decider modules (adw_modules/decide.py and standin.py), so `al decider`,
-    `al answer` and the layer's runs read the mode and scope and apply answers with the same code."""
-    if not (layer / "agentic-layer.json").is_file() or not (layer / "adws/adw_modules/standin.py").is_file():
+def layer_runtime_modules(layer: Path, *names: str):
+    """The layer's own runtime modules (adw_modules/NAME.py for each name), so `al` and the layer's
+    runs apply the same code; `errors` and `ir` are always returned after them."""
+    if not (layer / "agentic-layer.json").is_file() or not all(
+            (layer / f"adws/adw_modules/{name}.py").is_file() for name in names):
         if (layer / "agentic-layer.json").is_file() and (layer / "adws/adw_modules").is_dir():
-            raise AlError(f"{layer} was generated before the stand-in decider: run `al gen {layer}`")
+            missing = next(n for n in names if not (layer / f"adws/adw_modules/{n}.py").is_file())
+            what = "the stand-in decider" if missing in ("decide", "standin") else f"adw_modules/{missing}.py"
+            raise AlError(f"{layer} was generated before {what}: run `al gen {layer}`")
         raise AlError(f"{layer} is not a generated layer: run `al gen {layer}` first")
     for name in [n for n in sys.modules if n == "adw_modules" or n.startswith("adw_modules.")]:
         del sys.modules[name]   # another layer's runtime may have been imported before
     sys.path.insert(0, str(layer / "adws"))
     try:
-        from adw_modules import decide, errors, ir as ir_module, standin
+        import importlib
+        modules = [importlib.import_module(f"adw_modules.{name}") for name in names]
+        from adw_modules import errors, ir as ir_module
     except ImportError as exc:
         raise AlError(f"cannot import the layer runtime from {layer / 'adws'}: {exc}") from exc
+    return (*modules, ir_module, errors)
+
+
+def layer_decide_module(layer: Path):
+    """The layer's own decider modules (adw_modules/decide.py and standin.py), so `al decider`,
+    `al answer` and the layer's runs read the mode and scope and apply answers with the same code."""
+    decide, standin, ir_module, errors = layer_runtime_modules(layer, "decide", "standin")
     return decide, ir_module, errors, standin
+
+
+def approve_cli(a: argparse.Namespace) -> int:
+    """`al approve LAYER RUN WHAT… [--who NAME]`: approve what a run stopped for and resume it.
+    0 resumed, 1 refused (unknown run, not stopped for an approver), 2 bad use."""
+    layer = a.layer.resolve()
+    approvals, ir_module, errors = layer_runtime_modules(layer, "approvals")
+    try:
+        for what in a.what:
+            approvals.parse(what)
+    except ValueError as exc:
+        print(f"al approve: {exc}", file=sys.stderr)
+        return 2
+    try:
+        ir_module.load(layer)
+    except errors.LayerError as exc:
+        raise AlError(str(exc)) from exc
+    result = approvals.grant_and_resume(layer, a.run, a.what, a.who or _login_name(), "cli")
+    if result["status"] == "resumed":
+        print(f"approve: {result['message']}")
+        return 0
+    print(f"al approve: refused ({result.get('reason')}): {result.get('message')}", file=sys.stderr)
+    return 1
+
+
+def _login_name() -> str:
+    import getpass
+    try:
+        return os.environ.get("AL_APPROVED_BY") or getpass.getuser()
+    except (KeyError, OSError):
+        return "unknown"
 
 
 def decider_cli(a: argparse.Namespace) -> int:
@@ -3660,7 +3708,9 @@ def run_cli(a: argparse.Namespace) -> int:
         result = launch.start(loaded, target, prompt, request_key=a.request_key or secrets.token_hex(16),
                               klass=a.klass, model_set=a.model_set, models=a.model, confirm_duplicate=a.yes,
                               confirm_ships=a.yes, dry_run=a.dry_run, detach=a.detach, spawn=spawn,
-                              replaces=a.replaces or "", **({"testing": a.testing} if a.testing else {}))
+                              replaces=a.replaces or "", **({"testing": a.testing} if a.testing else {}),
+                              **({"approvals": list(a.approve), "approved_by": a.who or _login_name()}
+                                 if a.approve else {}))
     except KeyboardInterrupt:
         return 130
     status = result["status"]
@@ -4033,6 +4083,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--testing", choices=TESTING_CHOICES, metavar="LEVEL",
                    help="how deep this run's checks go: light (smoke), standard (targeted) or heavy (full); "
                    "the depth names smoke, targeted and full are accepted too")
+    p.add_argument("--approve", action="append", default=[], metavar="WHAT",
+                   help="pre-approve a decision only a person may take, for this run (repeatable): vocabulary, "
+                   "edit:PATH, dependency:NAME; the gate still sends a protected-path edit to a person")
+    p.add_argument("--who", metavar="NAME", help="who gives the --approve approvals (default: your login name)")
     p = sub.add_parser("runs", help="what needs you among a layer's runs, and what landed or settled the others; prune leftovers",
                        description="List LAYER's runs that need someone (open hand-overs, waiting runs, failures nothing "
                        "replaces), each with its reason and next action; --view shows the running, landed or settled "
@@ -4179,6 +4233,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("answer", nargs="?", metavar="go|alter|explain|reject")
     p.add_argument("text", nargs="*", metavar="TEXT", help="with alter: your changes")
     p.add_argument("--mail", action="store_true", help="apply the e-mail replies waiting in the mailbox")
+    p = sub.add_parser("approve", help="approve what a stopped run asks a person for, and resume it",
+                       description="Approve WHAT for RUN, a run that stopped before its build or review because it "
+                       "needs a decision only a person may take (its plan's Proof plan names it, e.g. vocabulary, "
+                       "edit:PATH, dependency:NAME), and resume it from the step that stopped. The approval is "
+                       "recorded with who and when. Exit: 0 resumed, 1 refused (unknown run, or not stopped for an "
+                       "approver), 2 bad use.")
+    p.add_argument("layer", type=Path)
+    p.add_argument("run", metavar="RUN", help="the run id (8 hexadecimal characters)")
+    p.add_argument("what", nargs="+", metavar="WHAT", help="an approval: vocabulary, edit:PATH, dependency:NAME …")
+    p.add_argument("--who", metavar="NAME", help="who approves (default: AL_APPROVED_BY, else your login name)")
     p = sub.add_parser("deploy", help="put an in-repo layer on another machine over ssh and keep it running there",
                        description="Put an in-repo layer and its repository on HOST over ssh (your own ssh configuration; "
                        "al stores no host name, key or password), check that HOST can run it, and keep its poller, webhook "
@@ -4401,6 +4465,8 @@ def main(argv: list[str] | None = None) -> int:
             return batch_cli(a)
         elif a.cmd == "answer":
             return answer_cli(a)
+        elif a.cmd == "approve":
+            return approve_cli(a)
         elif a.cmd == "run":
             return run_cli(a)
         elif a.cmd in ("runs", "settle"):

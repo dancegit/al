@@ -38,6 +38,8 @@ Languages: python. Entry document: `README.md`. Default branch: `main`.
 - Write PLAN_FILE in the Plan Format: keep every heading, replace every `<placeholder>`, add no sections (unless a codebase-specific instruction below says otherwise). `<descriptive-name>` is 3-6 lowercase hyphenated words.
 - Keep the commands already present under `### Commands` in the Plan Format unchanged and in order; add the reproduction command and bug-specific commands after them. Checkable results are observable: each one maps to a test, a command or a named artefact.
 - If the bug is user-visible, name under Checkable results the artefacts that will prove the fix (screenshots, video, reports) and the step that produces them.
+- End How it is proven with the Proof plan table, one row per checkable result. Proven by names a Validation Command in backticks, then the test ids it runs, each in backticks. Writes lists the files it writes as globs relative to the worktree with `(count)`; files for this run only go under `${proof_dir}/` and are listed as `proof:GLOB` (relative to `${proof_dir}/`), and every one of them reaches the reviewers; `-` when it writes none. Needs lists the tokens, or `none`: `tool:NAME`, `engine:podman|docker`, `network`, `model:NAME`, `secret:NAME`, `host:ID`, `approval:KIND[:ARG]`. A decision only a person may take is `approval:edit:PATH`, `approval:dependency:NAME` or a layer word such as `approval:vocabulary`. Pre-approved for this run: ${approvals}.
+- Right after you, the runtime checks every row without an agent; a row it cannot prove here stops the run with the declaration or question, so write needs truthfully.
 - Never plan a change under a protected path. If the fix cannot avoid one, plan everything else and add a line starting `REQUIRES HUMAN` under What is left out naming the path and the reason.
 - A plan covers building and validating only: no step commits, merges, pushes, tags, releases or opens a pull request; delivery is the workflow's. Integration work (bringing in another branch or patch) is planned as 'apply onto the worktree, uncommitted', e.g. `git merge --no-commit --squash <ref>`, `git checkout <ref> -- <path>` or `git apply`.
 - A new dependency is a last resort; add it with `(not specified — do not add dependencies without flagging it)` and justify it under What could go wrong.
@@ -116,6 +118,11 @@ Execute every command from the worktree root; all must exit 0.
 
 ### Checkable results
 <bullet per observable result, each tied to a test, a command or a named artefact>
+
+### Proof plan
+| # | Criterion | Proven by | Writes | Needs |
+|---|---|---|---|---|
+| C1 | <checkable result> | `<validation command>` `<test id>` | <globs (count), proof:GLOB, or -> | <none, or need tokens> |
 
 ## What could go wrong
 <risks; new dependencies with their justification; anything the implementer must know; "Nothing known" if none>

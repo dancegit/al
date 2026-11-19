@@ -454,3 +454,19 @@ def test_start_again_refuses_passed_or_replaced_run(site):
     status, data = post(running, {"layer": "notes", "again": "0f00f000", "request_key": key(), "prompt": "x"})
     assert status == 400
     assert sorted(run_dirs(layers["notes"])) == ["0a55ed00", "0e0e0e0e", "0f00f000"]
+
+
+def test_start_passes_approvals_to_dispatch(site):
+    running, layers = site
+    status, data = post(running, plan_build(approvals=["vocabulary", "edit:docs/*.md"]))
+    assert status == 202, data
+    state = wait_state(layers["notes"], data["run_id"])
+    assert state["status"] == "passed"
+    assert [(a["what"], a["who"], a["via"]) for a in state["approvals"]] == [
+        ("vocabulary", "dashboard", "start"), ("edit:docs/*.md", "dashboard", "start")]
+    for bad in (["Not A Token"], "vocabulary", ["x"] * 21, [3]):
+        status, data = post(running, plan_build(approvals=bad))
+        assert status == 400 and "approvals:" in data["error"], bad
+    status, data = post(running, {"layer": "notes", "text": "/plan-chore tidy", "request_key": key(),
+                                  "approvals": ["vocabulary"]})
+    assert status == 400 and "only a workflow run takes approvals" in data["error"]

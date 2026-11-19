@@ -132,6 +132,10 @@ STAGE_NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 START_CLASSES = ("chore", "bug", "feature", "patch")   # mirror of kit/runtime/adw_modules/agents.py
 START_ISSUE = ("none", "start", "trigger")
 START_KEY = re.compile(r"^[A-Za-z0-9_-]{8,64}$")     # mirror of launch.KEY_RE
+# mirror of kit/runtime/adw_modules/approvals.py TOKEN: an approval a person gives a run
+APPROVAL_TOKEN = re.compile(r"[a-z][a-z0-9-]*(:[^\s]{1,200})?")
+MAX_APPROVALS = 20
+APPROVE_KEYS = {"layer", "run", "what"}
 COMMAND_PREFIX = "command:"       # a single-command run's ADW name (launch.single_command_adw)
 LAUNCHER = "adws/dispatch.py"
 # The stand-in (kit/runtime/adw_modules/standin.py), always asked through the layer's own script:
@@ -2441,9 +2445,18 @@ def start_request(layer: Layer, data: dict[str, Any]) -> tuple[dict[str, Any] | 
     testing = data.get("testing") or None
     if testing is not None and (not isinstance(testing, str) or testing not in TESTING_LEVELS):
         return None, f"testing: one of {', '.join(TESTING_LEVELS)}, or empty for the layer's own level"
+    given = data.get("approvals") or []
+    if not isinstance(given, list) or len(given) > MAX_APPROVALS or not all(
+            isinstance(item, str) and APPROVAL_TOKEN.fullmatch(item.strip()) for item in given):
+        return None, (f"approvals: at most {MAX_APPROVALS}, each a word of lower-case letters, digits and -, "
+                      "optionally :ARG (vocabulary, edit:PATH, dependency:NAME)")
+    given = list(dict.fromkeys(item.strip() for item in given))
+    if given and target["kind"] != "workflow":
+        return None, "approvals: only a workflow run takes approvals"
     return {"target": {"kind": target["kind"], "name": target["name"]}, "prompt": prompt, "request_key": key,
             "class": klass, "model_set": model_set, "models": models, "issue": issue, "decider": decider,
             "testing": testing,
+            "approvals": given,
             "confirm_duplicate": data.get("confirm_duplicate") is True,
             "confirm_ships": data.get("confirm_ships") is True}, ""
 
@@ -2753,6 +2766,9 @@ def start_via_layer(layer: Layer, request: dict[str, Any], timeout: float = STAR
     argv += ["--confirm-ships"] if request.get("confirm_ships") else []
     argv += ["--replaces", request["replaces"]] if request.get("replaces") else []
     argv += ["--decider", request["decider"]] if request.get("decider") else []
+    for what in request.get("approvals") or []:
+        argv += ["--approve", what]
+    argv += ["--who", "dashboard"] if request.get("approvals") else []
     env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
     try:
         done = subprocess.run(argv, input=request["prompt"].encode("utf-8"), capture_output=True, cwd=str(layer.path),
@@ -2768,6 +2784,120 @@ def start_via_layer(layer: Layer, request: dict[str, Any], timeout: float = STAR
     except ValueError:
         result = {}
     return done.returncode, result if isinstance(result, dict) else {}, tail
+
+
+def approve_via_layer(layer: Layer, run_id: str, what: list[str],
+                      timeout: float = START_TIMEOUT) -> tuple[int, dict[str, Any], str]:
+    """`adws/dispatch.py --grant RUN --approve W… --who dashboard --json` of the layer (its runtime
+    version): records the approvals and resumes the run. → (exit code, its JSON result, stderr tail)."""
+    argv = [sys.executable, str(layer.path / LAUNCHER), "--grant", run_id, "--who", "dashboard", "--json"]
+    for item in what:
+        argv += ["--approve", item]
+    env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
+    try:
+        done = subprocess.run(argv, capture_output=True, cwd=str(layer.path), env=env, timeout=timeout, check=False,
+                              stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return -1, {}, f"the layer's launcher took longer than {int(timeout)} s"
+    except OSError as exc:
+        return -1, {}, f"cannot run the layer's launcher: {exc}"
+    lines = [line for line in done.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    try:
+        result = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        result = {}
+    return done.returncode, result if isinstance(result, dict) else {}, done.stderr.decode("utf-8", "replace")[-2000:]
+
+
+# ============================================================================ proof plans and review rounds
+#
+# The plan's Proof plan and what became of it (state.json `proof_plan`, written by the runtime's
+# proofplan.py, evidence.py, convergence.py and freshen.py): the table with a state per criterion
+# from the moment the plan exists, why a run stopped before its build or review and who can clear
+# it, the evidence pack, and per review round what was resolved, still open and new.
+
+PROOF_STATES = ("planned", "proven", "missing", "failed", "stale", "skipped-only", "not-run", "files-missing")
+
+
+def proof_plan_view(state: dict[str, Any] | None, short: Any = lambda text: text) -> dict[str, Any]:
+    """The run page's proof card; {} for a run whose plan has no Proof plan table. Every text is data
+    (the page sets it as text, never as markup)."""
+    plan = (state or {}).get("proof_plan") if isinstance(state, dict) else None
+    if not isinstance(plan, dict) or plan.get("table") not in ("parsed", "invalid"):
+        return {}
+
+    def text(value: Any, limit: int = 2000) -> str:
+        return short(str(value if value is not None else ""))[:limit]
+
+    rows = [{"id": text(r.get("id"), 20), "criterion": text(r.get("criterion"), 500), "command": text(r.get("command"), 500),
+             "outcome": text(r.get("outcome"), 60), "why": text(r.get("why")), "fix": text(r.get("fix")),
+             "party": text(r.get("party"), 40), "state": text(r.get("state") or "planned", 40)}
+            for r in plan.get("rows") or [] if isinstance(r, dict)]
+    stopped = plan.get("stopped") if isinstance(plan.get("stopped"), dict) else {}
+    pack = plan.get("pack") if isinstance(plan.get("pack"), dict) else {}
+    rounds = [{"round": r.get("round"), "resolved": [text(x, 200) for x in r.get("resolved") or []],
+               "open": [text(x, 200) for x in r.get("open") or []], "new": [text(x, 200) for x in r.get("new") or []],
+               "seconds": r.get("seconds"), "success": r.get("success")}
+              for r in plan.get("rounds") or [] if isinstance(r, dict)]
+    freshen = plan.get("freshen") if isinstance(plan.get("freshen"), dict) else {}
+    return {
+        "table": text(plan.get("table"), 20), "rows": rows,
+        "stopped": {"at": text(stopped.get("at"), 40), "outcome": text(stopped.get("outcome"), 60),
+                    "party": text(stopped.get("party"), 40), "reason": text(stopped.get("reason"), 4000),
+                    "question": text(stopped.get("question"), 1000),
+                    "approvals": [text(a, 220) for a in stopped.get("approvals") or []]} if stopped else {},
+        "pack": [{"id": text(r.get("id"), 20), "state": text(r.get("state"), 40), "check": text(r.get("check"), 200),
+                  "exit": r.get("exit"), "tree": text(r.get("tree"), 20), "passed": r.get("passed"),
+                  "failed": r.get("failed"), "skipped": r.get("skipped"), "note": text(r.get("note"), 500),
+                  "tests": {text(k, 300): text(v, 40) for k, v in (r.get("tests") or {}).items()},
+                  "files": [text(f, 300) for f in r.get("files") or []][:50]}
+                 for r in pack.get("rows") or [] if isinstance(r, dict)],
+        "rounds": rounds, "why_stopped": text(plan.get("why_stopped"), 200),
+        "freshen": {when: {"behind": f.get("behind"), "touched": [text(x, 300) for x in f.get("touched") or []],
+                           "merged": bool(f.get("merged")), "conflicts": [text(x, 300) for x in f.get("conflicts") or []]}
+                    for when, f in freshen.items() if isinstance(f, dict)},
+        "debt": [{"text": text(d.get("text"), 1000), "where": text(d.get("where"), 300)}
+                 for d in plan.get("debt") or [] if isinstance(d, dict)],
+    }
+
+
+def review_convergence(states: list[dict[str, Any]]) -> dict[str, Any]:
+    """The Layers view's review numbers: mirror of tools/al_kpis.py convergence_of (a test holds them
+    equal), over runs' state.json, counting only runs with a Proof plan summary."""
+    summaries = []
+    for state in states:
+        plan = state.get("proof_plan") if isinstance(state, dict) else None
+        summary = plan.get("summary") if isinstance(plan, dict) else None
+        if isinstance(summary, dict):
+            summaries.append(summary)
+    rounds = [int(s.get("rounds") or 0) for s in summaries if int(s.get("rounds") or 0) > 0]
+    by_reason: dict[str, int] = {}
+    by_party: dict[str, int] = {}
+    causes: dict[str, int] = {}
+    declarations: dict[str, int] = {}
+    repeated = 0
+    idle = 0.0
+    for summary in summaries:
+        why = str(summary.get("stopped") or "")
+        if ":" in why or why.startswith("no-progress"):
+            reason = why.split(" (")[0]
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+            party = str(summary.get("party") or "person")
+            by_party[party] = by_party.get(party, 0) + 1
+        for item in summary.get("repeated") or []:
+            repeated += 1
+            cause = str(item.get("cause") or "fixable") if isinstance(item, dict) else "fixable"
+            causes[cause] = causes.get(cause, 0) + 1
+        idle += float(summary.get("idle_seconds") or 0)
+        for line in summary.get("declarations") or []:
+            declarations[str(line)] = declarations.get(str(line), 0) + 1
+    return {"runs_with_proof_plan": len(summaries),
+            "rounds_per_run": {"mean": round(sum(rounds) / len(rounds), 2) if rounds else None,
+                               "max": max(rounds) if rounds else None},
+            "stopped_early": {"runs": sum(by_reason.values()), "by_reason": by_reason, "by_party": by_party},
+            "repeated_blockers": repeated, "causes": causes, "idle_hours": round(idle / 3600, 2),
+            "missing_declarations": [{"declaration": text, "runs": count} for text, count in
+                                     sorted(declarations.items(), key=lambda kv: (-kv[1], kv[0]))]}
 
 
 # ============================================================================ landing and settlement
@@ -4473,6 +4603,7 @@ class RunModel:
             # targeted testing: the run's depth per check, and the red batch it broke (agents/testing/batches.jsonl)
             "testing": run_testing(self.layer, state),
             "broke_batch": broken_by(batch_ledger(self.layer.path)).get(self.id),
+            **self._proof_summary(state),
             **extras,
         }
         summary["integrate"] = integrate_offer(self.layer, summary)
@@ -4507,6 +4638,12 @@ class RunModel:
                 "standin_stop": str(last.get("stop") or "") if last else "",
                 "fingerprint": run_fingerprint(state) if state else "",
                 "cost_standin": round(sum(costs), 6) if costs else None}
+
+    def _proof_summary(self, state: dict[str, Any]) -> dict[str, Any]:
+        """The per-run review numbers the Layers view sums (review_convergence); nothing for a run without a Proof plan."""
+        plan = state.get("proof_plan")
+        summary = plan.get("summary") if isinstance(plan, dict) else None
+        return {"proof_summary": summary} if isinstance(summary, dict) else {}
 
     def _promotion_badge(self, state: dict[str, Any], status: str) -> dict[str, Any]:
         """A promotion run's badge for the run card and the runs list."""
@@ -4813,6 +4950,7 @@ class RunModel:
                                     "why": short(_state_outcome(state, name)[1])}
                              for name, r in records.items()},
             "proof": proof_view(state, short),
+            "proof_plan": proof_plan_view(state, short),
             "promotion": promotion_view(self.layer, self.id, state, short),
             "testing": self._testing_detail(state, summary, short),
         }
@@ -5555,7 +5693,9 @@ class Model:
                             "standin": self.standin_view(layer),
                             "testing": layer.testing_view(self.read_only, runs, batch_status(layer, self)),
                             "start": start_status(layer, self),
-                            "voice": voice_status(layer, self)})
+                            "voice": voice_status(layer, self),
+                            "reviews": review_convergence([{"proof_plan": {"summary": r["proof_summary"]}}
+                                                           for r in runs if r.get("proof_summary")])})
             return out
 
     # ---------------------------------------------------------------- the stand-in
@@ -9158,6 +9298,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._batch()
             if path == "/api/run-testing":
                 return self._run_testing()
+            if path == "/api/approve":
+                return self._approve()
         except (BrokenPipeError, ConnectionResetError):
             return None
         self._refuse()
@@ -9804,6 +9946,50 @@ class Handler(BaseHTTPRequestHandler):
             code, answer = model_.integrate_approve(data["layer"], data["run"], who.strip())
         return self._json(answer, code)
 
+    def _approve(self) -> None:
+        """POST /api/approve {layer, run, what: [APPROVAL, …]} and nothing else: the Approve button of a
+        run stopped for a decision only a person may take. Checked here, then done by the layer's own
+        `adws/dispatch.py --grant RUN`, which records the approvals (who: dashboard) and resumes the run.
+        202 resumed, 409 refused (the run is not stopped for an approver)."""
+        body = self._write_guard(MAX_WRITE_BODY)
+        if body is None:
+            return None
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        usage = 'expected {"layer", "run", "what": [approval, …]} and nothing else'
+        if not isinstance(data, dict) or not set(data) <= APPROVE_KEYS or not isinstance(data.get("layer"), str) \
+                or not isinstance(data.get("run"), str) or not RUN_ID.match(data["run"]):
+            return self._error(400, usage)
+        what = data.get("what")
+        if not isinstance(what, list) or not what or len(what) > MAX_APPROVALS or not all(
+                isinstance(item, str) and APPROVAL_TOKEN.fullmatch(item) for item in what):
+            return self._error(400, "what: 1 to 20 approvals, each a word of lower-case letters, digits and -, "
+                                    "optionally :ARG (vocabulary, edit:PATH, dependency:NAME)")
+        if self.server.no_start:
+            return self._error(403, "the dashboard was started with --no-start")
+        if self.server.model.in_container and not self.server.allow_start:
+            return self._error(403, "the dashboard runs in a container and cannot start runs "
+                                    "(--allow-start-in-container only for an image built for it)")
+        model_ = self.server.model
+        with model_.lock:
+            layer = model_.layers.get(data["layer"])
+        if layer is None:
+            return self._error(404, "unknown layer")
+        code, result, stderr = approve_via_layer(layer, data["run"], list(what))
+        status = result.get("status")
+        if status == "resumed":
+            return self._json({"status": "resumed", "message": str(result.get("message") or ""),
+                               "url": f"#/run/{layer.key}/{data['run']}"}, 202)
+        if status == "refused":
+            return self._json({"error": str(result.get("message") or "refused"), "reason": result.get("reason") or "",
+                               "refused": True}, 409)
+        if status == "invalid":
+            return self._error(400, str(result.get("message") or "invalid request"))
+        tail = "\n".join(stderr.strip().splitlines()[-12:])
+        return self._json({"error": f"the layer's launcher failed (exit {code})", "stderr": tail}, 502)
+
     def _integrate_preview(self, query: dict[str, list[str]]) -> None:
         """GET /api/integrate/preview?layer=K&run=ID: what the integration would do (read-only)."""
         code, answer = self.server.model.integrate_preview(self._q(query, "layer"), self._q(query, "run"))
@@ -10277,7 +10463,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._startable(query)
             if path in ("/api/start", "/api/models", "/api/promotion", "/api/settle", "/api/integrate", "/api/decider",
                         "/api/decision", "/api/standin", "/api/voice/approve", "/api/testing", "/api/batch",
-                        "/api/run-testing") or path in VOICE_POST:
+                        "/api/run-testing", "/api/approve") or path in VOICE_POST:
                 return self._error(405, "POST only")
             if path == "/api/integrate/preview":
                 return self._integrate_preview(query)

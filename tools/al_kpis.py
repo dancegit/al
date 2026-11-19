@@ -32,6 +32,11 @@ What is counted (the same text is in the --md output):
                 (the layer's own adw_modules/testing.py miss_rates; nothing for a layer generated before
                 targeted testing), the median seconds of its targeted checks and of its last full run
                 (agents/testing/suites.json, read directly).
+  reviews and proof  over the runs whose plan has a Proof plan table (state.json proof_plan.summary,
+                written by the runtime's convergence.py): review rounds per run, the runs stopped before
+                another round (by reason and by the party who can clear it), blockers that came back in a
+                later round (by cause), hours in rounds that changed no verdict, and the declarations a
+                layer author should add first (most often missing first). Runs without a table count nowhere.
 
 The output holds counts, step names, workflow names and classes. It never holds a run id, a title, a
 prompt, a branch, a URL, a path or a reason as it was written.
@@ -72,6 +77,15 @@ DEFINITIONS = (
                        "landed afterwards."),
     ("Miss", "a batch failure bisected to a run whose check of that command passed below full depth; the miss rate "
              "is over the targeted runs batches verified, per command and per selection strategy."),
+    ("Runs with a Proof plan", "runs whose plan ends with a Proof plan table; every other number of Reviews and "
+                               "proof counts only these runs."),
+    ("Review rounds per run", "mean and max of the review rounds of the runs with a Proof plan that were reviewed."),
+    ("Stopped early", "runs stopped before the build or before another review round (prove, evidence, a moved "
+                      "target, or rounds that made no progress), by reason and by the party who can clear it."),
+    ("Repeated blockers", "blockers whose fingerprint (criterion or file, and kind) came back in a later round, by "
+                          "cause (fixable, needs-environment, needs-declaration, needs-person)."),
+    ("Idle hours", "time spent in review rounds whose verdict was the same as the round before."),
+    ("Missing declarations", "the declarations stops asked a layer author for, most frequent first: add these first."),
 )
 
 
@@ -221,6 +235,45 @@ def _testing(layer_dir: Path, ir: dict[str, Any], states: list[dict[str, Any]]) 
     return {"declared": declared, "commands": commands}
 
 
+def convergence_of(states: list[dict[str, Any]]) -> dict[str, Any]:
+    """The Reviews and proof numbers over runs' state.json (only those with a Proof plan summary).
+    kit/dashboard/dashboard.py review_convergence is its mirror; a test holds them equal."""
+    summaries = []
+    for state in states:
+        plan = state.get("proof_plan") if isinstance(state, dict) else None
+        summary = plan.get("summary") if isinstance(plan, dict) else None
+        if isinstance(summary, dict):
+            summaries.append(summary)
+    rounds = [int(s.get("rounds") or 0) for s in summaries if int(s.get("rounds") or 0) > 0]
+    by_reason: dict[str, int] = {}
+    by_party: dict[str, int] = {}
+    causes: dict[str, int] = {}
+    declarations: dict[str, int] = {}
+    repeated = 0
+    idle = 0.0
+    for summary in summaries:
+        why = str(summary.get("stopped") or "")
+        if ":" in why or why.startswith("no-progress"):
+            reason = why.split(" (")[0]
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+            party = str(summary.get("party") or "person")
+            by_party[party] = by_party.get(party, 0) + 1
+        for item in summary.get("repeated") or []:
+            repeated += 1
+            cause = str(item.get("cause") or "fixable") if isinstance(item, dict) else "fixable"
+            causes[cause] = causes.get(cause, 0) + 1
+        idle += float(summary.get("idle_seconds") or 0)
+        for line in summary.get("declarations") or []:
+            declarations[str(line)] = declarations.get(str(line), 0) + 1
+    return {"runs_with_proof_plan": len(summaries),
+            "rounds_per_run": {"mean": round(sum(rounds) / len(rounds), 2) if rounds else None,
+                               "max": max(rounds) if rounds else None},
+            "stopped_early": {"runs": sum(by_reason.values()), "by_reason": by_reason, "by_party": by_party},
+            "repeated_blockers": repeated, "causes": causes, "idle_hours": round(idle / 3600, 2),
+            "missing_declarations": [{"declaration": text, "runs": count} for text, count in
+                                     sorted(declarations.items(), key=lambda kv: (-kv[1], kv[0]))]}
+
+
 def collect(layer_dir: Path, since: float | None = None, since_text: str = "") -> dict[str, Any]:
     """Every number of the report, as plain data."""
     import al_runs
@@ -298,6 +351,7 @@ def collect(layer_dir: Path, since: float | None = None, since_text: str = "") -
                           for (adw, klass, dry), group in sorted(groups.items())],
         "default_branch": on_default,
         "testing": _testing(Path(layer.path), layer.ir, states),
+        "convergence": convergence_of(states),
     }
 
 
@@ -367,6 +421,22 @@ def _tables(data: dict[str, Any]) -> list[tuple[str, list[str], list[list[str]]]
                         strategies or "-", _seconds(cmd["targeted_seconds"]), _seconds(cmd["full_seconds"])])
     if not testing:
         testing = [["no targeted runs yet", "-", "-", "-", "-", "-", "-"]]
+    conv = data.get("convergence") or convergence_of([])
+    per_run = conv["rounds_per_run"]
+    stopped = conv["stopped_early"]
+    proof = [["runs with a Proof plan", str(conv["runs_with_proof_plan"])],
+             ["review rounds per run, mean", "-" if per_run["mean"] is None else f"{per_run['mean']:.2f}"],
+             ["review rounds per run, max", "-" if per_run["max"] is None else str(per_run["max"])],
+             ["stopped early", str(stopped["runs"])],
+             *[[f"  {reason}", str(count)] for reason, count in sorted(stopped["by_reason"].items(),
+                                                                       key=lambda kv: (-kv[1], kv[0]))],
+             *[[f"  for the {party}", str(count)] for party, count in sorted(stopped["by_party"].items(),
+                                                                             key=lambda kv: (-kv[1], kv[0]))],
+             ["repeated blockers", str(conv["repeated_blockers"])],
+             *[[f"  {cause}", str(count)] for cause, count in sorted(conv["causes"].items(),
+                                                                     key=lambda kv: (-kv[1], kv[0]))],
+             ["hours in rounds that changed no verdict", f"{conv['idle_hours']:.2f}"],
+             *[[f"  add first: {item['declaration']}", str(item["runs"])] for item in conv["missing_declarations"][:5]]]
     return [("Runs by outcome", ["outcome", "runs", "share", "why"], outcomes),
             ("Attempts per step", ["step", "records", "mean", "max", "first attempt"], attempts),
             ("Review rounds", ["runs reviewed", "mean", "max", "more than one round"], reviews),
@@ -375,7 +445,8 @@ def _tables(data: dict[str, Any]) -> list[tuple[str, list[str], list[list[str]]]
              ["workflow", "class", "agent", "runs", "median time", "total time", "median cost", "total cost", "without cost"],
              money),
             ("Changes on the default branch", ["", "count"], default),
-            ("Testing", ["command", "targeted runs", "misses", "miss rate", "by strategy", "targeted s", "full s"], testing)]
+            ("Testing", ["command", "targeted runs", "misses", "miss rate", "by strategy", "targeted s", "full s"], testing),
+            ("Reviews and proof", ["", "count"], proof)]
 
 
 def _scope(data: dict[str, Any]) -> str:

@@ -201,7 +201,7 @@ def rec(name: str, kind: str, status: str, start: float | None, end: float | Non
             "detail": detail}
 
 
-def plan_records(t: float, klass: str = "chore") -> tuple[list[dict], float]:
+def plan_records(t: float, klass: str = "chore", build: bool = True) -> tuple[list[dict], float]:
     out = [rec("classify", "run", "passed", t, t + 10, '{"class":"chore"}')]
     t += 10
     for name, when in (("plan-chore", "chore"), ("plan-bug", "bug"), ("plan-feature", "feature")):
@@ -210,6 +210,8 @@ def plan_records(t: float, klass: str = "chore") -> tuple[list[dict], float]:
             t += 30
         else:
             out.append(rec(name, "run", "skipped", t, t, f"when=class-{when}, class={klass}"))
+    if not build:
+        return out, t
     out.append(rec("build", "run", "passed", t, t + 50, "Added the test."))
     return out, t + 50
 
