@@ -1750,3 +1750,148 @@
                                   '(adw c (steps (check t #:cmd test))) '(testing smoke))))
                 '())
   (check-equal? (layer-warnings (dynamic-require (build-path examples "full.rkt") 'layer-spec)) '()))
+
+;; ---------------------------------------------------------------------------------- placement
+
+(define placement-base
+  (list '(layer in-repo) '(environment worktree) '(environment podman) '(trigger cron)
+        '(registry #:address-env "AL_REGISTRY") plan simple-adw
+        '(host #:id build-1 #:images pull) '(host #:id build-2 #:images pull)))
+(define (placement-layer . clauses) (apply in-repo-layer ".." (append placement-base clauses)))
+(define (placed . fields) `(placement auto ,@fields))
+
+(test-case "placement compiles to the placement key"
+  (define ir (compile-layer-datum
+              (placement-layer '(placement auto #:hosts (home build-1 build-2) #:prefer least-loaded #:max-runs-per-host 4
+                                           #:reserve ((host build-2) (classes (chore bug)))))))
+  (define p (hash-ref ir 'placement))
+  (check-equal? (hash-ref p 'kind) "auto")
+  (check-equal? (hash-ref p 'hosts) '("home" "build-1" "build-2"))
+  (check-equal? (hash-ref p 'prefer) "least-loaded")
+  (check-equal? (hash-ref p 'maxRunsPerHost) 4)
+  (check-equal? (hash-ref p 'reserve) (hasheq 'host "build-2" 'classes '("chore" "bug")))
+  (check-equal? (hash-ref p 'sourceEnv) "AL_GIT_SOURCE")
+  (check-equal? (hash-ref p 'layerSourceEnv) "AL_LAYER_SOURCE")
+  (check-equal? (hash-ref p 'lostAfter) 120)
+  ;; the defaults: no reservation, no per-host limit
+  (define d (hash-ref (compile-layer-datum (placement-layer (placed '#:hosts '(home build-1)))) 'placement))
+  (check-equal? (hash-ref d 'reserve) 'null)
+  (check-equal? (hash-ref d 'maxRunsPerHost) 0)
+  ;; the schema accepts it, and the reference documents it
+  (define props (hash-ref (layer-schema) 'properties))
+  (check-true (hash-has-key? props 'placement))
+  (check-false (member "placement" (hash-ref (layer-schema) 'required)))
+  (define ref (reference-text))
+  (check-true (string-contains? ref "(placement auto #:hosts (…) …)"))
+  (check-true (string-contains? ref "((FIELD value) …), see record `host-reserve`"))
+  (check-true (string-contains? ref "`#:needs-home`")))
+
+(test-case "a layer without placement has the IR of before"
+  (define ir (dynamic-require (build-path examples "minimal.rkt") 'layer-spec))
+  (check-false (hash-has-key? ir 'placement))
+  (for ([c (in-list (hash-ref (hash-ref ir 'codebase) 'commands))])
+    (check-false (hash-has-key? c 'needsHome)))
+  (for ([a (in-list (hash-ref ir 'adws))])
+    (check-false (hash-has-key? a 'pinnedHome)))
+  ;; #:needs-home is a fact about the command: it needs no placement, and pins nothing without one
+  (define with-cmd
+    (compile-layer-datum
+     `(agentic-layer #:name "t" (codebase #:root "." #:languages (python) (cmd test "pytest") (cmd db-test "make db" #:needs-home #t))
+                     ,plan (adw a (steps (run plan #:command plan) (check db #:cmd db-test))))))
+  (define cmds (hash-ref (hash-ref with-cmd 'codebase) 'commands))
+  (check-false (hash-has-key? (car cmds) 'needsHome))
+  (check-equal? (hash-ref (cadr cmds) 'needsHome) #t)
+  (check-false (hash-has-key? with-cmd 'placement))
+  (check-false (hash-has-key? (car (hash-ref with-cmd 'adws)) 'pinnedHome)))
+
+(test-case "placement rules"
+  (check-rejects (placement-layer (placed '#:hosts '(home)) (placed '#:hosts '(home build-1))) #rx"only one placement")
+  (check-rejects (placement-layer (placed '#:hosts '())) #rx"#:hosts is empty")
+  (check-rejects (placement-layer (placed)) #rx"missing required field #:hosts")
+  (check-rejects (placement-layer (placed '#:hosts '(home build-1 build-1))) #rx"#:hosts lists `build-1` twice")
+  (check-rejects (placement-layer (placed '#:hosts '(home build-9))) #rx"`build-9` is not a declared \\(host")
+  (check-rejects (placement-layer '(host #:id home)) #rx"reserved")
+  (check-rejects (placement-layer (placed '#:hosts '(home) '#:max-runs-per-host 100)) #rx"#:max-runs-per-host must be 0–64")
+  (check-rejects (placement-layer (placed '#:hosts '(home) '#:max-runs-per-host -1)) #rx"#:max-runs-per-host must be 0–64")
+  (check-rejects (placement-layer (placed '#:hosts '(home) '#:lost-after 5)) #rx"#:lost-after must be 30–3600")
+  (check-rejects (placement-layer (placed '#:hosts '(home) '#:lost-after 4000)) #rx"#:lost-after must be 30–3600")
+  (check-rejects (placement-layer (placed '#:hosts '(home build-1) '#:reserve '((host home) (classes (chore)))))
+                 #rx"#:reserve names `home`")
+  (check-rejects (placement-layer (placed '#:hosts '(home build-1) '#:reserve '((host build-2) (classes (chore)))))
+                 #rx"#:reserve names `build-2`, which is not in #:hosts")
+  (check-rejects (placement-layer (placed '#:hosts '(home build-2) '#:reserve '((host build-2) (classes ()))))
+                 #rx"#:reserve needs at least one class")
+  (check-rejects (placement-layer (placed '#:hosts '(home build-2) '#:reserve '(build-2 chore)))
+                 #rx"expected \\(\\(field value\\) …\\)")
+  (check-rejects (placement-layer (placed '#:hosts '(home build-2) '#:reserve '((host build-2) (classes (chore)) (ram 4))))
+                 #rx"unknown field #:ram")
+  (check-rejects (placement-layer (placed '#:hosts '(home build-2) '#:reserve '((host build-2) (classes (epic)))))
+                 #rx"one of: chore, bug, feature, patch")
+  (check-rejects (placement-layer (placed '#:hosts '(home) '#:source-env "git@forge.example:team/app.git"))
+                 #rx"#:source-env takes the NAME of an environment variable")
+  (check-rejects (placement-layer (placed '#:hosts '(home) '#:layer-source-env "https://forge.example/team/layer.git"))
+                 #rx"#:layer-source-env takes the NAME of an environment variable")
+  (check-rejects (placement-layer (placed '#:hosts '(home) '#:prefer 'random)) #rx"one of: least-loaded, first"))
+
+(test-case "placement: the private value is never echoed"
+  (define msg
+    (with-handlers ([exn:al? exn-message])
+      (compile-layer-datum (placement-layer (placed '#:hosts '(home) '#:source-env "git@forge.example:team/app.git")))
+      "no error"))
+  (check-false (string-contains? msg "forge.example")))
+
+(test-case "workflows pinned to home"
+  (define (pins . clauses)
+    (define ir
+      (compile-layer-datum
+       `(agentic-layer #:name "t"
+                       (codebase #:root ".." #:languages (python) (cmd test "pytest")
+                                 (cmd db-test "make db" #:needs-home #t) (cmd wait "./wait.sh"))
+                       (layer in-repo) (environment worktree) (environment host) ,plan ,review-cmd
+                       (review agent) (host #:id build-1)
+                       (placement auto #:hosts (home build-1))
+                       ,@clauses)))
+    (for/hash ([a (in-list (hash-ref ir 'adws))]) (values (hash-ref a 'name) (hash-ref a 'pinnedHome))))
+  (define p
+    (pins '(adw free #:environment (worktree) (steps (run plan #:command plan) (check t #:cmd test)))
+          '(adw db #:environment (worktree) (steps (run plan #:command plan) (check t #:cmd test) (check db #:cmd db-test)))
+          '(adw waits #:environment (worktree) (steps (run plan #:command plan) (script hold #:cmd wait #:waiting-exit (75))))
+          '(adw tune #:environment (worktree) #:changes layer #:review agent (steps (run plan #:command plan)))
+          '(adw look #:environment (host) (steps (run plan #:command plan)))
+          '(adw both #:environment (worktree) #:changes layer #:review agent
+                (steps (script db #:cmd db-test) (script hold #:cmd wait #:waiting-exit (75))))))
+  (check-equal? (hash-ref p "free") '())
+  (check-equal? (hash-ref p "db") '("cmd db-test needs home (#:needs-home)"))
+  (check-equal? (hash-ref p "waits") '("step hold waits for something outside (#:waiting-exit)"))
+  (check-equal? (hash-ref p "tune") '("it changes the layer (#:changes layer)"))
+  (check-equal? (hash-ref p "look") '("it has no worktree environment"))
+  (check-equal? (hash-ref p "both") '("cmd db-test needs home (#:needs-home)"
+                                      "step hold waits for something outside (#:waiting-exit)"
+                                      "it changes the layer (#:changes layer)")))
+
+(test-case "workflows pinned to home: a cmd the gate requires"
+  (define ir
+    (compile-layer-datum
+     `(agentic-layer #:name "t"
+                     (codebase #:root ".." #:languages (python) (cmd test "pytest") (cmd db-test "make db" #:needs-home #t))
+                     (layer in-repo) (environment worktree) (environment podman) ,plan ,review-cmd
+                     (registry #:address-env "AL_REGISTRY")
+                     (review auto #:require-checks (test db-test)) (host #:id build-1 #:images pull)
+                     (placement auto #:hosts (home build-1))
+                     (adw a #:environment (worktree podman) (steps (run plan #:command plan) (check t #:cmd test) (review) (ship))))))
+  (check-equal? (hash-ref (car (hash-ref ir 'adws)) 'pinnedHome) '("cmd db-test needs home (#:needs-home)")))
+
+(test-case "warning: a placement host that builds its image, with no registry"
+  (define (ws . clauses)
+    (layer-warnings
+     (compile-layer-datum
+      (apply in-repo-layer ".." '(layer in-repo) '(environment worktree) '(environment podman) plan
+             '(adw a #:environment (worktree podman) (steps (run plan #:command plan)))
+             clauses))))
+  (define w (ws '(host #:id build-1) '(host #:id build-2) '(placement auto #:hosts (home build-1))))
+  (check-equal? (length w) 1)
+  (check-regexp-match #rx"host `build-1`.*#:images build.*no \\(registry" (car w))
+  ;; a registry, or no placement, or a host that is not listed: nothing to say
+  (check-equal? (ws '(registry #:address-env "AL_REGISTRY") '(host #:id build-1) '(placement auto #:hosts (home build-1))) '())
+  (check-equal? (ws '(host #:id build-1)) '())
+  (check-equal? (ws '(host #:id build-1) '(placement auto #:hosts (home))) '()))

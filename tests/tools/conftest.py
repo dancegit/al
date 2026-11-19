@@ -54,6 +54,22 @@ PROVISION_LAYER = DEPLOY_LAYER.replace(
 assert PROVISION_LAYER.count("(host ") == 2
 
 
+# DEPLOY_LAYER without a forge and its webhook, plus a mock agent next to the default one, a podman environment, two
+# hosts and a placement on them, one check and an auto review that merges: what `al run` places.
+PLACEMENT_LAYER = (DEPLOY_LAYER
+                   .replace('  (forge forgejo #:host "https://forge.example.org" #:repo "acme/notes")\n',
+                            '  (forge none #:remote "origin")\n  (agent claude-code)\n  (agent mock #:id mock)\n'
+                            "  (environment worktree)\n  (environment podman)\n"
+                            "  (host #:id build-1)\n  (host #:id build-2)\n"
+                            "  (placement auto #:hosts (home build-1 build-2) #:max-runs-per-host 2)\n"
+                            "  (command review #:template review #:output json)\n"
+                            "  (review auto #:require-checks (test) #:allowed-classes (chore bug feature patch))\n")
+                   .replace("  (trigger webhook #:port 8001)\n", "")      # a webhook listens to forge events
+                   .replace("    #:input (tasklist) #:trigger (cron webhook)",
+                            "    #:input (tasklist) #:trigger (cron) #:environment (worktree podman) #:review auto"))
+assert "(placement auto" in PLACEMENT_LAYER and "#:review auto" in PLACEMENT_LAYER
+
+
 def sh(argv, cwd=None, env=None, timeout=900) -> subprocess.CompletedProcess:
     return subprocess.run([str(a) for a in argv], cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
 
@@ -153,6 +169,43 @@ def provisionable(app: Path, tmp_path: Path) -> Path:
     pins_dir = tmp_path / "pins"
     pins_dir.mkdir(exist_ok=True)
     return gen_provision_layer(app, test_pins(pins_dir))
+
+
+@pytest.fixture
+def placed(app: Path, tmp_path: Path):
+    """A layer whose runs may execute on `home`, `build-1` and `build-2`:
+    (layer directory, {id: deploy_host.Host}, the bare repository that is the git source, the environment for `al`).
+
+    PLACEMENT_LAYER is generated in-repo; the podman option is then taken out of the workflow's environment
+    list in the generated agentic-layer.json (the fake hosts have no container engine; the compiler rule that
+    zero-touch needs podman is covered by the compiler tests). The repository is committed and pushed to
+    `source.git` (its `origin`), deployed to both fake hosts with `al deploy … --as build-N`, and each host's
+    env file names the git source."""
+    from deploy_host import make_hosts
+
+    al("init", app, "--in-repo")
+    layer = app / "agentic"
+    (layer / "agentic.rkt").write_text(PLACEMENT_LAYER.format(root="..", placement='(layer in-repo #:dir "agentic")'))
+    al("gen", layer)
+    path = layer / "agentic-layer.json"
+    data = json.loads(path.read_text())
+    for adw in data["adws"]:
+        adw["environment"] = [e for e in adw["environment"] if e != "podman"]
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    commit(app, "the agentic layer", "agentic")
+    source = tmp_path / "source.git"
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", "source.git")
+    git(app, "remote", "add", "origin", str(source))
+    git(app, "push", "-q", "origin", "main")
+    hosts = make_hosts(tmp_path, ("build-1", "build-2"))
+    for ident, host in hosts.items():
+        host.runtime()
+        host.login("claude-code")
+        host.set_env_file("notes", AL_GIT_SOURCE=str(source))
+        al("deploy", layer, "--to", f"{ident}.example", "--as", ident, "--no-enable", env=host.env())
+    env = {"AL_HOSTS_LOCAL": str(tmp_path / "hosts"), "AL_GIT_SOURCE": str(source),
+           "XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+    return layer, hosts, source, env
 
 
 @pytest.fixture

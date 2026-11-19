@@ -169,6 +169,11 @@
       if (n < 1048576) return `${(n / 1024).toFixed(1)} kB`;
       return `${(n / 1048576).toFixed(1)} MB`;
     },
+    kb(n) {
+      if (n === null || n === undefined) return "—";
+      if (n < 1048576) return `${Math.round(n / 1024)} MB`;
+      return `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} GB`;
+    },
     time(epoch) {
       if (!epoch) return "—";
       const d = new Date(epoch * 1000);
@@ -265,6 +270,62 @@
     if (threshold) {
       el.appendChild(h("div", { class: "faint", text: `no new agent step at ${threshold.percent}% (then: ${threshold.on_limit === "wait"
         ? `wait for the reset, at most ${threshold.wait_minutes} min` : "hand over"})` }));
+    }
+    return el;
+  }
+
+  /** Where a run executes: the host of a run its layer placed on another machine, `home` for one that stayed
+   *  (nothing for a layer that places no runs). */
+  function hostBadge(run) {
+    if (!run || !run.host) return null;
+    const remote = run.remote;
+    const phase = remote ? remote.phase : "";
+    const seen = remote && remote.last_seen ? ` · last answer ${fmt.time(remote.last_seen)} (${fmt.ago(remote.last_seen)})` : "";
+    const title = !remote ? "runs on the home machine"
+      : phase === "remote" ? `runs on ${run.host}${seen}`
+        : phase === "gate" ? `ran on ${run.host}; the gate and what follows run on the home machine`
+          : phase === "lost" ? `${run.host} stopped answering${seen}` : `placed on ${run.host}${seen}`;
+    const note = phase === "gate" ? " · gate at home" : (phase === "lost" ? " · no answer" : "");
+    return h("span", { class: `badge host${phase === "lost" ? " lost" : ""}`, title, dataset: { host: run.host }, text: `⌂ ${run.host}${note}` });
+  }
+
+  /** One layer's block of the "Hosts" panel: each declared host with this layer's runs on it now and what it
+   *  answered in the scheduler's last survey (the load facts are as old as that survey). */
+  function hostsPanel(layer, runs) {
+    const hosts = layer.hosts || [];
+    const at = (hosts.find((x) => x.at) || {}).at || null;
+    const el = h("div", { class: "hosts-layer", dataset: { layer: layer.key } },
+      h("div", { class: "name" }, h("a", { href: `#/layer/${enc(layer.key)}`, text: layer.name || layer.key }),
+        h("span", { class: "faint survey" }, at ? ["load as of the last survey, ", h("span", { class: "num", "data-since": at, text: fmt.dur(now() - at) }), " ago"]
+          : "no survey yet")));
+    const mine = (runs || []).filter((r) => r.layer === layer.key && r.status === "running");
+    for (const host of hosts) {
+      // a run executes on its host while its phase is `remote`; before and after (the gate) on the home machine
+      const here = mine.filter((r) => (r.remote && r.remote.phase === "remote" ? r.host : "home") === host.host);
+      const max = host.max_runs === null || host.max_runs === undefined ? "?" : host.max_runs;
+      const row = h("div", { class: `host-row${host.state === "silent" ? " silent" : ""}`, dataset: { host: host.host } },
+        h("span", { class: "host-name", text: host.host }),
+        h("span", { class: "num", title: here.map((r) => r.id).join("\n") || "none of this layer's runs" },
+          "runs ", h("b", { text: `${here.length}/${max}` }), host.pending ? h("span", { class: "faint", text: ` +${host.pending} starting` }) : null));
+      if (host.state === "silent") {
+        row.appendChild(h("span", { class: "badge bad", title: host.silent || "", text: "no answer" }));
+        if (host.silent) row.appendChild(h("span", { class: "faint", text: host.silent }));
+      } else if (host.state !== "ok") {
+        row.appendChild(h("span", { class: "faint", text: "not surveyed yet" }));
+      } else {
+        const logins = Object.entries(host.logins || {}).filter(([, v]) => v !== "not needed");
+        appendAll(row, [
+          h("span", { class: "num", title: "1-minute load average / CPUs" }, "load ", h("b", { text: host.load1 === null ? "—" : host.load1.toFixed(2) }),
+            host.cpus ? h("span", { class: "faint", text: ` / ${host.cpus} cpu` }) : null),
+          h("span", { class: "num" }, "memory free ", h("b", { text: fmt.kb(host.mem_available_kb) }),
+            host.mem_total_kb ? h("span", { class: "faint", text: ` of ${fmt.kb(host.mem_total_kb)}` }) : null),
+          h("span", { class: "num" }, "disk free ", h("b", { text: fmt.kb(host.disk_free_kb) })),
+          host.image === null ? h("span", { class: "faint", text: "image: not needed" })
+            : h("span", { class: `badge ${host.image ? "good" : "warn"}`, text: host.image ? "image present" : "image missing" }),
+          logins.length ? logins.map(([agent, how]) => h("span", { class: `badge${how === "none" ? " bad" : ""}`, title: `how ${agent} logs in on ${host.host}`,
+            text: `${agent}: ${how === "none" ? "no login" : how}` })) : h("span", { class: "faint", text: "login: not needed" })]);
+      }
+      el.appendChild(row);
     }
     return el;
   }
@@ -973,7 +1034,7 @@
   }
 
   // =========================================================================== components: workflow graph
-  const GLYPH = { passed: "✓", failed: "✗", running: "●", pending: "○", skipped: "–", done: "•", unknown: "?", died: "⊘", waiting: "⏸", rejected: "⊗", "handed-over": "↪", "not-affected": "∅", reused: "↺" };
+  const GLYPH = { passed: "✓", failed: "✗", running: "●", pending: "○", skipped: "–", done: "•", unknown: "?", died: "⊘", waiting: "⏸", rejected: "⊗", "handed-over": "↪", "not-affected": "∅", reused: "↺", lost: "⌁" };
   // a check that was not run, in the runtime's own words (affected.summary_text)
   function checkResultText(r) {
     if (r.outcome === "not-affected") return `not affected (${r.why || "no covered path changed"}; ${r.paths_total ?? (r.paths || []).length} paths compared)`;
@@ -1687,6 +1748,9 @@
     const usage = h("div", { class: "usage" });
     const modelsBox = h("div", { class: "models" });
     const standinBox = h("div", { class: "standins" });
+    const hostsHead = h("div", { class: "card-head" }, h("h2", { text: "Hosts" }), h("span", { class: "spacer" }),
+      h("span", { class: "faint", text: "where placed runs execute; runs are live, the load is what each host last answered" }));
+    const hostsBox = h("div", { class: "hosts" });
     const recent = h("div", { class: "table-wrap" });
     const containerNote = h("span", { class: "faint" });
     main.append(strip,
@@ -1698,7 +1762,9 @@
       h("div", { class: "card-head" }, h("h2", { text: "Stand-in" }), h("span", { class: "spacer" }),
         h("span", { class: "faint", text: "a strong model that proposes, or takes, the routine decisions a run waits on you for" })), standinBox,
       h("div", { class: "card-head", style: null }, h("h2", { text: "Slots and ports" })), pools,
+      hostsHead, hostsBox,
       h("div", { class: "card-head" }, h("h2", { text: "Recently finished" })), recent);
+    hostsBox.style.marginBottom = "18px";
     grid.style.marginBottom = "18px";
     pools.style.marginBottom = "18px";
     usage.style.marginBottom = "18px";
@@ -1734,7 +1800,7 @@
       replace(el,
         h("div", { class: "head" }, h("span", { class: `dot s-${run.waiting ? "waiting" : "running"}` }),
           h("span", { class: "where", text: `${run.layer} · ${run.adw}` }), h("span", { class: "mono faint", text: run.id }),
-          run.dry_run ? h("span", { class: "badge", text: "dry run" }) : null, promotionBadge(run), h("span", { class: "spacer" }), progress(run.steps)),
+          run.dry_run ? h("span", { class: "badge", text: "dry run" }) : null, hostBadge(run), promotionBadge(run), h("span", { class: "spacer" }), progress(run.steps)),
         h("div", { class: "title", text: run.title || "(no request text)" }),
         h("div", { class: "doing" }, h("span", { class: "step", text: current.step ? `▶ ${current.step}` : "▶" }),
           h("span", { class: "action", text: run.waiting ? `waiting for a free ${run.waiting} slot` : (current.action || "working") })),
@@ -1756,7 +1822,7 @@
       const runs = store.runList();
       const running = runs.filter((r) => r.status === "running").sort((a, b) => (a.started || 0) - (b.started || 0));
       const day = runs.filter((r) => r.started && r.started > now() - 86400);
-      const finishedDay = day.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over");
+      const finishedDay = day.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over" || r.status === "lost");
       const handedDay = finishedDay.filter((r) => r.status === "handed-over").length;
       const costDay = day.reduce((sum, r) => sum + (r.cost || 0), 0);
       replace(strip,
@@ -1785,7 +1851,15 @@
       renderModels();
       renderStandins();
       renderPools();
+      renderHosts(runs);
       renderRecent(runs);
+    }
+
+    /** The "Hosts" section: only for layers that place their runs on hosts. */
+    function renderHosts(runs) {
+      const placed = store.layers.filter((layer) => (layer.hosts || []).length);
+      hostsHead.hidden = hostsBox.hidden = !placed.length;
+      replace(hostsBox, placed.map((layer) => hostsPanel(layer, runs)));
     }
 
     function renderUsage() {
@@ -1951,7 +2025,7 @@
       const runs = store.runList();
       const uniq = (key) => [...new Set(runs.map((r) => r[key]).filter(Boolean))].sort();
       replace(filters, select("layer", "layers", store.layers.map((l) => l.key)), select("adw", "workflows", uniq("adw")),
-        select("status", "statuses", ["running", "passed", "handed-over", "failed", "died", "waiting", "unknown"]), select("klass", "classes", uniq("klass")),
+        select("status", "statuses", ["running", "passed", "handed-over", "failed", "lost", "died", "waiting", "unknown"]), select("klass", "classes", uniq("klass")),
         h("label", {}, "from", from), h("label", {}, "to", to), search);
     }
 
@@ -2024,7 +2098,7 @@
       replace(standinBar, button);
     }
 
-    function groupRow(group, members, columns) {
+    function groupRow(group, members, columns, hosted) {
       const open = groupState.open.has(group.id);
       const again = h("button", { type: "button", class: "btn start-all", text: "Start all again", onclick: async (e) => {
         e.stopPropagation();
@@ -2042,15 +2116,17 @@
       return h("tr", { class: "group-row", dataset: { group: group.id } },
         h("td", {}, pill("failed")), h("td", { class: "num", text: fmt.time(Math.max(...members.map((r) => r.started || 0))) }),
         h("td", { text: members[0].layer }), h("td", { text: [...new Set(members.map((r) => r.adw))].join(", ") }),
+        hosted ? h("td", { class: "host-cell" }) : null,
         h("td", { class: "mono dim", text: members.map((r) => r.id).join(" ") }),
-        h("td", { class: "title-cell", colspan: columns - 6 }, h("b", { text: `${members.length} runs: ${group.step}, same reason` }),
+        h("td", { class: "title-cell", colspan: columns - (hosted ? 7 : 6) }, h("b", { text: `${members.length} runs: ${group.step}, same reason` }),
           h("div", { class: "reason dim", text: group.reason || "" })),
         h("td", { class: "next" }, toggle, again));
     }
 
-    function runRow(run, needs) {
+    function runRow(run, needs, hosted) {
       const open = () => go(`#/run/${enc(run.layer)}/${enc(run.id)}`);
       const base = [h("td", {}, pill(run.status)), h("td", { class: "num", text: fmt.time(run.started) }), h("td", { text: run.layer }), h("td", { text: run.adw }),
+        hosted ? h("td", { class: "host-cell" }, hostBadge(run)) : null,
         h("td", { class: "mono dim", text: run.id })];
       if (needs) {
         return h("tr", { "data-key": run.key, class: `${run.key === selectedKey ? "selected" : ""}${run.group ? " group-member" : ""}`, onclick: open },
@@ -2077,7 +2153,7 @@
       renderChips();
       renderStandinBar();
       const runs = filtered();
-      const finished = runs.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over");
+      const finished = runs.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over" || r.status === "lost");
       const passed = finished.filter((r) => r.status === "passed").length;
       const handedOver = finished.filter((r) => r.status === "handed-over").length;
       const costs = runs.map((r) => r.cost).filter((c) => c !== null && c !== undefined);
@@ -2087,9 +2163,10 @@
         stat("handed over", handedOver),
         stat("total cost", fmt.cost(costs.reduce((a, b) => a + b, 0))), stat("median cost", fmt.cost(median(costs))),
         stat("median time", fmt.dur(median(durations))), stat("total time", fmt.dur(durations.reduce((a, b) => a + b, 0))));
+      const hosted = runs.some((r) => r.host);   // a host column only when a layer places its runs
       const body = h("tbody");
       const needs = params.view === "needs-you";
-      const columns = needs ? 8 : 12;
+      const columns = (needs ? 8 : 12) + (hosted ? 1 : 0);
       const shown = new Set();
       for (const run of runs) {
         const group = needs && run.group && run.group.count > 1 ? run.group : null;
@@ -2097,17 +2174,17 @@
           if (shown.has(group.id)) continue;
           shown.add(group.id);
           const members = runs.filter((r) => r.group && r.group.id === group.id);
-          body.appendChild(groupRow(group, members, columns));
-          if (groupState.open.has(group.id)) for (const member of members) body.appendChild(runRow(member, true));
+          body.appendChild(groupRow(group, members, columns, hosted));
+          if (groupState.open.has(group.id)) for (const member of members) body.appendChild(runRow(member, true, hosted));
           continue;
         }
-        body.appendChild(runRow(run, needs));
+        body.appendChild(runRow(run, needs, hosted));
       }
       const empty = !store.loaded ? "loading…" : needs ? "nothing needs you" : "no runs match";
       if (!runs.length) body.appendChild(h("tr", {}, h("td", { colspan: columns, class: "dim", text: empty })));
       const head = needs
-        ? [header("status"), header("started", "time"), header("layer"), header("workflow"), header("id"), header("request"), header("reason"), header("next")]
-        : [header("status"), header("started", "time"), header("layer"), header("workflow"), header("id"), header("class"),
+        ? [header("status"), header("started", "time"), header("layer"), header("workflow"), hosted ? header("host") : null, header("id"), header("request"), header("reason"), header("next")]
+        : [header("status"), header("started", "time"), header("layer"), header("workflow"), hosted ? header("host") : null, header("id"), header("class"),
           header("request"), header("steps"), header("time", "duration", true), header("cost", "cost", true), header("out tok", null, true),
           header(params.view === "landed" ? "landed" : params.view === "settled" ? "settled" : "outcome")];
       table.className = needs ? "needs-you" : "";
@@ -2490,6 +2567,13 @@
 
     const reload = debounce(load, 350);
 
+    /** Why and when a run was lost, from its `remote` record (state.json). */
+    function lostNote(remote) {
+      const lost = remote && typeof remote.lost === "object" && remote.lost ? remote.lost : {};
+      const at = typeof lost.at === "string" ? Date.parse(lost.at) / 1000 : null;
+      return `${typeof lost.reason === "string" && lost.reason ? ` · ${lost.reason}` : ""}${at ? ` · ${fmt.time(at)}` : ""}`;
+    }
+
     function renderHead() {
       const sm = detail.summary;
       const prompt = h("div", { class: "prompt", title: "click to expand", text: detail.state.prompt || sm.prompt || "", onclick: () => prompt.classList.toggle("open") });
@@ -2501,7 +2585,7 @@
             sm.kit ? h("span", { class: "badge kit", title: "a workflow the kit gives every layer; the layer's definition does not declare it", text: "kit" }) : null,
             h("span", { class: "mono dim", text: sm.id }),
             h("span", { class: "badge", text: sm.layer }), sm.klass ? h("span", { class: "badge", text: `class ${sm.klass}` }) : null,
-            sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, outcomeBadge(sm),
+            sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, hostBadge(sm), outcomeBadge(sm),
             sm.status === "handed-over" && (sm.outcome.handover || []).length
               ? h("span", { class: "badge handed-over", title: "why a person decides", text: `↪ ${sm.outcome.handover.join(", ")}` }) : null,
             promotionBadge(sm), brokeBatchBadge(sm),
@@ -2509,6 +2593,8 @@
               text: sm.fanout && sm.fanout.index ? `candidate ${sm.fanout.index} of ${sm.fanout_parent}${sm.fanout.step ? ` (${sm.fanout.step})` : ""}` : `candidate of ${sm.fanout_parent}` }) : null,
             sm.status === "died" ? h("span", { class: "badge died", title: "state.json still says running, but its heartbeat stopped and its process is gone",
               text: `process died · last seen ${fmt.ago(sm.last_seen)} (${fmt.time(sm.last_seen)})` }) : null,
+            sm.status === "lost" ? h("span", { class: "badge lost", title: "its host stopped answering; the run is finished here and can be started again",
+              text: `lost${lostNote(detail.state.remote)}` }) : null,
             sm.waiting ? h("span", { class: "badge warn", text: `waiting for a ${sm.waiting} slot` }) : null,
             sm.status === "waiting" ? h("span", { class: "badge waiting", title: "a script step exited with a code it declares as waiting; the worktree is kept",
               text: `⏸ waiting${sm.waiting_step ? ` at ${sm.waiting_step.name}` : ""} · resume: ${sm.resume || ""}` }) : null,
@@ -3666,7 +3752,7 @@
       clear(grid);
       for (const layer of store.layers) {
         const runs = store.runList().filter((r) => r.layer === layer.key);
-        const finished = runs.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over");
+        const finished = runs.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over" || r.status === "lost");
         const passed = finished.filter((r) => r.status === "passed").length;
         const handedOver = finished.filter((r) => r.status === "handed-over").length;
         const cost = runs.reduce((sum, r) => sum + (r.cost || 0), 0);

@@ -3,6 +3,9 @@
 A pool (`runs`, `agents`, `checks`) has N slot files under agents/.slots; holding a slot means
 holding an exclusive flock on one of them. Locks die with the process, so a crashed run can
 never leak a slot.
+
+On a host that runs self-contained runs every run has its own copy of the layer, so AL_SLOTS_DIR
+names the one directory all runs of that host share: the pools are per host.
 """
 from __future__ import annotations
 
@@ -19,10 +22,24 @@ from .errors import StepFailed
 POOL_FIELD = {"runs": "maxRuns", "agents": "maxAgents", "checks": "maxChecks"}
 
 
+SLOTS_DIR_ENV = "AL_SLOTS_DIR"
+
+
 def limits(layer: Any) -> dict[str, Any]:
     option = layer.ir.get("concurrency") or {}
-    return {"runs": int(option.get("maxRuns", 4)), "agents": int(option.get("maxAgents", 2)),
+    runs = int(option.get("maxRuns", 4))
+    placement = layer.ir.get("placement")
+    if isinstance(placement, dict) and int(placement.get("maxRunsPerHost") or 0) > 0:
+        runs = int(placement["maxRunsPerHost"])  # (placement #:max-runs-per-host N): the same on every host
+    return {"runs": runs, "agents": int(option.get("maxAgents", 2)),
             "checks": int(option.get("maxChecks", 2)), "wait": int(option.get("waitSeconds", 3600))}
+
+
+def _directory(layer: Any) -> Path:
+    """Where the slot files are: AL_SLOTS_DIR when it is set (one directory for every run of a
+    host), else agents/.slots of the layer."""
+    named = os.environ.get(SLOTS_DIR_ENV, "").strip()
+    return Path(named).expanduser() if named else Path(layer.layer_dir) / "agents" / ".slots"
 
 
 @contextmanager
@@ -30,7 +47,7 @@ def slot(layer: Any, pool: str, who: str = "", poll: float = 0.5) -> Iterator[in
     """Hold one slot of `pool` for the duration of the block; waits up to waitSeconds."""
     config = limits(layer)
     limit = max(1, config[pool])
-    directory = Path(layer.layer_dir) / "agents" / ".slots"
+    directory = _directory(layer)
     directory.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     deadline = started + config["wait"]
@@ -68,7 +85,7 @@ def free_slots(layer: Any, pool: str) -> int:
     non-blocking flock that is released at once. Informational only (a start says it will wait);
     the run's real wait for a slot stays in slot()."""
     limit = max(1, limits(layer)[pool])
-    directory = Path(layer.layer_dir) / "agents" / ".slots"
+    directory = _directory(layer)
     free = 0
     for index in range(limit):
         path = directory / f"{pool}.{index}.lock"

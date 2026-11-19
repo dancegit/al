@@ -6,9 +6,12 @@ one per reference. Each call appends its argv as one JSON line to <state>/calls.
 `login --password-stdin` is never logged. Implements what al uses: --version, info, image exists,
 image inspect [--format] (JSON with Id, Size, Created, Labels as the runtime's image_info reads it),
 build --label -t, tag, untag, rmi, push, pull, save -o / image save -o, load [-i] / image load,
-login --authfile --password-stdin, images --filter label=K=V --format json and ps --format json (no
-containers): the calls of al_sandbox and of the runtime's ensure_image / build_image / _tag_latest /
-prune_images (kit/runtime/adw_modules/sandbox.py).
+login --authfile --password-stdin, images --filter label=K=V --format json and ps --format json
+(always empty): the calls of al_sandbox and of the runtime's ensure_image / build_image /
+_tag_latest / prune_images (kit/runtime/adw_modules/sandbox.py). `run -d`, `run … IMAGE ARGV…`,
+`exec`, `pause`, `unpause` and `rm` of a container: nothing is isolated, a command runs on this
+machine in the `-w` directory with the `-e` variables; a container started with `--init` reports
+`catatonit` as process 1.
 
     install(bin_dir, state_dir, registry_dir) writes bin_dir/podman that runs this file.
 """
@@ -74,6 +77,68 @@ def _registry_file(registry: Path, ref: str) -> Path:
     return registry / (norm(ref).replace("/", "__") + ".json")
 
 
+def containers(state: Path) -> dict[str, dict]:
+    path = Path(state) / "containers.json"
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
+def _execute(state: Path, flags: list[str], command: list[str], init: bool) -> int:
+    """Run `command` on this machine as the container would: the -w directory, the -e variables."""
+    import subprocess
+    env = dict(os.environ)
+    cwd = None
+    for i, x in enumerate(flags):
+        if x == "-e":
+            key, _, val = flags[i + 1].partition("=")
+            env[key] = val
+        elif x == "-w":
+            cwd = flags[i + 1]
+    if init:                                    # --init: process 1 of the container is catatonit
+        shim = Path(state) / "init-bin" / "cat"
+        if not shim.is_file():
+            import shutil
+            shim.parent.mkdir(parents=True, exist_ok=True)
+            shim.write_text(f'#!/bin/sh\n[ "$1" = /proc/1/comm ] && {{ echo catatonit; exit 0; }}\n'
+                            f'exec {shutil.which("cat")} "$@"\n')
+            shim.chmod(0o755)
+        env["PATH"] = f"{shim.parent}{os.pathsep}{env.get('PATH', '')}"
+    return subprocess.run(command, cwd=cwd, env=env, check=False).returncode
+
+
+def _container_command(state: Path, store: list[dict], command: str, rest: list[str]) -> int:
+    """run [-d] … IMAGE ARGV…, exec [-i] [-w DIR] [-e K=V]… NAME ARGV…, pause, unpause and rm of a
+    container. Nothing is isolated: a command runs on this machine in the -w directory with the -e
+    variables added. What a test reads is the recorded argv (calls.log)."""
+    known = containers(state)
+    if command == "run":
+        at = next((i for i, x in enumerate(rest) if not x.startswith("-") and _find(store, x)), None)
+        if at is None:
+            print("Error: no image of the store is named", file=sys.stderr)
+            return 125
+        if "-d" in rest[:at]:
+            name = rest[rest.index("--name") + 1]
+            known[name] = {"init": "--init" in rest[:at]}
+            (Path(state) / "containers.json").write_text(json.dumps(known))
+            print(hashlib.sha256(name.encode()).hexdigest())
+            return 0
+        return _execute(state, rest[:at], rest[at + 1:], False)
+    if command == "exec":
+        at = 0
+        while at < len(rest) and rest[at].startswith("-"):
+            at += 1 if rest[at] == "-i" else 2
+        if at >= len(rest) or rest[at] not in known:
+            print("Error: no such container", file=sys.stderr)
+            return 125
+        return _execute(state, rest[:at], rest[at + 1:], known[rest[at]]["init"])
+    if rest[-1] not in known:
+        print(f"Error: no such container {rest[-1]}", file=sys.stderr)
+        return 125
+    if command == "rm":
+        del known[rest[-1]]
+        (Path(state) / "containers.json").write_text(json.dumps(known))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     state, registry = None, None
     while argv and argv[0] in ("--state", "--registry"):
@@ -92,6 +157,8 @@ def main(argv: list[str]) -> int:
     if argv[0] == "--version":
         print("podman version 5.0.0-fake")
         return 0
+    if argv[0] in ("run", "exec", "pause", "unpause") or (argv[0] == "rm" and argv[-1] in containers(state)):
+        return _container_command(state, store, argv[0], argv[1:])
     if argv[0] == "image" and len(argv) > 1 and argv[1] in ("exists", "inspect", "save", "load", "rm", "untag", "tag"):
         argv = argv[1:]
     command, rest = argv[0], argv[1:]

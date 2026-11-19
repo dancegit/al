@@ -153,7 +153,8 @@ def test_scripts_and_reserved_names(reg):
         "adws/triggers/trigger_cron.py": "trigger", "adws/triggers/trigger_webhook.py": "trigger",
         "adws/triggers/trigger_voice.py": "trigger", "adws/voice/listen.py": "voice", "adws/voice/say.py": "voice",
         "adws/voice/serve.py": "voice", "adws/dashboard.py": "dashboard", "adws/standin.py": "stand-in",
-        "adws/verify_batch.py": "batch"}
+        "adws/verify_batch.py": "batch", "adws/host.py": "host"}   # the full example declares (placement …)
+    assert "adws/host.py" not in registry.build({**FULL, "placement": None})["scripts"]
     assert scripts["adws/promote.py"]["entries"] == ["promote-sprint-main", "promote-hotfix-main"]
     assert scripts["adws/integrate.py"]["entries"] == ["integrate"] and scripts["adws/adw_zte.py"]["entries"] == ["zte"]
     assert scripts["adws/dispatch.py"]["entries"] == names(registry.commands(reg))

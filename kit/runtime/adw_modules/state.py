@@ -118,6 +118,11 @@ class ADWState:
     # decisions a person took for this run (approvals.py): [{"what", "who", "at", "via"}]; empty, and
     # then left out of state.json, for a run nobody approved anything for
     approvals: list[dict[str, Any]] = field(default_factory=list)
+    # a run that executes (or executed) on another host of a (placement …): {host, phase: remote | gate,
+    # base, branch, pushed: {sha, step, at}, delivered: {sha, branch, at, step}, lost: {at, reason},
+    # last_seen, restart_of, storage, status}; empty, and then left out of state.json, for every run
+    # that stays on the machine that holds the layer
+    remote: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -169,6 +174,8 @@ class ADWState:
                 data.pop("proof_plan", None)  # only a run whose plan has a Proof plan table has one
             if not data.get("approvals"):
                 data.pop("approvals", None)  # only a run somebody approved something for has one
+            if not data.get("remote"):
+                data.pop("remote", None)  # only a run placed on another host has one
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")

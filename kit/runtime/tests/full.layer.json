@@ -15,6 +15,7 @@
         "voice"
       ],
       "name": "plan-build",
+      "pinnedHome": [],
       "review": "human",
       "steps": [
         {
@@ -97,6 +98,9 @@
         "tasklist"
       ],
       "name": "sdlc",
+      "pinnedHome": [
+        "step changelog waits for something outside (#:waiting-exit)"
+      ],
       "review": "human",
       "steps": [
         {
@@ -257,6 +261,7 @@
         "tasklist"
       ],
       "name": "zte",
+      "pinnedHome": [],
       "review": "zero-touch",
       "steps": [
         {
@@ -404,6 +409,7 @@
         "tasklist"
       ],
       "name": "hotfix",
+      "pinnedHome": [],
       "review": "human",
       "steps": [
         {
@@ -519,6 +525,7 @@
         "tasklist"
       ],
       "name": "candidate",
+      "pinnedHome": [],
       "review": "human",
       "steps": [
         {
@@ -622,6 +629,7 @@
         "tasklist"
       ],
       "name": "race",
+      "pinnedHome": [],
       "review": "human",
       "steps": [
         {
@@ -878,6 +886,7 @@
         "description": "",
         "maxTargeted": 200,
         "name": "deploy",
+        "needsHome": true,
         "pathMap": [],
         "recordCoverage": "none",
         "reuse": true,
@@ -1311,6 +1320,20 @@
       "timeout": 10
     }
   ],
+  "placement": {
+    "hosts": [
+      "home"
+    ],
+    "id": "auto",
+    "kind": "auto",
+    "layerSourceEnv": "AL_LAYER_SOURCE",
+    "lostAfter": 120,
+    "maxRunsPerHost": 4,
+    "prefer": "least-loaded",
+    "reserve": null,
+    "sourceEnv": "AL_GIT_SOURCE",
+    "status": "stable"
+  },
   "promotions": [
     {
       "adw": "sdlc",

@@ -274,13 +274,14 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
           confirm_duplicate: bool = False, confirm_ships: bool = False, dry_run: bool = False,
           detach: bool = True, spawn: Callable[..., Any] = _spawn, forge: Any = None,
           replaces: str = "", decider: str = "", testing: str | None = None, approvals: Iterable[str] = (),
-          approved_by: str = "") -> dict[str, Any]:
+          approved_by: str = "", on: str | None = None) -> dict[str, Any]:
     """Start `target` with `prompt` once per `request_key`; see the module docstring. `models` are
     TIER=MODEL_ID strings; `replaces` is the run this one starts again; `decider` is the stand-in's
     mode for this run (`--decider MODE`), "" for the layer's; `testing` the depth of this run's checks
     (light|standard|heavy or smoke|targeted|full; None = the layer's); `approvals` are decisions a person
     pre-approves for a workflow run (approvals.py), given by `approved_by`. Returns {"status": started | issue-created | confirm-duplicate |
-    confirm-ships | refused | invalid | error, …}; EXIT maps the status to an exit code."""
+    confirm-ships | refused | invalid | error, …}; EXIT maps the status to an exit code. `on` names
+    the host of the layer's (placement …) the run executes on; without it the scheduler picks one."""
     model_list = [str(m) for m in models]
     layer_dir = Path(layer.layer_dir)
     shown = {"kind": target.kind, "name": target.name}
@@ -288,6 +289,16 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
     try:
         adw, over = _check(layer, target, prompt, request_key, klass, model_set or None, model_list, issue,
                            str(decider or ""))
+        if on is not None:
+            hosts = [str(h) for h in (layer.ir.get("placement") or {}).get("hosts") or []]
+            if not hosts:
+                raise ValueError("--on needs a layer that declares (placement auto #:hosts (…))")
+            if on not in hosts:
+                raise ValueError(f"{on} is not a host of the layer's (placement …); hosts: {', '.join(hosts)}")
+            if issue == "trigger":
+                raise ValueError("a trigger starts the run: the scheduler picks its host, --on does not apply")
+            if target.kind != "workflow":
+                raise ValueError("--on applies to a workflow; a single command runs on the home machine")
     except (LayerError, ValueError) as exc:
         return _result("invalid", error=str(exc), **base)
     if testing is not None and str(testing) not in (*testing_module.LEVELS, *testing_module.DEPTHS):
@@ -397,9 +408,13 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
     for item in approval_list:
         argv += ["--approve", item]
     argv += ["--approved-by", str(approved_by)] if approval_list and approved_by else []
+    argv += ["--on", on] if on is not None else []
     limits = slots.limits(layer)
+    # only a run that stays on this machine waits for one of its run slots
+    stays = (target.kind != "workflow" or
+             (on == "home" if on is not None else not isinstance(layer.ir.get("placement"), dict)))
     queued = (f"all {max(1, limits['runs'])} run slots are in use; it waits up to {limits['wait']} s"
-              if slots.free_slots(layer, "runs") == 0 else "")
+              if stays and slots.free_slots(layer, "runs") == 0 else "")
     result = _result("started", run_id=run_id, issue=created, queued=queued, existing=False, **base)
     if detach:
         with (run / LAUNCH_LOG).open("ab") as log:

@@ -59,6 +59,13 @@
           "name": {
             "type": "string"
           },
+          "pinnedHome": {
+            "description": "Only with a (placement …): why the workflow always runs on `home`, one sentence each; empty = it may run on any listed host.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "review": {
             "description": "Review option.",
             "type": "string"
@@ -991,6 +998,10 @@
               },
               "name": {
                 "type": "string"
+              },
+              "needsHome": {
+                "description": "The command needs state that exists only on the machine that holds the layer (a local database, a licence, a device): a workflow that runs it as a check or script is never placed on another host.",
+                "type": "boolean"
               },
               "pathMap": {
                 "description": "Declared source → test patterns, e.g. ((\"kit/runtime/adw_modules/{name}.py\" \"kit/runtime/tests/test_{name}*.py\")).",
@@ -2542,6 +2553,104 @@
         ]
       },
       "type": "array"
+    },
+    "placement": {
+      "description": "Where runs of this layer may execute. Omitted: every run executes on the machine that holds the layer, as before. Hosts are `home` (a reserved id: the machine that holds the layer) or the ids of declared (host …) clauses. The address of a host is never written in the layer file: it comes from the variable AL_HOST_<ID> (the id in capitals, `-` as `_`) in the environment, in `local.env` in the layer directory or in `$XDG_CONFIG_HOME/al/<layer name>.env`. A run on another host works in its own clone of the git source and can only push its own branch; the home machine fetches that branch and runs the workflow's (ship) step itself, through the unchanged gate.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A scheduler on the home machine asks every listed host for its load, picks one by #:prefer and starts the run there. `al hosts LAYER status` shows what it sees; `al run LAYER /NAME … --on HOST` picks the host by hand.",
+          "properties": {
+            "hosts": {
+              "description": "Hosts runs may execute on, in declared order: `home` and/or ids of declared (host …) clauses.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "auto"
+            },
+            "layerSourceEnv": {
+              "description": "NAME of the variable holding the git source of a layer that is not in the application repository. Never the URL itself.",
+              "type": "string"
+            },
+            "lostAfter": {
+              "description": "Seconds without an answer from a host after which its run is marked `lost`, 30–3600; `al run LAYER --restart RUN` starts it again on another host.",
+              "type": "integer"
+            },
+            "maxRunsPerHost": {
+              "description": "Runs in flight at once on each host, 1–64; replaces (concurrency #:max-runs) on every host including `home`. 0 = (concurrency #:max-runs) applies on each host.",
+              "type": "integer"
+            },
+            "prefer": {
+              "description": "`least-loaded`: the host with the lowest share of its runs in use (ties: the lower load average, then a host that already has the sandbox image, then the declared order); `first`: the first listed host with a free run.",
+              "enum": [
+                "least-loaded",
+                "first"
+              ],
+              "type": "string"
+            },
+            "reserve": {
+              "additionalProperties": false,
+              "description": "Keep one host for some work classes, e.g. ((host build-2) (classes (chore bug))): that host only takes runs whose class is fixed at start to one of them.",
+              "properties": {
+                "classes": {
+                  "description": "Work classes the host is kept for; at least one.",
+                  "items": {
+                    "enum": [
+                      "chore",
+                      "bug",
+                      "feature",
+                      "patch"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "host": {
+                  "description": "The reserved host: one of #:hosts, not `home`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "classes",
+                "host"
+              ],
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "sourceEnv": {
+              "description": "NAME of the variable holding the git source: the URL runs clone the base commit from and push their own branch to (the forge's clone URL, or the home repository over ssh). Every machine holds its own value, the URL as seen from there. Never the URL itself.",
+              "type": "string"
+            },
+            "status": {
+              "const": "stable"
+            }
+          },
+          "required": [
+            "hosts",
+            "id",
+            "kind",
+            "layerSourceEnv",
+            "lostAfter",
+            "maxRunsPerHost",
+            "prefer",
+            "reserve",
+            "sourceEnv",
+            "status"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "promotions": {
       "items": {

@@ -2048,6 +2048,10 @@ Every run already has its own copy of the code. For more:
 Inside its container each run binds its usual ports; nothing collides. To race several agents on one
 task and keep the best result, see `(fan-out …)` in the language reference.
 
+When one machine is not enough, `(placement auto #:hosts (home build-1 build-2))` lets runs execute
+on other machines you have deployed the layer to, while the merge stays on yours: see
+[Run on several machines](#run-on-several-machines).
+
 ## Step 14 — Change the layer later
 
 You will want to change how agents work on your codebase: a new way to hand out work, a rule every
@@ -2539,6 +2543,107 @@ notes:
 | neither podman nor Nix | yes | no | no | no (compiler rule) |
 
 On arm64, the images you use must exist for `linux/arm64`. `--json` prints the same facts as JSON.
+
+## Run on several machines
+
+One machine fills up: every run, every check and every agent call share it. A layer can say which
+other machines its runs may execute on. The machine that holds the layer is called `home`; every
+other one is a `(host …)` you have deployed to (the section above).
+
+```racket
+(host #:id build-1 #:images pull)
+(host #:id build-2 #:images pull)
+(placement auto #:hosts (home build-1 build-2)        ; where runs may execute, in this order
+           #:prefer least-loaded                       ; or first: the first host with a free run
+           #:max-runs-per-host 2                       ; replaces (concurrency #:max-runs) on every host
+           #:reserve ((host build-2) (classes (chore bug))))   ; keep one host for small work
+```
+
+No address is written in the layer. On the home machine, put each host's address (what `ssh HOST`
+accepts) and the git source in `local.env` in the layer folder, or in `~/.config/al/<name>.env`:
+
+```
+AL_HOST_BUILD_1=build-1.example
+AL_HOST_BUILD_2=build-2.example
+AL_GIT_SOURCE=git@forge.example:team/notes.git
+```
+
+The **git source** is the one repository every machine reaches: the forge's clone URL, or the home
+repository over ssh. Each host holds its own `AL_GIT_SOURCE` (the URL as seen from there) in its
+`~/.config/al/<name>.env`; `al deploy` lists it as missing until it is there. Then:
+
+```
+al gen agentic && git commit && git push          # hosts run what the git source holds
+al deploy agentic --to build-1.example --as build-1
+al hosts agentic status
+```
+
+```
+placement: auto, prefer least-loaded, at most 2 runs per host
+host     runs  cpus  load   memory free  disk free  image  login                   state
+home     0/2   12    13.70  39.6 GB      20.9 GB    no     claude-code: own login  ok
+build-1  0/2   12    13.70  39.5 GB      20.9 GB    yes    claude-code: own login  ok
+build-2  0/2   12    13.70  39.6 GB      20.9 GB    yes    claude-code: own login  ok
+```
+
+That table is what the scheduler sees when a run starts: it asks every host once, picks one by
+`#:prefer` and starts the run there. A host that does not answer shows `no answer` and is skipped.
+`al host agentic build-1 doctor` checks one host and says which login it has:
+
+```
+host build-2:
+  ok      git                found
+  ok      uv                 found
+  ok      podman             rootless
+  ok      agent claude-code  found
+  MISSING login claude-code  none
+          fix: log in on it, or name a token (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) in its env file
+  ok      git source         answers
+1 missing
+```
+
+A host without a login for the workflow's agent is never picked, and naming it refuses the run
+before anything starts (exit code 3):
+
+```
+adw_change: refused: host build-2 has no usable login for claude-code: log in on it, or name a token (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) in its env file; see: al host LAYER build-2 doctor
+```
+
+Nothing else changes in how you start work: the dashboard, the triggers and `al run` all go through
+the scheduler. `al run agentic /change "tidy the readme" --on build-1` picks the host by hand. The
+run's steps, logs and proof appear on your dashboard while it runs there, with the host next to the
+run, and the summary says where it ran:
+
+```
+ship:      merge -> origin/main (shipped=True)
+host:      build-1 (delivered chore/b1c5a4c8-tidy-the-readme at c2fd5ed8caa7; gate on home)
+```
+
+What a run on another host may do is small. It works in its own clone of the git source and pushes
+one branch, its own, never forced. Your home machine then fetches that branch, checks that it is the
+commit the run reported, runs the required checks again and only then merges: the review gate and
+the default branch stay on the machine you sit at. A run that fails on a host is handed to a person
+by the home machine, like any other stopped run.
+
+Some workflows stay on `home`, and `al explain` says which and why: one that runs a command marked
+`(cmd … #:needs-home #t)` (a local database, a licence, a device), one with a script step that
+waits (`#:waiting-exit`), one that changes the layer, and one without a `worktree` environment.
+
+If a host stops answering for `#:lost-after` seconds (default 120), its run is marked `lost` with
+everything received so far. Start it again elsewhere:
+
+```
+al run agentic --restart b1c5a4c8                  # on another host, from the last commit it pushed
+al run agentic --restart b1c5a4c8 --on build-2
+al run agentic --follow b1c5a4c8                   # the host is fine, only the process on this machine died
+```
+
+Steps that finished before that push are skipped; later ones run again.
+
+Two limits to know. A sandbox that publishes ports (`#:publish`) should keep `#:max-runs-per-host 1`
+on other hosts: two runs that start in the same instant there could lease the same ports. And a
+host with `#:images build` and no `(registry …)` builds the sandbox image itself at its first run;
+`al gen` warns about it.
 
 ## When something goes wrong
 

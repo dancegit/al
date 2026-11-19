@@ -397,6 +397,9 @@ def _scripts(ir: Mapping[str, Any], entries: list[dict[str, Any]]) -> dict[str, 
     # the full suites per batch (`al batch`, the dashboard's "Run the full suites now"; batch.py): every
     # generated layer has it
     scripts["adws/verify_batch.py"] = {"role": "batch", "entries": []}
+    # what other machines call (load, start, pull, clean): only a layer that places its runs has it
+    if isinstance(ir.get("placement"), dict):
+        scripts["adws/host.py"] = {"role": "host", "entries": []}
     return scripts
 
 

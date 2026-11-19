@@ -404,7 +404,7 @@ video { width: 100%; max-width: 860px; max-height: 460px; background: #000; bord
   main { padding: 10px; }
   .top { gap: 8px; padding: 0 8px; }
   .brand-text, .views kbd, .crumbs { display: none; }
-  .now-grid, .layer-grid, .pools, .usage, .models { grid-template-columns: minmax(0, 1fr); }
+  .now-grid, .layer-grid, .pools, .usage, .models, .hosts { grid-template-columns: minmax(0, 1fr); }
   .run-head { grid-template-columns: minmax(0, 1fr); }
   .ev { grid-template-columns: 40px 56px minmax(0, 1fr) 18px; gap: 6px; }
 }
@@ -974,3 +974,17 @@ table.proof td.depth .accounting { color: var(--text-2); }
 .round-progress { font-size: 12px; color: var(--dim); margin: 2px 0 4px 18px; }
 .layer-reviews .missing-declaration { overflow-wrap: anywhere; }
 .start-approvals { width: 100%; min-width: 16rem; }
+/* runs placed on hosts: where a run executes, a run whose host stopped answering, the Hosts panel */
+:root { --lost: #ff8c5a; }
+.badge.host { color: var(--text-2); font-family: var(--mono, ui-monospace, monospace); }
+.badge.host.lost, .badge.lost { color: var(--lost); border-color: rgba(255, 140, 90, .45); background: rgba(255, 140, 90, .08); }
+.s-lost { color: var(--lost); }
+.progress i.s-lost { background: var(--lost); opacity: 1; }
+.hosts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.hosts-layer { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; }
+.hosts-layer .name { font-weight: 600; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+.hosts-layer .name .survey { font-weight: 400; }
+.host-row { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; padding: 4px 0; font-size: 12px; color: var(--text-2);
+  border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.host-row .host-name { min-width: 90px; font-weight: 600; color: var(--text); }
+.host-row.silent .host-name { color: var(--lost); }

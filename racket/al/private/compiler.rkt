@@ -75,6 +75,14 @@
          (when dup (fail "~a: `~a` is given twice" who dup))))
      items]
     [(and (pair? type) (eq? (car type) 'record)) (compile-item (cadr type) v who)]
+    [(and (pair? type) (eq? (car type) 'pairs))
+     (unless (and (list? v) (pair? v)
+                  (andmap (lambda (x) (and (list? x) (= (length x) 2) (symbol? (car x)))) v))
+       (bad "((field value) …)"))
+     (define kws (for/list ([x (in-list v)]) (cons (string->keyword (symbol->string (car x))) (cadr x))))
+     (define dup (check-duplicates (map car kws)))
+     (when dup (fail "~a: field ~a is given twice" who dup))
+     (compile-fields (rec-fields (cadr type)) kws who)]
     [(and (pair? type) (eq? (car type) 'shorthand)) (if (string? v) v (bad "a string in double quotes"))]
     [(and (pair? type) (memq (car type) '(ref optional-ref)))
      (define s (name->string v who))
@@ -268,7 +276,9 @@
              (fail "~a: #:covers ~s must be a path or glob relative to the repository root, without `..` or a leading `/`"
                    who entry)))
          (check-cmd-forms compiled who)
-         (set! cmds (cons compiled cmds))]
+         ;; needsHome is in the IR only when it is #t, so a layer that never says it keeps its IR
+         (set! cmds (cons (if (hash-ref compiled 'needsHome #f) compiled (hash-remove compiled 'needsHome))
+                          cmds))]
         [(paths)
          (when paths (fail "(codebase): (paths …) given twice"))
          (define-values (pos k) (split-kwargs (cdr s) "(paths)"))
@@ -776,17 +786,18 @@
           [fam
            (define o (compile-option fam d))
            (define existing (hash-ref options (family-name fam) '()))
+           (when (and (memq (family-name fam) singleton-families) (pair? existing))
+             (fail "(~a …): only one ~a may be declared" (family-name fam) (family-name fam)))
            (when (findf (lambda (x) (equal? (hash-ref x 'id) (hash-ref o 'id))) existing)
              (fail "(~a ~a): id ~a already used; add #:id to tell them apart"
                    (family-name fam) (hash-ref o 'kind) (hash-ref o 'id)))
-           (when (and (memq (family-name fam) singleton-families) (pair? existing))
-             (fail "(~a …): only one ~a may be declared" (family-name fam) (family-name fam)))
            (when (eq? (family-name fam) 'layer) (set! layer-clause (car c)))
            (when (eq? (family-name fam) 'dashboard) (hash-set! clause-of 'dashboard-clause (car c)))
            (when (eq? (family-name fam) 'budget) (hash-set! clause-of 'budget-clause (car c)))
            (when (eq? (family-name fam) 'stand-in) (hash-set! clause-of 'stand-in-clause (car c)))
            (when (eq? (family-name fam) 'cycle) (hash-set! clause-of 'cycle-clause (car c)))
            (when (eq? (family-name fam) 'voice) (hash-set! clause-of 'voice-clause (car c)))
+           (when (eq? (family-name fam) 'placement) (hash-set! clause-of 'placement-clause (car c)))
            (when (eq? (family-name fam) 'agent) (hash-set! clause-of (cons 'agent (hash-ref o 'id)) (car c)))
            (when (eq? (family-name fam) 'notify) (hash-set! clause-of (cons 'notify (hash-ref o 'id)) (car c)))
            (when (eq? (family-name fam) 'toolchain) (hash-set! clause-of (cons 'toolchain (hash-ref o 'id)) (car c)))
@@ -959,6 +970,8 @@
           (define who (format "(host #:id ~a)" id))
           (when (regexp-match? #rx"[.]" id)
             (fail "(host …): #:id ~s looks like a host name; an id names a kind of machine, not a host (lowercase letters, digits and dashes, e.g. server); the host itself is given to al deploy --to" id))
+          (when (equal? id "home")
+            (fail "(host …): #:id home is reserved: `home` is the machine that holds the layer, and (placement … #:hosts (home …)) names it without a declaration; give this kind of machine another id"))
           (unless (regexp-match? tier-rx id)
             (fail "(host …): #:id must be lowercase letters, digits and dashes, starting with a letter (got ~s)" id))
           (unless (equal? (hash-ref placement 'kind) "in-repo")
@@ -978,6 +991,40 @@
             (fail "~a: #:images pull needs a (registry #:address-env \"VARIABLE\") declaration" who))
           (when (and (member images '("pull" "load")) (not podman?))
             (fail "~a: #:images ~a needs a podman environment: there is no sandbox image without (environment podman …)" who images)))))
+    ;; ---- placement: where runs may execute ---------------------------------------------------
+    (define placement-decl (let ([p (opts 'placement)]) (and (pair? p) (car p))))
+    (when placement-decl
+      (parameterize ([current-clause (hash-ref clause-of 'placement-clause #f)])
+        (define who "(placement auto)")
+        (define listed (hash-ref placement-decl 'hosts))
+        (define host-ids (map (lambda (h) (hash-ref h 'id)) (reverse hosts)))
+        (when (null? listed)
+          (fail "~a: #:hosts is empty; list the hosts runs may execute on, e.g. #:hosts (home build-1)" who))
+        (define dup (check-duplicates listed))
+        (when dup (fail "~a: #:hosts lists `~a` twice" who dup))
+        (for ([h (in-list listed)])
+          (unless (or (equal? h "home") (member h host-ids))
+            (fail "~a: #:hosts: `~a` is not a declared (host #:id …) and not `home`; declared: ~a" who h
+                  (if (null? host-ids) "(none)" (names host-ids)))))
+        (unless (<= 0 (hash-ref placement-decl 'maxRunsPerHost) 64)
+          (fail "~a: #:max-runs-per-host must be 0–64 (got ~a); 0 = (concurrency #:max-runs) on each host"
+                who (hash-ref placement-decl 'maxRunsPerHost)))
+        (unless (<= 30 (hash-ref placement-decl 'lostAfter) 3600)
+          (fail "~a: #:lost-after must be 30–3600 seconds (got ~a)" who (hash-ref placement-decl 'lostAfter)))
+        (define reserve (hash-ref placement-decl 'reserve))
+        (unless (eq? reserve 'null)
+          (define rh (hash-ref reserve 'host))
+          (when (equal? rh "home")
+            (fail "~a: #:reserve names `home`; the machine that holds the layer takes every class, reserve one of the other hosts" who))
+          (unless (member rh listed)
+            (fail "~a: #:reserve names `~a`, which is not in #:hosts (~a)" who rh (string-join listed " ")))
+          (when (null? (hash-ref reserve 'classes))
+            (fail "~a: #:reserve needs at least one class, e.g. ((host ~a) (classes (chore bug)))" who rh)))
+        (for ([k '(sourceEnv layerSourceEnv)] [kw '("#:source-env" "#:layer-source-env")])
+          (define looks (private-looking (hash-ref placement-decl k)))
+          (when looks
+            (fail "~a: ~a takes the NAME of an environment variable in capitals, e.g. \"AL_GIT_SOURCE\", but the value given ~a. agentic.rkt is committed, so it must hold no private data: put the value in local.env in the layer directory (never committed) or in the environment, and write only the variable's name here"
+                  who kw looks)))))
     (for ([ag (in-list (opts 'agent))] #:when (hash-has-key? ag 'models))
       (parameterize ([current-clause (hash-ref clause-of (cons 'agent (hash-ref ag 'id)) #f)])
         (define who (format "(agent ~a)" (hash-ref ag 'kind)))
@@ -1513,8 +1560,30 @@
           (when (and (hash-ref si 'systemd) (not (equal? (hash-ref (car (opts 'dashboard)) 'kind) "local")))
             (fail "(stand-in …): #:systemd #t needs (dashboard local): the loop is the dashboard's")))))
 
+    ;; with a placement, every ADW says why it stays on `home` (an empty list: it may be placed)
+    (define (pinned-home a)
+      (define steps (hash-ref a 'steps))
+      (define rv (opt 'review (hash-ref a 'review)))
+      (define needs-home
+        (for/list ([c (in-list (hash-ref codebase 'commands))] #:when (hash-ref c 'needsHome #f)) (hash-ref c 'name)))
+      (define used-cmds
+        (remove-duplicates
+         (append (for/list ([s (in-list steps)] #:when (member (hash-ref s 'kind) '("check" "script"))) (hash-ref s 'cmd))
+                 (if (pair? (steps-of-kind a "review")) (hash-ref rv 'requireChecks '()) '()))))
+      (append (for/list ([c (in-list used-cmds)] #:when (member c needs-home))
+                (format "cmd ~a needs home (#:needs-home)" c))
+              (for/list ([s (in-list steps)]
+                         #:when (and (equal? (hash-ref s 'kind) "script") (pair? (hash-ref s 'waitingExit))))
+                (format "step ~a waits for something outside (#:waiting-exit)" (hash-ref s 'name)))
+              (if (equal? (hash-ref a 'changes) "layer") '("it changes the layer (#:changes layer)") '())
+              (if (member "worktree" (env-kinds-of a)) '() '("it has no worktree environment"))))
+    (define adws-out
+      (if placement-decl
+          (for/list ([a (in-list adws)]) (hash-set a 'pinnedHome (pinned-home a)))
+          adws))
+
     (define (single fname) (let ([l (opts fname)]) (if (null? l) 'null (car l))))
-    (define ir-out
+    (define ir-base
       (hash-set* top
                'schemaVersion "agentic-layer-v1"
                'codebase codebase
@@ -1539,11 +1608,13 @@
                'experts (reverse experts)
                'hosts (reverse hosts)
                'registry (or registry 'null)
-               'adws adws))
+               'adws adws-out))
+    ;; no placement: exactly the IR of before (no placement key, no pinnedHome)
+    (define ir-out (if placement-decl (hash-set ir-base 'placement placement-decl) ir-base))
     ;; no stage: exactly the IR of before (no stages, cycle or delivery key, no deliverTo)
     (define ir
       (if (null? stage-list)
-          (hash-set ir-out 'adws (for/list ([a (in-list adws)]) (hash-remove a 'deliverTo)))
+          (hash-set ir-out 'adws (for/list ([a (in-list adws-out)]) (hash-remove a 'deliverTo)))
           (hash-set* ir-out
                      'stages stage-list
                      'cycle (single 'cycle)
