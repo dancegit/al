@@ -1578,6 +1578,146 @@ class Layer:
         writable, why = settings_writable(self, read_only)
         return {"tiers": tiers, "known": list(KNOWN_MODELS), "writable": writable, "why": why, "error": error}
 
+    def testing_view(self, read_only: bool = False, runs: list[dict[str, Any]] | None = None,
+                     batch: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The Testing panel: the level a run gets and where it comes from (the local setting, else the
+        layer file), each level's typical minutes, each command's narrower forms and miss rate, and per
+        stage (or the default branch) the last batch, what landed since and when the next one is due.
+        `runs` are the layer's run summaries (their `testing`), `batch` whether a batch may be started."""
+        policy = self.ir.get("testing") if isinstance(self.ir.get("testing"), dict) else None
+        error = ""
+        try:
+            local = read_testing_setting(self.path)
+        except ValueError as exc:
+            local, error = None, str(exc)
+        layer_depth = "full"
+        if policy:
+            layer_depth = str(policy.get("perRun") or "inherit")
+            layer_depth = str(policy.get("depth") or "targeted") if layer_depth == "inherit" else layer_depth
+        runs = [r for r in runs or [] if isinstance(r, dict)]
+        ledger = batch_ledger(self.path)
+        suites = read_json(self.path / SUITES_FILE)
+        suites = suites if isinstance(suites, dict) else {}
+        minutes = self._typical_minutes(runs, suites)
+        writable, why = settings_writable(self, read_only, "al testing LAYER --set LEVEL")
+        return {"declared": policy is not None, "level": local or DEPTH_LEVELS.get(layer_depth, "heavy"),
+                "source": "local setting" if local else "layer file", "local": local, "layer_depth": layer_depth,
+                "levels": [{"level": level, "depth": depth, "minutes": minutes[level]} for level, depth in TESTING_LEVELS.items()],
+                "allowed": {level: dict(zip(("ok", "why"), testing_allowed(self.ir, level))) for level in TESTING_LEVELS},
+                "commands": self._miss_rates(runs, ledger, policy or {}, suites),
+                "batches": self._batch_targets(runs, ledger, policy or {}),
+                "policy": {key: policy.get(key) for key in ("depth", "perRun", "reviewRounds", "onStage", "batchEvery",
+                                                            "batchAfterHours", "onBatchFailure", "maxMissPercent")}
+                if policy else None,
+                "writable": writable, "why": why, "error": error, "note": "" if policy else TESTING_UNDECLARED,
+                "batch": batch or {"enabled": False, "why": ""}}
+
+    @staticmethod
+    def _typical_minutes(runs: list[dict[str, Any]], suites: dict[str, Any]) -> dict[str, float | None]:
+        """Per level: the median check time of the last TYPICAL_RUNS finished runs at its depth, in minutes;
+        heavy from the suite timings when no full run is known; None without data."""
+        out: dict[str, float | None] = {}
+        finished = sorted((r for r in runs if r.get("status") in ("passed", "failed", "handed-over") and r.get("testing")),
+                          key=lambda r: -(r.get("started") or 0))
+        for level, depth in TESTING_LEVELS.items():
+            totals = []
+            for run in finished:
+                testing = run["testing"]
+                seconds = [c.get("seconds") for c in (testing.get("checks") or {}).values() if _number(c.get("seconds")) is not None]
+                if testing.get("depth") == depth and seconds:
+                    totals.append(sum(seconds))
+                if len(totals) >= TYPICAL_RUNS:
+                    break
+            if not totals and depth == "full":
+                totals = [sum(float(v["seconds"]) for v in suites.values()
+                              if isinstance(v, dict) and _number(v.get("seconds")) is not None)] if suites else []
+            out[level] = round(statistics.median(totals) / 60, 1) if totals and sum(totals) else None
+        return out
+
+    def _miss_rates(self, runs: list[dict[str, Any]], ledger: list[dict[str, Any]], policy: dict[str, Any],
+                    suites: dict[str, Any]) -> list[dict[str, Any]]:
+        """Per declared command, as testing.miss_rates counts them: its forms, and over the newest
+        MISS_WINDOW runs delivered in batches that ended whose check of it passed below full depth
+        (`targeted`), how many of those runs a batch was bisected to (`misses`, misses.jsonl), the rate in
+        percent, the same per selection strategy, and `fallback` when the rate is above
+        #:max-miss-percent (the command then runs full)."""
+        by_id = {r.get("id"): r for r in runs}
+        delivered: list[str] = []
+        for line in sorted(ledger, key=lambda item: str(item.get("at") or ""), reverse=True):
+            for rid in reversed(_run_ids(line.get("delivered"))):
+                if rid not in delivered:
+                    delivered.append(rid)
+        misses = read_jsonl(self.path / MISSES_FILE)
+        limit = int(policy.get("maxMissPercent") or 0) if policy else 0
+        out = []
+        for command in (self.ir.get("codebase") or {}).get("commands") or []:
+            if not isinstance(command, dict) or not command.get("name"):
+                continue
+            name = str(command["name"])
+            counted = [(rid, ((by_id.get(rid) or {}).get("testing") or {}).get("below_full", {})[name]) for rid in delivered
+                       if name in (((by_id.get(rid) or {}).get("testing") or {}).get("below_full") or {})][:MISS_WINDOW]
+            ids = {rid for rid, _ in counted}
+            mine = [m for m in misses if m.get("cmd") == name and m.get("run") in ids]
+            missed = {str(m.get("run")) for m in mine}
+            by_strategy = {}
+            for strategy in dict.fromkeys(s for _, names in counted for s in names):
+                targeted = sum(1 for _, names in counted if strategy in names)
+                hit = len({str(m.get("run")) for m in mine if strategy in (m.get("strategies") or [])})
+                by_strategy[strategy] = {"targeted": targeted, "misses": hit,
+                                         "rate": round(100.0 * hit / targeted, 1) if targeted else None}
+            rate = round(100.0 * len(missed) / len(counted), 1) if counted else None
+            suite = suites.get(name) if isinstance(suites.get(name), dict) else {}
+            out.append({"cmd": name, "forms": ["full"] + [form for form in ("targeted", "smoke") if command.get(form)],
+                        "targeted": len(counted), "misses": len(missed), "rate": rate,
+                        "fallback": bool(rate is not None and limit > 0 and rate > limit), "by_strategy": by_strategy,
+                        "full_seconds": _number(suite.get("seconds")), "tests": _number(suite.get("tests"))})
+        return out
+
+    def _batch_targets(self, runs: list[dict[str, Any]], ledger: list[dict[str, Any]],
+                       policy: dict[str, Any]) -> list[dict[str, Any]]:
+        """Per stage (or the default branch without stages): its last batch, the runs that landed on its
+        branch since, and when the next batch is due (batch.due, in words)."""
+        stages = [s for s in self.ir.get("stages") or [] if isinstance(s, dict) and s.get("name")]
+        if stages:
+            cycle = read_json(self.path / "agents" / "cycle.json")
+            targets = [(str(s["name"]), _expand_stage_branch(s, cycle)) for s in stages]
+        else:
+            codebase = self.ir.get("codebase") if isinstance(self.ir.get("codebase"), dict) else {}
+            targets = [("", str(codebase.get("defaultBranch") or "main"))]
+        every, hours = int(policy.get("batchEvery") or 0), int(policy.get("batchAfterHours") or 0)
+        out = []
+        for stage, branch in targets:
+            lines = [l for l in ledger if (stage and l.get("stage") == stage) or l.get("branch") == branch]
+            last = lines[-1] if lines else None
+            since = parse_time(last.get("at")) if last else None
+            landed = sorted((r for r in runs if (r.get("outcome") or {}).get("shipped") and r.get("target_branch") == branch
+                             and r.get("adw") != "verify-batch" and (since is None or (r.get("ended") or 0) > since)),
+                            key=lambda r: r.get("ended") or 0)
+            n = len(landed)
+            parts = []
+            if every:
+                parts.append(f"after {every - n} more landing{'' if every - n == 1 else 's'} ({n} of {every})"
+                             if n < every else f"due now ({n} of {every} landings)")
+            if hours:
+                parts.append(f"once the last batch is {hours} h old" + ("" if n else " and a change landed"))
+            if not policy:
+                when = "no batches: this layer checks every run at full depth"
+            else:
+                when = ", or ".join(parts) or "no batch rhythm declared: run the full suites by hand"
+            view = None
+            if last:
+                culprit, fix, rid = str(last.get("culprit") or ""), str(last.get("fix_run") or ""), str(last.get("id"))
+                view = {"id": clip(rid, 64), "status": last.get("status"), "head": str(last.get("head") or "")[:40],
+                        "since": str(last.get("since") or "")[:40], "at": str(last.get("at") or "")[:40],
+                        "depth": str(last.get("depth") or "") if last.get("depth") in TESTING_DEPTHS else "",
+                        "delivered": _run_ids(last.get("delivered")), "culprit": clip(culprit, 120),
+                        "culprit_run": culprit if RUN_ID.match(culprit) else "", "fix_run": fix if RUN_ID.match(fix) else "",
+                        "source": clip(str(last.get("source") or ""), 40), "failing": _failing(last.get("checks")),
+                        "run": rid if RUN_ID.match(rid) and (self.path / "agents" / rid).is_dir() else ""}
+            out.append({"stage": stage, "branch": branch, "last": view, "delivered_since": [r["id"] for r in landed][:50],
+                        "next": when})
+        return out
+
 
 def find_layers(roots: Iterable[Path], depth: int = 4) -> list[Path]:
     """Directories containing agentic-layer.json below each root (the root itself included)."""
@@ -1715,12 +1855,12 @@ def write_settings(layer_dir: Path, mapping: dict[str, str]) -> Path:
     return path
 
 
-def settings_writable(layer: "Layer", read_only: bool) -> tuple[bool, str]:
-    """Can the Models panel write this layer's local setting? → (writable, why not)."""
+def settings_writable(layer: "Layer", read_only: bool, command: str = "al models LAYER --set TIER=ID") -> tuple[bool, str]:
+    """Can the Models (or Testing) panel write this layer's local setting in agents/settings? → (writable, why not)."""
     if read_only:
         return False, "the dashboard was started with --read-only"
     why = ("agents/settings is not writable here (in the podman dashboard only layers given directly are "
-           "mounted writable); use `al models LAYER --set TIER=ID` on the host")
+           f"mounted writable); use `{command}` on the host")
     root = Path(os.path.realpath(layer.path))
     target = layer.path / SETTINGS_FILE
     for directory in (target.parent, target.parent.parent):   # agents/settings, agents/
@@ -1731,6 +1871,326 @@ def settings_writable(layer: "Layer", read_only: bool) -> tuple[bool, str]:
         if directory.exists():
             return (True, "") if directory.is_dir() and os.access(directory, os.W_OK | os.X_OK) else (False, why)
     return False, why
+
+
+# ============================================================================ testing depth and batches
+#
+# A layer with (testing …) checks a run with the tests its change concerns and proves the whole per
+# batch (kit/runtime/adw_modules/testing.py and batch.py). The dashboard reads what they write and
+# never imports them: the local level (agents/settings/testing.json, the Testing panel's one write),
+# the batch ledger, the misses and the suite timings under agents/testing/, a run's state.testing, its
+# per-check accounting and the `depth` of its ledger entries. The three functions marked "mirror" are
+# the runtime's code again; tests/tools/test_targeted_testing.py holds them equal.
+
+TESTING_FILE = "agents/settings/testing.json"    # mirror of testing.py: the layer's local level, never committed
+TESTING_LEVELS = {"light": "smoke", "standard": "targeted", "heavy": "full"}   # mirror of testing.LEVELS
+TESTING_DEPTHS = ("smoke", "targeted", "full")                                 # mirror of testing.DEPTHS
+DEPTH_LEVELS = {depth: level for level, depth in TESTING_LEVELS.items()}
+BATCHES_FILE = "agents/testing/batches.jsonl"    # one line per batch (batch.py)
+MISSES_FILE = "agents/testing/misses.jsonl"      # one line per miss a batch bisected to a run (testing.record_miss)
+SUITES_FILE = "agents/testing/suites.json"       # each cmd's full suite: {CMD: {seconds, tests, commit, at}}
+TESTING_REQUEST = "testing-request.json"         # agents/<id>/testing-request.json: "full before it ships"
+BATCH_SCRIPT = "adws/verify_batch.py"            # generated by `al gen` for every layer (the kit workflow verify-batch)
+BATCH_KEYS = {"layer", "stage"}
+TESTING_KEYS = {"layer", "level", "reset"}
+RUN_TESTING_KEYS = {"layer", "adw_id", "depth"}
+MISS_WINDOW = 50       # targeted runs per command a miss rate is computed over (mirror of testing.miss_rates)
+TYPICAL_RUNS = 20      # runs per depth the typical minutes are computed over (mirror of testing.typical_minutes)
+TESTING_UNDECLARED = ("this layer has no (testing …) clause, so every check runs its full form; "
+                      "add (testing targeted …) and #:targeted forms to test what a change touches")
+
+
+def read_testing_setting(layer_dir: Path) -> str | None:
+    """mirror of kit/runtime/adw_modules/testing.py read_setting (ValueError instead of LayerError): the
+    level of agents/settings/testing.json, None without the file."""
+    path = Path(layer_dir) / TESTING_FILE
+    hint = "fix or remove it (al testing LAYER --reset)"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError(f"{TESTING_FILE}: cannot read it ({exc.strerror}); {hint}") from exc
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"{TESTING_FILE}: not JSON; {hint}") from exc
+    level = data.get("level") if isinstance(data, dict) else None
+    if not isinstance(level, str) or level not in TESTING_LEVELS:
+        raise ValueError(f'{TESTING_FILE}: expected {{"version": 1, "level": "light|standard|heavy"}}; {hint}')
+    return level
+
+
+def write_testing_setting(layer_dir: Path, level: str | None) -> Path:
+    """mirror of kit/runtime/adw_modules/testing.py write_setting: atomically (temporary file, fsync,
+    rename; a depth name is stored as its level); None removes the file (reset)."""
+    path = Path(layer_dir) / TESTING_FILE
+    if level is None:
+        path.unlink(missing_ok=True)
+        return path
+    level = DEPTH_LEVELS.get(level, level) if isinstance(level, str) else level
+    if level not in TESTING_LEVELS:
+        raise ValueError(f"level is one of {', '.join(TESTING_LEVELS)}, got {level!r}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False,
+                                         prefix=".testing.", suffix=".tmp")
+    try:
+        with handle:
+            handle.write(json.dumps({"version": 1, "level": level}, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(handle.name, path)
+    except BaseException:
+        Path(handle.name).unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _final_landing(ir: dict[str, Any], adw: dict[str, Any], review: dict[str, Any]) -> str | None:
+    """The branch a run of `adw` lands on when that is the final stage (the default branch without
+    stages), None when every class it produces is delivered into an earlier stage (delivery.route)."""
+    stages = [s for s in ir.get("stages") or [] if isinstance(s, dict)]
+    codebase = ir.get("codebase") if isinstance(ir.get("codebase"), dict) else {}
+    if not stages:
+        return str(codebase.get("defaultBranch") or "main")
+    final = next((s for s in stages if not (s.get("into") or s.get("from"))), None)
+    if final is None:
+        return None
+    wanted = str(adw.get("deliverTo") or "")
+    for klass in adw.get("classes") or review.get("allowedClasses") or START_CLASSES:
+        if wanted:
+            stage = next((s for s in stages if s.get("name") == wanted), None)
+        else:
+            stage = next((s for s in stages if klass in (s.get("accepts") or [])), None) or final
+        if stage is final:
+            return str(final.get("branch") or final.get("name") or "")
+    return None
+
+
+def testing_allowed(ir: dict[str, Any], level: str) -> tuple[bool, str]:
+    """mirror of kit/runtime/adw_modules/testing.py setting_allowed, in the compiler's words: a level
+    below full is refused while a zero-touch workflow (review auto, ship merge or deploy) can land on
+    the final stage and no batch rhythm proves the full suites there. → (allowed, why not)."""
+    depth = TESTING_LEVELS.get(level, level)
+    if depth not in TESTING_DEPTHS:
+        return False, f"unknown level {level!r}; one of {', '.join(TESTING_LEVELS)}"
+    if depth == "full":
+        return True, ""
+    policy = ir.get("testing") if isinstance(ir.get("testing"), dict) else {}
+    if int(policy.get("batchEvery") or 0) > 0 or int(policy.get("batchAfterHours") or 0) > 0:
+        return True, ""
+    for adw in ir.get("adws") or []:
+        if not isinstance(adw, dict):
+            continue
+        review = _review(ir, adw.get("review"))
+        if review.get("kind") != "auto" or review.get("ship") not in ("merge", "deploy"):
+            continue
+        branch = _final_landing(ir, adw, review)
+        if branch is not None:
+            return False, (f"(adw {adw.get('name')}) ships to {branch} without a person at testing depth {depth}, but no "
+                           "batch verification is declared: add #:batch ((every N)) or ((after-hours H)) to (testing …), "
+                           "or #:per-run full")
+    return True, ""
+
+
+def _duration_words(seconds: float) -> str:
+    """mirror of kit/runtime/adw_modules/testing.py _duration"""
+    seconds = float(seconds)
+    if seconds < 90:
+        return f"{seconds:.0f} s"
+    if seconds < 90 * 60:
+        return f"{seconds / 60:.0f} min"
+    return f"{seconds / 3600:.1f} h"
+
+
+def _number(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def accounting_text(acc: Any) -> str:
+    """mirror of kit/runtime/adw_modules/testing.py accounting_text: a check's depth and what it ran, in
+    the runtime's words ("targeted: ran 14 of 812 tests (changed-tests 3, imports 9, coverage 2): 41 s
+    instead of about 9 min", "full", "full (WHY)"). Never "passed": what was not run is not called a
+    pass. "" for a record without accounting (a ledger from before depths)."""
+    if not isinstance(acc, dict):
+        return ""
+    depth, why = str(acc.get("depth") or "full"), str(acc.get("why") or "")
+    if depth == "full":
+        return clip(f"full ({why})" if why else "full", 600)
+    ran, total, units = acc.get("ran"), acc.get("total"), str(acc.get("units") or "tests")
+    from_log = acc.get("ran_from", "log") == "log"
+    strategies = acc.get("strategies") if isinstance(acc.get("strategies"), dict) else {}
+    used = ", ".join(f"{name} {count}" for name, count in strategies.items())
+    if depth == "smoke":
+        head = f"smoke ({why})" if why else "smoke"
+        body = f"ran {ran} tests" if ran is not None and from_log else "ran the smoke form"
+        text = f"{head}: {body}"
+    else:
+        if from_log and total:
+            body, inner = f"ran {ran} of {total} tests", used
+        elif from_log:
+            body = f"ran {ran} tests"
+            inner = "; ".join(item for item in ("full suite size not known yet", used) if item)
+        else:
+            body = f"ran the {ran} selected {units}"
+            inner = "; ".join(item for item in (used, f"the full suite has {total} tests" if total
+                                                  else "full suite size not known yet") if item)
+        text = f"targeted: {body}" + (f" ({inner})" if inner else "")
+    if _number(acc.get("seconds")) is not None:
+        text += f": {_duration_words(float(acc['seconds']))}"
+        if _number(acc.get("full_seconds")):
+            text += f" instead of about {_duration_words(float(acc['full_seconds']))}"
+    return clip(text, 600)
+
+
+_JSONL_CACHE: dict[str, tuple[tuple[int, int, int] | None, list[dict[str, Any]]]] = {}
+_JSONL_LOCK = threading.Lock()
+
+
+def read_jsonl(path: Path, cap: int = 4_000_000) -> list[dict[str, Any]]:
+    """The JSON objects of a .jsonl file (unreadable lines skipped), cached by its signature."""
+    sig = stat_sig(path)
+    key = str(path)
+    with _JSONL_LOCK:
+        cached = _JSONL_CACHE.get(key)
+        if cached and cached[0] == sig:
+            return cached[1]
+    out = []
+    for line in read_text(path, cap=cap).splitlines() if sig else []:
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            out.append(item)
+    with _JSONL_LOCK:
+        _JSONL_CACHE[key] = (sig, out)
+    return out
+
+
+def _run_ids(value: Any, cap: int = 200) -> list[str]:
+    return [str(v) for v in value if isinstance(v, str) and RUN_ID.match(v)][:cap] if isinstance(value, list) else []
+
+
+def _failing(checks: Any) -> list[str]:
+    """The failing tests a batch line names, from `checks` as {CMD: {failing: […]}} or [{…, failing}]."""
+    items = checks.values() if isinstance(checks, dict) else checks if isinstance(checks, list) else []
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, dict) and isinstance(item.get("failing"), list):
+            out += [clip(str(t), 300) for t in item["failing"] if isinstance(t, str)]
+    return list(dict.fromkeys(out))[:20]
+
+
+def batch_ledger(layer_dir: Path) -> list[dict[str, Any]]:
+    """agents/testing/batches.jsonl: the batches that ended (green or red), oldest first."""
+    return [line for line in read_jsonl(Path(layer_dir) / BATCHES_FILE)
+            if isinstance(line.get("id"), str) and line.get("status") in ("green", "red")]
+
+
+def broken_by(lines: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """run id → the red batch it broke (batch.broken_by): the batch, the fix run, the branch, when and
+    the failing tests; a later batch naming the same culprit wins. A culprit that is a commit without a
+    run ("commit SHA (no run)") names nobody."""
+    out: dict[str, dict[str, Any]] = {}
+    for line in lines:
+        culprit = str(line.get("culprit") or "")
+        if line.get("status") != "red" or not RUN_ID.match(culprit):
+            continue
+        fix = str(line.get("fix_run") or "")
+        out[culprit] = {"batch": clip(str(line.get("id")), 64), "fix_run": fix if RUN_ID.match(fix) else "",
+                        "branch": clip(str(line.get("branch") or ""), 200), "stage": clip(str(line.get("stage") or ""), 64),
+                        "at": str(line.get("at") or "")[:40], "failing": _failing(line.get("checks"))}
+    return out
+
+
+def read_testing_request(layer_dir: Path, run_id: str) -> dict[str, str] | None:
+    """agents/<id>/testing-request.json: a person asked for the full suites before the run ships."""
+    data = read_json(Path(layer_dir) / "agents" / run_id / TESTING_REQUEST)
+    if not isinstance(data, dict) or data.get("depth") != "full":
+        return None
+    return {"by": clip(str(data.get("by") or ""), 80), "at": str(data.get("at") or "")[:40]}
+
+
+def run_testing(layer: "Layer", state: dict[str, Any]) -> dict[str, Any] | None:
+    """What a run's summary carries about its depth: the run's depth and its source, per check the cmd,
+    depth and seconds (state.checks[NAME].testing), and the cmds whose check passed below full depth
+    (its ledger), which miss rates count. None for a run without testing records."""
+    record = state.get("testing") if isinstance(state.get("testing"), dict) else {}
+    adw = layer.adw(str(state.get("adw") or "")) or (state.get("definition") if isinstance(state.get("definition"), dict) else {})
+    cmd_of = {str(s.get("name")): str(s.get("cmd") or s.get("name")) for s in adw.get("steps") or []
+              if isinstance(s, dict) and s.get("kind") == "check"}
+
+    def cmd(name: str) -> str:
+        return cmd_of.get(name) or (name[len("batch-"):] if name.startswith("batch-") else name)
+
+    checks = {}
+    for name, rec in (state.get("checks") or {}).items() if isinstance(state.get("checks"), dict) else []:
+        acc = rec.get("testing") if isinstance(rec, dict) else None
+        if isinstance(acc, dict) and acc.get("depth") in TESTING_DEPTHS:
+            checks[str(name)] = {"cmd": cmd(str(name)), "depth": acc["depth"], "seconds": _number(acc.get("seconds"))}
+    below: dict[str, list[str]] = {}   # cmd → the strategies of its latest pass below full depth
+    ledger = state.get("check_results") if isinstance(state.get("check_results"), list) else []
+    for entry in reversed(ledger):
+        if not isinstance(entry, dict) or not isinstance(entry.get("check"), str) or entry.get("outcome") != "passed" \
+                or entry.get("depth") not in ("smoke", "targeted") or cmd(entry["check"]) in below:
+            continue
+        acc = entry.get("testing") if isinstance(entry.get("testing"), dict) else {}
+        strategies = acc.get("strategies") if isinstance(acc.get("strategies"), dict) else {}
+        below[cmd(entry["check"])] = [clip(str(name), 40) for name in strategies][:10]
+    if not record and not checks and not below:
+        return None
+    return {"depth": str(record.get("depth") or "") if record.get("depth") in TESTING_DEPTHS else "",
+            "source": clip(str(record.get("source") or ""), 200), "checks": checks, "below_full": below}
+
+
+def _expand_stage_branch(stage: dict[str, Any], cycle: Any) -> str:
+    """A stage's branch with {cycle}, {version} and {date} of the open cycle (delivery.expand_branch,
+    without today's date: a branch the cycle does not name stays as declared)."""
+    branch = str(stage.get("branch") or stage.get("name") or "")
+    current = cycle.get("current") if isinstance(cycle, dict) and cycle.get("stage") == stage.get("name") else None
+    if isinstance(current, dict):
+        branch = branch.replace("{cycle}", str(current.get("name") or "{cycle}")).replace(
+            "{version}", str(current.get("version") or "{version}"))
+        if current.get("opened_at"):
+            branch = branch.replace("{date}", str(current["opened_at"])[:10])
+    return branch
+
+
+def batch_status(layer: "Layer", model: "Model") -> dict[str, Any]:
+    """Can "Run the full suites now" start a batch in this layer from the page? → {enabled, why}."""
+    if model.read_only:
+        return {"enabled": False, "why": "the dashboard was started with --read-only"}
+    if model.no_start:
+        return {"enabled": False, "why": "the dashboard was started with --no-start"}
+    if model.in_container and not model.allow_start:
+        return {"enabled": False, "why": "the dashboard runs in a container, which cannot start runs "
+                                         "(--allow-start-in-container only for an image built for it)"}
+    if not (layer.path / BATCH_SCRIPT).is_file():
+        return {"enabled": False, "why": f"generated before batch verification: run `al gen {layer.name}`"}
+    return {"enabled": True, "why": ""}
+
+
+def batch_via_layer(layer: Layer, argv: list[str], timeout: float = START_TIMEOUT) -> tuple[int, dict[str, Any], str]:
+    """Run the layer's own `adws/verify_batch.py ARGV` (`run --detach --json [--stage S]`: it starts the
+    kit workflow verify-batch detached): argv list, no shell, the dashboard's token not passed on. →
+    (exit code, its JSON result, stderr tail)."""
+    command = [sys.executable, str(layer.path / BATCH_SCRIPT), *argv]
+    env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
+    try:
+        done = subprocess.run(command, capture_output=True, cwd=str(layer.path), env=env, timeout=timeout,
+                              check=False, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return -1, {}, f"the layer's verify_batch.py took longer than {int(timeout)} s"
+    except OSError as exc:
+        return -1, {}, f"cannot run the layer's verify_batch.py: {exc}"
+    tail = done.stderr.decode("utf-8", "replace")[-2000:]
+    lines = [line for line in done.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    try:
+        result = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        result = {}
+    return done.returncode, result if isinstance(result, dict) else {}, tail
 
 
 # ============================================================================ starting work
@@ -1978,8 +2438,12 @@ def start_request(layer: Layer, data: dict[str, Any]) -> tuple[dict[str, Any] | 
         return None, "the layer has no forge (forge none): the request cannot be logged as an issue"
     if issue == "trigger" and (target["kind"] != "workflow" or target["name"] not in catalog["issue"]["trigger"]):
         return None, f"no cron or webhook trigger starts {target['name']} from an issue"
+    testing = data.get("testing") or None
+    if testing is not None and (not isinstance(testing, str) or testing not in TESTING_LEVELS):
+        return None, f"testing: one of {', '.join(TESTING_LEVELS)}, or empty for the layer's own level"
     return {"target": {"kind": target["kind"], "name": target["name"]}, "prompt": prompt, "request_key": key,
             "class": klass, "model_set": model_set, "models": models, "issue": issue, "decider": decider,
+            "testing": testing,
             "confirm_duplicate": data.get("confirm_duplicate") is True,
             "confirm_ships": data.get("confirm_ships") is True}, ""
 
@@ -2282,6 +2746,7 @@ def start_via_layer(layer: Layer, request: dict[str, Any], timeout: float = STAR
             "--request-key", request["request_key"], "--issue", request["issue"]]
     argv += ["--class", request["class"]] if request.get("class") else []
     argv += ["--model-set", request["model_set"]] if request.get("model_set") else []
+    argv += ["--testing", request["testing"]] if request.get("testing") else []
     for tier, model_id in sorted((request.get("models") or {}).items()):
         argv += ["--model", f"{tier}={model_id}"]
     argv += ["--confirm-duplicate"] if request.get("confirm_duplicate") else []
@@ -3080,7 +3545,9 @@ class RunFiles:
     def signature(self, deep: bool) -> tuple:
         items: list[Any] = [stat_sig(self.dir / "state.json"), stat_sig(self.dir / "run.log"), mtime(self.dir),
                             stat_sig(self.dir / EVENTS_FILE), stat_sig(self.dir / SETTLEMENT_FILE),
-                            stat_sig(self.dir / INTEGRATION_FILE), stat_sig(self.dir / DECISIONS_FILE)]
+                            stat_sig(self.dir / INTEGRATION_FILE), stat_sig(self.dir / DECISIONS_FILE),
+                            stat_sig(self.dir / TESTING_REQUEST),
+                            stat_sig(self.layer.path / BATCHES_FILE)]   # a batch may name this run its culprit
         if deep:
             items.append(stat_sig(self.dir / "PR.md"))
             items.append(stat_sig(self.layer.path / "artefacts" / self.id / "manifest.json"))
@@ -3338,6 +3805,9 @@ def proof_view(state: dict[str, Any] | None, short: Any) -> list[dict[str, Any]]
             exit_code = entry.get("exit")
             rows.append({"check": check[:200], "where": where, "outcome": view["outcome"], "why": short(view["why"]),
                          "tree": view["tree"],
+                         # targeted testing: the depth it ran at and its accounting ("" for ledgers from before)
+                         "depth": str(entry["depth"]) if entry.get("depth") in TESTING_DEPTHS else "",
+                         "accounting": short(accounting_text(entry.get("testing"))),
                          "exit": exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None,
                          "log": short(str(entry.get("log") or ""))[:500], "paths": [short(p) for p in view["paths"]],
                          "paths_total": view["paths_total"],
@@ -4000,6 +4470,9 @@ class RunModel:
             "integration": read_integration(self.layer.path, self.id),
             "integrates": integrates,
             "kit": kit_run, "acts_on": acts_on,
+            # targeted testing: the run's depth per check, and the red batch it broke (agents/testing/batches.jsonl)
+            "testing": run_testing(self.layer, state),
+            "broke_batch": broken_by(batch_ledger(self.layer.path)).get(self.id),
             **extras,
         }
         summary["integrate"] = integrate_offer(self.layer, summary)
@@ -4341,7 +4814,29 @@ class RunModel:
                              for name, r in records.items()},
             "proof": proof_view(state, short),
             "promotion": promotion_view(self.layer, self.id, state, short),
+            "testing": self._testing_detail(state, summary, short),
         }
+
+    def _testing_detail(self, state: dict[str, Any], summary: dict[str, Any], short: Callable[[str], str]) -> dict[str, Any] | None:
+        """The run page's depth: the run's depth and its source, why it was escalated, whether a person
+        asked for the full suites before it ships, each check's accounting in words, and the batch it
+        broke. None for a run of a layer without (testing …) that recorded nothing about depth."""
+        declared = isinstance(self.layer.ir.get("testing"), dict)
+        record = state.get("testing") if isinstance(state.get("testing"), dict) else {}
+        request = read_testing_request(self.layer.path, self.id)
+        checks = [{"name": clip(str(name), 200), "depth": rec["testing"]["depth"], "text": short(accounting_text(rec["testing"]))}
+                  for name, rec in (state.get("checks") or {}).items()
+                  if isinstance(rec, dict) and isinstance(rec.get("testing"), dict) and rec["testing"].get("depth") in TESTING_DEPTHS]
+        escalation = record.get("escalation")
+        reasons = [r for value in (escalation.values() if isinstance(escalation, dict) else [escalation])
+                   for r in (value if isinstance(value, list) else [])]
+        if not (declared or record or checks or request or summary.get("broke_batch")):
+            return None
+        return {"declared": declared,
+                "depth": str(record.get("depth") or "") if record.get("depth") in TESTING_DEPTHS else "",
+                "source": short(clip(str(record.get("source") or ""), 200)),
+                "escalation": [short(clip(str(r), 300)) for r in dict.fromkeys(reasons) if isinstance(r, str)][:20],
+                "requested_full": request, "checks": checks, "broke_batch": summary.get("broke_batch")}
 
 
 # ============================================================================ slots, ports, containers
@@ -5058,6 +5553,7 @@ class Model:
                             "usage": self.layer_usage(layer, time.time()),
                             "models": layer.models_view(self.read_only),
                             "standin": self.standin_view(layer),
+                            "testing": layer.testing_view(self.read_only, runs, batch_status(layer, self)),
                             "start": start_status(layer, self),
                             "voice": voice_status(layer, self)})
             return out
@@ -5298,6 +5794,13 @@ class Model:
         self.standin_note(layer, {"run": run_id, "kind": "settle", "action": "undo", "outcome": "settlement undone"})
         self.refresh_run(layer, run_id)
         return 200, {"status": "undone", "record": record}
+
+    @staticmethod
+    def settings_sig(layer: Layer) -> tuple:
+        """What the layer-level panels read besides the IR: the local model and testing settings, the batch
+        ledger, the misses and the suite timings. A change republishes the layers."""
+        return tuple(stat_sig(layer.path / name) for name in (SETTINGS_FILE, TESTING_FILE, BATCHES_FILE, MISSES_FILE,
+                                                                SUITES_FILE))
 
     def needs_you(self, layer_key: str) -> int:
         """How many runs of the layer are in the needs-you bucket (what the Runs link counts)."""
@@ -5622,7 +6125,7 @@ class Model:
             elif self.usage_sigs[layer.key] != sig:
                 self.usage_sigs[layer.key] = sig
                 usage_changed = True
-            sig = stat_sig(layer.path / SETTINGS_FILE)   # the local model setting: the same
+            sig = self.settings_sig(layer)   # the local model and testing settings, the batch files: the same
             if layer.key not in self.settings_sigs:
                 self.settings_sigs[layer.key] = sig
             elif self.settings_sigs[layer.key] != sig:
@@ -8649,6 +9152,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._voice_approve()
             if path in VOICE_POST:
                 return getattr(self, VOICE_POST[path])()
+            if path == "/api/testing":
+                return self._set_testing()
+            if path == "/api/batch":
+                return self._batch()
+            if path == "/api/run-testing":
+                return self._run_testing()
         except (BrokenPipeError, ConnectionResetError):
             return None
         self._refuse()
@@ -8817,9 +9326,127 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(409, f"cannot write {SETTINGS_FILE}: {exc.strerror or exc}")
         view = layer.models_view(self.server.read_only)
         with model_.lock:
-            model_.settings_sigs[layer.key] = stat_sig(layer.path / SETTINGS_FILE)
+            model_.settings_sigs[layer.key] = model_.settings_sig(layer)
         model_.hub.publish("layers", model_.layer_list())
         return self._json({"ok": True, "note": note, "models": view})
+
+    def _set_testing(self) -> None:
+        """POST /api/testing {"layer", "level": light|standard|heavy} or {"layer", "reset": true}: the
+        layer's local testing level (agents/settings/testing.json), as `al testing LAYER --set|--reset`."""
+        body = self._write_guard(MAX_WRITE_BODY)
+        if body is None:
+            return None
+        try:
+            request = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        usage = 'expected {"layer", "level": light|standard|heavy} or {"layer", "reset": true}; nothing else'
+        if not isinstance(request, dict) or not set(request) <= TESTING_KEYS or not isinstance(request.get("layer"), str):
+            return self._error(400, usage)
+        reset = request.get("reset")
+        if reset not in (None, True) or (reset is True and request.get("level") is not None):
+            return self._error(400, usage)
+        level = request.get("level")
+        if reset is None and (not isinstance(level, str) or level not in TESTING_LEVELS):
+            return self._error(400, f"level is one of {', '.join(TESTING_LEVELS)} (light = smoke, standard = targeted, "
+                                    "heavy = full)")
+        model_ = self.server.model
+        with model_.lock:
+            layer = model_.layers.get(request["layer"])
+        if layer is None:
+            return self._error(404, "unknown layer")
+        writable, why = settings_writable(layer, self.server.read_only, "al testing LAYER --set LEVEL")
+        if not writable:
+            return self._error(409, why)
+        if reset is None:
+            allowed, why = testing_allowed(layer.ir, level)
+            if not allowed:
+                return self._error(409, why)
+        try:
+            write_testing_setting(layer.path, None if reset else level)
+        except OSError as exc:
+            return self._error(409, f"cannot write {TESTING_FILE}: {exc.strerror or exc}")
+        with model_.lock:
+            model_.settings_sigs[layer.key] = model_.settings_sig(layer)
+        layers = model_.layer_list()
+        model_.hub.publish("layers", layers)
+        view = next((entry["testing"] for entry in layers if entry["key"] == layer.key), {})
+        return self._json({"ok": True, "testing": view})
+
+    def _batch(self) -> None:
+        """POST /api/batch {"layer", "stage"?}: "Run the full suites now", by the layer's own
+        adws/verify_batch.py run --detach --json [--stage S] (the kit workflow verify-batch, detached)."""
+        body = self._write_guard(MAX_WRITE_BODY)
+        if body is None:
+            return None
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        if not isinstance(data, dict) or not set(data) <= BATCH_KEYS or not isinstance(data.get("layer"), str):
+            return self._error(400, 'expected {"layer"} and, for a stage, "stage"; nothing else')
+        stage = data.get("stage")
+        if stage is not None and (not isinstance(stage, str) or not STAGE_NAME_RX.match(stage)):
+            return self._error(400, "stage names one of the layer's stages, e.g. sprint")
+        if self.server.no_start:
+            return self._error(403, "the dashboard was started with --no-start")
+        if self.server.model.in_container and not self.server.allow_start:
+            return self._error(403, "the dashboard runs in a container and cannot start runs "
+                                    "(--allow-start-in-container only for an image built for it)")
+        model_ = self.server.model
+        with model_.lock:
+            layer = model_.layers.get(data["layer"])
+        if layer is None:
+            return self._error(404, "unknown layer")
+        names = [str(s.get("name")) for s in layer.ir.get("stages") or [] if isinstance(s, dict)]
+        if stage is not None and stage not in names:
+            return self._error(400, f"no stage named {stage!r}; declared: {', '.join(names) or '(none)'}")
+        if not (layer.path / BATCH_SCRIPT).is_file():
+            return self._error(409, f"this layer has no {BATCH_SCRIPT} (generated before batch verification): "
+                                    f"run `al gen {layer.name}`")
+        code, result, stderr = batch_via_layer(layer, ["run", "--detach", "--json", *(["--stage", stage] if stage else [])])
+        if result.get("status") == "started" and RUN_ID.match(str(result.get("run_id") or "")):
+            return self._json({"status": "started", "run_id": result["run_id"],
+                               "url": f"#/run/{layer.key}/{result['run_id']}"}, 202)
+        if result.get("status") == "error":
+            return self._json({"error": f"{result.get('reason')}: {result.get('error')}", "reason": result.get("reason")}, 409)
+        tail = "\n".join(stderr.strip().splitlines()[-12:])
+        return self._json({"error": f"the layer's verify_batch.py failed (exit {code})", "stderr": tail}, 502)
+
+    def _run_testing(self) -> None:
+        """POST /api/run-testing {"layer", "adw_id", "depth": "full"}: "Full before it ships": a running
+        run's gate then runs the full suites (agents/<id>/testing-request.json, by: dashboard)."""
+        body = self._write_guard(MAX_WRITE_BODY)
+        if body is None:
+            return None
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        if not isinstance(data, dict) or set(data) != RUN_TESTING_KEYS or not all(isinstance(v, str) for v in data.values()):
+            return self._error(400, 'expected {"layer", "adw_id", "depth": "full"}; nothing else')
+        if data["depth"] != "full":
+            return self._error(400, "depth: full is the only depth a person asks for before a run ships")
+        if not RUN_ID.match(data["adw_id"]):
+            return self._error(400, "adw_id: a run id, 8 hexadecimal characters")
+        model_ = self.server.model
+        with model_.lock:
+            layer = model_.layers.get(data["layer"])
+        run_dir = layer.path / "agents" / data["adw_id"] if layer is not None else None
+        if layer is None or run_dir is None or not run_dir.is_dir():
+            return self._error(404, "no such run")
+        state = read_json(run_dir / "state.json")
+        status = str(state.get("status") or "unknown") if isinstance(state, dict) else "unknown"
+        alive = liveness(state if isinstance(state, dict) else {}, time.time(), not model_.in_container)
+        if status != "running" or (alive is not None and alive["died"]):
+            return self._error(409, f"run {data['adw_id']} is not running ({'died' if alive else status}): "
+                                    "only a running run can be asked for the full suites before it ships")
+        record = {"depth": "full", "by": "dashboard", "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        try:
+            _write_record(run_dir / TESTING_REQUEST, record)
+        except OSError as exc:
+            return self._error(409, f"cannot write {TESTING_REQUEST}: {exc.strerror or exc}")
+        return self._json({"status": "requested", "request": record})
 
     def _settle(self) -> None:
         """POST /api/settle {layer, run, as: landed|superseded|abandoned, by, note, who}: a person's record
@@ -9649,7 +10276,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/startable":
                 return self._startable(query)
             if path in ("/api/start", "/api/models", "/api/promotion", "/api/settle", "/api/integrate", "/api/decider",
-                        "/api/decision", "/api/standin", "/api/voice/approve") or path in VOICE_POST:
+                        "/api/decision", "/api/standin", "/api/voice/approve", "/api/testing", "/api/batch",
+                        "/api/run-testing") or path in VOICE_POST:
                 return self._error(405, "POST only")
             if path == "/api/integrate/preview":
                 return self._integrate_preview(query)

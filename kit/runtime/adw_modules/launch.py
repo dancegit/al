@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from . import budget, inputs, ir, models, registry, slots, state as state_module
+from . import testing as testing_module
 from .agents import CLASSES
 from .errors import LayerError
 
@@ -272,10 +273,11 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
           model_set: str | None = None, models: Iterable[str] = (), issue: str = "none",
           confirm_duplicate: bool = False, confirm_ships: bool = False, dry_run: bool = False,
           detach: bool = True, spawn: Callable[..., Any] = _spawn, forge: Any = None,
-          replaces: str = "", decider: str = "") -> dict[str, Any]:
+          replaces: str = "", decider: str = "", testing: str | None = None) -> dict[str, Any]:
     """Start `target` with `prompt` once per `request_key`; see the module docstring. `models` are
     TIER=MODEL_ID strings; `replaces` is the run this one starts again; `decider` is the stand-in's
-    mode for this run (`--decider MODE`), "" for the layer's. Returns {"status": started | issue-created | confirm-duplicate |
+    mode for this run (`--decider MODE`), "" for the layer's; `testing` the depth of this run's checks
+    (light|standard|heavy or smoke|targeted|full; None = the layer's). Returns {"status": started | issue-created | confirm-duplicate |
     confirm-ships | refused | invalid | error, …}; EXIT maps the status to an exit code."""
     model_list = [str(m) for m in models]
     layer_dir = Path(layer.layer_dir)
@@ -286,6 +288,9 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
                            str(decider or ""))
     except (LayerError, ValueError) as exc:
         return _result("invalid", error=str(exc), **base)
+    if testing is not None and str(testing) not in (*testing_module.LEVELS, *testing_module.DEPTHS):
+        return _result("invalid", error=f"testing: one of {', '.join((*testing_module.LEVELS, *testing_module.DEPTHS))}",
+                       **base)
     replaces = str(replaces or "")
     if replaces and not RUN_ID_RE.fullmatch(replaces):
         return _result("invalid", error="replaces: a run id of 8 hexadecimal characters", **base)
@@ -373,6 +378,7 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
                 "--adw-id", run_id, "--prompt-file", str(request)]
     argv += ["--class", klass] if klass else []
     argv += ["--model-set", model_set] if model_set else []
+    argv += ["--testing", str(testing)] if testing else []
     for item in model_list:
         argv += ["--model", item]
     argv += ["--dry-run"] if dry_run else []

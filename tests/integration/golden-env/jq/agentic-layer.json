@@ -318,38 +318,90 @@
     "commands": [
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "The build system is generated and configured against the system Oniguruma (libonig-dev); the vendor/oniguruma submodule is not fetched, because a run's container mounts the repository's .git read-only and git submodule update cannot register it; must run once in a fresh checkout before build or test",
+        "maxTargeted": 200,
         "name": "install",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "autoreconf -i && ./configure --disable-docs --with-oniguruma=yes --enable-static",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "libjq and the jq binary compile and link with -Wextra -Wall",
+        "maxTargeted": 200,
         "name": "build",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "make -j\"$(nproc)\"",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "Every driver in TESTS of Makefile.am passes against the built ./jq; writes test-suite.log and tests/*.log",
+        "maxTargeted": 200,
         "name": "test",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "make check VERBOSE=yes",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "The website renders from docs/content into docs/output/",
+        "maxTargeted": 200,
         "name": "docs",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "(cd docs && pipenv sync && pipenv run python3 build_website.py)",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       }
     ],

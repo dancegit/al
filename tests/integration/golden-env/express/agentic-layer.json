@@ -309,38 +309,90 @@
     "commands": [
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "dependencies and devDependencies resolve and install into node_modules",
+        "maxTargeted": 200,
         "name": "install",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "npm install",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "eslint reports no violation of .eslintrc.yml in any JavaScript file of the repository",
+        "maxTargeted": 200,
         "name": "lint",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "npm run lint",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "the whole mocha suite (test/ and test/acceptance/) passes with global-leak checking, under nyc, writing coverage/lcov.info and a text coverage table to stdout",
+        "maxTargeted": 200,
         "name": "test",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "npm run test-ci",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "the whole mocha suite (test/ and test/acceptance/) passes with global-leak checking, without coverage",
+        "maxTargeted": 200,
         "name": "test-fast",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "npm test",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       }
     ],

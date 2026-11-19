@@ -116,11 +116,24 @@
     "commands": [
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "the tests pass",
+        "maxTargeted": 200,
         "name": "test",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "./test.sh",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 60
       }
     ],

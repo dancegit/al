@@ -1371,7 +1371,12 @@
   (define spec (dynamic-require (build-path examples "minimal.rkt") 'layer-spec))
   (define c (cmd-of spec "test"))
   (check-equal? (sort (map symbol->string (hash-keys c)) string<?)
-                '("always" "covers" "description" "name" "reuse" "run" "timeout"))
+                '("always" "coverageFile" "coverageRun" "covers" "description" "maxTargeted" "name" "pathMap"
+                  "recordCoverage" "reuse" "run" "select" "selectCmd" "smoke" "targeted" "testRoot" "timeout"))
+  ;; the targeted-testing fields at their defaults: the cmd has only its full form
+  (check-equal? (for/list ([k '(targeted smoke select selectCmd pathMap testRoot maxTargeted recordCoverage coverageRun coverageFile)])
+                  (hash-ref c k))
+                '("" "" ("changed-tests" "imports") "" () "" 200 "none" "" ""))
   (check-equal? (list (hash-ref c 'covers) (hash-ref c 'always) (hash-ref c 'reuse)) '(() #t #t))
   (check-equal? (step-names spec "plan-build") '("plan" "build" "test"))
   (define st (check-step spec "plan-build" "test"))
@@ -1559,3 +1564,189 @@
                                     '(voice kokoro #:helper-agent "mock" #:helper-model-set "anything")))))
   (define v (hash-ref (compile-layer-datum (layer plan simple-adw '(voice kokoro #:listen-mode always))) 'voice))
   (check-equal? (hash-ref v 'listenMode) "always"))
+
+;; ---------------------------------------------------------------------------------------
+;; Targeted testing: narrower forms of a cmd, the (testing …) policy, the zero-touch batch rule
+;; ---------------------------------------------------------------------------------------
+
+(define testing-defaults
+  (hasheq 'depth "targeted" 'perRun "inherit" 'reviewRounds "inherit" 'onStage "full"
+          'batchEvery 0 'batchAfterHours 0 'escalatePaths '() 'escalateDiffLines 1500 'escalateFiles 40
+          'escalateOn '("lockfile" "layer" "unmapped") 'escalateClasses '()
+          'onBatchFailure '("bisect" "open-fix") 'fixAdw "" 'maxMissPercent 10))
+(define (testing-of . clauses)
+  (hash-ref (compile-layer-datum (apply layer plan simple-adw clauses)) 'testing))
+;; a layer whose one cmd `unit` has the given keywords
+(define (targeted-cmd . kws)
+  (covering-layer `((cmd unit "pytest -q" ,@kws)) simple-adw))
+
+(test-case "targeted-testing fixture compiles"
+  (define spec (dynamic-require (build-path fixtures "targeted-testing.rkt") 'layer-spec))
+  (check-equal? (hash-ref spec 'testing)
+                (hash-set* testing-defaults
+                           'batchEvery 5 'batchAfterHours 6 'escalatePaths '("a/core/**")
+                           'escalateClasses '("feature")))
+  (define a (cmd-of spec "suite-a"))
+  (check-equal? (hash-ref a 'targeted) "run-tests {tests}")
+  (check-equal? (hash-ref a 'smoke) "run-tests --smoke")
+  (check-equal? (hash-ref a 'select) '("changed-tests" "path-map" "imports"))
+  (check-equal? (hash-ref a 'pathMap) (list (hasheq 'source "a/{name}.py" 'tests "a/tests/test_{name}.py")))
+  (define b (cmd-of spec "suite-b"))
+  (check-equal? (list (hash-ref b 'targeted) (hash-ref b 'smoke)) '("" ""))
+  (check-equal? (step-names spec "zte") '("plan" "build" "suite-a" "suite-b" "commit" "review" "ship"))
+  (check-equal? (layer-warnings spec) '()))
+
+(test-case "no testing clause → no IR key"
+  (check-false (hash-has-key? (compile-layer-datum (layer plan simple-adw)) 'testing))
+  (check-false (hash-has-key? (dynamic-require (build-path examples "minimal.rkt") 'layer-spec) 'testing))
+  (for ([f '("affected-checks.rkt" "delivery-sprint.rkt" "nested-engine.rkt")])
+    (check-false (hash-has-key? (dynamic-require (build-path fixtures f) 'layer-spec) 'testing) f))
+  (define schema (layer-schema))
+  (check-false (member "testing" (hash-ref schema 'required)))
+  (check-true (hash-has-key? (hash-ref schema 'properties) 'testing)))
+
+(test-case "full.rkt declares (testing …) and the narrower forms of `test`"
+  (define full (dynamic-require (build-path examples "full.rkt") 'layer-spec))
+  (check-equal? (hash-ref (hash-ref full 'testing) 'batchEvery) 5)
+  (check-equal? (hash-ref (hash-ref full 'testing) 'escalateOn) '("lockfile" "layer" "unmapped"))
+  (define t (cmd-of full "test"))
+  (for ([k '(targeted smoke)]) (check-not-equal? (hash-ref t k) "" (format "~a" k)))
+  (check-true (pair? (hash-ref t 'pathMap)))
+  (check-true (pair? (hash-ref t 'select))))
+
+(test-case "(testing) alone: depth targeted and every default"
+  (check-equal? (testing-of '(testing)) testing-defaults)
+  (check-equal? (testing-of '(testing targeted)) testing-defaults)
+  (check-equal? (hash-ref (testing-of '(testing full)) 'depth) "full")
+  (check-equal? (hash-ref (testing-of '(testing smoke #:per-run full #:review-rounds targeted)) 'perRun) "full"))
+
+(test-case "(testing …): #:escalate written replaces the escalate defaults"
+  (check-equal? (testing-of '(testing targeted #:escalate ((paths "x/**" "y/*.py"))))
+                (hash-set* testing-defaults 'escalatePaths '("x/**" "y/*.py") 'escalateDiffLines 0
+                           'escalateFiles 0 'escalateOn '()))
+  (check-equal? (testing-of '(testing targeted #:escalate ((diff-lines 300) (files 9) (lockfile) (unmapped) (class feature bug))))
+                (hash-set* testing-defaults 'escalateDiffLines 300 'escalateFiles 9
+                           'escalateOn '("lockfile" "unmapped") 'escalateClasses '("feature" "bug")))
+  ;; a field written next to #:escalate keeps its written value
+  (check-equal? (hash-ref (testing-of '(testing #:escalate ((lockfile)) #:escalate-files 7)) 'escalateFiles) 7)
+  ;; the fields themselves, without #:escalate
+  (check-equal? (hash-ref (testing-of '(testing #:escalate-on (layer))) 'escalateOn) '("layer")))
+
+(test-case "(testing …): #:batch items"
+  (define t (testing-of '(testing targeted #:batch ((every 5)))))
+  (check-equal? (list (hash-ref t 'batchEvery) (hash-ref t 'batchAfterHours)) '(5 0))
+  (define u (testing-of '(testing targeted #:batch ((every 3) (after-hours 24)))))
+  (check-equal? (list (hash-ref u 'batchEvery) (hash-ref u 'batchAfterHours)) '(3 24))
+  (check-equal? (hash-ref (testing-of '(testing #:batch-after-hours 12)) 'batchAfterHours) 12))
+
+(test-case "(testing …): #:fix-adw names a declared adw"
+  (check-equal? (hash-ref (testing-of '(testing #:fix-adw a)) 'fixAdw) "a")
+  (check-rejects (layer plan simple-adw '(testing #:fix-adw nope)) #rx"`nope` is not a declared adw; declared: a"))
+
+(test-case "cmd narrower forms: rejections with their messages"
+  (check-rejects (targeted-cmd '#:targeted "pytest -q")
+                 #rx"\\(cmd unit\\): #:targeted \"pytest -q\" needs \\{tests\\}, \\{files\\} or \\{packages\\}: that is where the selected tests go")
+  (check-rejects (targeted-cmd '#:targeted "pytest -q {test}")
+                 #rx"\\(cmd unit\\): #:targeted: unknown placeholder \\{test\\}; placeholders are \\{tests\\} \\{files\\} \\{packages\\}")
+  (check-rejects (targeted-cmd '#:targeted "pytest -q {tests}" '#:select '(changed-tests path-map))
+                 #rx"\\(cmd unit\\): #:select names path-map, but #:path-map is empty")
+  (check-rejects (targeted-cmd '#:targeted "pytest -q {tests}" '#:select '(command))
+                 #rx"\\(cmd unit\\): #:select names command, but #:select-cmd is empty")
+  (check-rejects (targeted-cmd '#:targeted "pytest -q {tests}" '#:select-cmd "./which-tests.sh")
+                 #rx"\\(cmd unit\\): #:select-cmd is given, but #:select does not name command")
+  (check-rejects (targeted-cmd '#:targeted "pytest -q {tests}" '#:select '(coverage))
+                 #rx"\\(cmd unit\\): #:select names coverage, but #:record-coverage is none: no full run records a map")
+  (check-rejects (targeted-cmd '#:record-coverage 'coverage-py '#:coverage-file "coverage.json")
+                 #rx"\\(cmd unit\\): #:record-coverage coverage-py needs #:coverage-run and #:coverage-file")
+  (check-rejects (targeted-cmd '#:record-coverage 'al-json '#:coverage-run "pytest --cov")
+                 #rx"\\(cmd unit\\): #:record-coverage al-json needs #:coverage-run and #:coverage-file")
+  (check-rejects (targeted-cmd '#:targeted "pytest -q {tests}" '#:max-targeted 0)
+                 #rx"\\(cmd unit\\): #:max-targeted must be at least 1")
+  (for ([bad '("../x" "/abs" "a/../../b")])
+    (check-rejects (targeted-cmd '#:targeted "pytest -q {tests}" '#:test-root bad)
+                   #rx"\\(cmd unit\\): #:test-root \".*\" must be a path relative to the repository root, without `..` or a leading `/`"))
+  (check-rejects (targeted-cmd '#:record-coverage 'al-json '#:coverage-run "x" '#:coverage-file "/tmp/cov.json")
+                 #rx"\\(cmd unit\\): #:coverage-file \"/tmp/cov.json\" must be a path relative")
+  (check-rejects (targeted-cmd '#:targeted "pytest -q {tests}" '#:select '(path-map)
+                               '#:path-map '(("src/{base}.py" "tests/test_{base}.py")))
+                 #rx"\\(cmd unit\\): #:path-map pattern \"src/\\{base\\}.py\": unknown placeholder \\{base\\}; placeholders are \\{name\\} \\{dir\\}")
+  (check-rejects (targeted-cmd '#:targeted "pytest -q {tests}" '#:select '(path-map)
+                               '#:path-map '(("../src/{name}.py" "tests/test_{name}.py")))
+                 #rx"\\(cmd unit\\): #:path-map pattern \"../src/\\{name\\}.py\" must be a path relative")
+  (check-rejects (targeted-cmd '#:targeted "pytest -q {tests}" '#:select '(path-map)
+                               '#:path-map '(("src/{name}.py" "tests/{dir}/test_{name}.py")))
+                 #rx"\\(cmd unit\\): #:path-map: \"tests/\\{dir\\}/test_\\{name\\}.py\" uses \\{dir\\}, which its source \"src/\\{name\\}.py\" does not have")
+  (check-rejects (targeted-cmd '#:select '(changed-tests nearby)) #rx"one of: changed-tests, path-map, imports, coverage, command"))
+
+(test-case "cmd narrower forms: accepted"
+  (define ir (compile-layer-datum
+              (targeted-cmd '#:covers '("src" "tests") '#:targeted "cd src && pytest -q {tests} {files}" '#:test-root "src"
+                            '#:smoke "pytest -q -m smoke"
+                            '#:select '(changed-tests path-map imports coverage command) '#:select-cmd "./which.sh"
+                            '#:path-map '(("src/{dir}/{name}.py" "tests/{dir}/test_{name}*.py"))
+                            '#:max-targeted 50 '#:record-coverage 'coverage-py
+                            '#:coverage-run "pytest --cov --cov-context=test" '#:coverage-file "coverage.json")))
+  (define c (cmd-of ir "unit"))
+  (check-equal? (hash-ref c 'pathMap) (list (hasheq 'source "src/{dir}/{name}.py" 'tests "tests/{dir}/test_{name}*.py")))
+  (check-equal? (hash-ref c 'select) '("changed-tests" "path-map" "imports" "coverage" "command"))
+  (check-equal? (list (hash-ref c 'testRoot) (hash-ref c 'maxTargeted) (hash-ref c 'recordCoverage)
+                      (hash-ref c 'coverageRun) (hash-ref c 'coverageFile) (hash-ref c 'selectCmd))
+                '("src" 50 "coverage-py" "pytest --cov --cov-context=test" "coverage.json" "./which.sh"))
+  (check-not-exn (lambda () (compile-layer-datum (targeted-cmd '#:targeted "go test {packages}"))))
+  (check-not-exn (lambda () (compile-layer-datum (targeted-cmd '#:smoke "pytest -q -m smoke")))))
+
+(test-case "(testing …): rejections with their messages"
+  (check-rejects (layer plan simple-adw '(testing) '(testing full))
+                 #rx"\\(testing …\\): only one \\(testing …\\) may be declared")
+  (check-rejects (layer plan simple-adw '(testing #:escalate ((size 3))))
+                 #rx"\\(testing …\\): #:escalate item \\(size 3\\); items are \\(paths G …\\) \\(diff-lines N\\) \\(files N\\) \\(lockfile\\) \\(layer\\) \\(unmapped\\) \\(class C …\\)")
+  (check-rejects (layer plan simple-adw '(testing #:escalate ((class feature #:size large))))
+                 #rx"\\(testing …\\): \\(class …\\) takes work classes; a size is not known to al")
+  (check-rejects (layer plan simple-adw '(testing #:batch ((every 0))))
+                 #rx"\\(testing …\\): #:batch \\(every 0\\): N must be at least 1")
+  (check-rejects (layer plan simple-adw '(testing #:batch ((after-hours 0))))
+                 #rx"\\(testing …\\): #:batch \\(after-hours 0\\): H must be at least 1")
+  (check-rejects (layer plan simple-adw '(testing #:batch ((weekly))))
+                 #rx"\\(testing …\\): #:batch item \\(weekly\\); items are \\(every N\\) \\(after-hours H\\)")
+  (check-rejects (layer plan simple-adw '(testing #:batch ((every 5)) #:batch-every 3))
+                 #rx"\\(testing …\\): #:batch-every is given twice: in #:batch and as #:batch-every")
+  (check-rejects (layer plan simple-adw '(testing #:escalate ((lockfile)) #:escalate-on (layer)))
+                 #rx"\\(testing …\\): #:escalate-on is given twice: in #:escalate and as #:escalate-on")
+  (check-rejects (layer plan simple-adw '(testing #:max-miss-percent 120))
+                 #rx"\\(testing …\\): #:max-miss-percent must be 0–100 \\(got 120\\)")
+  (check-rejects (layer plan simple-adw '(testing deep)) #rx"\\(testing …\\) #:depth: expected one of: targeted, full, smoke")
+  (check-rejects (layer plan simple-adw '(testing #:batch-every -1)) #rx"\\(testing …\\): #:batch-every must be 0 .* or more"))
+
+(test-case "zero-touch rule: a change landing on the final stage below full depth needs a batch"
+  (define (zt . clauses) (apply layer (append zte-parts (list (zte-adw)) clauses)))
+  (check-rejects (zt '(testing targeted))
+                 #rx"^\\(adw zte\\) ships to main without a person at testing depth targeted, but no batch verification is declared: add #:batch \\(\\(every N\\)\\) or \\(\\(after-hours H\\)\\) to \\(testing …\\), or #:per-run full$")
+  (check-rejects (zt '(testing full #:per-run smoke)) #rx"at testing depth smoke, but no batch verification")
+  (check-not-exn (lambda () (compile-layer-datum (zt '(testing targeted #:batch ((every 5)))))))
+  (check-not-exn (lambda () (compile-layer-datum (zt '(testing targeted #:batch-after-hours 24)))))
+  (check-not-exn (lambda () (compile-layer-datum (zt '(testing targeted #:per-run full)))))
+  (check-not-exn (lambda () (compile-layer-datum (zt '(testing full)))))
+  (check-not-exn (lambda () (compile-layer-datum (zt))))   ; no (testing …): full everywhere
+  ;; delivering into a sprint stage (not the final one) needs no batch
+  (check-not-exn (lambda () (compile-layer-datum (zt '(delivery sprint) '(testing targeted)))))
+  ;; a stage graph that lets the zero-touch run land on the final stage does
+  (check-rejects (zt '(stage main #:branch "main") '(testing targeted))
+                 #rx"\\(adw zte\\) ships to main without a person at testing depth targeted")
+  ;; #:ship pr: a person merges
+  (check-not-exn
+   (lambda ()
+     (compile-layer-datum
+      (layer plan review-cmd '(agent claude-code) '(environment worktree) '(environment podman)
+             '(review auto #:ship pr #:require-checks (test)) (zte-adw) '(testing targeted))))))
+
+(test-case "warning: targeted-without-forms"
+  (define text "(testing targeted) changes nothing: no check cmd declares #:targeted or #:smoke, so every check runs its full form")
+  (check-equal? (warnings simple-adw '(adw c (steps (check t #:cmd test))) '(testing targeted)) (list text))
+  (check-equal? (warnings simple-adw '(adw c (steps (check t #:cmd test))) '(testing full)) '())
+  (check-equal? (warnings simple-adw '(adw c (steps (check t #:cmd test)))) '())
+  (check-equal? (layer-warnings
+                 (compile-layer-datum
+                  (covering-layer '((cmd test "pytest" #:smoke "pytest -m smoke"))
+                                  '(adw c (steps (check t #:cmd test))) '(testing smoke))))
+                '())
+  (check-equal? (layer-warnings (dynamic-require (build-path examples "full.rkt") 'layer-spec)) '()))

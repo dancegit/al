@@ -908,3 +908,51 @@ td.reason .proposal { color: var(--accent); margin-top: 2px; overflow-wrap: anyw
 .start-kit-preview .integrate-card { margin-top: 4px; }
 .start-complete .badge.kit { margin-left: 6px; }
 .registry-problems { margin-top: 8px; }
+/* targeted testing: a check's depth (full plain; targeted and smoke marked: fewer tests than the whole suite ran),
+   the layer's Testing panel, the batch state per stage, a run that broke a batch */
+.depth-pill { display: inline-block; font: 11px/1.5 var(--mono); padding: 0 6px; border-radius: 4px; border: 1px solid var(--border-2);
+  color: var(--text-2); background: var(--panel-3); white-space: nowrap; }
+.depth-pill.d-targeted { color: var(--check); border-color: rgba(214, 162, 58, .55); border-style: dashed; background: rgba(214, 162, 58, .08); }
+.depth-pill.d-smoke { color: var(--budget); border-color: rgba(232, 135, 90, .6); border-style: dotted; background: rgba(232, 135, 90, .08); }
+.depth-pill + .depth-pill { margin-left: 4px; }
+.testing-panel { margin-bottom: 12px; }
+.testing-panel .testing-source { font-size: 12px; color: var(--text-2); }
+.testing-undeclared { margin-bottom: 8px; padding: 6px 10px; border-radius: 5px; border: 1px dashed var(--border-2); color: var(--text-2); }
+.testing-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.testing-levels { display: inline-flex; border: 1px solid var(--border-2); border-radius: 6px; overflow: hidden; }
+.testing-level { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 150px; padding: 6px 12px;
+  border: 0; border-right: 1px solid var(--border-2); background: var(--panel-2); cursor: pointer; text-align: left; }
+.testing-level:last-child { border-right: 0; }
+.testing-level .minutes { font-size: 11.5px; color: var(--dim); }
+.testing-level.current b::after { content: " · now"; font-weight: 400; color: var(--dim); }
+.testing-level.picked { background: rgba(110, 168, 254, .16); box-shadow: inset 0 -2px 0 var(--accent); }
+.testing-level:hover:not(:disabled) { background: var(--panel-3); }
+.testing-level.picked:hover:not(:disabled) { background: rgba(110, 168, 254, .22); }
+.testing-level:disabled { opacity: .45; cursor: not-allowed; }
+.testing-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.testing-note { overflow-wrap: anywhere; } .testing-note.error { color: var(--failed); }
+.testing-why { color: var(--waiting); padding-top: 6px; overflow-wrap: anywhere; }
+.testing-policy { padding-top: 6px; font-size: 12px; }
+.testing-panel .table-wrap { margin-top: 10px; }
+table.testing-commands td, table.testing-commands th { white-space: nowrap; }
+.pill-fallback { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 999px; color: var(--failed);
+  border: 1px solid rgba(242, 85, 90, .45); background: rgba(242, 85, 90, .08); }
+.testing-batches { margin-top: 12px; }
+.testing-batches h4 { margin: 0 0 6px; font-size: 12px; color: var(--dim); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.batch-row { padding: 8px 0; border-top: 1px solid var(--border); }
+.batch-row .batch-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.batch-row .batch-head .spacer { flex: 1; }
+.batch-row .batch-culprit, .batch-row .batch-next { padding-top: 4px; font-size: 12px; overflow-wrap: anywhere; }
+.batch-green, .batch-red { display: inline-block; font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 4px; border: 1px solid; }
+.batch-green { color: var(--passed); border-color: rgba(63, 185, 80, .45); background: rgba(63, 185, 80, .08); }
+.batch-red { color: var(--failed); border-color: rgba(242, 85, 90, .5); background: rgba(242, 85, 90, .1); }
+.batch-row:has(.batch-red) .batch-culprit { color: var(--text); }
+.testing-line { margin-top: 6px; font-size: 12.5px; line-height: 1.9; overflow-wrap: anywhere; }
+.testing-line .btn.full-before-ship { margin-left: 8px; border-color: rgba(214, 162, 58, .55); }
+.card.broke-batch { border-color: rgba(242, 85, 90, .55); background: rgba(242, 85, 90, .06); margin-bottom: 12px; }
+.card.broke-batch > div + div { margin-top: 4px; }
+table.proof.with-depth td:nth-child(3) { min-width: 96px; }
+table.proof td.depth { min-width: 128px; font-size: 12px; }
+table.proof.with-depth td:last-child { min-width: 96px; }
+table.proof td.depth .accounting { color: var(--text-2); }
+@media (max-width: 760px) { .testing-level { min-width: 0; } }

@@ -286,29 +286,68 @@
     "commands": [
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "go vet reports nothing for all packages except /examples/",
+        "maxTargeted": 200,
         "name": "lint",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "make vet",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "rewrites every *.go file with gofmt -s -w; proves nothing, it changes files",
+        "maxTargeted": 200,
         "name": "format",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "make fmt",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "tests of packages gin, ginS, binding, render pass with go test -v -covermode=count; writes coverage.out",
+        "maxTargeted": 200,
         "name": "test",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "make test",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       }
     ],

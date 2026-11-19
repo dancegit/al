@@ -294,6 +294,140 @@
     return null;
   }
 
+  /** A check's depth: full plain, targeted and smoke marked (they ran fewer tests than the whole suite). */
+  function depthPill(depth) {
+    return depth ? h("span", { class: `depth-pill d-${depth}`, title: depth === "full" ? "the whole suite ran"
+      : `${depth}: fewer tests than the whole suite ran; the full suites are proven per batch`, text: depth }) : null;
+  }
+
+  /** A run a batch bisected a failure to: "broke the batch". */
+  function brokeBatchBadge(run) {
+    const b = run && run.broke_batch;
+    if (!b) return null;
+    return h("span", { class: "badge bad broke-batch-badge",
+      title: `the full suites on ${b.branch} failed in batch ${b.batch}${(b.failing || []).length ? `: ${b.failing.join(", ")}` : ""}${b.fix_run ? `; fix run ${b.fix_run}` : ""}`,
+      text: "broke the batch" });
+  }
+
+  /** "about 9 min", "under a minute", "no data yet": a level's typical check time. */
+  function typicalMinutes(minutes) {
+    if (minutes === null || minutes === undefined) return "no data yet";
+    return minutes < 1 ? "under a minute" : `about ${Math.round(minutes)} min`;
+  }
+
+  /** An ISO time as "2026-11-16 14:07 (2 d ago)". */
+  function isoWhen(value) {
+    const epoch = Date.parse(value || "") / 1000;
+    return isFinite(epoch) ? `${fmt.time(epoch)} (${fmt.ago(epoch)})` : (value || "—");
+  }
+
+  const testingChoice = new Map();   // layer key -> the level picked on the panel, not applied yet
+  const testingNotes = new Map();    // layer key -> {text, error}: the last answer, kept when the page reloads
+
+  /** The Layer page's Testing panel: the three levels (light = smoke, standard = targeted, heavy = full) with
+   * their typical minutes and a switch (the local setting), each command's miss rate, and per stage or default
+   * branch the batch state with "Run the full suites now". */
+  function testingPanel(layer, reload) {
+    const t = layer.testing;
+    if (!t) return null;
+    const key = layer.key;
+    const last = testingNotes.get(key);
+    const note = h("span", { class: `testing-note faint${last && last.error ? " error" : ""}`, role: "status", text: last ? last.text : "" });
+    const show = (text, error) => {
+      testingNotes.set(key, { text, error });
+      for (const n of new Set([note, ...document.querySelectorAll(".testing-panel .testing-note")])) { n.textContent = text; n.classList.toggle("error", error); }
+    };
+    let picked = testingChoice.get(key) || t.level;
+    const apply = h("button", { type: "button", class: "btn primary testing-apply", text: "Apply", disabled: !t.writable });
+    const levels = h("div", { class: "testing-levels", role: "radiogroup", "aria-label": "testing level" });
+    const mark = () => {
+      for (const b of levels.children) {
+        b.classList.toggle("picked", b.dataset.level === picked);
+        b.setAttribute("aria-checked", b.dataset.level === picked ? "true" : "false");
+      }
+      apply.disabled = !t.writable || picked === t.level;   // nothing to change; Reset goes back to the layer file
+    };
+    for (const l of t.levels || []) {
+      const allowed = (t.allowed || {})[l.level] || { ok: true, why: "" };
+      levels.appendChild(h("button", { type: "button", role: "radio", class: `testing-level${l.level === t.level ? " current" : ""}`,
+        dataset: { level: l.level }, disabled: !t.writable || !allowed.ok,
+        title: allowed.ok ? `${l.level}: each run's checks at depth ${l.depth}` : allowed.why,
+        onclick: () => { picked = l.level; testingChoice.set(key, l.level); mark(); } },
+        h("b", { text: l.level }), depthPill(l.depth), h("span", { class: "minutes", text: typicalMinutes(l.minutes) })));
+    }
+    mark();
+    const send = async (body, button) => {
+      button.disabled = true;
+      try {
+        await api.post("/api/testing", { layer: key, ...body });
+        testingChoice.delete(key);
+        show(body.reset ? "reset: runs started from now on use the layer file's level" : "saved; applies to runs started from now on", false);
+        reload();
+      } catch (err) {
+        show(String(err.message || err), true);
+        button.disabled = false;
+      }
+    };
+    apply.addEventListener("click", () => send({ level: picked }, apply));
+    const reset = t.local ? h("button", { type: "button", class: "btn testing-reset", text: "Reset", disabled: !t.writable,
+      title: "drop the local setting: runs use the layer file's level again", onclick: (e) => send({ reset: true }, e.target) }) : null;
+    const policy = t.policy || {};
+    const rhythm = [policy.batchEvery ? `every ${policy.batchEvery} landings` : "", policy.batchAfterHours ? `after ${policy.batchAfterHours} h` : ""].filter(Boolean).join(" or ");
+    const commands = (t.commands || []).length ? h("div", { class: "table-wrap" }, h("table", { class: "testing-commands" },
+      h("thead", {}, h("tr", {}, ["command", "forms", "targeted runs", "misses", "miss rate", ""].map((label) => h("th", { text: label })))),
+      h("tbody", {}, t.commands.map((c) => h("tr", { dataset: { cmd: c.cmd } },
+        h("td", { class: "mono", text: c.cmd }), h("td", {}, c.forms.map((f) => depthPill(f))),
+        h("td", { class: "num", text: String(c.targeted) }), h("td", { class: "num", text: String(c.misses) }),
+        h("td", { class: "num", title: Object.entries(c.by_strategy || {}).map(([s, v]) => `${s}: ${v.misses} of ${v.targeted} missed`).join("\n"),
+          text: c.rate === null || c.rate === undefined ? "—" : `${c.rate}%` }),
+        h("td", {}, c.fallback ? h("span", { class: "pill-fallback", title: `the miss rate is above ${policy.maxMissPercent}%: this command runs its full form until it falls`,
+          text: "runs full" }) : null)))))) : null;
+    const batches = (t.batches || []).map((b) => {
+      const lb = b.last;
+      const runLink = (id) => h("a", { class: "mono", href: `#/run/${enc(key)}/${enc(id)}`, text: id });
+      const start = h("button", { type: "button", class: "btn batch-run", text: "Run the full suites now", disabled: !(t.batch || {}).enabled,
+        title: (t.batch || {}).enabled ? `start the kit workflow verify-batch on ${b.branch}` : (t.batch || {}).why });
+      start.addEventListener("click", async () => {
+        start.disabled = true;
+        try {
+          const answer = await api.post("/api/batch", { layer: key, ...(b.stage ? { stage: b.stage } : {}) });
+          go(answer.url);
+        } catch (err) {
+          show(String(err.message || err), true);
+          start.disabled = false;
+        }
+      });
+      const state = !lb ? h("span", { class: "faint", text: "no batch yet" })
+        : h("span", { class: `batch-${lb.status}`, text: lb.status === "green" ? "✓ green" : "✗ red" });
+      const facts = lb ? [
+        h("span", { class: "dim", text: `${lb.depth || "full"} on ${String(lb.head || "").slice(0, 7) || "?"}, ${isoWhen(lb.at)}` }),
+        lb.run ? h("span", {}, "batch ", runLink(lb.run)) : null,
+        h("span", { class: "dim", text: `${(lb.delivered || []).length} change${(lb.delivered || []).length === 1 ? "" : "s"} proven` })] : [];
+      const red = lb && lb.status === "red" ? h("div", { class: "batch-culprit" },
+        h("span", {}, "culprit ", lb.culprit_run ? runLink(lb.culprit_run) : h("span", { class: "mono", text: lb.culprit || "not found (no failing commit: a flaky test?)" })),
+        lb.fix_run ? h("span", {}, " · fix run ", runLink(lb.fix_run)) : null,
+        (lb.failing || []).length ? h("span", { class: "mono dim", text: ` · ${lb.failing.join(", ")}` }) : null) : null;
+      const since = b.delivered_since || [];
+      return h("div", { class: "batch-row", dataset: { stage: b.stage || "", branch: b.branch } },
+        h("div", { class: "batch-head" }, h("b", { text: b.stage || "default branch" }), h("span", { class: "mono dim", text: b.branch }), state, ...facts,
+          h("span", { class: "spacer" }), start),
+        red,
+        h("div", { class: "batch-next dim" }, `landed since: ${since.length}`, since.length ? [" (", since.slice(0, 8).flatMap((id, i) => [i ? ", " : "", runLink(id)]),
+          since.length > 8 ? ` … and ${since.length - 8} more` : "", ")"] : null, ` · next batch: ${b.next}`));
+    });
+    return h("div", { class: "card testing-panel", dataset: { layer: key } },
+      h("div", { class: "card-head" }, h("h3", { text: "Testing" }),
+        h("span", { class: "dim", text: "how deep each run's checks go; the full suites are proven per batch" }), h("span", { class: "spacer" }),
+        h("span", { class: "testing-source", text: `level ${t.level} · from the ${t.source}` })),
+      t.note ? h("div", { class: "testing-undeclared", text: t.note }) : null,
+      h("div", { class: "testing-switch" }, levels, h("span", { class: "testing-actions" }, apply, reset, note)),
+      t.error ? h("div", { class: "why error", text: t.error }) : null,
+      !t.writable && t.why ? h("div", { class: "testing-why", text: t.why }) : null,
+      t.declared ? h("div", { class: "faint testing-policy", text: `layer file: ${t.layer_depth} per run, ${policy.onStage || "full"} per batch${rhythm ? `, a batch ${rhythm}` : ", no batch rhythm"}; applies to runs started from now on` }) : null,
+      commands,
+      batches.length ? h("div", { class: "testing-batches" }, h("h4", { text: "Batches" }), batches) : null);
+  }
+
   async function api(path) {
     const response = await fetch(path, { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error(`${response.status} ${path}`);
@@ -1936,7 +2070,7 @@
         h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }), h("td", {}, progress(run.steps)),
         h("td", { class: "right num", ...(run.status === "running" ? { "data-since": run.started } : {}), text: run.status === "running" ? fmt.dur(now() - (run.started || now())) : fmt.dur(run.duration) }),
         h("td", { class: "right num", text: fmt.cost(run.cost) }), h("td", { class: "right num dim", text: fmt.tokens((run.tokens || {}).out) }),
-        h("td", {}, why || outcomeBadge(run), why ? null : promotionBadge(run), run.dry_run ? h("span", { class: "badge", text: "dry" }) : null));
+        h("td", {}, why || outcomeBadge(run), why ? null : promotionBadge(run), brokeBatchBadge(run), run.dry_run ? h("span", { class: "badge", text: "dry" }) : null));
     }
 
     function render() {
@@ -2370,7 +2504,7 @@
             sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, outcomeBadge(sm),
             sm.status === "handed-over" && (sm.outcome.handover || []).length
               ? h("span", { class: "badge handed-over", title: "why a person decides", text: `↪ ${sm.outcome.handover.join(", ")}` }) : null,
-            promotionBadge(sm),
+            promotionBadge(sm), brokeBatchBadge(sm),
             sm.fanout_parent ? h("a", { class: "badge info", href: `#/run/${enc(layerKey)}/${enc(sm.fanout_parent)}`,
               text: sm.fanout && sm.fanout.index ? `candidate ${sm.fanout.index} of ${sm.fanout_parent}${sm.fanout.step ? ` (${sm.fanout.step})` : ""}` : `candidate of ${sm.fanout_parent}` }) : null,
             sm.status === "died" ? h("span", { class: "badge died", title: "state.json still says running, but its heartbeat stopped and its process is gone",
@@ -2392,6 +2526,7 @@
             startAgainButton(sm), askStandinButton(sm),
             h("button", { class: "toggle", type: "button", text: "copy link", title: "copy a deep link to this view", onclick: (e) => copyLink(e.target) })),
           prompt,
+          testingLine(sm),
           sm.problem ? h("div", { class: "badge warn", text: sm.problem }) : null),
         h("div", { class: "figures" }, fig("time", elapsed), fig(costLabel(sm) ? "cost (API-equivalent)" : "cost", h("b", { text: fmt.cost(sm.cost_children ? (sm.cost || 0) + sm.cost_children : sm.cost) },
           sm.cost_standin ? h("small", { class: "cost-standin", text: ` (stand-in ${fmt.cost(sm.cost_standin)})` }) : null,
@@ -2414,6 +2549,35 @@
         }
       });
       return button;
+    }
+
+    /** "Testing: targeted (layer policy) · escalated: …", whether a person asked for the full suites
+     * before it ships, and while the run runs the button that asks. */
+    function testingLine(sm) {
+      const t = detail.testing;
+      if (!t || !(t.depth || t.declared || t.requested_full)) return null;
+      const head = t.depth ? (t.source ? ` (${t.source})` : "") : "decided at its first check";
+      const parts = [];
+      if ((t.escalation || []).length) parts.push(`escalated: ${t.escalation.join("; ")}`);
+      if (t.requested_full) parts.push(`full before it ships: asked by ${t.requested_full.by || "a person"}${t.requested_full.at ? ` ${isoWhen(t.requested_full.at)}` : ""}`);
+      const note = h("span", { class: "faint testing-request-note", role: "status" });
+      const ask = sm.status === "running" && t.declared && !t.requested_full
+        ? h("button", { type: "button", class: "btn full-before-ship", text: "Full before it ships",
+          title: "the gate runs the full suites before this run ships, whatever depth its checks ran at" }) : null;
+      if (ask) {
+        ask.addEventListener("click", async () => {
+          ask.disabled = true;
+          try {
+            await api.post("/api/run-testing", { layer: layerKey, adw_id: runId, depth: "full" });
+            load();
+          } catch (err) {
+            note.textContent = String(err.message || err);
+            ask.disabled = false;
+          }
+        });
+      }
+      return h("div", { class: "testing-line" }, h("span", { class: "dim", text: "Testing: " }), depthPill(t.depth),
+        h("span", { text: `${head}${parts.map((p) => ` · ${p}`).join("")}` }), ask, note);
     }
 
     function renderTabs() {
@@ -2440,6 +2604,18 @@
       if (detail.promotion) body.appendChild(promotionCard(detail, layerKey, load));
       const sm = detail.summary;
       if (sm.suggestion) body.appendChild(suggestionCard(detail, layerKey, load));
+      const broke = (detail.testing && detail.testing.broke_batch) || sm.broke_batch;
+      if (broke) {
+        // a batch's full suites failed and bisect named this run: the batch, the failing tests and the fix run
+        const run = (id) => h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(id)}`, text: id });
+        body.appendChild(h("div", { class: "card broke-batch", role: "alert" },
+          h("div", { class: "card-head" }, h("h3", { text: "This run broke the batch" }), h("span", { class: "badge bad", text: "broke the batch" })),
+          h("div", {}, "The full suites on ", h("span", { class: "mono", text: broke.branch || "?" }), " failed in batch ",
+            /^[0-9a-f]{8}$/.test(broke.batch || "") ? run(broke.batch) : h("span", { class: "mono", text: broke.batch || "?" }),
+            broke.at ? ` (${isoWhen(broke.at)})` : "", "; bisect named this run: its targeted checks passed, the whole did not."),
+          (broke.failing || []).length ? h("div", {}, "Failing: ", h("span", { class: "mono", text: broke.failing.join(", ") })) : null,
+          h("div", {}, broke.fix_run ? ["Fix run: ", run(broke.fix_run)] : "No fix run was opened (the layer's #:on-batch-failure has no open-fix).")));
+      }
       if (state.params.integrate === "1") integrateOpen.add(sm.key);
       const canIntegrate = sm.status === "handed-over" && !sm.settled && sm.bucket === "needs-you";
       if (!canIntegrate) integrateOpen.delete(sm.key);
@@ -2612,12 +2788,18 @@
           if (r.outcome === "reused") return `tree ${String(r.tree || "").slice(0, 8)}${r.from && r.from.log ? ` · log ${r.from.log}` : ""}`;
           return [r.tree ? `tree ${String(r.tree).slice(0, 8)}` : "", r.log ? `log ${r.log}` : ""].filter(Boolean).join(" · ");
         };
+        // the depth each ran at (targeted testing); only for ledgers that record it, so older runs read as before
+        const depths = detail.proof.some((r) => r.depth);
         blocks.push(h("div", { class: "outcome-block", "data-role": "proof" }, h("div", { class: "card-head" }, h("h3", { text: "What the checks proved" })),
-          h("div", { class: "table-wrap" }, h("table", { class: "proof" },
-            h("thead", {}, h("tr", {}, ["Check", "Where", "Result", "Evidence"].map((label) => h("th", { text: label })))),
-            h("tbody", {}, detail.proof.map((r) => h("tr", { "data-outcome": r.outcome },
+          h("div", { class: "table-wrap" }, h("table", { class: `proof${depths ? " with-depth" : ""}` },
+            h("thead", {}, h("tr", {}, ["Check", "Where", "Result", ...(depths ? ["Depth"] : []), "Evidence"].map((label) => h("th", { text: label })))),
+            h("tbody", {}, detail.proof.map((r) => h("tr", { "data-outcome": r.outcome, "data-depth": r.depth || "" },
               h("td", { class: "mono", text: r.check }), h("td", { text: r.where }),
               h("td", {}, h("span", { class: `badge ${cls[r.outcome] || ""}`, text: checkResultText(r) })),
+              depths ? h("td", { class: "depth" }, depthPill(r.depth),
+                // the accounting reads on from the pill: "targeted" + ": ran 14 of 812 tests …"
+                r.accounting && r.accounting !== r.depth ? h("span", { class: "accounting",
+                  text: r.depth && r.accounting.startsWith(r.depth) ? r.accounting.slice(r.depth.length) : ` ${r.accounting}` }) : null) : null,
               h("td", { class: "dim", text: evidence(r) }))))))));
       }
       const review = detail.review;
@@ -3136,6 +3318,13 @@
       const issue = h("select", { class: "start-issue", "aria-label": "log as an issue" });
       const issueRow = h("label", { class: "start-row", hidden: !catalog.issue.available }, h("span", { text: "issue" }), issue);
       const classRow = h("label", { class: "start-row" }, h("span", { text: "class" }), klass);
+      // how deep this run's checks go (al run --testing): the layer's level unless chosen here
+      const levels = (layer.testing && layer.testing.levels) || [];
+      const testing = h("select", { class: "start-testing", "aria-label": "testing depth of this run",
+        title: "light = smoke, standard = the tests the change concerns, heavy = the full suites" },
+        h("option", { value: "", text: `layer default${layer.testing ? ` (${layer.testing.level})` : ""}` }),
+        levels.map((l) => h("option", { value: l.level, text: `${l.level} (${l.depth}${l.minutes !== null && l.minutes !== undefined ? `, ${typicalMinutes(l.minutes)}` : ""})` })));
+      const testingRow = h("label", { class: "start-row", hidden: !levels.length }, h("span", { text: "testing" }), testing);
       const unattended = h("div", { class: "start-unattended" });
       const note = h("div", { class: "start-note faint" });
       const go = h("button", { class: "btn primary start-go", type: "button", text: "Start" });
@@ -3222,6 +3411,7 @@
         issueRow.hidden = !catalog.issue.available;
         summary.textContent = e.summary + (e.description ? ` — ${e.description}` : "");
         classRow.hidden = e.kind !== "workflow";
+        testingRow.hidden = e.kind !== "workflow" || !levels.length;
         const options = [["none", "do not log it as an issue"], ["start", "log it as an issue and start now"]];
         if (e.kind === "workflow" && catalog.issue.trigger.includes(e.name)) options.push(["trigger", "create the issue and let the trigger start it"]);
         const previous = issue.value;
@@ -3305,6 +3495,7 @@
         const out = { layer: layer.key, request_key: key, issue: issue.value || "none", model_set: tier.value || null, models, ...extra };
         if (e.kind === "workflow" && klass.value) out.class = klass.value;
         if (decider.value) out.decider = decider.value;
+        if (e.kind === "workflow" && testing.value) out.testing = testing.value;
         if (typed() !== null) out.text = prompt.value;
         else { out.target = { kind: e.kind, name: e.name }; out.prompt = prompt.value; }
         return out;
@@ -3346,12 +3537,12 @@
         h("span", { text: "stand-in" }), decider);
       const modelsRow = modelInputs.length ? h("div", { class: "start-models" }, modelInputs) : null;
       const actions = h("div", { class: "start-actions" }, go, h("span", { class: "faint", text: "Ctrl+Enter" }), note);
-      promptOnly.push(classRow, tierRow, deciderRow, issueRow, modelsRow, actions);
+      promptOnly.push(classRow, tierRow, testingRow, deciderRow, issueRow, modelsRow, actions);
       replace(body,
         inputBox,
         h("div", { class: "start-controls" },
           h("label", { class: "start-row" }, h("span", { text: "run" }), select),
-          classRow, tierRow, deciderRow, issueRow),
+          classRow, tierRow, testingRow, deciderRow, issueRow),
         modelsRow,
         summary, unattended, kitBox,
         (catalog.problems || []).length ? h("div", { class: "why registry-problems", text: catalog.problems.join("; ") }) : null,
@@ -3438,6 +3629,7 @@
           h("div", { class: "figures" }, [["runs", st.count], ["pass rate", fmt.pct(st.pass_rate)], ["total cost", fmt.cost(st.cost_total)], ["median time", fmt.dur(st.duration_median)]]
             .map(([label, value]) => h("div", { class: "stat" }, h("div", { class: "label", text: label }), h("div", { class: "value", text: value }))))));
       replace(rest,
+        testingPanel(layer, load),
         (data.promotions || []).length ? h("div", { class: "card promotions-section" },
           h("div", { class: "card-head" }, h("h3", { text: "Promotions" }), h("span", { class: "dim", text: "a stage moves into the next once people accept it" }),
             h("span", { class: "spacer" }), h("span", { class: "promotion-note", role: "status" })),

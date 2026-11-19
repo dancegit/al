@@ -114,6 +114,11 @@ def cmd_coverage(cmd: dict) -> str:
         text += " (only when affected)"
     if cmd.get("reuse", True) is False:
         text += " (never reused)"
+    if cmd.get("targeted"):
+        strategies = list(dict.fromkeys(["changed-tests", *(cmd.get("select") or [])]))
+        text += f"; targeted form selects by {', '.join(strategies)}"
+    if cmd.get("smoke"):
+        text += "; smoke form"
     return text
 
 
@@ -323,6 +328,9 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
                     rules.append("no protected path was touched")
                 if o.get("require") == "affected":
                     rules[0] += " (the gate runs only the required checks the change affects)"
+                guarantee = guarantees(ir, o["id"])
+                if guarantee:
+                    rules[0] += f" ({guarantee})"
                 bullets.append(f"`{o['id']}`: {o['reviewers']} reviewer agent(s) must approve, and then every rule must hold: "
                                + "; ".join(rules) + f". If so it ships by `{o['ship']}` ({ship_words(ir, o['ship'])}); "
                                f"otherwise a person decides, through {for_review(ir)}")
@@ -347,6 +355,8 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         return delivery_text(ir, head)
     if head == "promotion":
         return promotion_text(ir)
+    if head == "testing":
+        return testing_text(ir)
     if head == "forge":
         f = ir["forge"]
         return ("The forge", "No forge: results stay as local branches." if f["kind"] == "none"
@@ -428,6 +438,119 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
 
 
 CLASSES = ("chore", "bug", "feature", "patch")
+
+# ------------------------------------------------------------------------------------------ testing
+
+TESTING_UNDECLARED = ("This layer has no `(testing …)` clause, so every check runs its full form; add "
+                      "`(testing targeted …)` and `#:targeted` forms to test what a change touches.")
+DEPTH_WORDS = {"targeted": "the tests the change concerns", "full": "the whole suites", "smoke": "each check's smoke form"}
+ESCALATE_ON_WORDS = {"lockfile": "a lockfile or dependency manifest changed", "layer": "the agentic layer changed",
+                     "unmapped": "a covered path no selection strategy maps to a test"}
+FAILURE_WORDS = {"bisect": "bisect to the run that broke it (only the failing tests, on the commits since the last "
+                           "green batch)",
+                 "open-fix": "open a fix run with the failing tests, the culprit and its plan",
+                 "revert": "prepare a revert branch (the fix run is asked to revert where agents may merge)"}
+
+
+def testing_policy(ir: dict) -> dict | None:
+    """The layer's (testing …) with `inherit` resolved, or None when it declares none (every check runs
+    its full form, as before targeted testing)."""
+    t = ir.get("testing")
+    if not isinstance(t, dict):
+        return None
+    depth = t.get("depth") or "targeted"
+    resolved = {**t, "depth": depth}
+    for key in ("perRun", "reviewRounds"):
+        resolved[key] = depth if t.get(key, "inherit") in ("inherit", None, "") else t[key]
+    resolved["onStage"] = t.get("onStage") or "full"
+    return resolved
+
+
+def landing_branches(ir: dict, review_id: str | None = None) -> list[str]:
+    """The branches the workflows (of review option `review_id`, else all that ship) land on."""
+    default = (ir.get("codebase") or {}).get("defaultBranch") or "main"
+    branches: list[str] = []
+    for adw in ir.get("adws") or []:
+        if review_id is not None and adw.get("review") != review_id:
+            continue
+        if not any(s.get("kind") == "ship" for s in adw.get("steps") or []):
+            continue
+        if not ir.get("stages"):
+            branches.append(default)
+            continue
+        for klass in adw.get("classes") or CLASSES:
+            stage = route(adw, ir, klass)
+            if stage:
+                branches.append(stage["branch"])
+    return list(dict.fromkeys(branches)) or [default]
+
+
+def guarantees(ir: dict, review_id: str) -> str:
+    """What the gate of review option `review_id` proves when runs check less than the full suites:
+    `per run: …; per batch: …`; "" when the layer runs every check in full."""
+    policy = testing_policy(ir)
+    if not policy or policy["perRun"] == "full":
+        return ""
+    branches = listing([f"`{b}`" for b in landing_branches(ir, review_id)], "or")
+    batch = ("the full suites pass" if policy["onStage"] == "full"
+             else f"the checks pass at depth {policy['onStage']}")
+    return (f"per run: the selected tests pass for the tree that ships (depth {policy['perRun']}); "
+            f"per batch: {batch} for the head of {branches}")
+
+
+def rhythm_words(policy: dict) -> str:
+    parts = []
+    if policy.get("batchEvery"):
+        parts.append(f"every {policy['batchEvery']} landed changes")
+    if policy.get("batchAfterHours"):
+        parts.append(f"when a change landed and the last batch is older than {policy['batchAfterHours']} hours")
+    if not parts:
+        return ("No batch rhythm is declared: a batch runs when a cycle closes, before a promotion, or when "
+                "started (`al batch LAYER run`).")
+    return ("A batch runs " + " or ".join(parts) + "; also when a cycle closes, before a promotion, and when "
+            "started (`al batch LAYER run`).")
+
+
+def testing_text(ir: dict) -> tuple[str, str, list[str]]:
+    """The (testing …) block in plain words: the depths, escalation, the batch rhythm and what happens
+    when a batch fails; or that the layer declares none."""
+    policy = testing_policy(ir)
+    if policy is None:
+        return ("Testing", TESTING_UNDECLARED,
+                ["`al testing LAYER` shows the policy and the level on this machine; `al batch LAYER run` runs the "
+                 "full suites on a branch head"])
+    per_run, rounds, on_stage = policy["perRun"], policy["reviewRounds"], policy["onStage"]
+    text = (f"A run's checks run at depth {per_run} ({DEPTH_WORDS.get(per_run, per_run)}), the re-checks of a review "
+            f"round at depth {rounds}; per batch the checks run at depth {on_stage} on the head of "
+            + listing([f"`{b}`" for b in landing_branches(ir)], "or") + ".")
+    if per_run != "full":
+        text += (" So the gate proves the selected tests per run and the full suites per batch: a regression the "
+                 "selection missed is found by the batch, attributed to the run that caused it and counted.")
+    reasons = []
+    if policy.get("escalatePaths"):
+        reasons.append("a change under " + listing([f"`{p}`" for p in policy["escalatePaths"]], "or"))
+    if policy.get("escalateDiffLines"):
+        reasons.append(f"more than {policy['escalateDiffLines']} changed lines")
+    if policy.get("escalateFiles"):
+        reasons.append(f"more than {policy['escalateFiles']} changed files")
+    reasons += [ESCALATE_ON_WORDS.get(item, item) for item in policy.get("escalateOn") or []]
+    if policy.get("escalateClasses"):
+        reasons.append(f"{listing(policy['escalateClasses'], 'or')} work")
+    bullets = [("A run goes full when " + listing(reasons, "or")) if reasons else "No change escalates a run to full",
+               rhythm_words(policy)]
+    failure = [FAILURE_WORDS.get(item, item) for item in policy.get("onBatchFailure") or []]
+    bullets.append("When a batch fails: " + ("; ".join(failure) if failure else "nothing is started, a person looks")
+                   + (f" (fix runs use `{policy['fixAdw']}`)" if policy.get("fixAdw") else ""))
+    if policy.get("maxMissPercent"):
+        bullets.append(f"A command whose miss rate over its last 50 batch-verified targeted runs is above "
+                       f"{policy['maxMissPercent']}% runs full, and says so")
+    narrow = [c["name"] for c in (ir.get("codebase") or {}).get("commands") or [] if c.get("targeted") or c.get("smoke")]
+    bullets.append(("Commands with a narrower form: " + listing([f"`{n}`" for n in narrow]) + "; every other "
+                    "command always runs its full form") if narrow
+                   else "No command declares `#:targeted` or `#:smoke`, so every check still runs its full form")
+    bullets.append("`al testing LAYER --set light|standard|heavy` changes the level on this machine (light = smoke, "
+                   "standard = targeted, heavy = full); `al run … --testing LEVEL` for one run")
+    return "Testing", text, bullets
 
 
 def route(adw: dict, ir: dict, klass: str) -> dict | None:
@@ -892,6 +1015,40 @@ def kit_bullets(ir: dict) -> list[str]:
     return out
 
 
+BATCH_STEPS = (
+    ("open", "pin the branch head, the last green batch's head and the runs delivered since"),
+    ("checks", "every check of the layer, each once, at the batch depth on that head"),
+    ("record", "the suite timings and coverage maps, and a line in `agents/testing/batches.jsonl`"),
+    ("bisect", "when it is red: only the failing tests, on the commits since the last green batch, to find the "
+               "run that broke it; when that run's check passed below full depth, the miss is counted and learned"),
+    ("fix", "when it is red: a fix run with the failing tests, the culprit and its plan as the request (and a "
+            "prepared revert branch when the layer asks for one)"),
+    ("close", "the result: green, or red with the failing tests, the culprit and the fix run"),
+)
+
+
+def verify_batch_text(ir: dict) -> tuple[str, str, list[str]]:
+    """The kit workflow `verify-batch` (kit/runtime/adw_modules/batch.py): not declared in the definition,
+    every generated layer has it."""
+    policy = testing_policy(ir)
+    branches = listing([f"`{b}`" for b in landing_branches(ir)], "or")
+    if policy is None:
+        which = ("This layer declares no `(testing …)`, so every run already runs its checks in full; a batch "
+                 f"only runs when started, on the head of {branches}.")
+    else:
+        which = (f"It runs the checks at depth {policy['onStage']} on the head of {branches}. "
+                 + rhythm_words(policy))
+    text = ("Every layer has the workflow `verify-batch`; the definition does not declare it. It proves the whole "
+            "per batch: several changes that landed are checked together, in a run of its own. " + which)
+    bullets = [f"{name}: {words}." for name, words in BATCH_STEPS]
+    bullets += ["Start it with `al batch LAYER run [--stage S]` (`--if-due`: when the rhythm says one is due), or with "
+                "**Run the full suites now** in the dashboard's Testing panel; `al batch LAYER status` shows the last "
+                "batch per branch and when the next is due.",
+                "It never moves a branch: bisect checks out commits in its own worktree, and a revert is prepared on a "
+                "new branch `al/revert/<batch>` for the fix run or a person."]
+    return "Kit workflow: verify-batch (every layer has it)", text, bullets
+
+
 def markdown(name: str, source_label: str, lines: list[str], blocks: list[dict], ir: dict, gif: str | None) -> str:
     out = [f"# The `{name}` layer, explained", "",
            f"Source: `{source_label}` ({len(lines)} lines). This walkthrough is generated by `al explain` from the file "
@@ -909,7 +1066,7 @@ def markdown(name: str, source_label: str, lines: list[str], blocks: list[dict],
         out += [f"### {heading}", "", f"{where} {b['start']}–{b['end']}. {text}", ""]
         out += [f"- {x}" for x in bullets] + ([""] if bullets else [])
         out += ["```racket", *b.get("lines", lines)[b["start"] - 1:b["end"]], "```", ""]
-    for head, describe in (("agent", models_text), ("dashboard", dashboard_text)):
+    for head, describe in (("agent", models_text), ("dashboard", dashboard_text), ("testing", testing_text)):
         if not any(b["head"] == head for b in blocks):
             heading, text, bullets = describe(ir)
             out += [f"### {heading} (not written down: the default)", "", text, ""]
@@ -919,9 +1076,10 @@ def markdown(name: str, source_label: str, lines: list[str], blocks: list[dict],
             "(`adws/adw_modules/registry.py`), which the dashboard and `al run` read as well; a setting is shown as "
             "a newly generated layer has it.", ""]
     out += [f"- {x}" for x in kit_bullets(ir)] + [""]
-    heading, text, bullets = integrate_text(ir)
-    out += [f"### {heading}", "", text, ""]
-    out += [f"- {x}" for x in bullets] + [""]
+    for describe in (integrate_text, verify_batch_text):
+        heading, text, bullets = describe(ir)
+        out += [f"### {heading}", "", text, ""]
+        out += [f"- {x}" for x in bullets] + [""]
     return "\n".join(out)
 
 
@@ -1027,11 +1185,17 @@ def main() -> int:
             print(f"\n{heading}  (lines {b['start']}–{b['end']})\n  " + "\n  ".join(textwrap.wrap(body.replace('`', ''), 100)))
             for x in bullets:
                 print("    - " + x.replace("`", ""))
-        if not any(b["head"] == "agent" for b in blocks):
-            heading, body, bullets = models_text(ir)
-            print(f"\n{heading}  (not written down: the default)\n  " + "\n  ".join(textwrap.wrap(body.replace('`', ''), 100)))
+        for head, describe in (("agent", models_text), ("testing", testing_text)):
+            if not any(b["head"] == head for b in blocks):
+                heading, body, bullets = describe(ir)
+                print(f"\n{heading}  (not written down: the default)\n  " + "\n  ".join(textwrap.wrap(body.replace('`', ''), 100)))
+                for x in bullets:
+                    print("    - " + x.replace("`", ""))
+        for describe in (integrate_text, verify_batch_text):
+            heading, body, bullets = describe(ir)
+            print(f"\n{heading}\n  " + "\n  ".join(textwrap.wrap(body.replace('`', ''), 100)))
             for x in bullets:
-                print("    - " + x.replace("`", ""))
+                print("    - " + x.replace("`", "").replace("**", ""))
     return 0
 
 

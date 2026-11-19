@@ -11,7 +11,12 @@
     (cmd install "bun install && (cd api && uv sync)" #:timeout 1200)
     (cmd lint "bun run lint && (cd api && uv run ruff check)")
     (cmd test "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)"
-         #:covers ("web" "api"))
+         #:covers ("web" "api")
+         ;; a change runs the tests it concerns; the whole suite runs per batch (see (testing …) below)
+         #:targeted "uv run --project api pytest -q {tests}"
+         #:select (changed-tests path-map imports)
+         #:path-map (("api/app/{dir}/{name}.py" "api/tests/{dir}/test_{name}.py"))
+         #:smoke "(cd api && uv run pytest -q -m smoke)")
     (cmd e2e "bun run e2e" #:timeout 1800 #:description "Playwright; writes e2e-results/"
          #:covers ("web") #:always #f)   ; only run where affected checks are asked for and web/ changed
     (cmd deploy "./scripts/deploy.sh staging")
@@ -61,6 +66,9 @@
   (stage hotfix #:branch "hotfix/{date}" #:from main #:into main #:accepts (bug) #:agents-may-merge #f #:environment-name "production")
   (promotion sprint -> main #:approval human #:approvers 1 #:version (bump minor) #:tag "v{version}")   ; a person accepts the sprint; main gets a version, a tag and a changelog entry
   (promotion hotfix -> main #:approval human #:approvers 2)   ; an urgent fix needs two people and is merged back into the sprint
+  ;; checks run the tests a change concerns; the full suites run once per 5 landed changes, and a
+  ;; change to the API schema, a lock file, the layer or a path no test maps to runs everything
+  (testing targeted #:batch ((every 5)) #:escalate ((paths "api/schema/**") (lockfile) (layer) (unmapped)))
 
   (command prime #:template prime)
   (command classify #:template classify #:model-set fast #:output json)

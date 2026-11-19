@@ -20,6 +20,7 @@ PLAN_FILE: $1
 - Implement every step, in order, top to bottom. Do not skip, merge or reorder steps, and do not add work the plan does not ask for.
 - Read each file before editing it and match the surrounding style, naming and error handling.
 - Write the tests the plan lists. A step that names a test is not done until that test exists and passes.
+- Write or extend the tests of every behaviour you change, next to the existing tests for that code: they are what the targeted checks run for this change (test files the change adds or modifies always run).
 - Add dependencies only when the plan says so, using `{{package_manager}}`.
 - Do not modify anything under a protected path. If a step requires it, skip that step, finish the rest, and report it on a line starting `REQUIRES HUMAN`.
 - If a step is wrong or impossible as written, do the closest thing that serves the plan's stated goal and report the deviation. Do not silently drop it.
@@ -60,6 +61,7 @@ All must exit 0 before you report.
 ## Report
 
 - A bullet summary of what you implemented, one bullet per plan step, with deviations and `REQUIRES HUMAN` lines called out.
+- The test files you added or changed, one per line, or "none" with the reason.
 - One line per validation command from its last run: the command, its exit code, its log path, and for a test command the summary line from the log (e.g. `412 passed, 3 skipped`). A reviewer reads these instead of running the commands again.
 - The output of `git diff --stat` (plus `git status --short` if you created files).
 

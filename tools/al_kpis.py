@@ -26,6 +26,12 @@ What is counted (the same text is in the --md output):
                 recorded cost is counted under "without cost".
   default branch  runs whose work is on the layer's default branch: shipped by the gate, or handed
                 over and landed afterwards.
+  testing       per command with a narrower form (#:targeted, #:smoke): the targeted runs a batch
+                verified, the misses among them (a batch failure bisected to a run whose check of that
+                command passed below full depth), the miss rate overall and per selection strategy
+                (the layer's own adw_modules/testing.py miss_rates; nothing for a layer generated before
+                targeted testing), the median seconds of its targeted checks and of its last full run
+                (agents/testing/suites.json, read directly).
 
 The output holds counts, step names, workflow names and classes. It never holds a run id, a title, a
 prompt, a branch, a URL, a path or a reason as it was written.
@@ -64,6 +70,8 @@ DEFINITIONS = (
                       "and have no cost; a real run without a recorded cost is counted under without cost."),
     ("Default branch", "runs whose work is on the layer's default branch: shipped by the gate, or handed over and "
                        "landed afterwards."),
+    ("Miss", "a batch failure bisected to a run whose check of that command passed below full depth; the miss rate "
+             "is over the targeted runs batches verified, per command and per selection strategy."),
 )
 
 
@@ -156,6 +164,63 @@ def _stats(values: list[float], digits: int) -> dict[str, Any]:
             "total": round(sum(values), digits) if values else 0}
 
 
+def _layer_miss_rates(layer_dir: Path, ir: dict[str, Any]) -> dict[str, Any]:
+    """testing.miss_rates of the layer's own runtime (adw_modules/testing.py); {} for a layer generated
+    before targeted testing, or when its records cannot be read."""
+    if not (layer_dir / "adws" / "adw_modules" / "testing.py").is_file():
+        return {}
+    import types
+    saved = {name: module for name, module in sys.modules.items() if name == "adw_modules" or name.startswith("adw_modules.")}
+    for name in saved:
+        del sys.modules[name]   # another layer's runtime may have been imported before
+    sys.path.insert(0, str(layer_dir / "adws"))
+    try:
+        from adw_modules import testing  # type: ignore[import-not-found]
+        rates = testing.miss_rates(types.SimpleNamespace(ir=ir, layer_dir=layer_dir))
+    except Exception:  # noqa: BLE001 — numbers that cannot be read are no numbers, never a failure
+        rates = {}
+    finally:
+        sys.path.remove(str(layer_dir / "adws"))
+        for name in [n for n in sys.modules if n == "adw_modules" or n.startswith("adw_modules.")]:
+            del sys.modules[name]
+        sys.modules.update(saved)
+    return rates if isinstance(rates, dict) else {}
+
+
+def _testing(layer_dir: Path, ir: dict[str, Any], states: list[dict[str, Any]]) -> dict[str, Any]:
+    """The Testing numbers: per command with a narrower form or a counted miss."""
+    rates = _layer_miss_rates(layer_dir, ir)
+    try:
+        suites = json.loads((layer_dir / "agents" / "testing" / "suites.json").read_text())
+    except (OSError, ValueError):
+        suites = {}
+    suites = suites if isinstance(suites, dict) else {}
+    codebase = ir.get("codebase") if isinstance(ir.get("codebase"), dict) else {}
+    declared = isinstance(ir.get("testing"), dict)
+    narrower = [str(c.get("name")) for c in codebase.get("commands") or []   # without (testing …) they run in full
+                if declared and isinstance(c, dict) and (c.get("targeted") or c.get("smoke"))]
+    seconds: dict[str, list[float]] = {}
+    for state in states:
+        for entry in state.get("check_results") or []:
+            acc = entry.get("testing") if isinstance(entry, dict) else None
+            if (isinstance(acc, dict) and entry.get("outcome") in ("passed", "failed") and acc.get("depth") != "full"
+                    and isinstance(acc.get("seconds"), (int, float))):
+                seconds.setdefault(str(entry.get("check") or "?"), []).append(float(acc["seconds"]))
+    commands = {}
+    for name in dict.fromkeys([*narrower, *sorted(rates)]):
+        rate = rates.get(name) or {}
+        suite = suites.get(name) if isinstance(suites.get(name), dict) else {}
+        full = suite.get("seconds")
+        commands[name] = {"targeted": int(rate.get("targeted") or 0), "misses": int(rate.get("misses") or 0),
+                          "rate": rate.get("rate"), "fallback": bool(rate.get("fallback")),
+                          "by_strategy": {key: {"targeted": int(item.get("targeted") or 0), "misses": int(item.get("misses") or 0),
+                                                "rate": item.get("rate")}
+                                          for key, item in (rate.get("by_strategy") or {}).items() if isinstance(item, dict)},
+                          "full_seconds": float(full) if isinstance(full, (int, float)) else None,
+                          "targeted_seconds": round(statistics.median(seconds[name]), 1) if seconds.get(name) else None}
+    return {"declared": declared, "commands": commands}
+
+
 def collect(layer_dir: Path, since: float | None = None, since_text: str = "") -> dict[str, Any]:
     """Every number of the report, as plain data."""
     import al_runs
@@ -172,8 +237,10 @@ def collect(layer_dir: Path, since: float | None = None, since_text: str = "") -
     needing = zero_touch = 0
     groups: dict[tuple[str, str, bool], dict[str, list[float] | int]] = {}
     on_default = {"changes": 0, "shipped_by_the_gate": 0, "landed_afterwards": 0}
+    states: list[dict[str, Any]] = []
     for row in rows:
         state = _state(layer.path, str(row["id"]))
+        states.append(state)
         outcome = outcome_of(row)
         shipped = outcome == "passed" and (row.get("outcome") or {}).get("shipped") is True
         landed = landed_afterwards(row)
@@ -230,6 +297,7 @@ def collect(layer_dir: Path, since: float | None = None, since_text: str = "") -
                            "cost_usd": None if dry else {**_stats(group["costs"], 4), "without_cost": group["without_cost"]}}
                           for (adw, klass, dry), group in sorted(groups.items())],
         "default_branch": on_default,
+        "testing": _testing(Path(layer.path), layer.ir, states),
     }
 
 
@@ -291,6 +359,14 @@ def _tables(data: dict[str, Any]) -> list[tuple[str, list[str], list[list[str]]]
     default = [["changes on the default branch", str(branch["changes"])],
                ["  shipped by the gate", str(branch["shipped_by_the_gate"])],
                ["  handed over, landed afterwards", str(branch["landed_afterwards"])]]
+    testing = []
+    for name, cmd in (data.get("testing") or {}).get("commands", {}).items():
+        rate = "-" if cmd["rate"] is None else f"{cmd['rate']:g}%"
+        strategies = ", ".join(f"{key} {item['misses']}/{item['targeted']}" for key, item in cmd["by_strategy"].items())
+        testing.append([name, str(cmd["targeted"]), str(cmd["misses"]), rate + (" (runs full)" if cmd["fallback"] else ""),
+                        strategies or "-", _seconds(cmd["targeted_seconds"]), _seconds(cmd["full_seconds"])])
+    if not testing:
+        testing = [["no targeted runs yet", "-", "-", "-", "-", "-", "-"]]
     return [("Runs by outcome", ["outcome", "runs", "share", "why"], outcomes),
             ("Attempts per step", ["step", "records", "mean", "max", "first attempt"], attempts),
             ("Review rounds", ["runs reviewed", "mean", "max", "more than one round"], reviews),
@@ -298,7 +374,8 @@ def _tables(data: dict[str, Any]) -> list[tuple[str, list[str], list[list[str]]]
             ("Time and cost by workflow and class",
              ["workflow", "class", "agent", "runs", "median time", "total time", "median cost", "total cost", "without cost"],
              money),
-            ("Changes on the default branch", ["", "count"], default)]
+            ("Changes on the default branch", ["", "count"], default),
+            ("Testing", ["command", "targeted runs", "misses", "miss rate", "by strategy", "targeted s", "full s"], testing)]
 
 
 def _scope(data: dict[str, Any]) -> str:

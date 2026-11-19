@@ -478,7 +478,22 @@
   [description string "" "What the command proves."]
   [covers (list-of string) () "Paths this command proves something about, relative to the repository root: a directory (\"kit/dashboard\"), a file, or a glob (\"*.md\", \"docs/**\"). A cmd with #:covers is one of the layer's checks: (check NAME #:cmds affected) runs it, and `al verify` reports source paths no check covers."]
   [always boolean #t "#t = the command runs for every change. #f = where affected checks are asked for (a check step with #:when-affected #t, a gate with #:require affected) it runs only when a changed path is under its #:covers, and is recorded as not affected otherwise; needs #:covers."]
-  [reuse boolean #t "#t = a passing result is reused when the same command is asked for again on an identical tree in the same run (the gate after a passing check step, a review round that changed nothing). #f = it always runs again: for a command that is not deterministic."])
+  [reuse boolean #t "#t = a passing result is reused when the same command is asked for again on an identical tree in the same run (the gate after a passing check step, a review round that changed nothing). #f = it always runs again: for a command that is not deterministic."]
+  [targeted string "" "The targeted form: the command run with the tests selected for a change, e.g. \"pytest -q {tests}\". Placeholders {tests} (selected test files or ids), {files} (changed files under #:covers), {packages} (Go packages as ./dir, Rust crates as names); at least one. \"\" = the command has only its full form (#:run)."]
+  [smoke string "" "The smoke form: a few minutes, always meaningful (e.g. \"pytest -q -m smoke\"). Run at depth smoke, and at depth targeted when selection finds nothing for a covered change. \"\" = full instead."]
+  [select (list-of (enum changed-tests path-map imports coverage command)) (changed-tests imports) "Selection strategies, tried in this order and united: changed-tests = test files the change added or modified; path-map = #:path-map; imports = tests that import a changed module (Python, JavaScript/TypeScript, Go packages, Rust crates); coverage = the map recorded by full runs (#:record-coverage); command = #:select-cmd. What earlier batch misses taught is always added."]
+  [select-cmd string "" "For `command` in #:select: a shell command printing one test file or id per line; it gets AL_CHANGED (changed files, one per line) and AL_BASE (the commit compared against)."]
+  [path-map (list-of (record path-map-entry)) () "Declared source → test patterns, e.g. ((\"kit/runtime/adw_modules/{name}.py\" \"kit/runtime/tests/test_{name}*.py\"))."]
+  [test-root string "" "Directory, relative to the repository root, that {tests}, {files} and {packages} are relative to: the directory the command changes into (\"kit/runtime\" for \"cd kit/runtime && pytest -q {tests}\"). Selected paths outside it are dropped."]
+  [max-targeted integer 200 "More tests selected than this: run the full form instead, and say so."]
+  [record-coverage (enum none coverage-py profile-dir al-json) none "How a full run records which test executed which file: coverage-py = coverage.py JSON with contexts (coverage json --show-contexts); profile-dir = a directory with one lcov (.info) or Go cover profile per test, named after the test; al-json = al's own format. Needs #:coverage-run and #:coverage-file."]
+  [coverage-run string "" "The full form with the runner's per-test coverage on, run instead of #:run when a full run records coverage."]
+  [coverage-file string "" "File or directory, relative to the repository root, #:coverage-run writes the recipe's output to."])
+
+(define-record path-map-entry #:positional (source tests)
+  "One (\"SOURCE\" \"TESTS\") pair of a cmd's #:path-map."
+  [source string #:required "Source pattern relative to the repository root; {name} matches one file name without extension, {dir} one or more directories."]
+  [tests string #:required "Test glob relative to the repository root; {name} and {dir} are filled from the source."])
 
 (define-record paths
   "Where things are: (paths #:source (…) #:tests (…) …)."
@@ -644,6 +659,23 @@
   [password-env string "" "NAME of the variable holding the registry password or token; given together with #:username-env."]
   [tls-verify boolean #t "Verify the registry's TLS certificate."])
 
+(define-record testing #:positional (depth)
+  "(testing DEPTH #:k v …): how deep a run's checks go and how the whole is proven per batch. Declared at most once; without it every check runs its full form (the layer predates targeted testing). Depths: targeted (the tests a change concerns), full (whole suites), smoke (each cmd's #:smoke). #:escalate ((paths \"G\" …) (diff-lines N) (files N) (lockfile) (layer) (unmapped) (class C …)) and #:batch ((every N) (after-hours H)) are written as lists and stand for the escalate-… and batch-… fields."
+  [depth (enum targeted full smoke) targeted "The layer's depth: the default of #:per-run and #:review-rounds."]
+  [per-run (enum inherit targeted full smoke) inherit "Depth of a run's check steps and its gate; inherit = DEPTH."]
+  [review-rounds (enum inherit targeted full smoke) inherit "Depth of the re-checks of a review round, selected from what the patch touched; inherit = DEPTH."]
+  [on-stage (enum targeted full smoke) full "Depth of a batch: on a stage head (cycle closed, before a promotion is offered, the batch rhythm) and on the default branch."]
+  [batch-every integer 0 "Run a batch after this many changes landed on a branch since its last batch; 0 = not by count."]
+  [batch-after-hours integer 0 "Run a batch when a change landed and the last batch is older than this many hours; 0 = not by time."]
+  [escalate-paths (list-of string) () "Core areas: a changed path matching one of these globs runs this run at full depth."]
+  [escalate-diff-lines integer 1500 "A change of more lines than this runs at full depth; 0 = no limit."]
+  [escalate-files integer 40 "A change of more files than this runs at full depth; 0 = no limit."]
+  [escalate-on (list-of (enum lockfile layer unmapped)) (lockfile layer unmapped) "lockfile = a dependency manifest or lock file changed; layer = the agentic layer changed; unmapped = a changed path under a cmd's #:covers that no selection strategy could map to a test."]
+  [escalate-classes (list-of (enum chore bug feature patch)) () "Work classes that always run at full depth."]
+  [on-batch-failure (list-of (enum bisect open-fix revert)) (bisect open-fix) "bisect = find the delivered run that broke the batch (failing tests only, on the commits since the last green batch); open-fix = start a fix run with the failing tests, the culprit and its plan; revert = prepare a revert branch, and ask the fix run to revert where agents may merge."]
+  [fix-adw (optional-ref adw) "" "Workflow a fix run uses; \"\" = the first workflow that accepts class bug."]
+  [max-miss-percent integer 10 "A command whose miss rate over its last 50 batch-verified targeted runs exceeds this falls back to full and says so; 0 = never."])
+
 ;; ---------------------------------------------------------------------------------------
 ;; Derived lists and the semantic rules the compiler enforces (also printed in the reference)
 ;; ---------------------------------------------------------------------------------------
@@ -783,7 +815,10 @@
     "(check …) #:max-skipped is -1 (no limit) or more."
     "(cmd … #:always #f) needs a non-empty #:covers; a #:covers entry is a path or glob relative to the repository root, without `..` and without a leading `/`."
     "(check NAME #:cmds affected …) takes no #:cmd and no #:when-affected; at least one codebase cmd must declare #:covers; the steps it stands for are named after their cmds, so those names must be free in the ADW."
-    "A review with #:require affected and #:ship merge or deploy compiles with a warning: required checks no changed path touches are not run before the change ships without a person."))
+    "A review with #:require affected and #:ship merge or deploy compiles with a warning: required checks no changed path touches are not run before the change ships without a person."
+    "(cmd … #:targeted T): T contains {tests}, {files} or {packages} and no other {…} placeholder; `path-map` in #:select needs #:path-map, `command` needs #:select-cmd (and #:select-cmd needs `command`), `coverage` needs #:record-coverage; #:max-targeted is at least 1; #:record-coverage other than none needs #:coverage-run and #:coverage-file; #:test-root, #:coverage-file and #:path-map patterns are relative, without `..` or a leading `/`, and path-map patterns use only {name} and {dir}."
+    "(testing …) is declared at most once; #:escalate items are (paths G …), (diff-lines N), (files N), (lockfile), (layer), (unmapped), (class C …); #:batch items are (every N) and (after-hours H), N and H at least 1; an item and the field it stands for are not both given; #:max-miss-percent is 0–100."
+    "Without (testing …) every check runs its full form. A zero-touch ADW (review auto with #:ship merge or deploy) whose runs can land on the final stage (no stages, or a class routed to the final stage) at a #:per-run depth other than full needs #:batch-every or #:batch-after-hours: the full suites must be proven per batch on that branch."))
 
 ;; What each toolchain feature adds (enum order of the `features` field of (toolchain nix …));
 ;; printed in the reference and by `al explain`.

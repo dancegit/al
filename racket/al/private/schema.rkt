@@ -87,6 +87,7 @@
                    'experts (array-of (rec 'expert #:extra name-prop))
                    'hosts (array-of (rec 'host))
                    'registry (hasheq 'oneOf (list (rec 'registry) (hasheq 'type "null")))
+                   'testing (rec 'testing)
                    'adws
                    (array-of
                     (rec 'adw
@@ -120,9 +121,9 @@
           'type "object"
           'additionalProperties #f
           ;; stages, cycle, delivery and promotions exist only in the IR of a layer that declares a stage,
-          ;; and toolchains only in the IR of a layer that declares one
+          ;; toolchains only in the IR of a layer that declares one, testing only with a (testing …) clause
           'required (sort (for/list ([k (in-list (hash-keys props))]
-                                     #:unless (or (memq k '(stages cycle delivery promotions))
+                                     #:unless (or (memq k '(stages cycle delivery promotions testing))
                                                   (member (symbol->string k)
                                                           (for/list ([fam (in-list (all-families))] #:when (memq (family-name fam) optional-families))
                                                             (family-key fam)))))

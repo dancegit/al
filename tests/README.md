@@ -58,6 +58,34 @@ proved" section of that run), `one-suite-summary.txt` and `covered-path-events.j
 `test_skips.py::test_skip_rule_applies_to_the_gate_rerun` declares `"reuse": False` on its cmd,
 whose output differs each time it runs.
 
+Targeted testing (depths, batches and misses) has tests at each layer. In the runtime,
+`test_selection.py` runs every selection strategy on the tiny repositories under
+`kit/runtime/tests/data/selection/` (Python, TypeScript/JavaScript, Go, Rust; plain files, copied
+into `tmp_path` and `git init`ed there), `test_coverage_map.py` the coverage recipes and the stale
+rule, `test_testing_policy.py` the policy, the precedence of the depth, escalation, the plan of one
+check, the miss-rate fallback, the accounting text and the failing-test parsers.
+`test_targeted_runs.py` and `test_batch.py` run whole workflows through `runner.main` on the shop
+application of `targeted_fixtures.py` (a real pytest suite of 43 tests; the cmd appends `full`,
+`smoke` or `targeted TESTS…` to a counter file): a one-file change runs two tests, escalation and a
+person's choice run full, ten changes into a sprint are proven by one full run, and a regression
+only a dynamic import reaches is caught by the batch, bisected to its run (only the failing test runs
+per step), handed to a fix run, counted as a miss and learned. A detached start is captured, never
+spawned. `tests/tools/test_targeted_testing.py` covers `al gen` (`adws/verify_batch.py`), `al run
+--testing`, `al testing`, `al batch`, `al explain`, `al verify`, `al kpis` and the dashboard's
+mirror of the local setting; with `AL_TESTING_PROOF=DIR` it writes the outputs `docs/GUIDE.md`
+quotes. The dashboard's Testing panel has `kit/dashboard/tests/test_testing_model.py`,
+`test_testing_http.py` and `test_browser_testing.py` (screenshots `testing-panel-1280.png`,
+`testing-heavy-1280.png`, `run-targeted-accounting-1280.png`, `batch-failed-1280.png`,
+`start-testing-1280.png` under `AL_DASHBOARD_SHOTS`). Changed with the feature:
+`tests/tools/golden/no-toolchain/agentic-layer.json` and `golden-env/*/agentic-layer.json` (the new
+cmd fields at their defaults), `docs/KPIS.md` (the Testing table), and the golden `build.md` and
+`implement.md` of every integration repository.
+
+```bash
+(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q tests/test_selection.py tests/test_coverage_map.py tests/test_testing_policy.py tests/test_targeted_runs.py tests/test_batch.py)
+AL_TESTING_PROOF=/tmp/proof env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_targeted_testing.py -q
+```
+
 ### Integrating a handed-over run
 
 `kit/runtime/tests/test_integrate.py` covers `adw_modules/integrate.py` without a run: the settings file
