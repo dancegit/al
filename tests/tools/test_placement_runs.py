@@ -143,7 +143,7 @@ def test_on_a_host_without_login_is_refused_before_it_starts(placed):
 
 KEYS = ["adw", "adw_id", "agent_calls", "artefacts", "branch", "budget", "check_results", "checks", "class_fixed", "cost", "definition",
         "dry_run", "ended", "fanout", "fanout_parent", "heartbeat", "host", "image", "klass", "model_set", "models",
-        "notified", "outputs", "overrides", "pid", "plan", "ports", "prompt", "review", "scripts", "ship", "source",
+        "notified", "outputs", "overrides", "pid", "plan", "ports", "prompt", "proof_plan", "review", "scripts", "ship", "source",
         "started", "status", "steps", "usage", "worktree"]
 TYPES = ["agent.end", "agent.start", "check.end", "check.start", "gate.decision", "run.end", "run.start", "ship.result",
          "slot.acquire", "slot.release", "step.discipline", "step.end", "step.start"]

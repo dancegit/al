@@ -146,10 +146,7 @@ commit but committed, moved a ref or left files at the top of the layer fails as
 
 The review asks: is what was built what was asked for? Show it. It returns issues with the severities `blocker`, `tech_debt` and `skippable`
 ([`review.md`](kit/templates/commands/review.md)). Screenshots, recordings, video keyframes, logs and test reports are collected and handed to the reviewers
-([`docs/ARTEFACTS.md`](docs/ARTEFACTS.md)). A review can say no: [clip](docs/showcase/04-review-says-no.gif), and [the planted
-defect](docs/EXAMPLES.md#a-healthcare-staffing-app-rules-stopping-conditions-and-a-review-that-says-no).
-
-The plan ends with a **Proof plan**. Before the build, `prove` checks every criterion can be proven here, else stops with the party who can clear it. `evidence` runs the plan's commands and asks for an evidence patch when proof is missing; `freshen` keeps the review on the current tree. A person can pre-approve with `al run --approve` or clear a stop with `al approve` ([guide](docs/GUIDE.md#proof-plan-pre-approvals-and-al-approve), [proof](docs/ARTEFACTS.md#run-scoped-proof-and-what-the-evidence-step-adds)).
+([`docs/ARTEFACTS.md`](docs/ARTEFACTS.md)). A review can say no: [clip](docs/showcase/04-review-says-no.gif), and [the planted defect](docs/EXAMPLES.md#a-healthcare-staffing-app-rules-stopping-conditions-and-a-review-that-says-no). The plan ends with a **Proof plan**. Before the build, `prove` checks every criterion can be proven here, else stops with the party who can clear it. `evidence` runs the plan's commands and asks for an evidence patch when proof is missing; `freshen` keeps the review on the current tree. A person can pre-approve with `al run --approve` or clear a stop with `al approve` ([guide](docs/GUIDE.md#proof-plan-pre-approvals-and-al-approve), [proof](docs/ARTEFACTS.md#run-scoped-proof-and-what-the-evidence-step-adds)).
 
 ### Aim for zero touch, earn it in steps
 
@@ -321,7 +318,6 @@ the sandbox, step discipline). How each idea lands in this repository, and why a
 racket/al/        the language: vocabulary, compiler, schema and reference generators, tests
 tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard · kpis · integrate · assign · voice
 tools/al_*.py     al_provision (a host's provisioning files), al_sandbox (the sandbox image), …; kit/host/pins.json: pinned uv and agent CLIs
-kit/runtime/adw_modules/{placement,hostlink,selfrun,recordsync,remoterun}.py   runs on other hosts: scheduler, ssh, the host's run, the record pulled home, take-over
 kit/templates/    the prompts every layer starts from      kit/runtime/   what runs a workflow
 meta/             the prompts that guide an LLM through describing a codebase and writing its layer
 tests/            authored layers for the five repositories, integration tests, the live Forgejo test
