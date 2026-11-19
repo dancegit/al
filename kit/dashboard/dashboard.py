@@ -6752,6 +6752,10 @@ class Model:
         files = RunFiles(layer, run_id)
         sig = files.signature(deep=True)
         key = f"{layer_key}/{run_id}"
+        if key not in self.attention:
+            # a run the watcher has not read yet: read it and its bucket now, or the page draws it once
+            # without them and again (new nodes) when the watcher's tick adds them
+            self.refresh_run(layer, run_id)
         cached = self.detail_cache.get(key)
         if cached and cached[0] == sig and cached[1]["summary"]["status"] != "running":
             return {**cached[1], "summary": self._decorated(cached[1]["summary"]),

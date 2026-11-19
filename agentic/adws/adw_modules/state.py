@@ -103,6 +103,26 @@ class ADWState:
     # the run's own `--decider MODE` (off, suggest, auto); "", and then left out of state.json, for a run
     # started without the flag: the layer's mode applies
     decider: str = ""
+    # the run's testing depth (testing.py): {requested (--testing), depth, source, escalation: {tree: [reasons]},
+    # escalated: {cmd: [reasons]}, batch_started}; empty, and then left out of state.json, for a run of a
+    # layer without (testing …) that asked for nothing
+    testing: dict[str, Any] = field(default_factory=dict)
+    # a batch run (batch.py): {branch, stage, head, since, delivered, commits, owners, checks, status,
+    # culprit, culprits, fix_run, revert, skipped}; empty, and then left out of state.json, for every other run
+    batch: dict[str, Any] = field(default_factory=dict)
+    # the plan's Proof plan table and what became of it (proofplan.py, evidence.py, convergence.py,
+    # freshen.py): {"plan", "table": "parsed"|"absent"|"invalid", "rows": [...], "stopped": {...},
+    # "pack": {...}, "gaps": [...], "rounds": [...], "debt": [...], "freshen": {...}, "summary": {...}};
+    # empty, and then left out of state.json, for a run whose plan has no table
+    proof_plan: dict[str, Any] = field(default_factory=dict)
+    # decisions a person took for this run (approvals.py): [{"what", "who", "at", "via"}]; empty, and
+    # then left out of state.json, for a run nobody approved anything for
+    approvals: list[dict[str, Any]] = field(default_factory=list)
+    # a run that executes (or executed) on another host of a (placement …): {host, phase: remote | gate,
+    # base, branch, pushed: {sha, step, at}, delivered: {sha, branch, at, step}, lost: {at, reason},
+    # last_seen, restart_of, storage, status}; empty, and then left out of state.json, for every run
+    # that stays on the machine that holds the layer
+    remote: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -146,6 +166,16 @@ class ADWState:
                 data.pop("integration", None)  # only an integration run has one
             if not data.get("decider"):
                 data.pop("decider", None)  # only a run started with --decider has one
+            if not data.get("testing"):
+                data.pop("testing", None)  # a layer without (testing …) writes the state.json of before
+            if not data.get("batch"):
+                data.pop("batch", None)  # only a batch run has one
+            if not data.get("proof_plan"):
+                data.pop("proof_plan", None)  # only a run whose plan has a Proof plan table has one
+            if not data.get("approvals"):
+                data.pop("approvals", None)  # only a run somebody approved something for has one
+            if not data.get("remote"):
+                data.pop("remote", None)  # only a run placed on another host has one
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")

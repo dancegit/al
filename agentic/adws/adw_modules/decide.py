@@ -297,6 +297,10 @@ def eligible(layer: Any, state: Any, adw: dict[str, Any], mode: str | None = Non
     ship = state.ship or {}
     if mode == "off":
         return "the decider is off"
+    stopped = (getattr(state, "proof_plan", None) or {}).get("stopped") or {}
+    if stopped.get("party") in ("layer author", "operator"):
+        first = (str(stopped.get("reason") or "").strip().splitlines() or [""])[0]
+        return f"stopped for the {stopped['party']}: {first}"
     if state.fanout_parent:
         return "a fan-out candidate (its parent decides)"
     if str(adw.get("changes") or "codebase") == "layer":
@@ -458,6 +462,9 @@ def _consider(layer: Any, state: Any, adw: dict[str, Any], stack: Any, mode: str
 
     previous = dict(state.decision or {})
     previous.pop("skipped", None)
+    stopped = (getattr(state, "proof_plan", None) or {}).get("stopped") or {}
+    if stopped.get("party") == "approver":
+        return _ask_approver(layer, state, mode, source, previous, stopped)
     scope = standin.scope(layer, mode)
     why = eligible(layer, state, adw, mode) or ("the stand-in is paused" if scope["paused"] else "")
     if why:
@@ -520,6 +527,28 @@ def _consider(layer: Any, state: Any, adw: dict[str, Any], stack: Any, mode: str
                action=decision["action"], from_step=decision["from_step"], status=decision["status"])
     _save(layer, state)
     return "resume" if decision["status"] == "resuming" else ""
+
+
+def _ask_approver(layer: Any, state: Any, mode: str, source: str, previous: dict[str, Any],
+                  stopped: dict[str, Any]) -> str:
+    """A run stopped for a decision only a person may take (proofplan.py, evidence.py): the
+    suggestion is written without a model call, always as `suggest`, whatever the mode: a stand-in
+    never approves for a person. `go` grants the listed approvals and resumes (see `answer`)."""
+    wanted = [str(item) for item in stopped.get("approvals") or []]
+    question = str(stopped.get("question") or "").strip() or (
+        f"may this run {', '.join(wanted) or 'go on'}? answer: al approve LAYER {state.adw_id} {' '.join(wanted)}")
+    at = str(stopped.get("at") or "")
+    decision = {"mode": "suggest", "mode_from": source, "action": "resume", "from_step": at, "stopped_at": at,
+                "summary": question[:SUMMARY_MAX], "explanation": str(stopped.get("reason") or "")[:EXPLAIN_MAX],
+                "instructions": "", "approvals": wanted, "code": secrets.token_urlsafe(9),
+                "rounds": int(previous.get("rounds", 0) or 0), "answers": list(previous.get("answers") or []),
+                "at": state_module.now(), "status": "suggested"}
+    state.decision = decision
+    write_record(layer, state)
+    events.say(f"[adw {state.adw_id}] decider ({mode}): a person decides: {decision['summary']}", "decision",
+               mode="suggest", action="resume", from_step=at, status="suggested")
+    _save(layer, state)
+    return ""
 
 
 def keeps_worktree(state: Any) -> bool:
@@ -745,6 +774,10 @@ def answer(layer: Any, adw_id: str, kind: str, text: str, via: str, code: str | 
         if result["status"] != "acted":
             return _refused("not-applied", f"{action} was not applied: {result.get('reason') or result['status']}")
         return {"status": str(decision.get("status") or "applied"), "message": str(result.get("outcome") or action)}
+    if kind == "go" and decision.get("approvals"):
+        from . import approvals
+
+        approvals.record(state, [str(item) for item in decision["approvals"]], who=sender or via, via=f"answer:{via}")
     if kind in ("go", "alter"):
         extra = ""
         if kind == "alter" and decision.get("action") in ("abandon", "ask-human"):

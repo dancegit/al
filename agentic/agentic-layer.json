@@ -754,6 +754,8 @@
     "commands": [
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "racket",
           "schemas",
@@ -761,26 +763,52 @@
           "kit/runtime/tests/full.layer.json"
         ],
         "description": "The language rules: the compiler accepts the examples and rejects each invalid definition with the documented error",
+        "maxTargeted": 200,
         "name": "test-compiler",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "PLTCOLLECTS=\"$PWD/racket:\" raco test racket/al/tests/compiler-test.rkt",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "kit/runtime",
           "racket",
           "schemas"
         ],
         "description": "The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container",
+        "maxTargeted": 200,
         "name": "test-runtime",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q)",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "tools",
           "tests/tools",
@@ -790,13 +818,26 @@
           "meta"
         ],
         "description": "The al command itself works: eject, in-repo layers, al improve, dashboard generation",
+        "maxTargeted": 200,
         "name": "test-tools",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "env -u AL_APP_ROOT uv run --with pytest --with pytest-xdist --with pyyaml --with jsonschema pytest tests/tools -q -n 4",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 3600
       },
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "README.md",
           "docs",
@@ -806,43 +847,95 @@
           "tests/tools/test_readme.py"
         ],
         "description": "Links, images and commands shown in the README and the documents resolve, and the generated references are current",
+        "maxTargeted": 200,
         "name": "test-docs",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "if [ -f tests/tools/test_readme.py ]; then env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_readme.py tests/tools/test_generated_references.py -q; else echo 'this branch started before the README check existed: nothing to run'; fi",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "The dashboard's model and HTTP server work: unit and HTTP tests, no browser",
+        "maxTargeted": 200,
         "name": "test-dashboard",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "(cd kit/dashboard && uv run --with pytest pytest -q tests)",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "The dashboard tests plus the real-browser tests of the page in the host's Chrome",
+        "maxTargeted": 200,
         "name": "test-dashboard-browser",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "(cd kit/dashboard && uv run --with pytest --with playwright pytest -q tests)",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "kit/dashboard",
           "kit/runtime"
         ],
         "description": "The dashboard's unit, HTTP and real-browser tests, with screenshots of the page written to kit/dashboard/shots",
+        "maxTargeted": 200,
         "name": "test-dashboard-proof",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "(cd kit/dashboard && rm -rf shots && AL_DASHBOARD_SHOTS=shots uv run --with pytest --with playwright pytest -q tests)",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 2400
       },
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "tools",
           "kit",
@@ -852,9 +945,20 @@
           "tests/integration"
         ],
         "description": "The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots",
+        "maxTargeted": 200,
         "name": "test-integration",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 3600
       }
     ],
@@ -1382,7 +1486,27 @@
   ],
   "schemaVersion": "agentic-layer-v1",
   "services": [],
-  "standIn": null,
+  "standIn": {
+    "escalateTo": [
+      "dashboard"
+    ],
+    "id": "auto",
+    "kind": "auto",
+    "maxActionsPerRun": 2,
+    "maxPerHour": 12,
+    "may": [
+      "resume",
+      "restart",
+      "answer",
+      "integrate",
+      "settle",
+      "retry-job"
+    ],
+    "modelSet": "heavy",
+    "never": [],
+    "status": "stable",
+    "systemd": false
+  },
   "storage": {
     "dir": "artefacts",
     "id": "local",

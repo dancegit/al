@@ -703,6 +703,12 @@ def cycle_close(layer: Any, now: datetime | None = None) -> dict[str, Any]:
             raise DeliveryError("cycle-not-open", "no cycle is open; start one with `al cycle LAYER start`")
         closed = _close_current(layer, data, now)
         _save_cycle(layer, data)
+    try:  # the closed cycle's branch is proven by a batch of the full suites (batch.py); never fails the close
+        from . import batch
+
+        batch.after_cycle_closed(layer, stage.name)
+    except Exception as exc:  # noqa: BLE001
+        print(f"batch: not started after the cycle closed: {type(exc).__name__}: {exc}")
     into = _into(layer, stage)["branch"]
     if closed["accepted"]:
         step = f"{closed['branch']} is already merged into {into}"

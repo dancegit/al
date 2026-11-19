@@ -395,6 +395,13 @@ def ensure_image(layer: Any, *, say: Callable[[str], Any] = print) -> dict[str, 
         if image_exists(ref):
             _tag_latest(layer, ref)
             return {"image": ref, "recipe": recipe, "built": False}
+        from . import selfrun  # a run on another host takes the image from the registry by its recipe tag
+
+        if selfrun.active() and isinstance(layer.ir.get("registry"), dict):
+            if selfrun.pull_image(layer):
+                say(f"image: {ref} pulled from the registry")
+                return {"image": ref, "recipe": recipe, "built": False, "pulled": True}
+            say(f"image: not in the registry ({selfrun.pull_image.reason}); building it here")
         return build_image(layer, say=say)
 
 

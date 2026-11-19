@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 TEMPLATE_VARIABLES = (
     "adw_id", "layer_dir", "specs_dir", "worktree", "artefacts_dir",
     "branch", "default_branch", "class", "prompt", "plan", "workflow_steps", "scratch_dir",
+    "approvals", "proof_dir",
 )
 
 # One pass over the text so substituted values are never substituted again.

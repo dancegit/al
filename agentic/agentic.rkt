@@ -65,6 +65,13 @@
   ;; three at a time: they run this repository's test suites, which are the CPU-heavy part.
   (concurrency slots #:max-runs 10 #:max-agents 10 #:max-checks 3)
   (agent claude-code #:model-base "claude-opus-5-5" #:model-heavy "claude-opus-5-5")
+  ;; What the stand-in may do alone in this repository. land and promote stay out on purpose: it proposes
+  ;; them and a person decides (a promotion is what moves main). The dashboard may narrow this per machine.
+  (stand-in auto
+    #:may (resume restart answer integrate settle retry-job)
+    #:never ()
+    #:max-actions-per-run 2 #:max-per-hour 12
+    #:escalate-to (dashboard))
 
   (prompt-input cli)
   (prompt-input tasklist)
