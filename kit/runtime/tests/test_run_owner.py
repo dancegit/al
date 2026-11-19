@@ -18,7 +18,7 @@ from test_decide import ADW_ID, _layer, _state  # noqa: E402
 from test_standin import declared, decider, item_for, run, set_ir, stopped_run  # noqa: E402,F401
 from test_standin import no_settings_of_the_person  # noqa: E402,F401 — the same autouse fixture
 
-from adw_modules import assign, decide, envs, events, ir, launch, runner, standin, state as state_module  # noqa: E402
+from adw_modules import approvals, assign, decide, envs, events, ir, launch, runner, standin, state as state_module  # noqa: E402
 from adw_modules.errors import LayerError  # noqa: E402
 from adw_modules.runner import main  # noqa: E402
 
@@ -158,6 +158,7 @@ def test_every_resume_path_refuses_a_live_run(make_layer, tmp_path, monkeypatch)
     started: list[list[str]] = []
     monkeypatch.setattr(decide, "resume_argv", lambda layer, state: started.append(["decide"]) or None)
     layer = ir.load(layer_dir)
+    before = (state_module.run_dir(layer_dir, ADW_ID) / "state.json").read_bytes()
     with held_by_child(layer_dir) as child:
         pid = str(child.pid)
         result = launch.resume(layer, ADW_ID, spawn=lambda argv, **kw: started.append(list(argv)))
@@ -168,6 +169,9 @@ def test_every_resume_path_refuses_a_live_run(make_layer, tmp_path, monkeypatch)
         assert applied["status"] == "refused" and pid in applied["reason"]
         given = assign.plan(layer, ADW_ID)
         assert given["blocked"] == "running" and pid in given["blocked_why"]
+        granted = approvals.grant_and_resume(layer, ADW_ID, ["vocabulary"], "tester", "dashboard")
+        assert (granted["status"], granted["reason"]) == ("refused", "running") and pid in granted["message"]
+        assert (state_module.run_dir(layer_dir, ADW_ID) / "state.json").read_bytes() == before
         with pytest.raises(LayerError, match=pid):
             decide.spawn_resume(layer, state_module.load(layer_dir, ADW_ID))
     assert started == []

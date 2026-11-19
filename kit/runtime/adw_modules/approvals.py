@@ -119,10 +119,14 @@ def grant(layer: Any, adw_id: str, whats: Iterable[str], who: str, via: str) -> 
 
 def grant_and_resume(layer: Any, adw_id: str, whats: Iterable[str], who: str, via: str) -> dict[str, Any]:
     """`grant`, then make the stopped step pending again and start the run's resume (detached).
-    {status: resumed | refused, reason, message}."""
+    {status: resumed | refused, reason, message}. A run held by a live process is refused
+    (`running`) and nothing is recorded."""
     from . import decide
 
     layer = _layer(layer)
+    held = state_module.run_holder(layer.layer_dir, adw_id)
+    if held:
+        return _refused("running", f"run {adw_id} is held by process {held.get('pid')}: it is left to that process")
     result = grant(layer, adw_id, whats, who, via)
     if result["status"] != "granted":
         return {key: result[key] for key in ("status", "reason", "message")}
@@ -136,7 +140,7 @@ def grant_and_resume(layer: Any, adw_id: str, whats: Iterable[str], who: str, vi
     state.save(layer.layer_dir)
     try:
         decide.spawn_resume(layer, state)
-    except OSError as exc:
+    except (OSError, LayerError) as exc:
         return {"status": "refused", "reason": "resume-failed",
                 "message": f"{result['message']}, but the resume did not start: {exc}"}
     return {"status": "resumed", "reason": "", "message": f"{result['message']}; resuming from step {at or '?'}"}
