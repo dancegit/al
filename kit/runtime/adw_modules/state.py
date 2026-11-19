@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -7,6 +8,7 @@ import secrets
 import socket
 import tempfile
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +20,8 @@ HEARTBEAT_SECONDS = 5.0   # state.json's heartbeat is refreshed this often while
 _SAVE_LOCK = threading.RLock()  # the heartbeat thread and the run never interleave a save
 # steps a resume does not run again; a rejected review returned normally and its verdict stays in state.review
 FINISHED_STEP_STATUSES = ("passed", "rejected")
+RUN_LOCK = "run.lock"     # agents/<id>/run.lock: flock held by the run's process for its life
+HOLD_WAIT = 2.0           # a reader's brief probe of run.lock never makes hold_run() refuse
 
 
 def now() -> str:
@@ -233,3 +237,87 @@ def load(layer_dir: Path, adw_id: str) -> ADWState:
         return ADWState(**data)
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise LayerError(f"Cannot load state for {adw_id}: {exc}") from exc
+
+
+class RunHeld(Exception):
+    """Another live process holds the run's lock; `holder` is its {"pid", "host"}."""
+
+    def __init__(self, holder: dict) -> None:
+        self.holder = holder
+        super().__init__(f"run is held by process {holder.get('pid')} on {holder.get('host')}")
+
+
+class RunLock:
+    """The run's exclusive flock on agents/<id>/run.lock; release() is idempotent."""
+
+    def __init__(self, fd: int, path: Path) -> None:
+        self.fd, self.path = fd, path
+
+    def release(self) -> None:
+        fd, self.fd = self.fd, None
+        if fd is None:
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+
+
+def _read_holder(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        return {"pid": 0, "host": ""}
+    data.setdefault("pid", 0)
+    data.setdefault("host", "")
+    return data
+
+
+def hold_run(layer_dir: Path, adw_id: str) -> RunLock:
+    """Take the run's lock for this process, or raise RunHeld naming the live holder. A dead
+    holder's flock went with its process, so the lock is taken over. The fd is not inheritable,
+    so no child (an agent, conmon) keeps the run alive after this process is gone."""
+    path = run_dir(layer_dir, adw_id) / RUN_LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    deadline = time.monotonic() + HOLD_WAIT
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise RunHeld(_read_holder(path)) from None
+            time.sleep(0.05)
+        except OSError:
+            os.close(fd)
+            raise
+    data = json.dumps({"pid": os.getpid(), "host": socket.gethostname(), "at": now()}).encode("utf-8")
+    os.ftruncate(fd, 0)
+    os.pwrite(fd, data + b"\n", 0)
+    return RunLock(fd, path)
+
+
+def run_holder(layer_dir: Path, adw_id: str) -> dict | None:
+    """The {"pid", "host"} of the live process holding the run, or None when no process does."""
+    path = run_dir(layer_dir, adw_id) / RUN_LOCK
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return _read_holder(path)
+        except OSError:
+            return None
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return None
+    finally:
+        os.close(fd)

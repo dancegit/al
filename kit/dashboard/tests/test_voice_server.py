@@ -24,7 +24,7 @@ import dashboard as d
 import voice_fixtures as vf
 import workspace_fixtures as wf
 from conftest import Running, start_server, stop_server
-from test_start import run_dirs, wait_state
+from test_start import held_run, run_dirs, wait_state
 
 SERVE = Path(__file__).resolve().parents[2] / "runtime" / "voice" / "serve.py"
 SEARCH_BOX = "start a plan for adding a search box"
@@ -396,6 +396,26 @@ def test_job_resume_stop_answer_cards(voice_site, voice_server, tmp_path):
             sleeper.kill()
     assert d.validate_action(model, model.layers["talk"], conv, {"kind": "answer", "run": running_id, "text": "x"})[1] \
         .endswith("only a waiting run takes an answer")
+
+
+def test_resume_proposal_refuses_a_run_whose_process_is_alive(voice_site, voice_server):
+    running = voice_server()
+    layer = voice_site["talk"]
+    voice = vf.VoiceClient(running)
+    voice.session()
+    failed = "c3d4e5f6"
+    vf.state_json(layer, failed, adw="plan-build", prompt="Fix the footer", status="failed",
+                  host=socket.gethostname(), ended="2026-11-17T10:00:00+00:00")
+    model = running.server.model
+    model.tick()
+    conv = model.conversations.get(voice.cookie, "talk")
+    with held_run(layer, failed) as child:
+        action, error = d.validate_action(model, model.layers["talk"], conv, {"kind": "resume", "run": failed})
+        assert action is None and str(child.pid) in error and "left to that process" in error, error
+        child.kill()
+        child.wait(timeout=30)
+        action, error = d.validate_action(model, model.layers["talk"], conv, {"kind": "resume", "run": failed})
+    assert error == "" and action == {"kind": "resume", "run": failed}, error
 
 
 # ---------------------------------------------------------------- speech

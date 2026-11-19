@@ -4,8 +4,10 @@
 in-memory Forgejo for the issue race with the layer's own poller (trigger_cron.Scheduler)."""
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -403,6 +405,29 @@ def _old_run(layer: Path, run_id: str, status: str = "failed", prompt: str = "",
     (layer / "agents" / run_id / "request.md").write_text(prompt + "\n")
 
 
+HOLD_LOCK = ("import fcntl, json, os, sys, time\n"
+             "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o644)\n"
+             "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+             "os.ftruncate(fd, 0)\n"
+             "os.write(fd, json.dumps({'pid': os.getpid(), 'host': 'here'}).encode())\n"
+             "print('held', flush=True)\n"
+             "time.sleep(600)\n")
+
+
+@contextlib.contextmanager
+def held_run(layer: Path, run_id: str):
+    """A child process that holds agents/<id>/run.lock (as a live run's process does) until it is killed."""
+    child = subprocess.Popen([sys.executable, "-c", HOLD_LOCK, str(layer / "agents" / run_id / "run.lock")],
+                             stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == "held"
+        yield child
+    finally:
+        child.kill()
+        child.wait(timeout=30)
+        child.stdout.close()
+
+
 def _seen(running: Running, run_id: str) -> None:
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -454,6 +479,22 @@ def test_start_again_refuses_passed_or_replaced_run(site):
     status, data = post(running, {"layer": "notes", "again": "0f00f000", "request_key": key(), "prompt": "x"})
     assert status == 400
     assert sorted(run_dirs(layers["notes"])) == ["0a55ed00", "0e0e0e0e", "0f00f000"]
+
+
+def test_start_again_refuses_a_run_whose_process_is_alive(site):
+    running, layers = site
+    old = "0a11fe00"
+    _old_run(layers["notes"], old, prompt="Count the words of each note")
+    _seen(running, old)
+    with held_run(layers["notes"], old) as child:
+        status, data = post(running, {"layer": "notes", "again": old, "request_key": key()})
+        assert status == 409 and str(child.pid) in data["error"] and "left to that process" in data["error"], data
+        assert run_dirs(layers["notes"]) == [old]
+        child.kill()
+        child.wait(timeout=30)
+        status, data = post(running, {"layer": "notes", "again": old, "request_key": key()})
+        assert status == 202, data
+    wait_state(layers["notes"], data["run_id"])
 
 
 def test_start_passes_approvals_to_dispatch(site):

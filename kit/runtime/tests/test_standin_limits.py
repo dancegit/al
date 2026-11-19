@@ -48,7 +48,8 @@ def proposes(layer_dir: Path, script: str, **item) -> dict:
 
 def again(layer_dir: Path) -> None:
     """Forget that the stand-in looked at this stop, so the next proposal is judged afresh."""
-    for path in (layer_dir / "agents" / "stand-in" / "log.jsonl", layer_dir / "agents" / ADW_ID / "decisions.jsonl"):
+    for path in (layer_dir / "agents" / "stand-in" / "log.jsonl", layer_dir / "agents" / ADW_ID / "decisions.jsonl",
+                 layer_dir / "agents" / ADW_ID / decide.CLAIM_FILE):   # the stop's claim (one decision per stop)
         path.unlink(missing_ok=True)
 
 
