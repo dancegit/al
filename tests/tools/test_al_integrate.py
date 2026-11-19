@@ -271,9 +271,10 @@ def test_al_runs_next_names_al_integrate(scenario):
     for run in (RUN, fx.CLEAN):
         at = next(i for i, line in enumerate(lines) if line.startswith(run))
         assert lines[at + 1].strip() == (f"→ merge {fx.branch_of(run)} into main, or al integrate {layer} {run}, "
-                                         f"or al settle {layer} {run} --as …")
+                                         f"or al settle {layer} {run} --as …; or: al assign {layer} {run}")
     at = next(i for i, line in enumerate(lines) if line.startswith(fx.REJECTED))
     assert "al integrate" not in lines[at + 1]
+    assert lines[at + 1].endswith(f"; or: al assign {layer} {fx.REJECTED}"), "a rejected run is al assign's"
 
 
 def test_layer_generated_before_integrate_says_run_al_gen(scenario):

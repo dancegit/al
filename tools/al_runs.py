@@ -93,6 +93,14 @@ def rows_of(layer: Any, forge: bool = False) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda r: (-(r.get("started") or 0), r["id"]))
 
 
+def needs_you(layer_dir: Path, al: Any) -> list[str]:
+    """Ids of the layer's runs under Needs you, oldest first: what `al assign LAYER --all` considers.
+    `al` is the tools/al module, as in main()."""
+    global AL
+    AL = al
+    return [str(row["id"]) for row in reversed(rows_of(_load(layer_dir))) if row.get("bucket") == "needs-you"]
+
+
 # ---------------------------------------------------------------- the list
 
 def _day(epoch: Any) -> str:
@@ -119,16 +127,20 @@ def why(row: dict[str, Any]) -> str:
 def next_action(layer_dir: Path, row: dict[str, Any]) -> str:
     """The next action, as a command where there is one."""
     layer_dir = SHOWN or layer_dir
-    nxt = str(row.get("next") or "")
+    # the dashboard's words for `al assign` (alone when the row has no other next action)
+    nxt = str(row.get("next") or "").removesuffix(", or Give to an agent").removesuffix("Give to an agent")
+    # every run that needs you can be given to an agent: al assign shows the plan first (--preview)
+    assign = f"; or: al assign {layer_dir} {row['id']}" if row.get("bucket") == "needs-you" else ""
     if nxt == "Start again":
         adw = str(row.get("adw") or "")
         target = f"/{adw}" if adw else "/NAME"   # a single-command run's adw is command:NAME, which al run takes too
-        return f"al run {layer_dir} {target} --replaces {row['id']} < {layer_dir}/agents/{row['id']}/request.md"
+        return (f"al run {layer_dir} {target} --replaces {row['id']} < {layer_dir}/agents/{row['id']}/request.md"
+                + assign)
     if nxt.endswith("or `al integrate`, or `al settle`"):
         nxt = nxt.replace("`al integrate`", f"al integrate {layer_dir} {row['id']}")
     if nxt.endswith("or `al settle`"):
-        return nxt.replace("`al settle`", f"al settle {layer_dir} {row['id']} --as …")
-    return nxt
+        return nxt.replace("`al settle`", f"al settle {layer_dir} {row['id']} --as …") + assign
+    return nxt + assign if nxt else assign.removeprefix("; or: ")
 
 
 def format_row(row: dict[str, Any], layer_dir: Path | None = None) -> str:

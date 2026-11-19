@@ -297,8 +297,8 @@ This prints the layer back in plain language, block by block: the commands, wher
 where agents work, who decides, and each workflow's steps. It includes the defaults the author did not
 write down. If a sentence there is not what you want, that is the block to change in `agentic.rkt`.
 For a document and an animation: `al explain ~/code/myapp.al --md layer.md --gif layer.gif`.
-The document's first paragraph also names what the kit adds to every layer (`The kit adds 4 more a
-person or a run can start: integrate, promote, improve and decider.`), and its section **Kit workflows
+The document's first paragraph also names what the kit adds to every layer (`The kit adds 5 more a
+person or a run can start: integrate, assign, promote, improve and decider.`), and its section **Kit workflows
 (every layer gets them; not declared in the definition)** has one line per entry: what it is for, the
 command that starts it, its setting and whether it is on. With stages declared, `promote` is one entry
 per promotion (`promote-sprint-main`).
@@ -564,17 +564,17 @@ it. Nothing is deleted. The same list in a terminal:
 $ al runs orchard.al
 6 need you (5 running, 8 landed, 7 settled; --view all for every run)
 a0000001  waiting      plan-build      Order new rootstock once the budget i…  waiting at approve
-          → uv run adws/adw_plan-build.py --resume --adw-id a0000001
+          → uv run adws/adw_plan-build.py --resume --adw-id a0000001; or: al assign orchard.al a0000001
 b000000e  handed-over  plan-build      Track the fig trees, part 14            review-rejected
-          → review PR #7
+          → review PR #7; or: al assign orchard.al b000000e
 b000000d  handed-over  plan-build      Track the medlar trees, part 13         review-rejected
-          → merge al/b000000d into main, or al settle orchard.al b000000d --as …
+          → merge al/b000000d into main, or al settle orchard.al b000000d --as …; or: al assign orchard.al b000000d
 b000000c  handed-over  plan-build      Track the quince trees, part 12         review-rejected
-          → merge al/b000000c into main, or al settle orchard.al b000000c --as …
+          → merge al/b000000c into main, or al settle orchard.al b000000c --as …; or: al assign orchard.al b000000c
 b000000b  handed-over  plan-build      Track the cherry trees, part 11         review-rejected
-          → merge al/b000000b into main, or al settle orchard.al b000000b --as …
+          → merge al/b000000b into main, or al settle orchard.al b000000b --as …; or: al assign orchard.al b000000b
 a0000002  failed       plan-build      Draw the orchard map                    build: the map renderer needs a page size
-          → al run orchard.al /plan-build --replaces a0000002 < orchard.al/agents/a0000002/request.md
+          → al run orchard.al /plan-build --replaces a0000002 < orchard.al/agents/a0000002/request.md; or: al assign orchard.al a0000002
 
 $ al settle orchard.al b000000c --as abandoned --note "the map work replaces it" --who Ada
 settled b000000c as abandoned by Ada: agents/b000000c/settlement.json
@@ -800,7 +800,7 @@ your approval. `al runs` suggests the command for every run it applies to:
 $ al runs pantry.al
 …
 f0000002  handed-over  ship-it         Add a price table                       ship-failed:git push . HEAD:refs/heads/main failed: ! [rejected] HEAD -> main (non-fast-forward)
-          → merge chore/f0000002-add-a-price-table into main, or al integrate pantry.al f0000002, or al settle pantry.al f0000002 --as …
+          → merge chore/f0000002-add-a-price-table into main, or al integrate pantry.al f0000002, or al settle pantry.al f0000002 --as …; or: al assign pantry.al f0000002
 ```
 
 It is refused, before any worktree exists, when it is not the agent's to do. The reason is printed and
@@ -882,6 +882,149 @@ the Settle form in; nothing is written until you click Settle. To change how the
 conflicts, copy the prompt into the layer with `al eject LAYER command resolve-conflicts` and edit the
 copy.
 
+### Give a stopped run to an agent: `al assign`
+
+`al integrate` covers one reason a run waits for you. `al assign` covers the others as well: you name
+the run, it shows what an agent would do about it, and with your go-ahead it starts. The plan follows
+from why the run stopped, by rules; no agent call decides it:
+
+| Why the run stopped | What `al assign` starts |
+|---|---|
+| The review passed; the merge conflicts or the target moved | The integration of `al integrate`. |
+| The review rejected it, with blockers | One more round: the branch is applied onto the target in a fresh worktree (conflicts resolved first, when the target moved), the review's own patch commands address the blockers, the checks run, the review runs **once** with no further patch round, then the gate and ship. |
+| The review rejected it only because proof is missing | No code changes. When the proof exists but was not collected (a file of the change that no artefact matches, or one a `#:max-files` limit left out), it is handed to the review. Otherwise an agent runs the commands the plan lists for proof. Then the checks and the review. |
+| Something only a person may decide (a protected path, a credential, a line marked `REQUIRES HUMAN`) | Nothing. The plan names the decision; `--approve ITEM` records your approval of exactly that item, and the rest then starts with your approval quoted to the agent and to the reviewers. |
+| A check still failing after its retries | The run is resumed in its own worktree from that check; when it still fails, a fresh fixing agent gets its log, on the heavy tier. |
+| A login failure, a time limit, a process that died, a waiting step | The run is resumed from that step, unchanged. |
+| It failed before changing anything | The same request is started again; the new run replaces it. |
+
+A rejected run has no worktree any more, so it continues in a run of its own, exactly like an
+integration: when that run lands, the original is settled as landed by it; when its review rejects the
+change again, nothing is merged and the original stays under **Needs you** with the history. Nothing
+`al assign` starts can ship a rejected review: every plan ends in the checks, the review and the
+unchanged gate, or with you.
+
+Look first with `--preview`, which starts nothing:
+
+```console
+$ al assign pantry.al f0000011 --preview
+run:        f0000011 (Take a discount off the total)
+stopped:    handed-over at review: the review rejected it: the change is not right yet
+plan:       address 1 blocker (the review's patch round) and review once more
+  1. apply branch chore/f0000011-take-a-discount-off-the-total onto main in a fresh worktree
+  2. address the blockers with the review's patch round:
+     - total() accepts a negative discount
+  3. run the checks again
+  4. review once, with no further patch round
+  5. ship through the unchanged gate, or back to you with the history
+limit:      0 of 2 used
+
+$ al assign pantry.al f0000011 --note "keep the signature of total()"
+[adw 7c89cb45] integrate start: class=chore dry_run=False
+[adw 7c89cb45] step prepare (integrate) start
+[adw 7c89cb45] prepare: 0 conflicted files; target main at 3e7fade
+[adw 7c89cb45] step prepare (integrate) passed: prepare: 0 conflicted files; target main at 3e7fade
+[adw 7c89cb45] step resolve (integrate) start
+[adw 7c89cb45] step resolve (integrate) passed: no conflicts: the branch applies cleanly
+[adw 7c89cb45] step address (integrate) start
+[adw 7c89cb45] step address (integrate) passed: addressed 1 blocker
+[adw 7c89cb45] step test (check) start
+[adw 7c89cb45] step test (check) passed: exit 0, log agents/7c89cb45/checks/test.1.log
+[adw 7c89cb45] step review (review) start
+[adw 7c89cb45] review verdict: pass after 1 round(s): …
+[adw 7c89cb45] step ship (ship) start
+[adw 7c89cb45] gate: action merge
+[adw 7c89cb45] step ship (ship) passed: ok
+…
+=== ADW summary ===
+adw:       integrate 7c89cb45
+status:    passed
+…
+ship:      merge -> main (shipped=True)
+integrate: blockers of run f0000011 onto main at 3e7fade (applies cleanly)
+…
+integrate:  run f0000011 onto main: landed in 64d6ec3; f0000011 settled as landed by 7c89cb45
+al assign: run f0000011 given to an agent (blockers): run 7c89cb45; attempt 1
+```
+
+`--note TEXT` is one sentence for the agent (at most 500 characters, plain text). `--detach` starts the
+plan and returns, `--dry-run` uses the mock agent, `--model-set TIER` puts every agent step of what is
+started on one tier, and `--json` prints the plan or the result as JSON. The run is named by its id or
+by its branch.
+
+When something only a person may decide stands in the way, the preview names it with an id, and
+nothing starts until you approve exactly that item:
+
+```console
+$ al assign pantry.al f0000012 --preview
+run:        f0000012 (Print the shelf labels)
+stopped:    handed-over at review: the review rejected it: the change is not right yet
+plan:       a person decides: REQUIRES HUMAN: deploy/release.cfg is a protected file
+  1. a person decides: REQUIRES HUMAN: deploy/release.cfg is a protected file; to approve exactly this and let the rest start: al assign LAYER f0000012 --approve 650f1f73de --who NAME
+decisions:
+  650f1f73de  open: REQUIRES HUMAN: deploy/release.cfg is a protected file
+limit:      0 of 2 used; not started: needs-a-person: 1 item of run f0000012 only a person may decide: REQUIRES HUMAN: deploy/release.cfg is a protected file
+
+$ al assign pantry.al f0000012
+al assign: needs-a-person: 1 item of run f0000012 only a person may decide: REQUIRES HUMAN: deploy/release.cfg is a protected file
+
+$ al assign pantry.al f0000012 --approve 650f1f73de --who "Robin Example"
+approved by Robin Example: item 650f1f73de of run f0000012; nothing started
+run:        f0000012 (Print the shelf labels)
+stopped:    handed-over at review: the review rejected it: the change is not right yet
+plan:       address 2 blockers (the review's patch round) and review once more
+  1. apply branch chore/f0000012-print-the-shelf-labels onto main in a fresh worktree
+  2. address the blockers with the review's patch round:
+     - the labels are not sorted
+     - REQUIRES HUMAN: deploy/release.cfg is a protected file
+  3. run the checks again
+  4. review once, with no further patch round
+  5. ship through the unchanged gate, or back to you with the history
+decisions:
+  650f1f73de  approved by Robin Example: REQUIRES HUMAN: deploy/release.cfg is a protected file
+limit:      0 of 2 used
+```
+
+The approval is a record, `agents/<run>/assign.json`, for that one item (`--who` defaults to your `git
+config user.name`). It starts nothing and it changes no gate: a change to a protected path is still
+judged by the gate of the run that follows, which hands it to you as a pull request when the review
+option blocks protected paths. Some decisions cannot be approved here at all, and the plan says so
+(`open, a person's only`): a workflow that changes the layer, a run a spending limit stopped, a
+promotion, a pull request that waits for a human review, and a run `al integrate` refuses (a protected
+path in a change whose review passed, a branch a person changed since).
+
+`--all` lists every run under **Needs you** in the order they would be started, and without
+`--preview` starts each one that can start, detached: first the runs that are resumed or started again
+(each touches only its own worktree), then the integrations, the proof collections and the blocker
+rounds, oldest run first (they run one at a time, each from the result of the one before):
+
+```console
+$ al assign pantry.al --all --preview
+f0000013  check        resume from check test: it runs again, and when it still fails a fresh fixing agent gets its log, on the heavy tier
+f0000014  start-again  it failed before changing anything: start the same request again; the new run replaces it
+f0000001  integrate    bring it onto main: an agent resolves 2 conflicted files, then the checks, the review and the gate
+f0000002  integrate    bring it onto main: the branch applies cleanly, then the checks, the review and the gate
+f0000003  blockers     bring it onto main first, then address 1 blocker (the review's patch round) and review once more
+f0000011  blockers     address 1 blocker (the review's patch round) and review once more
+f0000004  person       skipped: needs-a-person: a person decides: run f0000004 changes deploy/release.cfg, a protected path: a person merges it
+f0000005  person       skipped: needs-a-person: a person decides: a person changed chore/f0000005-round-the-total since the run ended: a775419 is not the run's 1e2ed1a
+f0000012  person       skipped: needs-a-person: 1 item of run f0000012 only a person may decide: REQUIRES HUMAN: deploy/release.cfg is a protected file
+```
+
+The limits. You can give one run to an agent twice; after that `al assign` refuses with `limit` until
+you say `--override`, which allows one more. Every attempt is kept with its outcome (in
+`agents/<run>/assign.json`, in the run's events as `assign.attempt` and `assign.outcome`, and in the
+preview under `attempts:`). When two attempts stopped for the same reason, the refusal says so (`it
+stopped twice for the same reason (…): it stays with you`). A second blocker round continues from the
+first one's branch, not from the original, so the first fix is not lost.
+
+Exit codes: 0 the plan started or the preview was shown (attached, the exit code of the run that was
+started or resumed), 2 bad use, 3 refused; the reason is printed as `al assign: <reason>: <words>`
+with a reason of `unknown-run`, `not-stopped`, `settled`, `running`, `needs-a-person`, `limit`,
+`no-script`, `bad-item` or `bad-note`. A layer generated before this command says `was generated
+before al assign: run al gen`. On the dashboard the same plan is behind the button **Give to an
+agent** on every run under Needs you (see the dashboard's README).
+
 ## Start work from the dashboard or the command line
 
 The dashboard's **Layers** view has a **Start work** panel. Type what you want done, pick what runs it,
@@ -938,7 +1081,7 @@ $ al run myapp.al /change add a search command --detach         # a workflow, in
 run 66ce8c25 started (layer: myapp, workflow change)
 
 $ al run myapp.al /nope x
-al run: no workflow or command named nope; known: /change, /plan, /tidy, /commit, /implement, /new-adw, /integrate (kit), /promote (kit), /improve (kit), /decider (kit)
+al run: no workflow or command named nope; known: /change, /plan, /tidy, /commit, /implement, /new-adw, /integrate (kit), /assign (kit), /promote (kit), /improve (kit), /decider (kit)
 
 $ al run myapp.al /integrate 93f3f743                           # a kit workflow has its own command
 al run: integrate is a kit workflow that takes a handed-over run: al integrate LAYER RUN
@@ -2445,7 +2588,10 @@ In mode **auto** the decider can also start `al integrate` for a run that ended 
 could not merge (see "Resolve with an agent"). That is off until the layer says so with `"decider":
 true` in `templates/integrate.json` (`al integrate LAYER --set decider=true`). It needs no agent call:
 whether a run can be integrated is decided by rules, the same ones `al integrate` applies. The run's
-log then ends with `decider: integrating with an agent: run <id>`. In mode **suggest** nothing is
+log then ends with `decider: integrating with an agent: run <id>`. With `"decider": true` the stand-in
+also starts the `blockers` and `proof` plans of `al assign` for a run whose review rejected it (see
+"Give a stopped run to an agent"), once per run and never for an item only a person may decide; the
+log then ends with `decider: given to an agent (blockers): run <id>`. In mode **suggest** nothing is
 started.
 
 A suggestion, as `decision.md` records it:

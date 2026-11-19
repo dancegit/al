@@ -725,17 +725,38 @@ table.needs-you td.next .btn.integrate { display: block; margin-top: 4px; font-f
 .settle-evidence ul { margin: 4px 0; padding-left: 1.2rem; }
 .settle-evidence .evidence-head { font-weight: 600; }
 .settle-evidence .evidence-proposal { color: var(--passed); }
-.integrate-card { border-color: rgba(79, 182, 168, .45); }
-.integrate-preview .kv dd { margin-bottom: 4px; }
-.integrate-preview ul.conflicts { margin: 0; padding-left: 1.2rem; }
-.integrate-preview ul.conflicts .badge { white-space: normal; }
-.integrate-preview .kv dd, .integrate-card .card-head { min-width: 0; overflow-wrap: anywhere; }
-.integrate-card .card-head { flex-wrap: wrap; }
-.integrate-preview .clean { color: var(--passed); }
-.integrate-preview select { font: inherit; padding: .3rem .4rem; background: var(--panel-2); color: var(--text); border: 1px solid var(--border-2); border-radius: 5px; max-width: 100%; }
-.integrate-preview .buttons { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-.integrate-refused .refusal { overflow-wrap: anywhere; }
-.integrate-note { margin-top: 6px; }
+.integrate-card, .assign-card { border-color: rgba(79, 182, 168, .45); }
+.integrate-preview .kv dd, .assign-preview .kv dd { margin-bottom: 4px; }
+.integrate-preview ul.conflicts, .assign-preview ul.conflicts { margin: 0; padding-left: 1.2rem; }
+.integrate-preview ul.conflicts .badge, .assign-preview ul.conflicts .badge { white-space: normal; }
+.integrate-preview .kv dd, .integrate-card .card-head, .assign-preview .kv dd, .assign-card .card-head { min-width: 0; overflow-wrap: anywhere; }
+.integrate-card .card-head, .assign-card .card-head { flex-wrap: wrap; }
+.integrate-preview .clean, .assign-preview .clean { color: var(--passed); }
+.integrate-preview select, .assign-preview input[type="text"] { font: inherit; padding: .3rem .4rem; background: var(--panel-2); color: var(--text); border: 1px solid var(--border-2); border-radius: 5px; max-width: 100%; }
+.integrate-preview .buttons, .assign-preview .buttons, .assign-decision .buttons { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.integrate-refused .refusal, .assign-refused .refusal { overflow-wrap: anywhere; }
+.integrate-note, .assign-note { margin-top: 6px; }
+/* "Give to an agent": the plan, what only a person decides, the earlier attempts, all of a layer at once */
+.btn.assign-open, .btn.assign-all { border-color: rgba(79, 182, 168, .6); }
+.assign-plan ol.assign-steps { margin: 4px 0 0; padding-left: 1.4rem; }
+.assign-plan ol.assign-steps .sub { font-size: 12px; }
+.assign-plan .badge, .assign-decision .badge { white-space: normal; }
+.assign-preview input.assign-note-text { width: 100%; max-width: 40rem; box-sizing: border-box; }
+.assign-preview .assign-blockers { margin-top: 0; }
+.assign-decision { border: 1px solid rgba(214, 162, 58, .35); border-radius: 5px; padding: 6px 8px; background: rgba(214, 162, 58, .06); max-width: 46rem; }
+.assign-decision + .assign-decision { margin-top: 6px; }
+.assign-decision.approved { border-color: var(--border-2); background: transparent; }
+.assign-decision .buttons { margin-top: 6px; }
+.assign-attempts { margin: 0; padding-left: 1.2rem; }
+.assign-limit.reached { color: var(--waiting); }
+.assign-all-bar:not(:empty) { margin: 0 0 8px; }
+.assign-bulk { max-width: min(46rem, 94vw); }
+.assign-bulk-list { max-height: 50vh; overflow: auto; margin: 6px 0; font-size: 12.5px; }
+.assign-bulk-plans { margin: 0; padding-left: 1.6rem; }
+.assign-bulk-plans li { margin-bottom: 6px; overflow-wrap: anywhere; }
+.assign-bulk-plans li.skipped { list-style: none; margin-left: -1.6rem; padding-left: 1.6rem; opacity: .8; }
+.assign-fact { overflow-wrap: anywhere; }
+.left-out { margin: 4px 0 8px; padding: 4px 8px; font-size: 12.5px; border: 1px dashed var(--waiting); border-radius: 4px; color: var(--text-2); }
 .integration-fact { overflow-wrap: anywhere; }
 @media (max-width: 760px) {
   .settle-fields { grid-template-columns: 1fr; }

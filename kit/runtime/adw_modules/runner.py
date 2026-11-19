@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import affected, approvals, budget, checkenv, decide, delivery, envs, envsource, events, integrate, ir, models
+from . import affected, approvals, assign, budget, checkenv, decide, delivery, envs, envsource, events, ir, models
 from . import nested_engine, notify, placement, prepare, sandbox, selfrun, skips, testing
 from . import state as state_module, steps
 from . import slots
@@ -487,7 +487,8 @@ def _integration_line(state: state_module.ADWState) -> str:
         if report.get("undecidable"):
             what += f", {len(report['undecidable'])} undecidable"
     seen = ", ".join(str(item.get("file")) for item in i.get("seen_before") or [])
-    line = (f"run {i.get('run')} onto {i.get('target')}"
+    mode = str(i.get("mode") or "conflict")
+    line = ((f"{mode} of " if mode != "conflict" else "") + f"run {i.get('run')} onto {i.get('target')}"
             + (f" at {str(i['target_head'])[:7]}" if i.get("target_head") else "")
             + f" ({what}{f'; conflicted before: {seen}' if seen else ''})")
     if state.status == "waiting":
@@ -917,7 +918,7 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
             tee.close()
     if not selfrun.active():   # on a host the home machine does these, after it took the run over
         decide.after_run(layer, state)  # a resume the decider chose starts once this run has ended
-        integrate.after_run(layer, state, args)  # a handed-over run the decider may integrate (integrate.py)
+        assign.after_run(layer, state, args)  # a handed-over run the decider may give to an agent (assign.py)
         _speak(layer, f"ADW {adw} {state.adw_id} {state.status}. Ship: {state.ship.get('action', 'none')}.")
     return exit_code
 

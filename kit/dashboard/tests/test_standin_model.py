@@ -148,7 +148,7 @@ def test_loop_takes_only_items_that_stopped_after_since_and_were_not_seen(start_
     assert view["mode"] == "suggest" and view["since"]
     items = model.standin_items(model.layers["notes"], view)
     assert [item["run"] for item in items] == [RUN]
-    assert items[0]["status"] == "failed" and items[0]["reason"].startswith("ready:") and items[0]["next"] == "Start again"
+    assert items[0]["status"] == "failed" and items[0]["reason"].startswith("ready:") and items[0]["next"] == "Start again, or Give to an agent"
     assert set(items[0]) == {"run", "status", "reason", "next", "landing", "target_branch", "replaced_by"}
     # the same stop is handed over once per process, and a new entry for it ends it for every process
     model.standin_done[f"notes/{RUN}"] = model.summaries[f"notes/{RUN}"]["fingerprint"]

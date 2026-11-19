@@ -343,3 +343,111 @@ def test_integration_record_keeps_earlier_ones(make_layer, app_repo):
     assert again["status"] == "landed" and [item["run"] for item in again["previous"]][0] == "c0000005", \
         "an update of the same integration replaces its record"
     assert oct((layer / "agents" / RUN / "integration.json").stat().st_mode & 0o777) == "0o600"
+
+
+# ---------------------------------------------------------------- the modes of "Give to an agent"
+
+def test_eligible_modes(make_layer, app_repo):
+    layer = conflict_layer(make_layer, app_repo)
+    handed_over_run(layer, app_repo, RUN, reasons=("review-failed",), rejected=True)
+    handed_over_run(layer, app_repo, "f0000002", {"prices.py": "PRICES = {}\n"}, title="Add a price table")
+    move_main(app_repo)
+    loaded = ir.load(layer)
+    with pytest.raises(integrate.IntegrateError) as caught:
+        integrate.eligible(loaded, RUN)
+    assert caught.value.reason == "review-rejected", "mode conflict is as before"
+    for mode in ("blockers", "proof"):
+        original = integrate.eligible(loaded, RUN, mode=mode)
+        assert (original.id, original.mode, original.source) == (RUN, mode, "")
+        assert original.blockers == [{"description": "wrong", "resolution": "fix"}]
+        with pytest.raises(integrate.IntegrateError) as caught:
+            integrate.eligible(loaded, "f0000002", mode=mode)
+        assert caught.value.reason == "not-rejected"
+    assert integrate.eligible(loaded, "f0000002").blockers == []
+    assert integrate.preview(loaded, RUN, mode="blockers")["steps"] == ["prepare", "resolve", "address", "test",
+                                                                       "review", "ship"]
+    # a review step that cannot patch: nobody could address the blockers
+    data = json.loads((layer / "agentic-layer.json").read_text())
+    review_step = next(step for step in data["adws"][0]["steps"] if step["kind"] == "review")
+    del review_step["patch"]
+    (layer / "agentic-layer.json").write_text(json.dumps(data))
+    loaded = ir.load(layer)
+    with pytest.raises(integrate.IntegrateError) as caught:
+        integrate.eligible(loaded, RUN, mode="blockers")
+    assert caught.value.reason == "no-patch-round"
+    assert integrate.eligible(loaded, RUN, mode="proof").mode == "proof", "collecting proof needs no patch round"
+    with pytest.raises(ValueError):
+        integrate.eligible(loaded, RUN, mode="other")
+
+
+def test_eligible_source_and_approved_paths(make_layer, app_repo):
+    layer = conflict_layer(make_layer, app_repo)
+    handed_over_run(layer, app_repo, RUN, {"deploy/release.cfg": "channel = beta\n"}, reasons=("review-failed",),
+                    rejected=True)
+    loaded = ir.load(layer)
+    with pytest.raises(integrate.IntegrateError) as caught:
+        integrate.eligible(loaded, RUN, mode="blockers")
+    assert caught.value.reason == "protected-path"
+    assert integrate.eligible(loaded, RUN, mode="blockers", allow_protected=["deploy/release.cfg"]).id == RUN
+    # an earlier attempt that ended handed over: its branch and review are used, the records stay on RUN
+    attempt = handed_over_run(layer, app_repo, "c0000001", {"stock.py": "def total(items, discount=0):\n    return 0\n"},
+                              reasons=("review-failed",), rejected=True, title="Address the review")
+    path = layer / "agents" / "c0000001" / "state.json"
+    path.write_text(json.dumps({**attempt, "adw": "integrate", "integration": {"run": RUN},
+                                "definition": {"name": "integrate", "integration": {"run": RUN}}}))
+    original = integrate.eligible(loaded, RUN, mode="blockers", source="c0000001")
+    assert (original.id, original.source, original.branch, original.tip) == (
+        RUN, "c0000001", attempt["branch"], attempt["ship"]["commit"])
+    assert original.adw["name"] == "demo"
+    with pytest.raises(integrate.IntegrateError) as caught:
+        integrate.eligible(loaded, RUN, mode="blockers", source="f0000009")
+    assert caught.value.reason == "not-handed-over"
+
+
+def test_integration_adw_modes(make_layer, app_repo):
+    demo = {"name": "demo", "agent": "mock", "review": "policy", "environment": ["worktree"], "classes": ["chore"],
+            "steps": [{"name": "address", "kind": "check", "cmd": "test"},
+                      {"name": "proof", "kind": "check", "cmd": "test", "collect": []},
+                      {"name": "review", "kind": "review", "patch": "patch", "implement": "implement"},
+                      {"name": "ship", "kind": "ship"}]}
+    layer = conflict_layer(make_layer, app_repo, adws=[demo])
+    handed_over_run(layer, app_repo, RUN, reasons=("review-failed",), rejected=True)
+    loaded = ir.load(layer)
+    data = integrate.settings(layer)
+    blockers = integrate.integration_adw(loaded, integrate.eligible(loaded, RUN, mode="blockers"), data,
+                                         mode="blockers", extra={"instruction": "- wrong", "note": "keep it small"})
+    assert [s["name"] for s in blockers["steps"]] == ["prepare", "resolve", "address", "address-check", "proof-check",
+                                                      "review", "ship"]
+    assert blockers["steps"][2] == {"kind": "integrate", "name": "address", "action": "address"}
+    assert all(s["whenAffected"] is True for s in blockers["steps"] if s["kind"] == "check")
+    info = blockers["integration"]
+    assert (info["mode"], info["review_retries"], info["instruction"], info["note"]) == (
+        "blockers", 0, "- wrong", "keep it small")
+    assert info["blockers"] == [{"description": "wrong", "resolution": "fix"}] and info["source"] == ""
+    original = integrate.eligible(loaded, RUN, mode="proof")
+    found = integrate.integration_adw(loaded, original, data, mode="proof", extra={"found": ["proof/shelf.png"]})
+    assert [s["name"] for s in found["steps"]] == ["prepare", "resolve", "proof", "address-check", "proof-check",
+                                                   "review", "ship"]
+    assert found["steps"][2] == {"kind": "integrate", "name": "proof", "action": "proof"}
+    assert not any("whenAffected" in s for s in found["steps"] if s["kind"] == "check"), "they run to make the proof"
+    assert found["integration"]["review_retries"] == 0 and found["integration"]["found"] == ["proof/shelf.png"]
+    produce = integrate.integration_adw(loaded, original, data, mode="proof", extra={"produce": True})
+    assert [s["name"] for s in produce["steps"]][:4] == ["prepare", "resolve", "address", "proof"]
+    plain = integrate.integration_adw(loaded, original, data)
+    assert "mode" not in plain["integration"] and "review_retries" not in plain["integration"]
+
+
+def test_with_review_retries_copies_the_ir(make_layer, app_repo):
+    layer = conflict_layer(make_layer, app_repo)
+    data = json.loads((layer / "agentic-layer.json").read_text())
+    data["reviews"][0]["maxRetries"] = 2
+    (layer / "agentic-layer.json").write_text(json.dumps(data))
+    loaded = ir.load(layer)
+    adw = {"name": "integrate", "review": "policy", "integration": {"run": RUN, "review_retries": 0}}
+    scoped = integrate.with_review_retries(loaded, adw)
+    assert scoped is not loaded and scoped.option("reviews", "policy")["maxRetries"] == 0
+    assert loaded.option("reviews", "policy")["maxRetries"] == 2, "the layer itself is unchanged"
+    assert (scoped.layer_dir, scoped.app_root, scoped.delivery) == (loaded.layer_dir, loaded.app_root, loaded.delivery)
+    assert integrate.with_review_retries(loaded, {"name": "integrate", "review": "policy",
+                                                  "integration": {"run": RUN}}) is loaded
+    assert integrate.with_review_retries(loaded, loaded.adw("demo")) is loaded

@@ -675,10 +675,11 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
             raise StepFailed(str(step["name"]), "check refused in read-only host environment")
         run_check_with_resolve(layer, state, step, env_stack)
     elif kind == "review":
-        from . import convergence, review
+        from . import convergence, integrate, review
 
+        # an assigned run (integrate.py, modes blockers and proof) reviews once, with no patch round
         try:
-            review.run_review(layer, state, step, env_stack)
+            review.run_review(integrate.with_review_retries(layer, adw), state, step, env_stack)
         finally:
             convergence.after_review(layer, state, step)
     elif kind == "ship":

@@ -110,7 +110,7 @@ def test_layers_view_shows_the_kit_workflows(scenario, tab):
         commands: [...document.querySelectorAll('.commands-section .command-row')].map((el) => el.dataset.command),
         order: [...document.querySelectorAll('.adw-section, .run-section, .kit-group')].map((el) => el.className) })""")
     assert found["group"] == "Kit workflows"
-    assert [s["name"] for s in found["sections"]] == ["integrate", "promote", "improve", "decider"]
+    assert [s["name"] for s in found["sections"]] == ["integrate", "assign", "promote", "improve", "decider"]
     assert all(s["badge"] == "kit" for s in found["sections"])
     assert found["declared"] == ["plan-build", "ship-it"], "the declared workflows are still listed first"
     by_name = {s["name"]: s for s in found["sections"]}
@@ -141,10 +141,11 @@ def test_start_form_offers_integrate_with_a_run_picker(scenario, tab):
         ({ label: g.label, options: [...g.querySelectorAll('option')].map((o) => ({ value: o.value, text: o.text, disabled: o.disabled })) }))""")
     assert [g["label"] for g in groups][0] == "Workflows" and groups[-1]["label"] == "Kit workflows"
     kit = {o["value"]: o for o in groups[-1]["options"]}
-    assert list(kit) == ["kit:integrate", "kit:promote", "kit:improve", "kit:decider"]
+    assert list(kit) == ["kit:integrate", "kit:assign", "kit:promote", "kit:improve", "kit:decider"]
     assert not kit["kit:integrate"]["disabled"] and kit["kit:integrate"]["text"] == "/integrate"
     assert kit["kit:promote"]["disabled"] and kit["kit:promote"]["text"] == "/promote (off)"
     assert kit["kit:improve"]["disabled"] and kit["kit:decider"]["disabled"]
+    assert not kit["kit:assign"]["disabled"] and kit["kit:assign"]["text"] == "/assign"
     # the /NAME menu lists the kit entries too, marked
     page.fill(".start-panel textarea.start-prompt", "/in")
     page.wait_for_selector(".start-panel .start-complete li")

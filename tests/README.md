@@ -115,6 +115,37 @@ env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest t
 The golden snapshots of `tests/integration` hold `commands/resolve-conflicts.md` for each of the five
 layers: the prompt `al gen` writes into every layer for the workflow.
 
+### Giving a stopped run to an agent
+
+`kit/runtime/tests/test_assign.py` covers `adw_modules/assign.py` without starting anything: the plan
+for every reason a run stopped (one test per row of the module's table), the runs that have no plan
+(settled, passed, running), the decisions only a person may make and the approval record for exactly
+one item, the limit of two and `--override`, "stopped twice for the same reason", the bulk order and
+the note. `kit/runtime/tests/test_assign_runs.py` runs whole assigned runs through `assign.main` with
+the mock agent and real git: blockers that land through the gate, a review that rejects again (one
+round, no patch round, nothing merged, the history kept and the attempt run used as the next source),
+a moved target resolved and addressed in one run, proof that is collected without a code change, proof
+that is produced by the plan's commands (and a proof round that edits code fails), a failed check
+resumed in place on the heavy tier, a login failure resumed unchanged, a run that changed nothing
+started again, an approved item quoted to the agent, the bulk start and the stand-in. Their runs are
+built by `kit/runtime/tests/assign_fixtures.py`: on the pantry of `integrate_fixtures.py`, one real
+stopped run per row (each a run of `runner.main` with mock scripts). `test_integrate.py` also covers
+the modes of the integration run (`eligible`, `integration_adw`, `with_review_retries`), and
+`kit/runtime/tests/test_artefact_limits.py` the limit of an image artefact: the files of the change
+first, and the `left-out` entry of the reviewers' manifest. `tests/tools/test_al_assign.py` (its first
+test needs racket) covers `adws/assign.py` in `al gen` and `al check`, and runs `al assign`
+(`--preview`, `--approve`, a whole blocker round, `--all`, the refusals) on the scenario of
+`kit/dashboard/tests/assign_fixtures.py`; the dashboard's side is in `kit/dashboard/README.md`
+("Tests").
+
+```bash
+(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q tests/test_assign.py tests/test_assign_runs.py tests/test_artefact_limits.py tests/test_integrate.py tests/test_integrate_runs.py)
+env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_al_assign.py tests/tools/test_al_integrate.py tests/tools/test_al_runs.py -q
+```
+
+The review prompt (`kit/templates/commands/review.md`) explains the `left-out` entry, so the golden
+snapshots of `tests/integration` hold that sentence in each layer's `commands/review.md`.
+
 `tests/acceptance.sh` is the older end-to-end script. It works on the git-ignored `layers/` directory
 and leaves branches and worktrees behind in the testbeds; `tests/integration` supersedes it and covers
 everything it did (sections C and D) reproducibly.

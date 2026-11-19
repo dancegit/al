@@ -1,6 +1,6 @@
 """The registry (adw_modules/registry.py): what a layer can run, built from the compiled full example
 plus the kit. It may not import the modules that own three of its rules, so these tests keep it
-equal to them: integrate.py (name, step names, settings file), promotion.py (names and steps),
+equal to them: integrate.py (name, step names, settings file), assign.py (its kinds), promotion.py (names and steps),
 launch.py (single-command names, who ships) and inputs.py (the script of a workflow). They also
 check the two runtime readers: launch.resolve_target and the decider's resume."""
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from adw_modules import decide, inputs, integrate, ir, launch, promotion, registry
+from adw_modules import assign, decide, inputs, integrate, ir, launch, promotion, registry
 from adw_modules.errors import LayerError
 from adw_modules.state import ADWState
 
@@ -45,7 +45,7 @@ def test_full_example_lists_everything_it_can_run(reg):
     assert reg["version"] == 1 and reg["problems"] == []
     assert names(registry.declared(reg)) == [a["name"] for a in FULL["adws"]]
     assert names(registry.commands(reg)) == [c["name"] for c in FULL["commands"]] + [h["name"] for h in FULL["hops"]]
-    assert names(registry.kit(reg)) == ["integrate", "promote-sprint-main", "promote-hotfix-main", "improve", "decider"]
+    assert names(registry.kit(reg)) == ["integrate", "assign", "promote-sprint-main", "promote-hotfix-main", "improve", "decider"]
     assert names(registry.suite(reg)) == ["changelog"]
     # the order: declared workflows, kit rows, commands and hops, suite commands
     kinds = [e["kind"] for e in reg["entries"]]
@@ -86,6 +86,17 @@ def test_integrate_agrees_with_the_integrate_module(reg):
     assert entry["start"] == {"by_hand": True, "how": "form", "command": "al integrate LAYER RUN", "why": ""}
     assert entry["setting"]["key"] == "enabled" and entry["setting"]["on"] is True and entry["off"] is False
     assert "zte" in entry["purpose"], "the workflows whose runs it serves"
+
+
+def test_assign_agrees_with_the_assign_module(reg):
+    entry = registry.entry(reg, registry.ASSIGN)
+    assert entry["kind"] == "kit-workflow" and entry["source"] == "kit" and entry["adw"] == "assign"
+    assert entry["script"] == "adws/assign.py" and entry["setting"] is None and entry["off"] is False
+    assert entry["input"] == {"kind": "run", "what": "a stopped run"}
+    assert entry["start"] == {"by_hand": True, "how": "form", "command": "al assign LAYER RUN", "why": ""}
+    assert entry["ships"] == "as the run's own workflow"
+    assert entry["steps"] == list(registry.ASSIGN_KINDS) == [k for k in assign.KINDS if k != "none"]
+    assert registry.start_answer(reg, "assign") == "assign is a kit workflow that takes a stopped run: al assign LAYER RUN"
 
 
 def test_promotions_agree_with_the_promotion_module(reg):
@@ -149,13 +160,15 @@ def test_scripts_and_reserved_names(reg):
     scripts = reg["scripts"]
     assert {path: s["role"] for path, s in scripts.items()} == {
         **{f"adws/adw_{a['name']}.py": "workflow" for a in FULL["adws"]},
-        "adws/dispatch.py": "launcher", "adws/integrate.py": "kit-workflow", "adws/promote.py": "kit-workflow",
+        "adws/dispatch.py": "launcher", "adws/integrate.py": "kit-workflow", "adws/assign.py": "kit-workflow",
+        "adws/promote.py": "kit-workflow",
         "adws/triggers/trigger_cron.py": "trigger", "adws/triggers/trigger_webhook.py": "trigger",
         "adws/triggers/trigger_voice.py": "trigger", "adws/voice/listen.py": "voice", "adws/voice/say.py": "voice",
         "adws/voice/serve.py": "voice", "adws/dashboard.py": "dashboard", "adws/standin.py": "stand-in",
         "adws/verify_batch.py": "batch", "adws/host.py": "host"}   # the full example declares (placement …)
     assert "adws/host.py" not in registry.build({**FULL, "placement": None})["scripts"]
     assert scripts["adws/promote.py"]["entries"] == ["promote-sprint-main", "promote-hotfix-main"]
+    assert scripts["adws/assign.py"]["entries"] == ["assign"]
     assert scripts["adws/integrate.py"]["entries"] == ["integrate"] and scripts["adws/adw_zte.py"]["entries"] == ["zte"]
     assert scripts["adws/dispatch.py"]["entries"] == names(registry.commands(reg))
     assert sorted(registry.VOICE_SCRIPTS) == sorted(
@@ -248,7 +261,7 @@ def test_resolve_target_answers_a_kit_name_with_the_registry_s_sentence(make_lay
     known = str(exc.value).split("known: ", 1)[1]
     assert known == ", ".join(registry.known_names(reg))
     assert known.startswith("/plan-build, /sdlc, /zte, ") and known.endswith(
-        "/integrate (kit), /promote-sprint-main (kit), /promote-hotfix-main (kit), /improve (kit), /decider (kit)")
+        "/integrate (kit), /assign (kit), /promote-sprint-main (kit), /promote-hotfix-main (kit), /improve (kit), /decider (kit)")
     assert launch.resolve_target(layer, "/zte ship it") == launch.Target("workflow", "zte", "ship it")
     assert launch.resolve_target(layer, "/classify this") == launch.Target("command", "classify", "this")
     result = launch.start(layer, launch.Target("workflow", "integrate"), "x", request_key="key-0001-abcdef")

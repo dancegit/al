@@ -73,7 +73,7 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | **Run** | the workflow as a graph from the layer's IR (agent / check / review / ship / fan-out nodes; `when` branches stacked in one column; resolve loops and the review → patch → re-check loop as back-edges; fan-out candidates as lanes linked to their own runs), coloured live with duration and cost per node; a timeline of every step, check attempt, resolve agent, reviewer, patch round and gate re-run, with agent / check / slot-wait totals, setup bars at the top for a sandbox image build (`building sandbox image <recipe> (<size>)`) and the preflight (`preflight: all checks passed` or `preflight: missing <checks>`) from `env.build.*` / `env.preflight` events (while a build runs the run's current action reads "building the sandbox image"), and marks for what the CLI reported about subscription usage, a limit stop and a wait for a reset (`limit.*` events); cost and tokens per agent ("API-equivalent" when the calls ran on a subscription); the outcome: gate decision and reasons, ship target or PR, **why the run stopped** (a run a subscription limit stopped carries a "limit stop" mark and a "Subscription limit" block with the window, the share used and the reset time) and what the agent asks a human to do, review verdicts per round and reviewer with issues by severity |
 | **Step** | the exact prompt (sections collapsible), the transcript as one row per event: what the agent said, tool calls summarised (file read / edit with a diff / write, shell command, search pattern), results collapsed with size, errors marked, thinking as a marker, the final cost / turns / time. Filters (kind, errors only, tool), search with highlight, follow mode, raw JSON of any event, download of the raw `.jsonl`. Checks: every attempt's log with ANSI colours, its exit code and the resolve agent that followed. Under the head of an agent step the runtime checked, one line: "Stayed in its step" (HEAD unchanged, no refs changed, nothing outside the worktree), or "Left its step:" with the violation, what was restored and what was left for a person Next to a check's exit code an amber `N skipped` badge shows when the attempt skipped tests (its title lists the reasons, `no podman ×2`), and `in ENV` for a check that runs `#:in` another environment option; the graph's check node reads `N skipped` too. A check the runtime decided not to run has a decision instead of an attempt: a `not affected` badge with why and the paths that were compared, or a `reused` badge with the step whose pass on the same tree was reused and the tree hash (the log shown is that run's log); neither carries an exit code. |
 | **Documents** | what the run has written for people to read, as soon as each file exists: the plan, the `.md` / `.txt` / `.json` / `.log` outputs its steps recorded (a review's `patch-<n>` plans among them), review patch plans, `PR.md` (the handoff or PR text) and other text files in `agents/<id>/`, each reviewer's verdict (`review-*/output.txt`) and text artefacts; with the step that produced each, its size and time. **View** renders Markdown in the page (with a raw toggle), pretty-prints JSON and shows text as text; **Download** saves the exact file, **Download all** a zip of them all. A step's panel links the documents it produced (the plan on `plan-feature`). A new document appears live |
-| **Artefacts** | screenshots as thumbnails (click for full size), videos playable in the page with their keyframes, logs with their tail, all with the step that collected them |
+| **Artefacts** | screenshots as thumbnails (click for full size), videos playable in the page with their keyframes, logs with their tail, all with the step that collected them; when an artefact's limit (`#:max-files`) kept files from the reviewers, a line under it says how many: "shots: 3 more files matched and were not handed to the reviewers" (the manifest's `left-out` entry) |
 | **Kept on a branch** | on the run page of a workflow without a ship step: the branch its work was committed on, the commit, how many files changed, each kept file as a link to its copy in `artefacts/<id>/kept-files/`, the whole change as `changes.diff` (the files and the diff open in the Documents viewer), the files too large to copy (they are on the branch only); "nothing changed" when the run left nothing, "keeping failed" with the reason when the worktree was kept instead |
 | **Repos** (`4`) | the workspace: every git repository of the folder(s), searchable, with its state badge (`layer`: an `agentic.rkt` in it or in a sibling `NAME.al`; `setup`: rule files, prompts, workflow scripts or a hand-built suite, the same detection as `al scout`; `none`), branch, a mark for uncommitted changes and its last activity; **refresh** rescans. A selected repository (`#/repo/<key>`) shows al scout's "Existing agent setup" summary, its layer with a link to its workflows and runs, its jobs, and the **al** panel: one button per action with the exact command line(s) it runs, disabled with the reason when it does not apply (`needs the al tool; looked for …`, `--read-only`, `--no-actions`, the state), and a tools table: what `al doctor` sees on this machine (racket, raco, uv, git, the author agent's CLI: where each was found, or the sentence saying where al looked, and its version; kept 5 minutes). **create** and **adopt** have a placement picker above their command lines: **beside the repository** (`<folder>/<name>.al`) or **inside the repository** (`<repository>/agentic`), each with what it means, the resulting path and three checks (exists and is kept / will be created; writable; not a layer yet), disabled with its reason when it cannot be used; the command lines are those of the selected placement. A writing action first shows what it runs and writes (for adopt the dry run's diff, line by line; for create and adopt the placement with its path and the detected choices, each editable, with a sentence saying what it decides and its fact) and runs on **Confirm**. **generate a layer…** beside **refresh**, and **guided** in the al panel of a repository without a layer, open guided generation (below) |
 | **Job** | one action (`#/job/<id>`), in the order a person reads it: the header (repository, action, for a create or adopt its placement (`placement: inside the repository`), status, exit code, duration, why it failed, `needs a person: N` when the author left items out, **Download full output**); once it ended, the **outcome** card: for a passed job what was created (the layer with the files added, changed and removed) or adopted, what is `UNVERIFIED` and the next action (the last `next: …` line the steps printed); for a passed create or adopt the same card also holds the **result card** of its `result` step (forge clause, workflows, adopted rules, commands and suite workflows, what was left behind, unverified commands, the next steps, the first of which is the next action; paths as the job shows them), for a failed or interrupted job the failing step, the reason in one sentence (a generic "exited N" is replaced by the step's last error), up to 12 last relevant lines, **Retry from STEP** (asks first; the steps from the first that did not pass run again in the same job, a retried `author` with `--accept-existing`) and **Download log**; the **steps row**, one chip per step with status, exit code and time, a failed step's reason, and under the running one what it is doing right now ("reading the CI files", "compiling, attempt 2", "writing agentic.rkt", or a plain step's last line); the **activity** of the selected step (the running one, else the failed one, else the last agent step, so `author` rather than `scout`; a click picks another and the address keeps it as `?step=`): an agent step's journal with its messages as Markdown, one line per tool call (tool, target, result size, duration), errors in red, the final report and the totals, hooks, start-up, rate limits and other bookkeeping only with **show everything**; a plain step's own output as text (ANSI stripped); both the latest rows with **show earlier** and a search box, and the step's log (an agent step's **raw events**) and journal to download; the author's **Decisions** and **Left out and why** cards; the layer's files it added, changed or removed, and whether the repository changed (for a layer written inside the repository, when only `agentic/` changed: "the layer was written inside the repository: N path(s); commit agentic/ with the code", not a warning); its documents (`LLM.txt` of scout, `preview.diff.txt` of an adopt preview, `choices.json` of a create or adopt preview, `result.json`, `verify.json`, `EXPLAIN.md`); and, collapsed, **Full output** (every step as it ran, ANSI colours; an agent step condensed), opened by itself for a job from before the `steps/` files |
@@ -119,7 +119,7 @@ every 20 ticks):
 
 | Bucket | Runs | Row shows |
 |---|---|---|
-| **Needs you** | a waiting run; a handed-over run whose work is not on its target branch (or only partly: "partly landed: N paths differ (…)"); a failed or died run nothing replaces and nobody settled | the reason (the handover reasons, "waiting at STEP", "STEP: first line of the error") and the next action ("review PR #N", "merge BRANCH into TARGET, or `al settle`", with "or `al integrate`" and a **Resolve with an agent** button when the run can be integrated, the resume command, "Start again"); a run whose integration failed or waits says so ("integration ID did not land: WHY", "integration ID waits for approval") |
+| **Needs you** | a waiting run; a handed-over run whose work is not on its target branch (or only partly: "partly landed: N paths differ (…)"); a failed or died run nothing replaces and nobody settled | the reason (the handover reasons, "waiting at STEP", "STEP: first line of the error") and the next action ("review PR #N", "merge BRANCH into TARGET, or `al settle`", with "or `al integrate`" when the run can be integrated, the resume command, "Start again"), which ends ", or Give to an agent" with a **Give to an agent** button when the layer has `adws/assign.py`; a run whose integration failed or waits says so ("integration ID did not land: WHY", "integration ID waits for approval": approving is then the one next action); a run given to an agent twice that stopped for the same reason says so first ("given to an agent twice, stopped for the same reason: …") |
 | **Running** | running and unknown runs; a handed-over run an integration run is bringing onto its target ("being integrated by ID") | the current step |
 | **Landed** | a handed-over run whose work is on its target branch (see Landing below); a run an integration landed (`settlement.json` with `via: integrate`) | "landed in SHA (ancestor / forge / patch-id / paths), DATE"; "landed by ID (integration)", a link to the integration run on the run's page |
 | **Settled** | a run a person settled (`al settle`, or the run page's form); a handed-over run a later landed run integrated ("superseded by B"); a failure a later run replaces ("replaced by NEW (status)") | what settled it: "superseded by B", "replaced by NEW", "AS by WHO: note" |
@@ -135,20 +135,44 @@ replaces, and, on a finished run nobody settled, a **Settle this run** card: lan
 abandoned, an optional run or commit (`by`), a note, and your name (kept in the browser like the
 promotion card's).
 
-**Resolve with an agent.** A handed-over run that could not merge (its handover reasons name a merge
-conflict or a failed ship, and its review passed) has a **Resolve with an agent** button: in the Next
-column of its Needs-you row, and above the fields of its Settle card. It opens a card that says what
-will happen, from the layer's own `adws/integrate.py preview`: the branch and its tip, the target and
-its head, the conflicted files (generated ones marked; "applies cleanly" when there are none), the
-steps of the integration, "waits for your approval before it ships" when the layer asks for that, the
-integrations queued ahead, and a tier select. **Start the integration** starts it and goes to the new
-run's page; a run the layer refuses (a protected path, a branch a person changed, …) shows the reason
-in words and no start button. The button is shown disabled, with the reason as its title, when the run
-has a conflict but cannot be offered (the layer has it switched off, or its settings file is broken);
-a layer generated before the workflow shows none. The original's page links to the integration run
-(`integration` in its Status block, the badge "landed by ID (integration)"), and the integration run's
-page links back (`integrates`). An integration that waits at its `approve` step shows an **Approve and
-ship** card with a name field. Beside the Resolve button, **Check if it has landed** and **Find what
+**Give to an agent.** Every run under Needs you has a **Give to an agent** button: in the Next column
+of its row, and above the fields of its Settle card (address `…?assign=1`). It opens a card that says
+what will happen, from the layer's own `adws/assign.py preview` (the same plan `al assign LAYER RUN
+--preview` prints; `assign.plan` in the layer's runtime is the one function that computes it), and
+nothing starts until you confirm. The plan follows from why the run stopped:
+
+| Why it stopped | What starts |
+|---|---|
+| its review passed, the merge conflicts or the target moved | an integration run (what "Resolve with an agent" started): the branch onto the target, an agent for the conflicts, the checks, the review, the gate |
+| its review rejected it, with blockers | an integration run that also addresses the blockers with the review's patch round, runs the checks again and reviews **once**, with no further patch round; "bring it onto TARGET first" when the target moved |
+| its review rejected it only because proof is missing | the proof that exists is collected (or the plan's proof commands are run) and the review is asked again; no code changes |
+| something only a person may decide (a `REQUIRES HUMAN` blocker, a protected path, a layer change, a spending limit, a branch a person changed, a pull request that waits) | nothing: the card names the decision |
+| a check still failing after its retries | the run resumes from that check, its fixing agent on the heavy tier |
+| a login failure, a time limit, a process that died, a waiting step | the run resumes from the step that stopped, unchanged |
+| it failed before changing anything | the same request starts again; the new run replaces it |
+
+The card shows why the run stopped, the plan in one line and its numbered steps, for an integration
+the branch and its tip, the target and its head, the conflicted files (generated ones marked; "applies
+cleanly" when there are none), the steps of the run and "waits for your approval before it ships" when
+the layer asks for that, the review's blockers, the earlier attempts (when, by whom, which run, how it
+ended) and "given to an agent N of 2 times". You can add one sentence for the agent (at most 500
+characters); **Start** starts it and goes to the run that does it. A decision that is a person's to
+approve (a `REQUIRES HUMAN` blocker, a protected path) has a name field and **I approve this,
+continue**: the approval of exactly that item is recorded in `agents/<id>/assign.json`, nothing starts,
+and the card shows the plan that remains, with the approval quoted to the agent and to the review. A
+decision that is a person's only (a branch a person changed, a layer change, a spending limit) has no
+such button. After two starts by a person the card says so and offers "give it once more (override)";
+a run that stopped twice for the same reason says that it stays with you. Nothing here ships a
+rejected review: every plan ends in the checks, the review and the unchanged gate, or with a person.
+The button is shown disabled, with "run `al gen` to add adws/assign.py" as its title, in a layer
+generated before `al assign`. In the Needs-you view, **Give all N to agents** (one layer at a time: it
+is disabled while runs of several layers are shown) opens a dialog with every run's plan in the order
+they would start (resumes and restarts first, then one integration at a time; what stays with a person
+last, as "skipped: why") and **Start N**; what started is listed above the table. A run's Status
+block shows `given to an agent: 1 of 2; last: landed` with a link to that run. The original's page
+links to its integration run (`integration` in its Status block, the badge "landed by ID
+(integration)"), and the integration run's page links back (`integrates`). An integration that waits
+at its `approve` step shows an **Approve and ship** card with a name field. Beside the button, **Check if it has landed** and **Find what
 replaced it** ask `GET /api/settle/evidence` and list what was compared ("tip 4b8f959 of BRANCH: the
 same change (equal patch-id) is a commit of main", "run c0000002 (passed, landed) names run f0000007 in
 its request", or what differs); when something was found they fill the Settle form in and the button
@@ -259,7 +283,10 @@ actions run `al`, which writes what that command writes. `--read-only` turns all
 | `agents/<id>/settlement.json` | a person's settlement of a finished run (`{"as": landed\|superseded\|abandoned, "by", "note", "who", "at", "via": cli\|dashboard}`, the record before it under `"previous"`, one level; `"pruned"` after `al runs … prune`); written by `al settle` and `POST /api/settle`, atomically, mode 0600; also part of a run's signature, so a new one moves the run at once |
 | `agents/<id>/integration.json` | the integration run of a handed-over run (`{run, status: queued\|running\|waiting\|landed\|failed, why, commit, target, by, at, previous}`), written by the layer's runtime (`adw_modules/integrate.py`), never by the dashboard; part of a run's signature. A landed integration also writes the run's `settlement.json` with `"as": "landed"`, `"by": <integration run>`, `"via": "integrate"` |
 | `state.json` `integration`, `definition.integration` | an integration run: the run it integrates (`integrates` in its summary), its conflicted files and report; its graph is drawn from `definition` (workflow `integrate`, steps of kind `integrate`: prepare, resolve, approve) |
-| `adws/integrate.py`, `templates/integrate.json` | "Resolve with an agent": the script's presence and the settings (`enabled`, `approval`) decide whether the button is offered; `integrate.py preview RUN --json` is run for the preview, `run RUN --detach --json --by dashboard` and `approve RUN --who NAME --detach --json` for the writes (see Safety) |
+| `adws/integrate.py`, `templates/integrate.json` | the integration of a handed-over run: the script's presence and the settings (`enabled`, `approval`) decide whether a row's next action names `al integrate` (`integrate` in a run's summary); `integrate.py preview RUN --json` is run for `GET /api/integrate/preview`, `run RUN --detach --json --by dashboard` and `approve RUN --who NAME --detach --json` for the writes (see Safety) |
+| `adws/assign.py` | "Give to an agent": its presence enables the button (`assign.script` in a run's summary); `assign.py preview RUN --json` is run for the plan, `give RUN --detach --by dashboard [--note TEXT] [--override] --json`, `approve RUN ITEM --who NAME --via dashboard --json`, and `all RUN … --preview --json` / `all RUN … --by dashboard --json` (the runs under Needs you) for the writes (see Safety) |
+| `agents/<id>/assign.json` | how often a run was given to an agent and what a person approved (`{version, attempts: [{n, at, by: cli\|dashboard\|decider, who, kind, note, run, reason, outcome: started\|landed\|passed\|stopped, after, why}], approvals: [{id, kind, text, path, by, at, via}]}`), written by the layer's runtime (`adw_modules/assign.py`), never by the dashboard; part of a run's signature. `read_assign` mirrors the runtime's reading: `clicks` (attempts by `cli` or `dashboard`), `left` (of 2), `same_reason` (the last two stopped attempts ended for the same reason). An attempt the file still calls `started` is shown with what `integration.json` or the run's status already says |
+| `artefacts/<id>/manifest.json` entries of type `left-out` | `left_out` of the run detail: per artefact id, how many matching files were not handed over (`left_out` of `matched`), shown on the Artefacts tab |
 | `state.json` `replaces`, `branch`, `ship.commit`, `ship.pr`, `delivery.branch` | what landing and settlement need: the run a run starts again (a run whose `replaces` names another makes that one "replaced by"), the run's branch and shipped commit, its pull request, and its target branch (`delivery.branch` with stages, else `codebase.defaultBranch`, else `main`) |
 | the application repository (`codebase.root`, `AL_APP_ROOT` when set) | **Landing**, read-only: whether a handed-over run's tip (its branch, else `ship.commit`) is on the target branch's heads (`refs/heads/<target>` and every `refs/remotes/*/<target>`, read from the ref files): (1) `merge-base --is-ancestor` (landed in the oldest commit of `rev-list --ancestry-path`), (2) the forge says the pull request is merged, (3) the stable `patch-id` of the branch's change equals one of the last 500 target commits' (a squash merge), (4) every path the branch changed has the same blob on the target (an integration; some only: "partly"). git through the same hardened `safe_git` as the workspace scan, 10 s per call, never a fetch, never a write. Cached per (repository, run tip, target heads), so a new target commit recomputes; at most 8 uncached checks per tick (the others show "checking"). A later landed run whose prompt names a run's branch or id, or whose tip holds the run's tip, supersedes it |
 | `adws/dispatch.py --pr-state N --json` | the forge's answer for a run with a pull request whose local result is open: the layer's own runtime asks its forge read-only (`pr_state`, so credentials stay with the layer), kept 10 minutes per run and target heads; not asked for forge `none` or in a container |
@@ -418,8 +445,8 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
 ## Safety
 
 - **Writes, guarded** (and the stand-in's three, below). Only GET and HEAD, plus `POST /api/models`, `POST /api/start`,
-  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, `POST /api/promotion` and `POST /api/integrate`, which start runs through the layer's own scripts, and the three Testing writes `POST /api/testing`, `POST /api/batch` and `POST /api/run-testing`), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
-  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle`, `/api/integrate`, `/api/testing`, `/api/batch` or `/api/run-testing` is
+  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, `POST /api/promotion`, `POST /api/integrate` and `POST /api/assign`, which start runs through the layer's own scripts, and the three Testing writes `POST /api/testing`, `POST /api/batch` and `POST /api/run-testing`), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
+  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle`, `/api/integrate`, `/api/assign`, `/api/testing`, `/api/batch` or `/api/run-testing` is
   405 too). No endpoint changes a run's records (a settlement and a testing request are files of their own), and only an approved voice proposal can resume, answer or stop a run. All four writes pass one guard
   (`Handler._write_guard`): the token as for every request, but from the `Authorization` header or
   the cookie only (a token in the query string is refused); a loopback `Host` when there is no
@@ -709,6 +736,51 @@ only the keys named here.
 - `POST /api/start` accepts `testing` (`light`, `standard`, `heavy`, or empty for the layer's own level; 400
   otherwise) and passes it to the layer's launcher as `--testing`.
 
+### `GET /api/assign/preview`, `GET /api/assign/bulk`, `POST /api/assign`
+
+`GET /api/assign/preview?layer=K&run=ID` (the host and token checks of every GET) runs the layer's own
+`adws/assign.py preview ID --json` (argv list, no shell, the dashboard's token not passed on, a 60 s
+limit) and answers its plan: `{run, asked, title, status, stop: {status, step, kind, key, why}, kind:
+integrate|blockers|proof|person|check|resume|start-again|none, summary, steps, moved, decisions: [{id,
+kind, text, path, approvable, approved}], blockers, found, commands, integrate (the answer of the
+integration preview, for the kinds that start one), source, from_step, tier, attempts, clicks, left,
+same_reason, blocked, blocked_why, note}` with `start: {enabled, why}`, `tiers` and every path
+shortened. It starts nothing and changes nothing in the application; the one thing the runtime may
+write is the outcome of an earlier attempt that has ended, into `assign.json`. A `nonce`, valid for 10
+minutes for this layer and run, is added when this dashboard may start runs and there is something to
+confirm: a plan that can start, one only the limit blocks, or a decision a person can approve. A plan
+that cannot start (`blocked`: `needs-a-person`, `limit`, `settled`, `not-stopped`, `running`) is still
+200; a layer without the script answers 409 "generated before `al assign`: run `al gen NAME`", an
+unknown layer or run 404.
+
+`GET /api/assign/bulk?layer=K` runs `adws/assign.py all RUN … --preview --json` with the layer's runs
+under Needs you and answers `{layer, plans: [{run, title, kind, summary, skip, why}], startable, start}`
+in the order a bulk start gives them, `skip` saying why a run is left out, and one `nonce` for exactly
+those runs.
+
+`POST /api/assign` takes `{layer, run, action: start|approve|bulk, confirm, note, override, item, who}`
+and nothing else (`run`, `note`, `override` to start; `run`, `item`, `who` to approve; neither for
+`bulk`; any other key, or a key of another action, is 400), behind the guard of every write (loopback
+Host or token, the token never from the URL, Origin naming the Host, `X-AL-Dashboard: 1`,
+`application/json`, at most 4 KiB, not `--read-only`), and every action is refused with `--no-start` and
+in a container without `--allow-start-in-container` (403), as `POST /api/integrate` is. `confirm` is the
+`nonce` of a preview: missing, unknown, expired, used before or of another layer or run is 409 "the
+preview is stale: open it again", and a refused confirmation spends it.
+
+- `start`: `note` is at most 500 printable characters on one line, `override` true or false (400
+  otherwise). The layer's `adws/assign.py give ID --detach --by dashboard [--note TEXT] [--override]
+  --json` records the attempt and starts the plan: 202 `{"status": "started", "kind", "run", "run_id",
+  "attempt", "url": "#/run/K/RUN_ID"}`, where `run_id` is the run to watch (a new integration run, the
+  same run for a resume, the new run of a start-again); the runs are read again at once. A refusal of
+  the runtime is 409 `{"error": "<reason>: <words>", "reason"}` (`needs-a-person`, `limit` without the
+  override, `settled`, `running`, …, and the reasons of the integration).
+- `approve`: `item` is a decision's id, `who` 1–80 printable characters on one line. `assign.py approve
+  ID ITEM --who NAME --via dashboard --json` records the approval of exactly that item and starts
+  nothing: 200 with the new plan and a new `nonce`; an item the plan does not have, one that is approved
+  already or one that is a person's only is 409 `bad-item`.
+- `bulk`: `assign.py all RUN … --by dashboard --json` with the runs of the bulk preview: 202 `{"status":
+  "started", "started": N, "results": [{run, kind, status: started|skipped|error, run_id, why, url}]}`.
+
 ## Its own podman container
 
 ```bash
@@ -822,7 +894,7 @@ counts, landed and settled rows, a failure group's **Start all again** and the s
 `runs-failure-group-started-1280.png` and `run-settle-form-1280.png`. `tests/tools/test_al_runs.py` (at
 the repository root) runs `al runs`, `al settle` and `al runs … prune` on the same scenario.
 
-`tests/integrate_fixtures.py` builds the scenario of "Resolve with an agent" as code: an invented
+`tests/integrate_fixtures.py` builds the scenario of a run that could not merge as code: an invented
 application `pantry/` (a `stock.py`, an `INDEX.md` generated by `./index.sh`, a protected `deploy/`) with
 real git history, and its layer `pantry.al/` (the mock agent, a workflow that merges by itself,
 `templates/integrate.json`, a mock script for the resolve step) with nine runs: a merge conflict in a
@@ -835,8 +907,8 @@ is read by the dashboard; `tests/test_integrate_http.py` the three endpoints on 
 preview and its nonce (used once, not for another run), every write guard, `--read-only` and
 `--no-start`, a start that lands the work and moves the original to Landed, an unknown tier, the
 approval, and that the evidence endpoint writes nothing; `tests/test_browser_integrate.py` (Chrome) the
-button in the row and on the page, the preview at 1280 and 390 pixels, the whole flow from the click to
-"nothing needs you", the two evidence buttons and a refused run. With `AL_DASHBOARD_SHOTS=DIR` it saves
+**Give to an agent** button in the row and on the page, the preview at 1280 and 390 pixels, the whole
+flow from the click to "nothing needs you", the two evidence buttons and a run that stays with a person. With `AL_DASHBOARD_SHOTS=DIR` it saves
 `integrate-needs-you-1280.png`, `integrate-button-1280.png`, `integrate-preview-1280.png`,
 `integrate-preview-390.png`, `integrate-running-1280.png`, `integrate-landed-original-1280.png`,
 `integrate-runs-landed-1280.png`, `integrate-nothing-needs-you-1280.png`,
@@ -856,6 +928,28 @@ empty picker with its reason, a start from the form and the kit run's page; with
 (at the repository root) generates the full example layer and fails when a script under `adws/` or a
 workflow is missing from the registry or from what these two views return;
 `kit/runtime/tests/test_registry.py` keeps the registry equal to the kit modules it describes.
+`tests/assign_fixtures.py` extends that scenario for "Give to an agent": four more stopped runs written
+as records on real branches (a review that rejected the change after two rounds, with one blocker and
+a manifest that says 3 of 5 screenshots were left out; a rejected run with a `REQUIRES HUMAN` blocker; a
+failed check whose worktree is kept; a run that failed before changing anything), a patch round and an
+image artefact in the workflow, and the mock script that addresses the blocker; `KINDS` names the plan
+of each of the nine runs under Needs you. `tests/test_assign_model.py` checks what a run's summary says
+about `assign.json` (and that the constants and the counting are the runtime's), the next action of
+every run under Needs you with and without `adws/assign.py`, the reason of a run that stopped twice for
+the same reason, the left-out count of the run detail and the record in a run's signature;
+`tests/test_assign_http.py` the three endpoints on a real server: a preview with the right kind for
+every stopped run that starts and writes nothing, the nonce (missing, used, another run's, a bulk's),
+a start that lands the addressed blocker through the gate, `--read-only` and `--no-start`, an approval
+recorded for exactly one item with the plan that remains, the bulk order and a bulk start, unknown keys
+and a long note, and a layer without the script; `tests/test_browser_assign.py` (Chrome) the button in
+every Needs-you row and on every such page (disabled with its reason in a layer generated before
+`al assign`), the plan of a rejected review at 1280 and 390 pixels and its start with a sentence for
+the agent, "I approve this, continue" and the plan that remains, **Give all N to agents** with the
+plans first, and the left-out count on the Artefacts tab. With `AL_DASHBOARD_SHOTS=DIR` it saves
+`assign-needs-you-1280.png`, `assign-button-1280.png`, `assign-preview-rejected-1280.png`,
+`assign-preview-rejected-390.png`, `assign-preview-person-1280.png`, `assign-approved-1280.png`,
+`assign-bulk-1280.png` and `assign-left-out-1280.png`. `tests/tools/test_al_assign.py` (at the
+repository root) runs `al assign`.
 
 `tests/test_workspace.py` covers the workspace scan (states, sibling layers, al scout's summary, depth,
 symlinks out of the folder, the file and time bounds, git without fsmonitor or hooks, the cache and the

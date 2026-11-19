@@ -203,7 +203,7 @@ Every frame of the `docs/showcase` clips is real output of this repository on te
 | Notifications | | `al notify-test` sends one marked test message through the layer's notifiers. | [design](docs/DESIGN.md#telling-a-person) |
 | A stand-in for routine decisions | | Switch it on in the dashboard's Stand-in panel or with `al decider`; it proposes what to do with a stopped run (Go ahead · Yes, with this change · No, I decide) or takes the decisions you declared, inside hard limits. | [guide](docs/GUIDE.md#let-a-stand-in-decide-when-a-run-stops) |
 | Models and cost | | Claude Opus 5.5 by default, Claude Fable 5.2 opt-in for heavy work; tiers per step, per-run overrides, `(budget limits …)`. | [guide](docs/GUIDE.md#choose-models-and-limit-spending) |
-| A review that says no | <img src="docs/showcase/04-review-says-no.gif" width="320" alt="A review rejected in three rounds with its reasons; the run handed over to a person"> | A rejected review with its three rounds and reasons; the run is handed over, not counted as passed. | [clip](https://github.com/dancegit/al/releases/download/media-v1/showcase-04-review-says-no.mp4) · [guide](docs/GUIDE.md#step-12--let-small-things-ship-by-themselves) |
+| A review that says no | <img src="docs/showcase/04-review-says-no.gif" width="320" alt="A review rejected in three rounds with its reasons; the run handed over to a person"> | A rejected review with its three rounds and reasons; the run is handed over, not counted as passed; **Give to an agent** sends it round once more ([guide](docs/GUIDE.md#give-a-stopped-run-to-an-agent-al-assign)). | [clip](https://github.com/dancegit/al/releases/download/media-v1/showcase-04-review-says-no.mp4) · [guide](docs/GUIDE.md#step-12--let-small-things-ship-by-themselves) |
 
 ## See it
 
@@ -319,7 +319,7 @@ the sandbox, step discipline). How each idea lands in this repository, and why a
 
 ```
 racket/al/        the language: vocabulary, compiler, schema and reference generators, tests
-tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard · kpis · integrate · voice
+tools/al          init · scout · adopt · compile · gen · explain · verify · check · improve · eject · dashboard · kpis · integrate · assign · voice
 tools/al_*.py     al_provision (a host's provisioning files), al_sandbox (the sandbox image), …; kit/host/pins.json: pinned uv and agent CLIs
 kit/runtime/adw_modules/{placement,hostlink,selfrun,recordsync,remoterun}.py   runs on other hosts: scheduler, ssh, the host's run, the record pulled home, take-over
 kit/templates/    the prompts every layer starts from      kit/runtime/   what runs a workflow

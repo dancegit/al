@@ -74,6 +74,19 @@ a person needs.
 |---|---|
 | ![before](demo/webdemo/before.png) | ![after](demo/webdemo/a-after.png) |
 
+An image artefact hands the reviewers at most `#:max-files` pictures. Two rules apply when more files
+match its glob:
+
+- **The files of the change come first.** Pictures the run created or changed (new, modified, or built
+  and ignored by git) are handed over before pictures that were in the repository already; inside each
+  group the order is by name. So the proof of this change is not pushed out by older screenshots.
+- **The manifest says what was left out.** The reviewers' manifest gets one entry of type `left-out`
+  per capped artefact: `{"id": "screenshots", "type": "left-out", "left_out": 2, "matched": 14,
+  "limit": 12}`. It names no file. A reviewer who suspects that a requirement's proof is among the
+  files left out raises a blocker that names the artefact and says `proof not collected`; **Give to an
+  agent** then collects exactly that proof and asks the review again, without a code change (see the
+  guide, "Give a stopped run to an agent").
+
 ## On the pull request
 
 With a forge, the run attaches the proof to the pull request, so the reviewer never has to check
