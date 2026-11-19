@@ -798,6 +798,12 @@ def _consider(layer: Any, item: dict[str, Any], force_suggest: bool, via: str) -
         return _result("seen")
     if job is None and (state.decision or {}).get("status") == "resuming" and state.status != "running":
         return _result("skipped", reason="a resume of the run was started")     # not a new stop: nothing to record
+    if job is None:
+        held = state_module.run_holder(layer.layer_dir, state.adw_id)
+        if held:   # the run's process lives (e.g. in its own decide step): it decides its own stop
+            reason = f"the run's process {held.get('pid')} is alive: it decides its own stop"
+            decide.note_skipped(layer.layer_dir, state.adw_id, "stand-in", reason)
+            return _result("skipped", reason=reason)
     why = not_eligible(layer, state, adw, item)
     if why == RUNNING:
         return _result("skipped", reason=why)                     # it will stop again: that stop is looked at
@@ -808,6 +814,12 @@ def _consider(layer: Any, item: dict[str, Any], force_suggest: bool, via: str) -
     base["situation"] = name
     if offered in ([], ["ask-human"]):
         return _result("skipped", record(layer, {**base, "status": "skipped", "reason": NEVER_ALL}, state))
+    if job is None and not force_suggest:   # one party decides each stop: the run's decide step or this loop
+        lost = decide.claim_stop(layer.layer_dir, state.adw_id, "stand-in")
+        if lost:
+            reason = f"the stop was decided by {lost}"
+            decide.note_skipped(layer.layer_dir, state.adw_id, "stand-in", reason)
+            return _result("skipped", reason=reason)
     # numbers (an attempt, a log's name, a duration) do not make a reason a different one
     stopped_for = re.sub(r"\d+", "#", str(job.get("reason") or "") if job is not None else decide._stop_reason(state))[:300]
     base["stopped_for"] = stopped_for
@@ -1084,6 +1096,11 @@ def apply(layer: Any, state: Any, decision: dict[str, Any], who: str, via: str, 
             **({"job": str(job.get("id"))} if job is not None else {"run": state.adw_id, "stop": fingerprint(state)}),
             **(shown or {})}
     base.update(who=who, via=via)
+    held = state_module.run_holder(layer.layer_dir, state.adw_id) if job is None else None
+    if held:   # the run's process lives: it is left to that process (apply_stored, a go-ahead)
+        reason = f"the run's process {held.get('pid')} is alive"
+        entry = record(layer, {**base, "status": "refused", "auto": False, "reason": reason}, state)
+        return _result("refused", entry, reason=reason)
     if who == "stand-in":
         refused = hard_limit(layer, state, action, decision, item)
         if refused:

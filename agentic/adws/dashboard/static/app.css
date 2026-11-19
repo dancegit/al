@@ -241,8 +241,9 @@ svg text { font-family: var(--sans); }
 .g-edge.resolve { stroke: var(--check); stroke-dasharray: 3 3; opacity: .75; }
 .g-edge.patch { stroke: var(--review); stroke-dasharray: 5 4; opacity: .8; }
 .g-edge.fan { stroke: var(--fan); opacity: .6; }
+.g-edge.waiting { stroke: var(--running); stroke-dasharray: 4 3; opacity: .85; }
 .g-edge-label { font-size: 10px; fill: var(--dim); }
-.g-edge-label.resolve { fill: var(--check); } .g-edge-label.patch { fill: var(--review); }
+.g-edge-label.resolve { fill: var(--check); } .g-edge-label.patch { fill: var(--review); } .g-edge-label.waiting { fill: var(--running); }
 .g-arrow { fill: #5c6b80; }
 .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--dim); }
 .legend span { display: inline-flex; gap: 5px; align-items: center; }

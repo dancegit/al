@@ -188,7 +188,13 @@ WORKSPACE_REPO_CAP = 500       # repositories listed
 WORKSPACE_GIT_TIMEOUT = 5      # seconds per git call of the scan
 JOB_ID = re.compile(r"^[0-9a-f]{8}$")
 JOB_HEARTBEAT = 5              # seconds between a job runner's heartbeats
-ACTION_KEYS = {"repo", "action", "confirm", "choices", "placement"}
+ACTION_KEYS = {"repo", "action", "confirm", "choices", "placement"} | {"snapshot", "request"}
+PLACEMENT_ACTIONS = ("create", "adopt")   # the actions that take a `placement`
+# a layer's snapshot records (al snapshot, tools/al_snapshot.py SNAPSHOT_DIR and ID_RX; a tools test keeps them equal)
+SNAPSHOT_DIR = ".work/snapshots"
+SNAPSHOT_ID = re.compile(r"^\d{8}T\d{6}Z(-\d{1,3})?$")
+SNAPSHOT_LIST_CAP = 50
+IMPROVE_REQUEST_CHARS = 2000       # the longest request the improve action passes to `al improve`
 PLACEMENTS = ("beside", "inside")   # where create and adopt put the layer: <name>.al beside the repository, or in it
 IN_REPO_DIR = "agentic"             # the folder of an inside layer: IN_REPO_DIR of tools/al_create.py (a test keeps them equal)
 RETRY_KEYS = {"job", "from"}
@@ -322,6 +328,29 @@ def read_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+def run_holder(layer_path: Path, run_id: str) -> dict[str, Any] | None:
+    """The {"pid", "host"} of the live process holding agents/<id>/run.lock (the runtime's
+    state.run_holder), else None; None too where flock cannot be used (the launcher still refuses)."""
+    path = Path(layer_path) / "agents" / str(run_id) / "run.lock"
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            data = read_json(path)
+            data = data if isinstance(data, dict) else {}
+            return {**data, "pid": data.get("pid", 0), "host": data.get("host", "")}
+        except OSError:
+            return None
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return None
+    finally:
+        os.close(fd)
 
 
 def clip(text: str, limit: int) -> str:
@@ -4095,6 +4124,15 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
                         cost=event.get("cost") if isinstance(event.get("cost"), (int, float)) else None,
                         turns=event.get("turns") if isinstance(event.get("turns"), int) else None,
                         error=str(event.get("error") or ""), billing=str(event.get("billing") or ""))
+        elif kind == "agent.leftovers":
+            # the CLI did not exit after its final result: the runtime stopped it and what it left running
+            span = agents.setdefault(str(event.get("step") or ""), {
+                "start": at, "owner": str(event.get("owner") or ""), "agent": str(event.get("agent") or ""),
+                "agent_kind": str(event.get("agent_kind") or ""), "model": str(event.get("model") or ""),
+                **tier_fields(event)})
+            span["leftovers"] = [str(item.get("command") or item.get("pid")) for item in event.get("stopped") or []
+                                 if isinstance(item, dict)]
+            span["left"] = True
         elif kind in {"limit.status", "limit.stop", "limit.wait"}:
             seconds = event.get("seconds")
             limits.append({"type": kind, "at": at,
@@ -4390,7 +4428,8 @@ class RunModel:
                              if role == "main" and record.get("agent_kind") else {})
             info = {"dir": directory.name, "step": step, "role": role, "start": start, "end": end,
                     "status": astatus, **agg.as_dict(), "agent_id": str(ident.get("agent") or ""),
-                    "agent_kind": str(ident.get("agent_kind") or "")}
+                    "agent_kind": str(ident.get("agent_kind") or ""),
+                    "leftovers": list((span or {}).get("leftovers") or []), "left": bool((span or {}).get("left"))}
             info["model"] = str(ident.get("model") or "") or agg.model
             call = calls.get(directory.name) or {}
             info.update(tier_fields(span or call))
@@ -4838,6 +4877,10 @@ class RunModel:
             node["resolves"] = sum(1 for a in group if a["role"] == "resolve")
             node["agents"] = [a["dir"] for a in group]
             node["detail"] = short(str(record.get("detail", "")))[:300]
+            node["leftovers"] = sum(len(a["leftovers"]) for a in group)
+            node["left"] = any(a["left"] for a in group)
+            if node["left"]:
+                node["note"] = "the agent finished; its leftover commands were stopped"
             if node["type"] == "candidate":
                 record = (state.get("fanout") or {}).get(step) or {}
                 candidates = record.get("candidates") or []
@@ -4855,6 +4898,12 @@ class RunModel:
                     node["status"] = str(records.get(step, {}).get("status", "pending"))
                     if node["status"] == "passed":
                         node["status"] = "done"
+        # the arrow out of a running step into a pending one is waiting, not untaken
+        status_of = {node["id"]: node["status"] for node in graph["nodes"]}
+        for edge in graph["edges"]:
+            if edge.get("kind") in {"flow", "branch", "join", "fan"} and status_of.get(edge["from"]) == "running" \
+                    and status_of.get(edge["to"]) == "pending":
+                edge["status"] = "waiting"
         # timeline
         bars = []
         order = {name: index for index, name in enumerate(data["steps"])}
@@ -5375,8 +5424,8 @@ class Model:
         self.author_flags = list(author_flags or [])
         self.finder = load_tool_finder(al)
         self._tool_rows: tuple[float, list[dict[str, Any]]] | None = None
-        # nonce → (repo, action, signature, expires, placement)
-        self.previews: dict[str, tuple[str, str, tuple, float, str]] = {}
+        # nonce → (repo, action, signature, expires, placement, the typed value: snapshot id or improve request)
+        self.previews: dict[str, tuple[str, str, tuple, float, str, str]] = {}
         self.action_lock = threading.Lock()
         self.workspace_version = workspace.version if workspace else 0
         self.job_sigs: dict[str, tuple | None] = {}
@@ -5524,11 +5573,14 @@ class Model:
                 "repos": [self.repo_view(e, layer_keys) for e in ws.as_list()]}
 
     def action_views(self, entry: RepoEntry) -> list[dict[str, Any]]:
-        cfg = ActionConfig(self.al or Path("al"), self.author_flags)
+        # the typed values show as placeholders: improve reads `al improve LAYER -- REQUEST`
+        cfg = ActionConfig(self.al or Path("al"), self.author_flags, snapshot="ID", request="REQUEST")
         docs = Path("/<job>/docs")
         out = []
         placements: list[dict[str, Any]] | None = None    # computed once, shared by create and adopt
         for name, action in ACTIONS.items():
+            if not action.listed:
+                continue
             why, needs = "", ""
             if self.al is None:
                 why, needs = f"needs the al tool; looked for: {', '.join(self.al_looked)}", "al"
@@ -5543,6 +5595,7 @@ class Model:
                                for p in action.writes_paths(entry, c)]
             view = {"name": name, "description": action.description, "writes": action.writes,
                     "available": not why, "why": why, "needs": needs, "states": list(action.states),
+                    "param": action.param,
                     "commands": show(action.steps(entry, cfg, docs)),
                     "preview": show(action.preview(entry, cfg, docs)) if action.preview else [],
                     "paths": paths(cfg)}
@@ -5575,8 +5628,21 @@ class Model:
         if entry is None:
             return None
         return {"repo": self.repo_view(entry), "summary": entry.summary, "actions": self.action_views(entry),
+                "help": [ACTION_HELP[n] for n in ("gen", "regen", "reauthor", "improve")] if entry.state == "layer" else [],
+                "snapshots": self.snapshot_rows(entry),
                 "jobs": self.job_list(entry.key, limit=20),
                 "al": {"found": self.al is not None, "looked": self.al_looked, "tools": self.tool_rows()}}
+
+    def snapshot_rows(self, entry: RepoEntry) -> list[dict[str, Any]]:
+        """The snapshots of the repository's layer (or of its placements' folders) with the command that
+        restores each; no absolute path."""
+        al = str(self.al or "al")
+        for layer in snapshot_layers(entry):
+            rows = snapshot_list(layer)
+            if rows:
+                return [{**row, "restore": display_argv([al, "snapshot", str(layer), "--restore", row["id"]],
+                                                        self.ws_display)} for row in rows]
+        return []
 
     def author_agent(self) -> str:
         """The agent kind `author` steps run with: --agent in the author flags, else claude-code."""
@@ -5604,11 +5670,14 @@ class Model:
         return self._tool_rows[1]
 
     def start_action(self, entry: RepoEntry, name: str, nonce: str | None,
-                     choices: dict[str, str] | None = None, placement: str | None = None) -> tuple[int, dict[str, Any]]:
+                     choices: dict[str, str] | None = None, placement: str | None = None,
+                     snapshot: str = "", request: str = "") -> tuple[int, dict[str, Any]]:
         """Every guard, then a preview (a writing action without a confirmation) or a job. → (status, body).
-        `choices` (create and adopt only, checked against CHOICE_RULES) go to the author step; `placement`
+        `choices` (create, adopt and reauthor, checked against CHOICE_RULES) go to the author step; `placement`
         (create and adopt only, one of PLACEMENTS, beside when absent) is where the new layer goes: it is
-        checked by `placement_view`, as the page shows it, and a confirmation is bound to its preview's."""
+        checked by `placement_view`, as the page shows it, and a confirmation is bound to its preview's.
+        `snapshot` (restore) is a snapshot id of the repository's layer; `request` (improve) what to change.
+        A confirmation is bound to the typed value its preview showed."""
         placement = placement or "beside"
         action = ACTIONS[name]
         if self.al is None:
@@ -5621,7 +5690,12 @@ class Model:
         app = os.path.realpath(entry.path)
         if not self.workspace.inside(app) or not os.path.lexists(os.path.join(app, ".git")):
             return 409, {"error": f"{entry.name} is no longer a git repository inside the workspace"}
-        layer = layer_of(entry, placement)
+        layer: Path | None = layer_of(entry, placement)
+        if action.param == "snapshot":
+            layer = snapshot_layer(entry, snapshot)
+            if layer is None:
+                return 409, {"error": f"no snapshot {snapshot} of {entry.name}'s layer"}
+        assert layer is not None
         if not self.workspace.inside(str(layer)) and not str(layer).startswith(app + os.sep):
             return 409, {"error": f"{entry.name}'s layer is outside the workspace"}
         if action.definition:
@@ -5631,7 +5705,9 @@ class Model:
             view = placement_view(Path(app), placement, self.ws_display)
             if not view["ok"]:
                 return 409, {"error": view["problem"]}
-        cfg = ActionConfig(self.al, self.author_flags, dict(choices or {}), placement)
+        cfg = ActionConfig(self.al, self.author_flags, dict(choices or {}), placement, snapshot=snapshot, request=request,
+                           layer=layer if action.param == "snapshot" else None)
+        typed = snapshot if action.param == "snapshot" else request if action.param == "request" else ""
         with self.action_lock:
             busy = self.jobs.running_for(app)
             if busy is not None or lock_held(lock_file(self.jobs.root, app)):
@@ -5643,7 +5719,7 @@ class Model:
                 sig = confirm_signature(Path(app), layer)
                 if not nonce:
                     nonce = secrets.token_urlsafe(18)
-                    self.previews[nonce] = (entry.key, name, sig, now + PREVIEW_TTL, placement)
+                    self.previews[nonce] = (entry.key, name, sig, now + PREVIEW_TTL, placement, typed)
                     docs = Path("/<job>/docs")
                     body: dict[str, Any] = {
                         "preview": True, "repo": entry.key, "action": name, "nonce": nonce,
@@ -5660,6 +5736,9 @@ class Model:
                     return 409, {"error": "this confirmation is unknown, used or expired: preview the action again"}
                 if stored[4] != placement:
                     return 409, {"error": "the placement changed since the preview: preview the action again"}
+                if stored[5] != typed:
+                    what = "snapshot" if action.param == "snapshot" else "request"
+                    return 409, {"error": f"the {what} changed since the preview: preview the action again"}
                 if stored[2] != sig:
                     return 409, {"error": f"{entry.name} changed since the preview: preview the action again"}
             job_id = self._spawn(entry, name, action.steps, cfg, layer)
@@ -5686,7 +5765,8 @@ class Model:
                "preflight": [str(cfg.al), "doctor", str(layer),
                              "--for", ",".join(dict.fromkeys(s.argv[1] for s in steps if len(s.argv) > 1)), *agent_flag],
                "retries": [], "choices": {} if preview else dict(cfg.choices),
-               "placement": cfg.placement if ACTIONS[name].definition else ""}
+               "placement": cfg.placement if ACTIONS[name].definition else "",
+               "snapshot": str(cfg.snapshot or ""), "request": str(cfg.request or "")}
         uv = self.finder.find("uv") if self.finder is not None else None
         if uv is not None and not uv.path and job["steps"]:
             # the al tool starts through uv (its shebang): without it no step can run; say so at once
@@ -6009,6 +6089,8 @@ class Model:
             entry = result.get("entry") if isinstance(result.get("entry"), dict) else {}
             if entry.get("id"):
                 standin_via_layer(layer, ["note", "--json"], stdin={"ref": entry["id"], "outcome": text})
+        with self.lock:                                       # done: once the page sees it, it may be queued again
+            self.standin_pending.discard(self._standin_key(layer, item))
         self.drop_standin_view(layer)
         if job is None and RUN_ID.match(str(item.get("run") or "")):
             self.refresh_run(layer, str(item["run"]))
@@ -6450,6 +6532,9 @@ class Model:
         with self.lock:
             summary = self.summaries.get(key)
         summary = summary or RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary()
+        held = run_holder(layer.path, run_id)
+        if held:
+            return None, 409, f"run {run_id} is still held by its process {held.get('pid')}: it is left to that process"
         if summary.get("status") not in ("failed", "died"):
             return None, 400, f"run {run_id} is {summary.get('status')}: only a failed or died run is started again"
         with self.lock:
@@ -6752,6 +6837,10 @@ class Model:
         files = RunFiles(layer, run_id)
         sig = files.signature(deep=True)
         key = f"{layer_key}/{run_id}"
+        if key not in self.attention:
+            # a run the watcher has not read yet: read it and its bucket now, or the page draws it once
+            # without them and again (new nodes) when the watcher's tick adds them
+            self.refresh_run(layer, run_id)
         cached = self.detail_cache.get(key)
         if cached and cached[0] == sig and cached[1]["summary"]["status"] != "running":
             return {**cached[1], "summary": self._decorated(cached[1]["summary"]),
@@ -7487,6 +7576,9 @@ class ActionConfig:
     author_flags: list[str]
     choices: dict[str, str] = field(default_factory=dict)    # --choice KEY=VALUE of the author step
     placement: str = "beside"                                # one of PLACEMENTS: where create and adopt put the layer
+    snapshot: str = ""                                       # restore: the snapshot id (checked against SNAPSHOT_ID)
+    request: str = ""                                        # improve: what to change, in plain words
+    layer: Path | None = None                                # restore: the layer, when the scan no longer sees one
 
 
 # What the start form may send as `choices` (KEY → allowed values, a comma-separated list of them, or a
@@ -7502,7 +7594,7 @@ CHOICE_RULES: dict[str, tuple[tuple[str, ...], bool, str]] = {
     "review": (("human", "agent"), False, ""),
     "delivery": (("trunk", "sprint", "gitflow", "release-train", "phase-gate", "none"), False, ""),
 }
-CHOICE_ACTIONS = ("create", "adopt")
+CHOICE_ACTIONS = ("create", "adopt", "reauthor")
 
 
 def choice_problem(key: Any, value: Any) -> str:
@@ -7540,6 +7632,53 @@ def layer_of(entry: RepoEntry, placement: str = "beside") -> Path:
     if entry.layer_dir is not None:
         return Path(os.path.realpath(entry.layer_dir))
     return placement_layer(Path(os.path.realpath(entry.path)), placement)
+
+
+def snapshot_list(layer: Path) -> list[dict[str, Any]]:
+    """The snapshots `al snapshot` recorded in LAYER/.work/snapshots/ (ID.json that names its own id),
+    newest first, at most SNAPSHOT_LIST_CAP: {id, kind, created, note, commit (12), files}. Read here, the
+    same way tools/al_snapshot.py `records` reads them (a tools test keeps the two equal)."""
+    directory = Path(layer) / SNAPSHOT_DIR
+    found = []
+    try:
+        paths = list(directory.glob("*.json")) if directory.is_dir() and not directory.is_symlink() else []
+    except OSError:
+        paths = []
+    for path in paths:
+        if not SNAPSHOT_ID.match(path.stem) or path.is_symlink() or not path.is_file():
+            continue
+        data = read_json(path)
+        if not isinstance(data, dict) or data.get("id") != path.stem:
+            continue
+        files = data.get("files")
+        found.append({"id": path.stem, "kind": str(data.get("kind") or ""), "created": str(data.get("created") or ""),
+                      "note": clip(str(data.get("note") or ""), 200), "commit": str(data.get("commit") or "")[:12],
+                      "files": files if isinstance(files, int) else None})
+
+    def key(row: dict[str, Any]) -> tuple[str, int]:
+        base, _, n = row["id"].partition("-")
+        return base, int(n or 1)
+    return sorted(found, key=key, reverse=True)[:SNAPSHOT_LIST_CAP]
+
+
+def snapshot_layers(entry: RepoEntry) -> list[Path]:
+    """Where the repository's snapshots are: its layer, else every placement's folder (beside first): a
+    beside layer whose agentic.rkt a failed reauthor set aside is no longer scanned as a layer."""
+    if entry.layer_dir is not None:
+        return [layer_of(entry)]
+    app = Path(os.path.realpath(entry.path))
+    return [placement_layer(app, p) for p in PLACEMENTS]
+
+
+def snapshot_layer(entry: RepoEntry, snap_id: str) -> Path | None:
+    """The layer that holds the snapshot `snap_id`, or None."""
+    if entry.layer_dir is not None:
+        layer = layer_of(entry)
+        return layer if any(r["id"] == snap_id for r in snapshot_list(layer)) else None
+    for layer in snapshot_layers(entry):
+        if any(r["id"] == snap_id for r in snapshot_list(layer)):
+            return layer
+    return None
 
 
 PLACEMENT_TEXT = {
@@ -7617,6 +7756,49 @@ def _steps_explain(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
     return [Step("explain", [str(c.al), "explain", str(layer_of(e)), "--md", str(docs / "EXPLAIN.md")], None, 300)]
 
 
+def _steps_snapshot(note: str):
+    """`al snapshot LAYER --note NOTE --json`: its record is the job's doc snapshot.json."""
+    def steps(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+        return [Step("snapshot", [str(c.al), "snapshot", str(layer_of(e)), "--note", note, "--json"], "snapshot.json", 1800)]
+    return steps
+
+
+def _steps_regen(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    return [*_steps_snapshot("before regen")(e, c, docs),
+            Step("gen", [str(c.al), "gen", str(layer_of(e)), "--discard-edits"], None, 600)]
+
+
+def _steps_regen_preview(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    return [Step("edits", [str(c.al), "gen", str(layer_of(e)), "--list-edits"], "hand-edits.txt", 600)]
+
+
+def _steps_reauthor(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    """A snapshot, then the definition written again from scratch: set the old one aside, scout, author
+    (the dashboard's author flags and the choices), gen, check, and the diff of the old against the new.
+    Nothing under agents/ or adopted/ is removed; the layer stays where it is."""
+    al, app, layer = str(c.al), os.path.realpath(e.path), str(layer_of(e))
+    return [*_steps_snapshot("before reauthor")(e, c, docs),
+            Step("set-aside", [al, "author", layer, "--set-aside"], None, 120),
+            Step("scout", [al, "scout", app, "--into", layer, *_agent_flag(c), "--raw"], None, 1800, "agent"),
+            Step("author", [al, "author", layer, *c.author_flags, "--raw", *_choice_args(c.choices)], None, 3600, "agent"),
+            Step("gen", [al, "gen", layer], None, 600), Step("check", [al, "check", layer], None, 600),
+            Step("diff", [al, "author", layer, "--diff-set-aside"], "definition.diff.txt", 120)]
+
+
+def _steps_improve(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    """The request is one argv element after `--`: never an option, never through a shell."""
+    return [Step("improve", [str(c.al), "improve", str(layer_of(e)), "--", c.request], None, 7200)]
+
+
+def _steps_restore(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    return [Step("restore", [str(c.al), "snapshot", str(c.layer or layer_of(e)), "--restore", c.snapshot], None, 1800)]
+
+
+def _steps_restore_preview(e: RepoEntry, c: ActionConfig, docs: Path) -> list[Step]:
+    return [Step("restore", [str(c.al), "snapshot", str(c.layer or layer_of(e)), "--restore", c.snapshot, "--dry-run"],
+                 "restore.txt", 1800)]
+
+
 @dataclass
 class Action:
     states: tuple[str, ...]
@@ -7626,6 +7808,8 @@ class Action:
     writes_paths: Callable[[RepoEntry, ActionConfig], list[Path | str]] = lambda e, c: []
     preview: Callable[[RepoEntry, ActionConfig, Path], list[Step]] | None = None
     definition: bool = False     # writes agentic.rkt: refused when any definition exists
+    param: str = ""              # the one typed value it takes: "snapshot" (restore) or "request" (improve)
+    listed: bool = True          # False: no button of its own (restore starts from a snapshot row or a job outcome)
 
 
 # The allow-list: a fixed name → the fixed argv lists it runs, built from the scanned repository only.
@@ -7645,6 +7829,35 @@ ACTIONS: dict[str, Action] = {
                      _one("verify", "--json", doc="verify.json", timeout=3600),
                      lambda e, c: [layer_of(e) / "agents" / "verify", "a throwaway git worktree (removed afterwards)"]),
     "explain": Action(("layer",), False, "explain the layer definition in plain language (read-only)", _steps_explain),
+    "snapshot": Action(("layer",), True, "back up the layer folder (a commit when it is a git repository, else an "
+                       "archive); restorable", _steps_snapshot("from the dashboard"),
+                       lambda e, c: [layer_of(e) / SNAPSHOT_DIR, "a commit in the layer's git repository, when it is one"]),
+    "regen": Action(("layer",), True, "snapshot, then regenerate and overwrite hand-edited generated files",
+                    _steps_regen, lambda e, c: [layer_of(e) / SNAPSHOT_DIR, layer_of(e)], preview=_steps_regen_preview),
+    "reauthor": Action(("layer",), True, "snapshot, then write the definition again from scratch; keeps agents/, "
+                       "adopted/ and the layer's place", _steps_reauthor,
+                       lambda e, c: [layer_of(e) / SNAPSHOT_DIR, layer_of(e) / "agentic.rkt",
+                                     "the old agentic.rkt is set aside first, as agentic.rkt.before-DATE",
+                                     layer_of(e) / "LLM.txt", layer_of(e) / "scout.json", layer_of(e)],
+                       preview=_steps_choices),
+    "improve": Action(("layer",), True, "change the definition through al's reviewed workflow (ends in a pull request)",
+                      _steps_improve, lambda e, c: [layer_of(e) / ".al-improve",
+                                                    "a branch and a pull request (or PR.md) of the layer's repository"],
+                      param="request"),
+    "restore": Action(("layer", "setup", "none"), True, "restore a snapshot of the layer (takes a snapshot of the "
+                      "current state first)", _steps_restore,
+                      lambda e, c: [(c.layer or layer_of(e)) / SNAPSHOT_DIR, c.layer or layer_of(e)],
+                      preview=_steps_restore_preview, param="snapshot", listed=False),
+}
+
+# One line each on the Repos screen: when to use which of the actions that change a layer's definition.
+ACTION_HELP: dict[str, str] = {
+    "gen": "gen: you changed agentic.rkt; generate the files again (stops on hand-edited generated files)",
+    "regen": "regen: gen stopped on hand edits you do not want; snapshot, then overwrite them",
+    "reauthor": "reauthor: the definition is old or wrong; snapshot, then have it written again from the "
+                "repository's facts",
+    "improve": "improve: say in words what to change; al's reviewed workflow changes the definition and opens a pull "
+               "request",
 }
 
 
@@ -7876,7 +8089,12 @@ JOURNAL_PAGE = 5000              # journal events per /api/job/journal answer
 LOG_PAGE_LINES = 20_000          # lines per /api/job/log answer
 LOG_PAGE_BYTES = 2 * 1024 * 1024
 JOB_NEXT = {"create": "open the layer's workflows on the Layers view",
-            "adopt": "open the layer's workflows on the Layers view"}
+            "adopt": "open the layer's workflows on the Layers view",
+            "regen": "open the layer's workflows on the Layers view",
+            "reauthor": "read the definition diff below, then al verify the layer",
+            "snapshot": "the snapshot is listed on the repository page",
+            "restore": "al gen the layer if its definition changed",
+            "improve": "review the pull request al improve opened"}
 _NEXT_LINE = re.compile(r"(?:^\s*|;\s+)next:\s*(.+?)\s*$", re.IGNORECASE)   # "next: …", "… compiles; next: …"
 _RELEVANT = re.compile(r"^al: |error|failed|Traceback", re.IGNORECASE)
 
@@ -8048,7 +8266,10 @@ def job_outcome(job: dict[str, Any], directory: Path, report: dict[str, Any] | N
         count = lambda kind: sum(1 for c in changed if c.get("change") == kind)  # noqa: E731
         left_out = (report or {}).get("left_out") or []
         card = job_card(job, directory)
-        return {"status": "passed",
+        extra: dict[str, Any] = {}
+        if job.get("action") == "reauthor" and step_passed(job, "diff"):
+            extra["diff"] = "definition.diff.txt"
+        return {**extra, "status": "passed",
                 "created": {"layer": str(job.get("layer_display") or ""), "added": count("added"),
                             "modified": count("modified"), "removed": count("removed")},
                 "adopted": sum(1 for c in changed if "/adopted/" in "/" + str(c.get("path") or "")),
@@ -8068,10 +8289,35 @@ def job_outcome(job: dict[str, Any], directory: Path, report: dict[str, Any] | N
                 break
     if not reason:
         reason = first_sentence(re.sub(r"^\S+: ", "", str(job.get("reason") or ""))) or f"{name} did not pass"
-    return {"status": status, "step": name, "reason": clip(reason, 400),
-            "lines": last_relevant_lines(directory, name) if name else [],
-            "retry_from": retry_from(job),
-            "log": f"{name}.log" if files and confined_file(directory, files["log"]) else ""}
+    out = {"status": status, "step": name, "reason": clip(reason, 400),
+           "lines": last_relevant_lines(directory, name) if name else [],
+           "retry_from": retry_from(job),
+           "log": f"{name}.log" if files and confined_file(directory, files["log"]) else ""}
+    if job.get("action") in ("regen", "reauthor"):
+        snap_id = job_snapshot_id(job, directory)
+        if snap_id:
+            out["restore"] = {"snapshot": snap_id,
+                              "command": f"al snapshot {job.get('layer_display') or ''} --restore {snap_id}"}
+        if job.get("action") == "reauthor" and step_passed(job, "set-aside"):
+            out["definition_aside"] = True
+    return out
+
+
+def step_passed(job: dict[str, Any], name: str) -> bool:
+    return any(isinstance(s, dict) and s.get("name") == name and s.get("status") == "passed"
+               for s in job.get("steps") or [])
+
+
+def job_snapshot_id(job: dict[str, Any], directory: Path) -> str:
+    """The id of the snapshot a job's passed `snapshot` step took (its doc snapshot.json), or ""."""
+    if not step_passed(job, "snapshot"):
+        return ""
+    path = Path(directory) / "docs" / "snapshot.json"
+    if not confined_file(directory, path):
+        return ""
+    data = read_json(path)
+    snap_id = data.get("id") if isinstance(data, dict) else None
+    return snap_id if isinstance(snap_id, str) and SNAPSHOT_ID.match(snap_id) else ""
 
 
 def job_detail(job: dict[str, Any], directory: Path) -> dict[str, Any]:
@@ -9292,6 +9538,9 @@ def validate_action(model: "Model", layer: Layer, conv: Conversation, action: An
         if not isinstance(run, str) or not RUN_ID.match(run) or not (layer.path / "agents" / run).is_dir():
             return None, "no such run in this layer (use the full 8-character id)"
         status = _run_status(model, layer, run)
+        held = run_holder(layer.path, run) if kind in ("resume", "retry") else None
+        if held:
+            return None, f"run {run[:4]} is still held by its process {held.get('pid')}: it is left to that process"
         if kind == "resume" and status not in ("waiting", "failed", "handed-over"):
             return None, f"run {run[:4]} is {status}: only a waiting, failed or handed-over run can be resumed"
         if kind == "answer":
@@ -9723,8 +9972,9 @@ class Handler(BaseHTTPRequestHandler):
             request = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             return self._error(400, "expected a JSON object")
-        usage = ('expected {"repo": KEY, "action": NAME}, and "confirm": NONCE to confirm a preview, and for create '
-                 'or adopt "choices": {KEY: VALUE} and "placement": "beside" | "inside"; nothing else')
+        usage = ('expected {"repo": KEY, "action": NAME}, and "confirm": NONCE to confirm a preview, for create, adopt '
+                 'or reauthor "choices": {KEY: VALUE}, for create or adopt "placement": "beside" | "inside", for '
+                 'restore "snapshot": ID and for improve "request": TEXT; nothing else')
         if not isinstance(request, dict) or not set(request) <= ACTION_KEYS or not {"repo", "action"} <= set(request) \
                 or not all(isinstance(v, str) for k, v in request.items() if k != "choices"):
             return self._error(400, usage)
@@ -9733,7 +9983,7 @@ class Handler(BaseHTTPRequestHandler):
         choices = request.get("choices")
         if choices is not None:
             if request["action"] not in CHOICE_ACTIONS:
-                return self._error(400, f"choices are for {' and '.join(CHOICE_ACTIONS)} only")
+                return self._error(400, f"choices are for {', '.join(CHOICE_ACTIONS[:-1])} and {CHOICE_ACTIONS[-1]} only")
             if not isinstance(choices, dict):
                 return self._error(400, usage)
             for key, value in choices.items():
@@ -9742,10 +9992,30 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(400, problem)
         placement = request.get("placement")
         if placement is not None:
-            if request["action"] not in CHOICE_ACTIONS:
-                return self._error(400, f"placement is for {' and '.join(CHOICE_ACTIONS)} only")
+            if request["action"] not in PLACEMENT_ACTIONS:
+                return self._error(400, f"placement is for {' and '.join(PLACEMENT_ACTIONS)} only")
             if placement not in PLACEMENTS:
                 return self._error(400, f"placement: one of {', '.join(PLACEMENTS)}")
+        param = ACTIONS[request["action"]].param
+        snapshot = request.get("snapshot")
+        if snapshot is not None and param != "snapshot":
+            return self._error(400, "snapshot is for restore only")
+        if param == "snapshot":
+            if snapshot is None:
+                return self._error(400, "restore needs a snapshot id")
+            if not SNAPSHOT_ID.match(snapshot):
+                return self._error(400, "snapshot: not a snapshot id")
+        wanted = request.get("request")
+        if wanted is not None and param != "request":
+            return self._error(400, "request is for improve only")
+        if param == "request":
+            if wanted is None or not wanted.strip():
+                return self._error(400, "improve needs a request: say what to change")
+            wanted = wanted.strip()
+            if len(wanted) > IMPROVE_REQUEST_CHARS:
+                return self._error(400, f"request: at most {IMPROVE_REQUEST_CHARS} characters")
+            if _CONTROL.search(wanted) or "\n" in wanted or "\t" in wanted or "\r" in wanted:
+                return self._error(400, "request: one line of text, without control characters")
         if not request["repo"] or WS_KEY_BAD.search(request["repo"]) or WS_KEY_BAD.search(request.get("confirm", "")):
             return self._error(400, usage)
         if model.workspace is None:
@@ -9754,7 +10024,7 @@ class Handler(BaseHTTPRequestHandler):
         if entry is None:
             return self._error(404, "unknown repository")
         status, answer = model.start_action(entry, request["action"], request.get("confirm") or None, choices,
-                                             placement)
+                                             placement, snapshot=snapshot or "", request=wanted or "")
         return self._json(answer, status)
 
     def _retry(self) -> None:

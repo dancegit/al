@@ -6,7 +6,8 @@ reader never sees half a line from us, and concurrent writers never interleave i
     {"ts": "2026-11-15T10:04:12.345+00:00", "seq": 7, "type": "check.start", "step": "test", ...}
 
 `ts` is ISO-8601 UTC, `seq` increases by one per event within the file (a resumed run continues
-after the last seq on disk), `type` is one of TYPES. The fields of each type are documented in
+after the last seq on disk; the next seq is taken under a flock on the file, so concurrent
+writers never share one), `type` is one of TYPES. The fields of each type are documented in
 docs/DESIGN.md ("Run events"); readers must ignore types and fields they do not know.
 
 This module owns the format. Call sites use `say()` where the run already prints a progress line
@@ -16,6 +17,7 @@ not. Nothing here ever raises into a run: a failed write is reported once on std
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import sys
@@ -31,7 +33,7 @@ TYPES = (
     "env.container.start", "env.container.stop",
     "env.build.start", "env.build.end", "env.preflight",
     "step.start", "step.end",
-    "agent.start", "agent.end",
+    "agent.start", "agent.end", "agent.leftovers",
     "check.start", "check.end",
     "script.start", "script.end", "script.event",
     "budget.stop",
@@ -43,7 +45,7 @@ TYPES = (
     "promotion.opened", "promotion.decision", "promotion.excluded", "promotion.waiting", "promotion.approved",
     "promotion.merged", "promotion.tagged", "promotion.deployed", "promotion.back-merge", "promotion.closed",
     "step.discipline",
-    "decision", "decision.resume", "decision.answer",
+    "decision", "decision.skipped", "decision.resume", "decision.answer",
     "integrate.queued", "integrate.lock", "integrate.unlock", "integrate.prepared", "integrate.resolved",
     "integrate.result",
     "standin.decision", "standin.action",
@@ -84,18 +86,30 @@ class Recorder:
         self.path = Path(path)
         self.lock = threading.Lock()
         self.seq = _last_seq(self.path)
+        self.size = -1  # the file's size after our last write; another writer changes it
         self.failed = False
 
     def emit(self, type_: str, fields: dict[str, Any]) -> dict[str, Any] | None:
         with self.lock:
-            event = {"ts": timestamp(), "seq": self.seq + 1, "type": type_}
-            event.update({key: value for key, value in fields.items() if key not in event})
             try:
-                data = (json.dumps(event, ensure_ascii=False, default=str, separators=(",", ":")) + "\n").encode("utf-8")
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 handle = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
                 try:
-                    os.write(handle, data)
+                    # the next seq is taken under a lock on the file, so two writers (the run and
+                    # the stand-in's loop, or two processes) never share one
+                    fcntl.flock(handle, fcntl.LOCK_EX)
+                    try:
+                        if os.fstat(handle).st_size != self.size:
+                            self.seq = max(self.seq, _last_seq(self.path))
+                        event = {"ts": timestamp(), "seq": self.seq + 1, "type": type_}
+                        event.update({key: value for key, value in fields.items() if key not in event})
+                        data = (json.dumps(event, ensure_ascii=False, default=str,
+                                           separators=(",", ":")) + "\n").encode("utf-8")
+                        os.write(handle, data)
+                        self.seq += 1
+                        self.size = os.fstat(handle).st_size
+                    finally:
+                        fcntl.flock(handle, fcntl.LOCK_UN)
                 finally:
                     os.close(handle)
             except (OSError, TypeError, ValueError) as exc:
@@ -104,7 +118,6 @@ class Recorder:
                     print(f"[events] warning: cannot write {self.path}: {exc}; continuing without events",
                           file=sys.stderr, flush=True)
                 return None
-            self.seq += 1
             return event
 
 

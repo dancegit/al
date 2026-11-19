@@ -553,6 +553,10 @@ def plan(layer: Any, run: str, *, note: str = "") -> dict[str, Any]:
     record = integrate.read_record(layer, run_id)
     if stopped["status"] == "running":
         return done("none", "it is running", blocked="running", why=f"run {run_id} is running")
+    held = state_module.run_holder(layer.layer_dir, run_id)
+    if held:
+        return done("none", "its process is alive", blocked="running",
+                    why=f"run {run_id} is held by process {held.get('pid')}")
     if under_way is not None:
         return done("none", f"an agent is on it: run {under_way.get('run')}", blocked="running",
                     why=f"attempt {under_way.get('n')} is under way: run {under_way.get('run')}")

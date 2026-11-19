@@ -47,6 +47,7 @@ from __future__ import annotations
 import email
 import email.policy
 import email.utils
+import fcntl
 import hmac
 import imaplib
 import json
@@ -78,6 +79,7 @@ ANSWERS = ("go", "alter", "explain", "reject")
 SETTINGS_FILE = Path("agents") / "settings" / "decider.json"   # the layer's local mode, never committed
 ENV_MODE = "AL_DECIDER"
 ENV_IMAP = "AL_DECIDE_IMAP_URL"
+CLAIM_FILE = "decide.claim"   # agents/<id>/decide.claim: who decides the run's current stop (claim_stop)
 MAX_AUTO_ROUNDS = 2
 STEP = "decide"
 SUMMARY_MAX = 300
@@ -450,6 +452,103 @@ def consider(layer: Any, state: Any, adw: dict[str, Any], stack: Any, args: Any)
         return ""
 
 
+# ---------------------------------------------------------------- one claim per stop
+
+def stop_seq(layer_dir: Path, run_id: str) -> int:
+    """The seq of the run's current stop: its last `handoff` event after the last `run.start`, 0 when none."""
+    path = events.path_for(layer_dir, run_id)
+    found = 0
+    try:
+        with path.open("rb") as handle:
+            for line in handle:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict) or not isinstance(event.get("seq"), int):
+                    continue
+                if event.get("type") == "run.start":
+                    found = 0
+                elif event.get("type") == "handoff":
+                    found = event["seq"]
+    except OSError:
+        return 0
+    return found
+
+
+def _claimed(layer_dir: Path, run_id: str, change: Callable[[dict[str, Any], int], dict[str, Any] | None]) -> Any:
+    """Read agents/<id>/decide.claim under its flock, let `change(claim, stop)` return what to write
+    (None writes nothing) and return `change`'s claim afterwards."""
+    path = state_module.run_dir(layer_dir, run_id) / CLAIM_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        chunks = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        try:
+            claim = json.loads(b"".join(chunks) or b"{}")
+        except ValueError:
+            claim = {}
+        if not isinstance(claim, dict):
+            claim = {}
+        written = change(claim, stop_seq(layer_dir, run_id))
+        if written is not None:
+            data = (json.dumps(written, sort_keys=True) + "\n").encode("utf-8")
+            os.ftruncate(fd, 0)
+            os.pwrite(fd, data, 0)
+        return written if written is not None else claim
+    finally:
+        os.close(fd)   # releases the flock
+
+
+def claim_stop(layer_dir: Path, run_id: str, who: str) -> str:
+    """Claim the run's current stop for `who` (`run` or `stand-in`): "" when won, else who holds it.
+    The run's own decide step and the stand-in's loop decide each stop once, whoever comes first."""
+    lost: list[str] = []
+
+    def change(claim: dict[str, Any], stop: int) -> dict[str, Any] | None:
+        if stop <= 0:
+            return None
+        if claim.get("seq") == stop and claim.get("by"):
+            lost.append(str(claim["by"]))
+            return None
+        skipped = list(claim.get("skipped") or []) if claim.get("seq") == stop else []
+        return {"seq": stop, "by": who, "pid": os.getpid(), "at": state_module.now(), "skipped": skipped}
+
+    _claimed(Path(layer_dir), run_id, change)
+    return lost[0] if lost else ""
+
+
+def note_skipped(layer_dir: Path, run_id: str, who: str, reason: str) -> None:
+    """Record that `who` left the run's current stop alone: once per stop and party a `decision.skipped` event."""
+    first: list[int] = []
+
+    def change(claim: dict[str, Any], stop: int) -> dict[str, Any] | None:
+        if claim.get("seq") != stop:
+            claim = {"seq": stop, "by": ""}
+        skipped = list(claim.get("skipped") or [])
+        if who in skipped:
+            return None
+        first.append(stop)
+        return {**claim, "skipped": [*skipped, who]}
+
+    _claimed(Path(layer_dir), run_id, change)
+    if not first:
+        return
+    fields = {"who": who, "reason": reason, "stop_seq": first[0]}
+    current = events._current
+    if current is not None and Path(current.path) == events.path_for(layer_dir, run_id):   # inside the run
+        events.emit("decision.skipped", **fields)
+        return
+    with events.recording(Path(layer_dir), run_id):
+        events.emit("decision.skipped", **fields)
+
+
 def _save(layer: Any, state: Any) -> None:
     try:
         state.save(layer.layer_dir)
@@ -471,6 +570,11 @@ def _consider(layer: Any, state: Any, adw: dict[str, Any], stack: Any, mode: str
         state.decision = {**previous, "skipped": why}
         events.say(f"[adw {state.adw_id}] decider: not used: {why}", "decision", mode=mode, status="skipped", reason=why)
         _save(layer, state)
+        return ""
+    lost = claim_stop(layer.layer_dir, state.adw_id, "run")
+    if lost:   # the stand-in's loop took this stop first: it is decided once
+        note_skipped(layer.layer_dir, state.adw_id, "run", "the stand-in's loop decided this stop")
+        print(f"[adw {state.adw_id}] decider: not used: the stand-in's loop decided this stop", flush=True)
         return ""
     names = step_names(adw)
     prompt = render_prompt(layer, state, adw)
@@ -623,7 +727,12 @@ def _no_script(state: Any) -> str:
 
 
 def spawn_resume(layer: Any, state: Any) -> None:
-    """Start the resume detached (its own session), its early output in agents/<id>/resume.log."""
+    """Start the resume detached (its own session), its early output in agents/<id>/resume.log.
+    Refused (LayerError) while a live process holds the run: it is left to that process."""
+    held = state_module.run_holder(layer.layer_dir, state.adw_id)
+    if held:
+        raise LayerError(f"run {state.adw_id} is held by process {held.get('pid')} on {held.get('host')}; "
+                         "it is left to that process")
     argv = resume_argv(layer, state)
     if argv is None:
         raise LayerError(_no_script(state))
@@ -736,6 +845,9 @@ def answer(layer: Any, adw_id: str, kind: str, text: str, via: str, code: str | 
         state = state_module.load(layer.layer_dir, adw_id)
     except LayerError:
         return _refused("unknown-run", f"no run {adw_id} in this layer")
+    held = state_module.run_holder(layer.layer_dir, adw_id)
+    if held:
+        return _refused("running", f"run {adw_id} is held by process {held.get('pid')}: it is left to that process")
     if kind not in ANSWERS:
         return _refused("bad-answer", f"unknown answer {kind!r}; use one of {', '.join(ANSWERS)}")
     if via == "stand-in" and kind in ("go", "alter"):

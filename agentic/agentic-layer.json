@@ -1565,7 +1565,27 @@
       "origin": "declared"
     }
   ],
-  "standIn": null,
+  "standIn": {
+    "escalateTo": [
+      "dashboard"
+    ],
+    "id": "auto",
+    "kind": "auto",
+    "maxActionsPerRun": 2,
+    "maxPerHour": 12,
+    "may": [
+      "resume",
+      "restart",
+      "answer",
+      "integrate",
+      "settle",
+      "retry-job"
+    ],
+    "modelSet": "heavy",
+    "never": [],
+    "status": "stable",
+    "systemd": false
+  },
   "storage": {
     "dir": "artefacts",
     "id": "local",

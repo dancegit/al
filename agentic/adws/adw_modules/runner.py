@@ -807,11 +807,22 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
 def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: dict[str, Any] | None = None) -> int:
     """Entry point of adws/adw_<name>.py. Returns 0 when the run passed or was handed over (it ran to
     its end, but a rejected review or a gate fallback leaves the decision to a person), 1 on a failed
-    run, 2 on usage errors, 3 when refused by a limit and 75 when a step is waiting.
+    run, 2 on usage errors, 3 when refused by a limit or when another live process holds the run
+    (agents/<id>/run.lock), and 75 when a step is waiting.
 
     `definition` is an ADW the compiled layer does not declare (a single-command run, see
     launch.single_command_adw): it is added to the loaded IR for this run only and recorded in
     state.json, so the run goes through the same runner as every other one."""
+    held: list[state_module.RunLock] = []
+    try:
+        return _main(adw, layer_dir, argv, definition, held)
+    finally:   # on every return path, so a later resume in this process can take the run
+        for lock in held:
+            lock.release()
+
+
+def _main(adw: str, layer_dir: Path, argv: list[str] | None, definition: dict[str, Any] | None,
+          held: list[state_module.RunLock]) -> int:
     parser = _parser(adw)
     try:
         args = parser.parse_args(argv)
@@ -869,6 +880,14 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
             if refused:
                 print(f"adw_{adw}: refused: {refused}", file=sys.stderr)
                 return budget.EXIT_REFUSED
+        # one process owns a run while it lives; a second one refuses before anything is saved or built
+        # (taken after the limits: a start they refuse leaves no run directory)
+        try:
+            held.append(state_module.hold_run(layer.layer_dir, state.adw_id))
+        except state_module.RunHeld as exc:
+            print(f"adw_{adw}: refused: run {state.adw_id} is held by process {exc.holder.get('pid')} "
+                  f"on {exc.holder.get('host')}", file=sys.stderr)
+            return budget.EXIT_REFUSED
         try:  # where the run delivers (a layer with stages); refused before any worktree exists
             target = delivery.for_run(layer, definition, state)
         except delivery.DeliveryError as exc:
@@ -916,6 +935,7 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
                 print("\n".join(lines), flush=True)  # out before integrate.finish() reports the run as ended
         finally:
             tee.close()
+    held[0].release()   # the resume decide.after_run may spawn takes the run over
     if not selfrun.active():   # on a host the home machine does these, after it took the run over
         decide.after_run(layer, state)  # a resume the decider chose starts once this run has ended
         assign.after_run(layer, state, args)  # a handed-over run the decider may give to an agent (assign.py)

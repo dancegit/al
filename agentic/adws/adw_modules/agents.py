@@ -6,7 +6,10 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
+import threading
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -74,10 +77,126 @@ def _reap(process: subprocess.Popen[Any]) -> None:
         pass
 
 
+LEFTOVER_GRACE_SECONDS = 30.0
+GRACE_ENV = "AL_AGENT_GRACE_SECONDS"
+CALL_TAG_ENV = "AL_AGENT_CALL"   # every process of one agent call carries it, also one that called setsid
+
+
+def grace_seconds() -> float:
+    """How long an agent CLI may run on after its final `result` event (AL_AGENT_GRACE_SECONDS, default 30)."""
+    try:
+        value = float(os.environ.get(GRACE_ENV, ""))
+    except ValueError:
+        return LEFTOVER_GRACE_SECONDS
+    return value if value >= 0 and value == value and value != float("inf") else LEFTOVER_GRACE_SECONDS
+
+
+def _feed_stdin(process: subprocess.Popen[str], text: str) -> None:
+    """Write the prompt and close stdin from a thread, so a prompt larger than the pipe never blocks the wait."""
+    def feed() -> None:
+        stdin = process.stdin
+        if stdin is None:
+            return
+        try:
+            stdin.write(text)
+        except (BrokenPipeError, OSError):
+            pass
+        try:
+            stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+    threading.Thread(target=feed, name="al-agent-stdin", daemon=True).start()
+
+
+def _has_result(chunk: bytes) -> bool:
+    for line in chunk.splitlines():
+        if b'"result"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            return True
+    return False
+
+
+def _cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()[:200]
+
+
+def _host_leftovers(process: subprocess.Popen[Any], tag: str) -> list[int]:
+    """Pids on this machine that carry the call's tag or are in the CLI's process group, minus the CLI."""
+    marker = f"{CALL_TAG_ENV}={tag}".encode()
+    found: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == process.pid or pid == os.getpid():
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+            group = int(stat[stat.rindex(")") + 2:].split()[2])
+        except (OSError, ValueError, IndexError):
+            continue
+        hit = group == process.pid
+        if not hit and tag:
+            try:
+                hit = marker in (entry / "environ").read_bytes().split(b"\0")
+            except OSError:
+                hit = False
+        if hit:
+            found.append(pid)
+    return found
+
+
+_CONTAINER_SWEEP = (
+    "for d in /proc/[0-9]*; do p=${d#/proc/}; [ \"$p\" = \"$$\" ] && continue; "
+    "if tr '\\0' '\\n' < \"$d/environ\" 2>/dev/null | grep -qx '%s'; then "
+    "c=$(tr '\\0' ' ' < \"$d/cmdline\" 2>/dev/null | cut -c1-200); "
+    "printf '%%s\\t%%s\\n' \"$p\" \"$c\"; kill -KILL \"$p\" 2>/dev/null; fi; done; true"
+)
+
+
+def _stop_leftovers(process: subprocess.Popen[Any], tag: str, env_stack: Any) -> list[dict[str, Any]]:
+    """Stop every process of an agent call: in the run's container (by tag), on the host (by tag and by
+    process group), then the CLI and its group. → one {pid, command, where} per process stopped."""
+    stopped: list[dict[str, Any]] = []
+    if tag and getattr(env_stack, "agent_inside", False):
+        try:
+            done = subprocess.run(env_stack.wrap(_CONTAINER_SWEEP % f"{CALL_TAG_ENV}={tag}"), capture_output=True,
+                                  text=True, timeout=30, check=False)
+            for line in done.stdout.splitlines():
+                pid, _, command = line.partition("\t")
+                if pid.strip().isdigit():
+                    stopped.append({"pid": int(pid), "command": command.strip()[:200], "where": "container"})
+        except Exception as exc:  # noqa: BLE001 — stopping leftovers never fails a finished step
+            print(f"[agent] could not stop leftover commands in the container: {exc}", file=sys.stderr, flush=True)
+    for pid in _host_leftovers(process, tag):
+        command = _cmdline(pid)
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            continue
+        stopped.append({"pid": pid, "command": command, "where": "host"})
+    _kill_group(process)
+    return stopped
+
+
 def _run_process(argv: list[str], *, cwd: Path, env: dict[str, str], stdin_text: str,
-                 timeout: int, step: str, raw_path: Path) -> str:
-    """Run an agent CLI in its own process group, streaming stdout to raw_path; returns stdout."""
+                 timeout: int, step: str, raw_path: Path, result_tag: str = "", env_stack: Any = None) -> str:
+    """Run an agent CLI in its own process group, streaming stdout to raw_path; returns stdout.
+
+    With `result_tag` (a stream-json CLI whose processes carry that tag), the call also ends when the
+    CLI has written its final `result` event and has not exited a grace period later: the runtime then
+    stops it and whatever it left running, and records `agent.leftovers`."""
     stderr_path = raw_path.with_name("stderr.log")
+    leftovers = False
     with raw_path.open("w", encoding="utf-8") as raw, stderr_path.open("w", encoding="utf-8") as err:
         try:
             process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=raw,
@@ -85,17 +204,46 @@ def _run_process(argv: list[str], *, cwd: Path, env: dict[str, str], stdin_text:
         except OSError as exc:
             raise StepFailed(step, f"could not start agent {argv[0]!r}: {exc}") from exc
         try:
-            process.communicate(stdin_text, timeout=max(1, timeout))
-        except subprocess.TimeoutExpired as exc:
-            _kill_group(process)
-            process.wait(timeout=30)
-            raise StepFailed(step, f"agent timed out after {timeout}s (process group killed)") from exc
+            _feed_stdin(process, stdin_text)
+            deadline = time.monotonic() + max(1, timeout)
+            grace = grace_seconds()
+            offset, pending, finished_at = 0, b"", None
+            while True:
+                try:
+                    process.wait(timeout=0.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                now = time.monotonic()
+                if now >= deadline:
+                    _kill_group(process)
+                    process.wait(timeout=30)
+                    raise StepFailed(step, f"agent timed out after {timeout}s (process group killed)")
+                if not result_tag:
+                    continue
+                if finished_at is None:
+                    try:
+                        with raw_path.open("rb") as handle:
+                            handle.seek(offset)
+                            chunk = handle.read()
+                    except OSError:
+                        chunk = b""
+                    offset += len(chunk)
+                    complete, _, pending = (pending + chunk).rpartition(b"\n")
+                    if complete and _has_result(complete):
+                        finished_at = now
+                elif now - finished_at >= grace:
+                    stopped = _stop_leftovers(process, result_tag, env_stack)
+                    _reap(process)
+                    events.emit("agent.leftovers", step=step, grace=grace, stopped=stopped)
+                    leftovers = True
+                    break
         except BaseException:  # the run was stopped (RunStopped) or interrupted: never leave the agent running
             _kill_group(process)
             _reap(process)
             raise
     stdout = raw_path.read_text(encoding="utf-8", errors="replace")
-    if process.returncode != 0:
+    if not leftovers and process.returncode != 0:   # a CLI we stopped after a finished turn is not a failure
         detail = (stderr_path.read_text(encoding="utf-8", errors="replace") or stdout)[-1000:]
         raise StepFailed(step, f"agent exited {process.returncode}: {detail.strip()}")
     return stdout
@@ -208,13 +356,17 @@ def _run_claude(layer: Any, agent: dict[str, Any], prompt: str, choice: models.C
                 env_stack: Any, step: str, raw_path: Path, cap: float | None = None) -> str:
     # The prompt goes in on stdin: templates start with `---` front matter, which the CLI would
     # parse as an option, and long prompts would hit the argv size limit.
-    argv = claude_argv(layer, agent, choice, cap)
+    tag = f"{step}-{uuid.uuid4().hex[:12]}"
+    # `env` reaches the CLI on the host, under nix and inside the container alike
+    argv = ["env", f"{CALL_TAG_ENV}={tag}", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1",
+            *claude_argv(layer, agent, choice, cap)]
     for attempt in range(1, LOGIN_ATTEMPTS + 1):
         login_before = _login_stamp()
         try:
             stdout = _run_process(env_stack.wrap_agent(argv), cwd=cwd, env=_claude_env(env_stack, raw_path.parent),
                                   stdin_text=prompt,
-                                  timeout=int(agent["timeout"]), step=step, raw_path=raw_path)
+                                  timeout=int(agent["timeout"]), step=step, raw_path=raw_path,
+                                  result_tag=tag, env_stack=env_stack)
             return parse_stream_json_result(stdout, step)
         except StepFailed as exc:
             # The login was revoked while this call ran: the work is not wrong, the login is stale.
@@ -509,6 +661,23 @@ def _render_prompt(layer: Any, state: Any, command_name: str, command: dict[str,
     return render(text, template_variables(layer, state), args)
 
 
+NO_BACKGROUND_RULE = """## This step ends when your turn ends
+
+Nothing runs after your final message, and no later turn reads what a background command prints. \
+Run every command in the foreground with a timeout; never start one in the background (`&`, `nohup`, \
+`run_in_background`). Leave long test suites to the run's own checks, which run after you. Commands \
+still running when you finish are stopped.
+"""
+_FRONT_MATTER = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
+
+
+def with_rules(prompt: str) -> str:
+    """`prompt` with NO_BACKGROUND_RULE right after its front matter, or at its start without one."""
+    match = _FRONT_MATTER.match(prompt)
+    at = match.end() if match else 0
+    return prompt[:at] + NO_BACKGROUND_RULE + "\n" + prompt[at:]
+
+
 def run_agent(layer: Any, state: Any, step_name: str, command_name: str, args: list[str],
               model_set: str, env_stack: Any, agent_id: str = "", tier_from: str = "command") -> str:
     """Render the command/hop, run it on the ADW's agent (mock when dry-run) and return the processed output.
@@ -535,6 +704,7 @@ def run_prompt(layer: Any, state: Any, step_name: str, command: dict[str, Any], 
     else:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
+    prompt = with_rules(prompt)  # prompt.md and the agent's stdin are the same text
     (directory / "prompt.md").write_text(prompt, encoding="utf-8")
     raw_path = directory / "raw.jsonl"
     # A step may name its own agent (`#:agent`), e.g. a cheaper model for a commit step or a
