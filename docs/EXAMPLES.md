@@ -370,7 +370,8 @@ tests/rotademo/rotademo_live.sh                              # the healthcare st
 ```
 
 The fast suites (what CI runs; no container engine, no browser, no agent), exactly as
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs them:
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs them. CI runs on pushes to `main` and
+`integration` and on pull requests into `main`, and runs the tools suite on Python 3.12 and 3.15:
 
 ```bash
 PLTCOLLECTS="$PWD/racket:" raco test racket/al/tests

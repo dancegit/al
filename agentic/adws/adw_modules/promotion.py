@@ -1228,15 +1228,23 @@ def _planned_version(run: _Run, included: list[Change]) -> dict[str, Any]:
     return out
 
 
+def _check_code(data: Any) -> str:
+    """`0`, or `0 (full)` for a check that carries its depth (a layer with (testing …))."""
+    if isinstance(data, Mapping):
+        return f"{data.get('exit')}" + (f" ({data['depth']})" if data.get("depth") else "")
+    return str(data)
+
+
 def _summary_md(run: _Run, included: list[Change], excluded: list[Change], handed: list[Change],
-                checks: Mapping[str, int]) -> str:
+                checks: Mapping[str, Any]) -> str:
     p, promo = run.p, run.promo
     lines = [f"# Promote {p['from_branch']} into {p['to_branch']}", "",
              f"Promotion `{run.pid}` of stage {promo['from']} into {promo['to']} ({promo.get('method', 'merge')}), "
              f"{_since(run.layer, promo)}: {_plural(len(included) + len(excluded), 'change')} delivered, "
              f"{len(excluded)} excluded, {len(handed)} handed to a person.", "",
              f"Stage head: `{str(p.get('promoted') or p.get('pinned'))[:12]}`. Checks: "
-             + (", ".join(f"{name}={code}" for name, code in checks.items()) or "none") + ".", "", "## Changes", ""]
+             + (", ".join(f"{name}={_check_code(data)}" for name, data in checks.items()) or "none") + ".", "",
+             "## Changes", ""]
     for change in included:
         lines.append(f"- `{change.id}` ({change.klass}): {change.title}")
     if not included:
@@ -1322,10 +1330,13 @@ def _pack_html(run: _Run, included: list[Change], excluded: list[Change], handed
     strip = [m for change in included for m in media.get(change.id, [])]
     sections["demo"] = ("<h2>Show</h2><p>This page is the demo: every picture and recording, in order.</p>"
                         f'<div class="strip">{"".join(_media_html(m) for m in strip) or "<p>nothing to show</p>"}</div>')
-    check_rows = "".join(f"<tr><td>{_h(name)}</td><td class=\"{'ok' if data['exit'] == 0 else 'bad'}\">{_h(data['exit'])}"
+    deep = any(data.get("depth") for data in checks.values())  # a layer with (testing …) shows each depth
+    check_rows = "".join(f"<tr><td>{_h(name)}</td>" + (f"<td>{_h(data.get('depth') or 'full')}</td>" if deep else "")
+                         + f"<td class=\"{'ok' if data['exit'] == 0 else 'bad'}\">{_h(data['exit'])}"
                          f"</td><td><code>{_h(data.get('log', ''))}</code></td></tr>" for name, data in checks.items())
-    sections["checks"] = (f"<h2>Checks on the stage head</h2><table><tr><th>check</th><th>exit</th><th>log</th></tr>"
-                          f"{check_rows or '<tr><td colspan=3>none declared</td></tr>'}</table>")
+    sections["checks"] = (f"<h2>Checks on the stage head</h2><table><tr><th>check</th>"
+                          + ("<th>depth</th>" if deep else "") + "<th>exit</th><th>log</th></tr>"
+                          f"{check_rows or f'<tr><td colspan={4 if deep else 3}>none declared</td></tr>'}</table>")
     sections["notes"] = (f"<h2>Release notes</h2><pre>{clean(notes)}</pre><h2>Changelog entry</h2>"
                          f"<pre>{clean(entry or 'no changelog detected')}</pre>")
     rows = [f"<li><code>{_h(c.id)}</code> {_h(c.title)} — refused by {_h(c.by)}"
@@ -1402,8 +1413,7 @@ def build_pack(run: _Run, checks: Mapping[str, Any] | None = None) -> Path:
     run.p["planned_version"] = {k: v for k, v in planned.items() if k != "entry"}
     notes = _release_notes(accepted)
     entry = planned.get("entry") or ""
-    (pack / "summary.md").write_text(_summary_md(run, included, excluded, handed,
-                                                 {k: v["exit"] for k, v in checks.items()}), encoding="utf-8")
+    (pack / "summary.md").write_text(_summary_md(run, included, excluded, handed, checks), encoding="utf-8")
     (pack / "release-notes.md").write_text(notes, encoding="utf-8")
     (pack / "changelog-entry.md").write_text(entry or "no changelog detected\n", encoding="utf-8")
     acceptance = [f"# Acceptance: {run.p['from_branch']} into {run.p['to_branch']}", ""]
@@ -1510,15 +1520,27 @@ def _check_commands(run: _Run) -> list[str]:
 
 
 def _run_checks(run: _Run, step: str) -> dict[str, Any]:
-    from . import steps
+    from . import batch, skips, steps, testing
 
+    depth = testing.policy(run.layer)["onStage"]  # the stage head is proven at #:on-stage depth (a batch)
     results: dict[str, Any] = {}
     for cmd in _check_commands(run):
         name = f"check-{cmd}"
-        code = steps.run_check(run.layer, run.state, {"name": name, "kind": "check", "cmd": cmd}, run.env)
-        results[cmd] = {"exit": code, "log": run.state.checks[name]["log"]}
+        code = steps.run_check(run.layer, run.state, {"name": name, "kind": "check", "cmd": cmd, "depth": depth},
+                               run.env)
+        record = run.state.checks[name]
+        results[cmd] = {"exit": code, "log": record["log"]}
+        if isinstance(record.get("testing"), dict):  # a layer with (testing …): the depth it ran at
+            results[cmd]["depth"] = str(record["testing"].get("depth") or depth)
+        if code:
+            with contextlib.suppress(OSError):
+                text = (Path(run.layer.layer_dir) / record["log"]).read_text(encoding="utf-8", errors="replace")
+                results[cmd]["failing"] = skips.failing_tests(text)
     run.p["check_logs"] = results
     run.state.save(run.layer.layer_dir)
+    if results and testing.policy(run.layer)["declared"] and not run.dry:
+        with contextlib.suppress(OSError, LayerError):  # the stage head's result counts as its batch
+            batch.record_stage_result(run.layer, run.state, str(run.p["from_branch"]), str(run.p["promoted"]), results)
     failed = [f"{cmd}={data['exit']} (log {data['log']})" for cmd, data in results.items() if data["exit"] != 0]
     if failed:
         raise StepFailed(step, f"promotion:checks-failed: on {run.p['from_branch']}: {', '.join(failed)}")

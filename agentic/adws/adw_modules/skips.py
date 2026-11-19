@@ -321,6 +321,55 @@ def from_log(text: str) -> SkipReport | None:
     return total
 
 
+# ------------------------------------------------------------------------------------- failing tests
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_PYTEST_FAILED = re.compile(r"^(?:FAILED|ERROR) (\S+?)(?: - .*)?$")
+_GO_FAIL = re.compile(r"^\s*--- FAIL: (\S+) \(")
+_GO_FAIL_PACKAGE = re.compile(r"^FAIL\t(\S+)")
+_CARGO_FAILED = re.compile(r"^test (\S+) \.\.\. FAILED$")
+_JS_FAIL = re.compile(r"^\s*FAIL\s+(\S+\.(?:[cm]?[jt]sx?))(?:\s|$)")
+
+
+def failing_tests(text: str) -> list[str]:
+    """The tests a log says failed, in order, each once: pytest `FAILED a/b.py::t` (and `ERROR
+    a/b.py`) as `a/b.py::t`; go `--- FAIL: T` as `PKG::T` with the package of the `FAIL\\tPKG`
+    line that follows (subtests `T/sub` are left out, their test fails too; `go test -json` too);
+    cargo `test x ... FAILED` as `x`; jest/mocha `FAIL path` as the test file."""
+    found: list[str] = []
+    pending: list[str] = []  # go: failed tests whose package line has not come yet
+    for raw in _lines(text):
+        line = _ANSI.sub("", raw).rstrip()
+        if line.startswith("{"):
+            try:
+                event = json.loads(line)
+            except ValueError:
+                event = None
+            if isinstance(event, dict) and event.get("Action") == "fail" and event.get("Test"):
+                if "/" not in str(event["Test"]):
+                    found.append(f"{event.get('Package', '')}::{event['Test']}".lstrip(":"))
+                continue
+        match = _PYTEST_FAILED.match(line)
+        if match:
+            found.append(match.group(1))
+            continue
+        match = _GO_FAIL.match(line)
+        if match:
+            if "/" not in match.group(1):
+                pending.append(match.group(1))
+            continue
+        match = _GO_FAIL_PACKAGE.match(line)
+        if match:
+            found += [f"{match.group(1)}::{name}" for name in pending]
+            pending = []
+            continue
+        match = _CARGO_FAILED.match(line) or _JS_FAIL.match(line)
+        if match:
+            found.append(match.group(1))
+    found += pending  # a go log without its package line still names the tests
+    return list(dict.fromkeys(found))
+
+
 def _junit_files(layer: Any, state: Any, step: dict[str, Any], started: float) -> list[Path]:
     worktree = Path(state.worktree).resolve() if getattr(state, "worktree", "") else None
     if worktree is None or not worktree.is_dir():
