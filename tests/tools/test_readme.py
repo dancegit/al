@@ -83,13 +83,17 @@ def test_every_shown_al_command_parses(monkeypatch: pytest.MonkeyPatch, capsys: 
     spec = importlib.util.spec_from_loader("al_readme", loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
-    original = argparse.ArgumentParser.parse_args
+    original = argparse.ArgumentParser.parse_known_args
 
     def wrapper(self, args=None, namespace=None):
-        original(self, args, namespace)
+        _, rest = original(self, args, namespace)
+        if rest:
+            self.error(f"unrecognized arguments: {' '.join(rest)}")
         raise _Parsed
 
-    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", wrapper)
+    # main() parses with parse_known_args (it hands a left-over RUN to `al assign` itself); parse_args
+    # goes through it too, so either way a command that parses stops here and left-overs are refused
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_known_args", wrapper)
     commands = _shown_commands(_readme())
     assert len(commands) >= 8, f"the README shows too few al commands: {commands}"
     refused = []

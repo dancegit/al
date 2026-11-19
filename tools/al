@@ -4603,7 +4603,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("notify-test", help="send one marked test message through every notifier of a layer")
     p.add_argument("layer", type=Path)
     p.add_argument("--event", default="needs-human", choices=("needs-human", "failed", "passed", "shipped"))
-    a = ap.parse_args(argv)
+    a, rest = ap.parse_known_args(argv)
+    # `al assign LAYER --all RUN`: the argparse of early 3.12 releases (3.12.3 on CI) leaves RUN over instead of filling the optional
+    # positional after an option; give it to RUN, so every Python reports the same al usage error
+    if rest and a.cmd == "assign" and a.run is None and len(rest) == 1 and not rest[0].startswith("-"):
+        a.run, rest = rest[0], []
+    if rest:
+        ap.error(f"unrecognized arguments: {' '.join(rest)}")
     try:
         if a.cmd == "explain":
             extra = (["--md", str(a.md)] if a.md else []) + (["--gif", str(a.gif)] if a.gif else [])
