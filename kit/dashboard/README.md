@@ -208,6 +208,12 @@ The run list, its status filter, the graph node and the timeline show it as `wai
 run's header shows the step it waits at and the command that resumes it
 (`uv run adws/adw_<workflow>.py --resume --adw-id <id>`).
 
+A step whose agent CLI did not exit after its final result (an `agent.leftovers` event: the runtime
+stopped it and the commands it left running) reads `leftover commands stopped` on its graph node,
+whose title says "the agent finished; its leftover commands were stopped"; the arrow out of a
+running step into a pending one is dashed in the running colour and labelled `waiting`, so it does
+not read like the untaken arrow into a skipped step.
+
 A check step whose command was not run because no changed path touches what it covers has the
 status **not-affected** (∅, dashed and dimmed like `skipped`, never green): the graph node reads
 `not affected`, the timeline shows the words instead of a bar, and the step panel says why and

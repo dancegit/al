@@ -56,7 +56,8 @@ def test_check_resolve_passes_and_logs_each_attempt(make_layer, app_repo):
     run_step(layer, run_state, layer.adw("demo"), step, env)
     assert run_state.checks["test"]["exit"] == 0
     assert sorted(p.name for p in (layer.layer_dir / "agents/b1b2b3b4/checks").glob("*.log")) == ["test.1.log", "test.2.log"]
-    assert (layer.layer_dir / "agents/b1b2b3b4/test-resolve-1/prompt.md").read_text().startswith("# resolve\n./test.sh")
+    resolve_prompt = (layer.layer_dir / "agents/b1b2b3b4/test-resolve-1/prompt.md").read_text()
+    assert "# resolve\n./test.sh" in resolve_prompt and resolve_prompt.startswith("## This step ends when your turn ends")
     assert run_state.step_record("test", "check")["status"] == "passed"
 
 

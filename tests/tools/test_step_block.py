@@ -93,6 +93,8 @@ def test_a_generated_build_prompt_starts_with_the_step_block_of_its_workflow(sib
             env={k: v for k, v in __import__("os").environ.items() if k != "AL_APP_ROOT"})
     prompt = (sibling / "agents" / "0badc0de" / "build" / "prompt.md").read_text()
     body = _body(prompt) if prompt.startswith("---\n") else prompt
-    assert body.startswith("## Your step"), (cp.stdout + cp.stderr)[-2000:]
+    assert body.startswith("## This step ends when your turn ends"), (cp.stdout + cp.stderr)[-2000:]
+    after_rule = body.split("\n## ", 1)[1] if "\n## " in body else ""
+    assert ("## " + after_rule).startswith("## Your step"), body[:1500]
     assert "Workflow `change`" in body and "**build (this step)**" in body and "`commit` commits" in body
     assert "agents/0badc0de/scratch" in body

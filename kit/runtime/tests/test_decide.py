@@ -64,7 +64,8 @@ def test_run_prompt_records_a_call_like_run_agent(make_layer):
         output = agents.run_prompt(layer, state, "decide", command, "Decide.", "heavy", stack)
     assert json.loads(output)["action"] == "ask-human"
     directory = layer_dir / "agents" / ADW_ID / "decide"
-    assert (directory / "prompt.md").read_text() == "Decide." and (directory / "raw.jsonl").is_file()
+    written = (directory / "prompt.md").read_text()
+    assert written.endswith("Decide.") and agents.NO_BACKGROUND_RULE in written and (directory / "raw.jsonl").is_file()
     (call,) = state.agent_calls
     assert (call["step"], call["tier"], call["status"], call["agent_kind"]) == ("decide", "heavy", "passed", "mock")
     types = [e["type"] for e in events.read(layer_dir / "agents" / ADW_ID / "events.jsonl")]
