@@ -20,7 +20,7 @@ from conftest import start_server, stop_server
 from promotion_fixtures import build_promotion_site
 from test_start import post
 
-KIT = ["integrate", "promote", "improve", "decider"]
+KIT = ["integrate", "assign", "promote", "improve", "decider"]
 APPLICABLE = [fx.ACCEPTANCE, fx.CLEAN, fx.PROTECTED, fx.CHANGED]   # offered; the preview refuses the last two
 VIEW_KEYS = {"name", "kind", "purpose", "steps", "input", "start", "ships", "setting", "off"}
 
@@ -258,7 +258,7 @@ def test_kit_name_is_not_a_free_text_start(layer, running):
     assert status == 400 and answer["error"].startswith("decider is the stand-in for a person")
     status, answer = post(running, {**body, "text": "/nope x"})
     assert status == 400 and answer["error"].startswith("no workflow or command named '/nope'; known: /plan-build, /ship-it, ")
-    assert answer["error"].endswith("/integrate (kit), /promote (kit), /improve (kit), /decider (kit)")
+    assert answer["error"].endswith("/integrate (kit), /assign (kit), /promote (kit), /improve (kit), /decider (kit)")
     assert sorted(p.name for p in (layer / "agents").iterdir()) == before
     model = model_for(layer)
     assert d.split_slash("/integrate x", d.startables(model.layers["pantry"])) is None
@@ -368,7 +368,7 @@ def test_promotion_entry_takes_two_stages(promotion_site, monkeypatch):
     server = start_server(["--layer", str(layer)])
     try:
         data = startable(server, "shop")
-        assert [k["name"] for k in data["kit"]] == ["integrate", "promote-sprint-main", "improve", "decider"]
+        assert [k["name"] for k in data["kit"]] == ["integrate", "assign", "promote-sprint-main", "improve", "decider"]
         promote = named(data["kit"], "promote-sprint-main")
         assert promote["kind"] == "kit-workflow" and promote["off"] is False
         assert promote["input"] == {"kind": "stages", "what": "two stages", "from": "sprint", "to": "main"}

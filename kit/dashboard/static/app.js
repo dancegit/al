@@ -1804,8 +1804,9 @@
     const totals = h("div", { class: "strip" });
     const report = h("div", { class: "start-report", role: "status" });   // what "Start all again" did, kept while rows change
     const standinBar = h("div", { class: "standin-bar" });                // "Ask the stand-in for all N", for a selected layer
+    const giveAll = h("div", { class: "assign-all-bar" });                // "Give all N to agents", in the Needs-you view
     const table = h("table");
-    main.append(chips, filters, totals, standinBar, report, h("div", { class: "table-wrap" }, table));
+    main.append(chips, filters, totals, standinBar, giveAll, report, h("div", { class: "table-wrap" }, table));
     const showReport = (lines) => {
       groupState.lines = lines;
       replace(report, lines.map((line) => h("div", { class: line.ok ? "ok" : "error", text: line.text })));
@@ -1914,6 +1915,24 @@
         h("td", { class: "next" }, toggle, again));
     }
 
+    /** "Give all N to agents": N = the shown needs-you runs whose layer has adws/assign.py; one layer at a time. */
+    function renderGiveAll(runs, needs) {
+      const mine = needs ? runs.filter((r) => r.assign && r.assign.script) : [];
+      if (!mine.length) { replace(giveAll); return; }
+      const layers = [...new Set(mine.map((r) => r.layer))];
+      const button = h("button", { type: "button", class: "btn integrate assign-all", text: `Give all ${mine.length} to agents`,
+        disabled: layers.length !== 1,
+        title: layers.length !== 1 ? "runs of several layers are shown: choose one layer in the filter first"
+          : "see what an agent would do for each run, in the order they start; nothing starts until you confirm",
+        onclick: async () => {
+          const results = await assignAllDialog(layers[0]);
+          if (!results) return;
+          showReport([{ ok: true, text: `Give all to agents (${layers[0]}):` }, ...results.map((r) => ({ ok: r.status !== "error",
+            text: r.status === "started" ? `${r.run} → ${r.run_id && r.run_id !== r.run ? r.run_id : "resumed in place"} (${r.kind})` : `${r.run}: ${r.status}${r.why ? `: ${r.why}` : ""}` }))]);
+        } });
+      replace(giveAll, button, h("span", { class: "faint", text: " each run's plan is shown first" }));
+    }
+
     function runRow(run, needs) {
       const open = () => go(`#/run/${enc(run.layer)}/${enc(run.id)}`);
       const base = [h("td", {}, pill(run.status)), h("td", { class: "num", text: fmt.time(run.started) }), h("td", { text: run.layer }), h("td", { text: run.adw }),
@@ -1923,10 +1942,10 @@
           ...base, h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }),
           h("td", { class: "reason" }, limitBadge(run) || budgetBadge(run), run.reason || "",
             run.suggestion ? h("div", { class: "proposal", text: proposalText(run) }) : null),
-          h("td", { class: "next mono" }, run.next || "", run.integrate && run.integrate.offered
-            ? h("button", { type: "button", class: "btn integrate integrate-open", text: "Resolve with an agent",
-              title: "an agent brings this run onto its target branch: conflicts, checks, review, ship; you see what it will do first",
-              onclick: (event) => { event.stopPropagation(); go(routeHash(["run", run.layer, run.id], { integrate: "1" })); } }) : null));
+          h("td", { class: "next mono" }, run.next || "", run.assign && run.assign.script
+            ? h("button", { type: "button", class: "btn integrate assign-open", text: "Give to an agent",
+              title: "an agent takes this run from where it stopped; you see the plan first, and nothing ships without the checks, the review and the gate",
+              onclick: (event) => { event.stopPropagation(); go(routeHash(["run", run.layer, run.id], { assign: "1" })); } }) : null));
       }
       const bucket = bucketOf(run);
       const why = bucket === "landed" ? h("span", { class: "landing", text: landedText(run) })
@@ -1955,6 +1974,7 @@
         stat("median time", fmt.dur(median(durations))), stat("total time", fmt.dur(durations.reduce((a, b) => a + b, 0))));
       const body = h("tbody");
       const needs = params.view === "needs-you";
+      renderGiveAll(runs, needs);
       const columns = needs ? 8 : 12;
       const shown = new Set();
       for (const run of runs) {
@@ -2142,12 +2162,12 @@
       } });
       return b;
     };
-    const offer = sm.integrate || {};
-    const canResolve = offer.offered && sm.bucket === "needs-you";
-    const resolve = canResolve || (offer.script && offer.conflict && sm.bucket === "needs-you" && sm.status === "handed-over")
-      ? h("button", { type: "button", class: "btn primary integrate integrate-open", text: "Resolve with an agent", disabled: !canResolve,
-        title: canResolve ? "an agent brings this run onto its target branch: conflicts, checks, review, ship; you see what it will do first" : offer.why || "",
-        onclick: () => { integrateOpen.add(sm.key); reload(true); } }) : null;
+    const canGive = !!(sm.assign && sm.assign.script);
+    const resolve = sm.bucket === "needs-you"
+      ? h("button", { type: "button", class: "btn primary integrate assign-open", text: "Give to an agent", disabled: !canGive,
+        title: canGive ? "an agent takes this run from where it stopped; you see the plan first, and nothing ships without the checks, the review and the gate"
+          : "run `al gen` to add adws/assign.py",
+        onclick: () => { assignOpen.add(sm.key); reload(true); } }) : null;
     const button = h("button", { type: "button", class: "btn primary settle-go", text: "Settle", onclick: async () => {
       button.disabled = true;
       localStorage.setItem("al.settle.who", who.value.trim());
@@ -2257,6 +2277,214 @@
     return card;
   }
 
+  const assignOpen = new Set();       // run keys whose "Give to an agent" plan is open
+  const assignPreviews = new Map();   // run key -> {at, promise}: one preview (and its confirmation) per look
+  const assignForm = new Map();       // run key -> {note, override}: kept while the card is rebuilt
+  const ASSIGN_KINDS = { integrate: "bring it onto its target", blockers: "address the review's blockers", proof: "collect the proof",
+    person: "a person decides", check: "resume from the failed check", resume: "resume", "start-again": "start again", none: "nothing to give" };
+
+  function loadAssign(layerKey, sm, fresh) {
+    const cached = assignPreviews.get(sm.key);
+    if (cached && !fresh && Date.now() - cached.at < 60000) return cached.promise;
+    const promise = fetch(`/api/assign/preview?layer=${enc(layerKey)}&run=${enc(sm.id)}`, { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        let data = null;
+        try { data = await response.json(); } catch (_err) { data = null; }
+        if (!response.ok) throw new Error((data && data.error) || `${response.status} preview`);
+        return data;
+      });
+    assignPreviews.set(sm.key, { at: Date.now(), promise });
+    promise.catch(() => assignPreviews.delete(sm.key));
+    return promise;
+  }
+
+  /** "Give to an agent": the plan that follows from why the run stopped (GET /api/assign/preview: why it
+   * stopped, the steps, for an integration the branch, the target and the conflicted files, the blockers,
+   * what only a person decides, the earlier attempts and the limit), a sentence for the agent, then Start
+   * (POST /api/assign with the preview's nonce), which goes to the run to watch. A "needs a person" item is
+   * approved here by name ("I approve this, continue"); the card then shows the remaining plan. */
+  function assignCard(detail, layerKey, reload) {
+    const sm = detail.summary;
+    const form = assignForm.get(sm.key) || { note: "", override: false };
+    assignForm.set(sm.key, form);
+    const content = h("div", { class: "assign-preview", text: "looking at what it would do…" });
+    const note = h("div", { class: "assign-note", role: "status" });
+    const close = h("button", { type: "button", class: "toggle assign-close", text: "close", onclick: () => {
+      assignOpen.delete(sm.key);
+      card.remove();
+    } });
+    const card = h("div", { class: "card assign-card" },
+      h("div", { class: "card-head" }, h("h2", { text: "Give to an agent" }), h("span", { class: "spacer" }),
+        h("span", { class: "faint", text: "what will happen; nothing starts until you confirm" }), close),
+      content, note);
+    const sha = (text) => String(text || "").slice(0, 7);
+    const kv = (pairs) => h("dl", { class: "kv" }, pairs.filter(([, v]) => v !== null && v !== undefined && v !== "").map(([k, v]) => [h("dt", { text: k }), h("dd", {}, v)]));
+    const refresh = () => loadAssign(layerKey, sm, true).then(show).catch((error) => {
+      replace(content, h("span", { class: "badge warn", text: error.message }));
+    });
+    const planSteps = (steps) => {   // a line that starts with three spaces belongs to the step before it
+      const list = h("ol", { class: "assign-steps" });
+      for (const line of steps || []) {
+        if (/^ {3}/.test(line) && list.lastChild) list.lastChild.appendChild(h("div", { class: "sub dim", text: line.trim() }));
+        else list.appendChild(h("li", { text: line }));
+      }
+      return list;
+    };
+    const decision = (p, d) => {
+      const open = d.approvable && !d.approved;
+      const who = open ? h("input", { type: "text", class: "assign-who", placeholder: "your name", maxlength: 80,
+        value: localStorage.getItem("al.settle.who") || localStorage.getItem("al.promotion.by") || "", "aria-label": "your name" }) : null;
+      const approve = open ? h("button", { type: "button", class: "btn primary assign-approve", text: "I approve this, continue",
+        disabled: !(p.start && p.start.enabled && p.nonce), title: p.start && !p.start.enabled ? p.start.why : "you approve exactly this item; nothing starts yet",
+        onclick: async () => {
+          approve.disabled = true;
+          localStorage.setItem("al.settle.who", who.value.trim());
+          try {
+            const answer = await api.post("/api/assign", { layer: layerKey, run: sm.id, action: "approve", item: d.id, who: who.value.trim(), confirm: p.nonce });
+            assignPreviews.set(sm.key, { at: Date.now(), promise: Promise.resolve(answer) });
+            replace(note, h("span", { class: "badge ok", text: "approved: this is what remains" }));
+            show(answer);
+          } catch (error) {
+            replace(note, h("span", { class: "badge warn", text: error.message }));
+            if (error.status === 409) refresh();
+            else approve.disabled = false;
+          }
+        } }) : null;
+      return h("div", { class: `assign-decision${d.approved ? " approved" : ""}`, dataset: { item: d.id } },
+        h("div", {}, h("span", { class: `badge ${d.approved ? "ok" : "warn"}`, text: d.approved ? `approved by ${d.approved.by}` : open ? "a person decides" : "a person's only" }),
+          " ", h("span", { class: "decision-text", text: d.text })),
+        d.approved ? h("div", { class: "faint", text: `${d.approved.at || ""}; it is quoted to the agent and to the review` })
+          : open ? h("div", { class: "buttons" }, who, approve)
+            : h("div", { class: "faint", text: "This is never given to an agent: do it yourself, or settle the run below." }));
+    };
+    const show = (p) => {
+      const stop = p.stop || {};
+      const merge = p.integrate && p.integrate.eligible ? p.integrate : null;
+      const refusal = p.integrate && !p.integrate.eligible && p.integrate.reason ? `${p.integrate.reason}: ${p.integrate.why}` : "";
+      const generated = new Set((merge && merge.generated) || []);
+      const files = !merge ? null : merge.conflicts === null || merge.conflicts === undefined ? h("span", { class: "faint", text: "known once it starts" })
+        : !merge.conflicts.length ? h("span", { class: "clean", text: "none: the branch applies cleanly (no agent is needed for the resolve step)" })
+          : h("ul", { class: "conflicts" }, merge.conflicts.map((name) => h("li", {}, h("span", { class: "mono", text: name }),
+            generated.has(name) ? " " : null, generated.has(name) ? h("span", { class: "badge", text: "generated: regenerated, not merged by hand" }) : null)));
+      const decisions = p.decisions || [], attempts = p.attempts || [];
+      const limited = p.blocked === "limit";
+      const startable = p.kind !== "none" && p.kind !== "person" && (!p.blocked || limited);
+      const text = h("input", { type: "text", class: "assign-note-text", placeholder: "add a sentence for the agent (optional)", maxlength: 500,
+        value: form.note, "aria-label": "a sentence for the agent", oninput: () => { form.note = text.value; } });
+      const override = limited ? h("input", { type: "checkbox", class: "assign-override", checked: form.override,
+        onchange: () => { form.override = override.checked; ready(); } }) : null;
+      const start = h("button", { type: "button", class: "btn primary assign-start", text: "Start",
+        title: p.start && !p.start.enabled ? p.start.why : "", onclick: async () => {
+          start.disabled = true;
+          try {
+            const answer = await api.post("/api/assign", { layer: layerKey, run: sm.id, action: "start", confirm: p.nonce,
+              note: text.value.trim(), override: !!(override && override.checked) });
+            assignOpen.delete(sm.key);
+            assignPreviews.delete(sm.key);
+            assignForm.delete(sm.key);
+            if (location.hash === answer.url) reload(); else location.hash = answer.url;
+          } catch (error) {
+            assignPreviews.delete(sm.key);
+            replace(note, h("span", { class: "badge warn", text: error.message }));
+            if (error.status === 409) refresh();
+            else ready();
+          }
+        } });
+      function ready() { start.disabled = !(p.start && p.start.enabled && p.nonce && (!limited || (override && override.checked))); }
+      ready();
+      replace(content, kv([
+        ["stopped", h("span", { class: "assign-stopped", text: stop.why || p.status || "" })],
+        ["plan", h("div", { class: "assign-plan", dataset: { kind: p.kind } },
+          h("div", {}, h("span", { class: "badge info assign-kind", text: ASSIGN_KINDS[p.kind] || p.kind }), " ", h("b", { class: "assign-summary", text: p.summary || "" })),
+          p.kind === "person" || p.kind === "none" ? null : planSteps(p.steps))],
+        ["cannot start", p.blocked && !limited && p.kind !== "person" ? h("span", { class: "assign-refused" },
+          h("span", { class: "badge warn", text: p.blocked }), h("span", { class: "refusal", text: ` ${p.blocked_why || ""}` })) : ""],
+        ["a person decides", decisions.length ? h("div", { class: "assign-decisions" }, decisions.map((d) => decision(p, d))) : ""],
+        ["refused", refusal ? h("span", { class: "assign-refused" }, h("span", { class: "refusal", text: refusal })) : ""],
+        ["branch", merge ? h("span", {}, h("span", { class: "mono", text: merge.branch }), ` at ${sha(merge.tip)} (it is not changed)`) : ""],
+        ["target", merge ? h("span", {}, h("span", { class: "mono", text: merge.target }), ` at ${sha(merge.target_head)}`) : ""],
+        ["conflicted files", files],
+        ["steps", merge ? (merge.steps || []).join(" → ") : ""],
+        ["approval", merge && merge.approval === "person" ? "waits for your approval before it ships" : ""],
+        ["queue", merge && (merge.ahead || []).length ? `queued behind ${merge.ahead.join(", ")}` : ""],
+        ["blockers", (p.blockers || []).length ? h("ul", { class: "issues assign-blockers" }, p.blockers.map((b) => h("li", { class: "sev-blocker" },
+          h("div", { class: "desc", text: b.description || "" }), b.resolution ? h("div", { class: "res", text: `resolution: ${b.resolution}` }) : null))) : ""],
+        ["proof found", (p.found || []).length ? h("span", { class: "mono", text: p.found.join(", ") }) : ""],
+        ["proof commands", (p.commands || []).length ? h("span", { class: "mono", text: p.commands.join(" ; ") }) : ""],
+        ["resumes from", p.from_step ? `${p.from_step}${p.tier ? ` (agent steps on the ${p.tier} tier)` : ""}` : ""],
+        ["attempts", attempts.length ? h("ul", { class: "assign-attempts" }, attempts.map((a) => h("li", {},
+          `${a.at ? `${fmt.time(Date.parse(a.at) / 1000)} · ` : ""}by ${a.by || "?"}${a.who ? ` (${a.who})` : ""} · ${a.kind || "?"} · `,
+          a.run ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(a.run)}`, text: a.run }) : "no run",
+          ` · ${a.outcome || "?"}${a.why ? `: ${a.why}` : ""}`))) : ""],
+        ["limit", h("span", { class: `assign-limit${limited ? " reached" : ""}`,
+          text: `given to an agent ${p.clicks || 0} of 2 times${limited ? `: ${p.blocked_why || "the limit is reached"}` : ""}` })],
+        ["note", startable ? text : ""],
+        ["override", limited ? h("label", { class: "assign-override-label" }, override, " give it once more (override)") : ""],
+      ]), h("div", { class: "buttons" }, startable ? start : null,
+        p.start && !p.start.enabled ? h("span", { class: "faint", text: p.start.why }) : null,
+        !startable && p.kind === "person" && !decisions.some((d) => d.approvable && !d.approved)
+          ? h("span", { class: "faint", text: "A person does this, or settles the run below." }) : null));
+    };
+    loadAssign(layerKey, sm, false).then(show).catch((error) => {
+      replace(content, h("span", { class: "badge warn", text: error.message }));
+    });
+    return card;
+  }
+
+  /** "Give all N to agents" of the Needs-you view: the plans of one layer's runs in the order they would
+   * start (GET /api/assign/bulk), then Start N (POST /api/assign {action: "bulk"} with that preview's
+   * nonce). Resolves with the answer's results, or null when the person cancelled. */
+  function assignAllDialog(layerKey) {
+    return new Promise((resolve) => {
+      const overlay = document.getElementById("overlay");
+      let done = false;
+      let watch = null;
+      const finish = (answer) => {
+        if (done) return;
+        done = true;
+        if (watch) watch.disconnect();
+        overlay.hidden = true;
+        clear(overlay);
+        overlay.onclick = null;
+        resolve(answer);
+      };
+      const list = h("div", { class: "assign-bulk-list", text: "looking at what each would do…" });
+      const note = h("div", { class: "assign-note", role: "status" });
+      const go = h("button", { class: "btn primary confirm-go assign-bulk-start", type: "button", text: "Start", disabled: true });
+      const cancel = h("button", { class: "btn confirm-cancel", type: "button", text: "Cancel", onclick: () => finish(null) });
+      const title = `Give the stopped runs of ${layerKey} to agents`;
+      replace(overlay, h("div", { class: "panel start-confirm assign-bulk", role: "dialog", "aria-modal": "true", "aria-label": title,
+        onclick: (e) => e.stopPropagation() },
+        h("h3", { text: title }),
+        h("p", { class: "confirm-message", text: "In this order: resumes and restarts first, then one integration at a time. Nothing ships without the checks, the review and the gate." }),
+        list, note, h("div", { class: "confirm-buttons" }, cancel, go)));
+      overlay.hidden = false;
+      overlay.onclick = () => finish(null);
+      watch = new MutationObserver(() => { if (overlay.hidden) finish(null); });
+      watch.observe(overlay, { attributes: true, attributeFilter: ["hidden"] });
+      cancel.focus();
+      api(`/api/assign/bulk?layer=${enc(layerKey)}`).then((p) => {
+        if (done) return;
+        replace(list, h("ol", { class: "assign-bulk-plans" }, (p.plans || []).map((plan) => h("li", { class: plan.skip ? "skipped" : "", dataset: { run: plan.run } },
+          h("span", { class: "mono", text: plan.run }), " ", h("span", { class: "dim", text: plan.title || "" }),
+          h("div", { class: plan.skip ? "skip dim" : "summary", text: plan.skip ? `skipped: ${plan.skip}` : plan.summary || plan.kind }))))
+          , !(p.plans || []).length ? h("div", { class: "dim", text: "no run of this layer needs you" }) : null);
+        go.textContent = `Start ${p.startable || 0}`;
+        go.disabled = !(p.start && p.start.enabled && p.nonce && p.startable);
+        if (p.start && !p.start.enabled) replace(note, h("span", { class: "faint", text: p.start.why }));
+        go.onclick = async () => {
+          go.disabled = true;
+          try {
+            const answer = await api.post("/api/assign", { layer: layerKey, action: "bulk", confirm: p.nonce });
+            finish(answer.results || []);
+          } catch (error) {
+            replace(note, h("span", { class: "badge warn", text: error.message }));
+          }
+        };
+      }).catch((error) => { replace(list, h("span", { class: "badge warn", text: error.message })); });
+    });
+  }
+
   /** On an integration run that waits at its approve step: who approves, then it ships. */
   function approveCard(detail, layerKey, reload) {
     const sm = detail.summary;
@@ -2279,6 +2507,17 @@
       h("div", { class: "card-head" }, h("h2", { text: "Approve and ship" }), h("span", { class: "spacer" }),
         h("span", { class: "faint", text: `the conflicts are resolved, the checks and the review passed; run ${sm.integrates} lands when you approve` })),
       h("div", { class: "settle-fields" }, who, h("div", { class: "buttons" }, button, note)));
+  }
+
+  /** The Status block's "given to an agent": "1 of 2; last: stopped", with a link to the last attempt's run. */
+  function givenFact(sm, layerKey) {
+    const given = sm.assign || {}, attempts = given.attempts || [];
+    if (!attempts.length) return "";
+    const last = attempts[attempts.length - 1];
+    return h("span", { class: "assign-fact" }, `${given.clicks || 0} of 2; last: ${last.outcome || "?"}`,
+      last.run && last.run !== sm.id ? " (" : null,
+      last.run && last.run !== sm.id ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(last.run)}`, text: last.run }) : null,
+      last.run && last.run !== sm.id ? ")" : null, last.why ? `: ${last.why}` : "");
   }
 
   /** "Start again" for a failed or died run nothing replaces yet: the same request, recorded as replacing it. */
@@ -2440,10 +2679,10 @@
       if (detail.promotion) body.appendChild(promotionCard(detail, layerKey, load));
       const sm = detail.summary;
       if (sm.suggestion) body.appendChild(suggestionCard(detail, layerKey, load));
-      if (state.params.integrate === "1") integrateOpen.add(sm.key);
-      const canIntegrate = sm.status === "handed-over" && !sm.settled && sm.bucket === "needs-you";
-      if (!canIntegrate) integrateOpen.delete(sm.key);
-      if (integrateOpen.has(sm.key)) body.appendChild(integrateCard(detail, layerKey));
+      if (state.params.assign === "1") assignOpen.add(sm.key);
+      const canAssign = sm.bucket === "needs-you" && !sm.settled && sm.assign && sm.assign.script;
+      if (!canAssign) assignOpen.delete(sm.key);
+      if (assignOpen.has(sm.key)) body.appendChild(assignCard(detail, layerKey, load));
       if (sm.integrates && sm.status === "waiting" && sm.waiting_step && sm.waiting_step.name === "approve") body.appendChild(approveCard(detail, layerKey, load));
       if (!["running", "unknown"].includes(sm.status) && !sm.settled) body.appendChild(settleCard(detail, layerKey, (redraw) => (redraw === true ? renderOverview() : load())));
       const grid = h("div", { class: "grid-2" }, h("div", { class: "stack" }, timelineCard(), decisionsCard(detail), costsCard()), h("div", { class: "stack" }, outcomeCard()));
@@ -2524,6 +2763,7 @@
             h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(sm.integration.run)}`, text: sm.integration.run }),
             ` ${sm.integration.status}${sm.integration.commit ? ` in ${sm.integration.commit.slice(0, 7)}` : ""}${sm.integration.why ? `: ${sm.integration.why}` : ""}`) : ""],
           ["integrates", sm.integrates ? h("a", { class: "mono integrates-fact", href: `#/run/${enc(layerKey)}/${enc(sm.integrates)}`, text: sm.integrates }) : ""],
+          ["given to an agent", givenFact(sm, layerKey)],
           ["next", sm.bucket === "needs-you" ? sm.next : ""]])));
       if (detail.budget) {
         const b = detail.budget, stop = b.stopped;
@@ -2870,7 +3110,15 @@
       for (const child of [...body.children]) child.remove();
       const card = h("div", { class: "card" });
       body.appendChild(card);
-      if (!detail.artefacts.length) { card.appendChild(h("div", { class: "empty", text: "This run collected no artefacts." })); return; }
+      const leftOut = (entry) => h("div", { class: "left-out", dataset: { id: entry.id },
+        title: entry.matched ? `${entry.matched} files matched; the artefact's limit handed ${entry.matched - entry.left_out} of them over, files of this change first` : "" },
+        `${entry.id}: ${entry.left_out} more file${entry.left_out === 1 ? "" : "s"} matched and ${entry.left_out === 1 ? "was" : "were"} not handed to the reviewers`);
+      const left = detail.left_out || [];
+      if (!detail.artefacts.length) {
+        card.appendChild(h("div", { class: "empty", text: "This run collected no artefacts." }));
+        for (const entry of left) card.appendChild(leftOut(entry));
+        return;
+      }
       const file = (path) => `/files/${enc(layerKey)}/${path.split("/").map(enc).join("/")}`;
       const groups = new Map();
       for (const art of detail.artefacts) {
@@ -2884,6 +3132,7 @@
         const type = items[0].type;
         const group = h("div", { class: "art-group" }, h("div", { class: "card-head" }, h("h3", { text: id }), h("span", { class: "badge", text: type }),
           h("span", { class: "dim", text: `collected by step ${items[0].step}` }), h("span", { class: "dim", text: `${items.length} file${items.length === 1 ? "" : "s"}` })));
+        for (const entry of left.filter((e) => e.id === id)) group.appendChild(leftOut(entry));
         if (type === "image") {
           group.appendChild(h("div", { class: "thumbs" }, items.map((art) => h("div", { class: "thumb", onclick: () => lightbox(file(art.path)) },
             h("img", { src: file(art.path), alt: art.name, loading: "lazy" }), h("div", { class: "cap", text: `${art.name} · ${fmt.bytes(art.bytes)}` })))));
@@ -2902,6 +3151,7 @@
         }
         card.appendChild(group);
       }
+      for (const entry of left.filter((e) => !groups.has(`${e.id}`))) card.appendChild(leftOut(entry));
     }
 
     // ------------------------------------------------------------------ documents tab

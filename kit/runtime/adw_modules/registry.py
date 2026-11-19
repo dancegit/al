@@ -1,5 +1,5 @@
 """The one description of what a layer can run: its declared workflows, the workflows the kit gives
-every layer (`integrate`, promotions, `improve`), the stand-in decider, its commands and hops as
+every layer (`integrate`, `assign`, promotions, `improve`), the stand-in decider, its commands and hops as
 single-command runs, and the codebase commands its `script` steps run.
 
 `build(ir, layer_dir)` returns it from the compiled layer (a plain dict) plus the KIT table below.
@@ -22,10 +22,12 @@ from typing import Any, Mapping
 VERSION = 1
 COMMAND_PREFIX = "command:"                                  # launch.COMMAND_PREFIX
 INTEGRATE = "integrate"                                      # integrate.ADW_NAME
-INTEGRATE_STEP_NAMES = ("prepare", "resolve", "approve")     # integrate.STEP_NAMES
+INTEGRATE_STEP_NAMES = ("prepare", "resolve", "approve", "address", "proof")   # integrate.STEP_NAMES
 INTEGRATE_SETTINGS = "templates/integrate.json"              # integrate.SETTINGS_SHOWN
 INTEGRATE_KEYS = ("version", "enabled", "approval", "decider", "generated")   # integrate.DEFAULTS
 INTEGRATE_APPROVALS = ("none", "person")                     # integrate.APPROVALS
+ASSIGN = "assign"
+ASSIGN_KINDS = ("integrate", "blockers", "proof", "person", "check", "resume", "start-again")   # assign.KINDS
 PROMOTE = "promote"
 PROMOTION_STEPS = ("open", "checks", "pack", "request", "approval", "version", "merge", "tag", "deploy",
                    "back-merge", "close")                    # promotion.STEPS
@@ -40,8 +42,8 @@ ENTRY_KEYS = ("name", "kind", "source", "purpose", "steps", "definition", "input
               "script", "available", "off", "adw", "used_by")
 NO_STAGES = "declare stages, e.g. `(delivery sprint)` in agentic.rkt, then `al gen`"
 
-# The only place a kit workflow is declared. `name` is the row; `integrate` gives one entry,
-# `promote` one per declared promotion (or one that is off), `improve` and `decider` one each.
+# The only place a kit workflow is declared. `name` is the row; `integrate` and `assign` give one entry
+# each, `promote` one per declared promotion (or one that is off), `improve` and `decider` one each.
 KIT: list[dict[str, Any]] = [
     {"name": INTEGRATE, "kind": "kit-workflow", "script": "adws/integrate.py",
      "purpose": "brings a handed-over run onto its target branch with an agent, when its review passed but the "
@@ -50,6 +52,14 @@ KIT: list[dict[str, Any]] = [
      "start": {"by_hand": True, "how": "form", "command": "al integrate LAYER RUN", "why": ""},
      "ships": "as the run's own workflow",
      "setting": {"where": INTEGRATE_SETTINGS, "key": "enabled", "turn_on": "al integrate LAYER --set enabled=true"}},
+    {"name": ASSIGN, "kind": "kit-workflow", "script": "adws/assign.py",
+     "purpose": "gives a stopped run to an agent: the plan follows from why it stopped (an integration, the "
+                "review's blockers, the missing proof, a resume or a start again); nothing ships without the "
+                "checks, the review and the gate",
+     "input": {"kind": "run", "what": "a stopped run"},
+     "start": {"by_hand": True, "how": "form", "command": "al assign LAYER RUN", "why": ""},
+     "ships": "as the run's own workflow",
+     "setting": None},
     {"name": PROMOTE, "kind": "kit-workflow", "script": "adws/promote.py",
      "purpose": "moves a stage into the next one once people accept it: checks, pack, approval, merge",
      "input": {"kind": "stages", "what": "two stages"},
@@ -255,6 +265,19 @@ def _integrate_row(row: Mapping[str, Any], ir: Mapping[str, Any], layer_dir: Pat
                    off=not available or not on, adw=row["name"])]
 
 
+def _assign_row(row: Mapping[str, Any], ir: Mapping[str, Any], layer_dir: Path | None,
+                problems: list[str]) -> list[dict[str, Any]]:
+    """Always on; off only when the layer was generated before `al assign` (no adws/assign.py)."""
+    del ir, problems
+    available = _exists(layer_dir, row["script"])
+    start = dict(row["start"])
+    if not available:
+        start["why"] = _missing(row["script"])
+    return [_entry(name=row["name"], kind=row["kind"], source="kit", purpose=row["purpose"], steps=list(ASSIGN_KINDS),
+                   input=dict(row["input"]), start=start, ships=row["ships"], setting=None, script=row["script"],
+                   available=available, off=not available, adw=row["name"])]
+
+
 def _promote_row(row: Mapping[str, Any], ir: Mapping[str, Any], layer_dir: Path | None,
                  problems: list[str]) -> list[dict[str, Any]]:
     del problems
@@ -303,7 +326,7 @@ def _decider_row(row: Mapping[str, Any], ir: Mapping[str, Any], layer_dir: Path 
                    start=start, ships=row["ships"], setting={**row["setting"], "on": on, "value": mode}, off=not on)]
 
 
-_ROWS = {INTEGRATE: _integrate_row, PROMOTE: _promote_row, "improve": _improve_row, "decider": _decider_row}
+_ROWS = {INTEGRATE: _integrate_row, ASSIGN: _assign_row, PROMOTE: _promote_row, "improve": _improve_row, "decider": _decider_row}
 
 
 def _kit(ir: Mapping[str, Any], layer_dir: Path | None, taken: set[str], problems: list[str]) -> list[dict[str, Any]]:

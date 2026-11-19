@@ -120,12 +120,12 @@ def test_attention_buckets_on_the_scenario(scenario):
     for run in sf.INTEGRATED:
         assert item(model, run)["superseded_by"] == sf.INTEGRATION
         assert item(model, run)["reason"] == f"superseded by {sf.INTEGRATION}"
-    assert item(model, sf.PR_RUN)["next"] == "review PR #7"
-    assert item(model, sf.OPEN[0])["next"] == f"merge al/{sf.OPEN[0]} into main, or `al settle`"
+    assert item(model, sf.PR_RUN)["next"] == "review PR #7, or Give to an agent"
+    assert item(model, sf.OPEN[0])["next"] == f"merge al/{sf.OPEN[0]} into main, or `al settle`, or Give to an agent"
     assert item(model, sf.WAITING)["reason"] == "waiting at approve"
     assert "--resume --adw-id a0000001" in item(model, sf.WAITING)["next"]
     assert item(model, sf.OLD_FAILURE)["reason"].startswith("build: ")
-    assert item(model, sf.OLD_FAILURE)["next"] == "Start again"
+    assert item(model, sf.OLD_FAILURE)["next"] == "Start again, or Give to an agent"
     assert item(model, sf.MERGED[0])["reason"].startswith("landed in ") and " on main, " in item(model, sf.MERGED[0])["reason"]
     decorated = model._decorated(model.summaries[f"orchard/{sf.OPEN[0]}"])
     assert decorated["bucket"] == "needs-you" and decorated["reason"]

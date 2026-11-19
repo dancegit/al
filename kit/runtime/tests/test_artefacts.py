@@ -20,7 +20,8 @@ def test_image_cap_hash_and_manifest(make_layer: object, tmp_path: Path) -> None
     assert len(result) == 2
     assert result[0]["sha256"] == hashlib.sha256((worktree / "shots/nested/0.png").read_bytes()).hexdigest()
     manifest = json.loads((layer.layer_dir / "artefacts/1234abcd/manifest.json").read_text())
-    assert len(manifest) == 2
+    assert [item["type"] for item in manifest] == ["image", "image", "left-out"]
+    assert manifest[:2] == state.artefacts and manifest[2]["left_out"] == 2 and manifest[2]["matched"] == 4
 
 
 def _files_under(root: Path) -> set[str]:

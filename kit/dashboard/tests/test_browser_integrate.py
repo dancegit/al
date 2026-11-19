@@ -1,7 +1,10 @@
-"""Real-browser tests of "Resolve with an agent": the button in the Needs-you row and on a run's page,
-the preview of what the integration will do, the integration run and the original moving to Landed
-with a link to it, and the two evidence buttons beside Settle. The scenario is integrate_fixtures (an
-invented pantry with real git history; the layer's own adws/integrate.py runs with the mock agent).
+"""Real-browser tests of a handed-over run that could not merge, given to an agent ("Give to an agent",
+which for such a run starts the integration that "Resolve with an agent" started): the button in the
+Needs-you row and on a run's page, the preview of what the integration will do, the integration run
+and the original moving to Landed with a link to it, and the two evidence buttons beside Settle. The
+scenario is integrate_fixtures (an invented pantry with real git history; the layer's own
+adws/assign.py and adws/integrate.py run with the mock agent). tests/test_browser_assign.py has the
+other kinds of stopped runs.
 
     uv run --with pytest --with playwright pytest kit/dashboard/tests/test_browser_integrate.py
 
@@ -80,7 +83,7 @@ def needs_you(page, count: int, timeout: int = 30000) -> None:
 def row(page, run: str) -> dict:
     return page.evaluate("""(key) => { const tr = document.querySelector(`#main tbody tr[data-key="${key}"]`);
         return tr ? { reason: tr.querySelector('td.reason')?.innerText || '', next: tr.querySelector('td.next')?.innerText || '',
-                      button: !!tr.querySelector('button.integrate-open'), text: tr.innerText,
+                      button: !!tr.querySelector('button.assign-open'), text: tr.innerText,
                       landing: tr.querySelector('.landing')?.innerText || '' } : null; }""", f"pantry/{run}")
 
 
@@ -99,15 +102,15 @@ def wait_record(layer: Path, run: str, timeout: float = 120.0) -> dict:
 
 def open_preview(page, run: str) -> None:
     open_(page, f"/run/pantry/{run}")
-    page.wait_for_selector(".settle-card button.integrate-open:not([disabled])")
-    page.click(".settle-card button.integrate-open")
-    page.wait_for_selector(".integrate-card .integrate-preview .kv, .integrate-card .integrate-refused")
+    page.wait_for_selector(".settle-card button.assign-open:not([disabled])")
+    page.click(".settle-card button.assign-open")
+    page.wait_for_selector(".assign-card .assign-preview .kv")
 
 
 def start_from_page(page, layer: Path, run: str) -> str:
-    """Click Resolve with an agent on the run's page, confirm, and wait until the integration ended."""
+    """Click Give to an agent on the run's page, confirm, and wait until the integration ended."""
     open_preview(page, run)
-    page.click(".integrate-card button.integrate-start")
+    page.click(".assign-card button.assign-start")
     until(page, f"location.hash.startsWith('#/run/pantry/') && !location.hash.includes('{run}')", 30000)
     new = page.evaluate("location.hash.split('/')[3].split('?')[0]")
     record = wait_record(layer, run)
@@ -132,26 +135,27 @@ def test_needs_you_row_and_run_page_offer_the_button(scenario, tab):
     assert page.inner_text("#crumbs").strip() == "5 need you"
     for run in (RUN, fx.CLEAN):
         found = row(page, run)
-        assert found["button"] and "Resolve with an agent" in found["next"], found
+        assert found["button"] and "Give to an agent" in found["next"], found
         assert "or `al integrate`, or `al settle`" in found["next"]
     rejected = row(page, fx.REJECTED)
-    assert not rejected["button"] and "al integrate" not in rejected["next"] and "review-rejected" in rejected["reason"]
+    assert "al integrate" not in rejected["next"] and "review-rejected" in rejected["reason"]
+    assert rejected["button"], "a rejected run is given to an agent too (its blockers: test_browser_assign.py)"
     no_personal_paths(page)
     shot(page, "integrate-needs-you-1280.png")
-    page.click(f'#main tbody tr[data-key="pantry/{RUN}"] button.integrate-open')     # the row's button opens the preview
-    until(page, f"location.hash.startsWith('#/run/pantry/{RUN}') && location.hash.includes('integrate=1')")
-    page.wait_for_selector(".integrate-card .integrate-preview .kv")
+    page.click(f'#main tbody tr[data-key="pantry/{RUN}"] button.assign-open')     # the row's button opens the preview
+    until(page, f"location.hash.startsWith('#/run/pantry/{RUN}') && location.hash.includes('assign=1')")
+    page.wait_for_selector(".assign-card .assign-preview .kv")
     open_(page, f"/run/pantry/{fx.CLEAN}")
     page.wait_for_selector(".settle-card")
     buttons = page.evaluate("[...document.querySelectorAll('.settle-card .settle-actions button')].map((b) => b.innerText.trim())")
-    assert buttons == ["Resolve with an agent", "Check if it has landed", "Find what replaced it"]
-    assert not page.query_selector(".integrate-card"), "the preview opens only when asked"
+    assert buttons == ["Give to an agent", "Check if it has landed", "Find what replaced it"]
+    assert not page.query_selector(".assign-card"), "the preview opens only when asked"
     no_personal_paths(page)
     shot(page, "integrate-button-1280.png")
     open_(page, f"/run/pantry/{fx.REJECTED}")
     page.wait_for_selector(".settle-card")
     buttons = page.evaluate("[...document.querySelectorAll('.settle-card .settle-actions button')].map((b) => b.innerText.trim())")
-    assert buttons == ["Check if it has landed", "Find what replaced it"], "a rejected run has no Resolve button"
+    assert buttons == ["Give to an agent", "Check if it has landed", "Find what replaced it"]
 
 
 def test_preview_shows_branch_target_and_conflicted_files(scenario, tab):
@@ -159,32 +163,32 @@ def test_preview_shows_branch_target_and_conflicted_files(scenario, tab):
     page = tab(running)
     before = sorted(p.name for p in (layer / "agents").iterdir())
     open_preview(page, RUN)
-    text = page.inner_text(".integrate-card")
+    text = page.inner_text(".assign-card")
     tip = fx.git(repo, "rev-parse", f"refs/heads/{fx.branch_of(RUN)}")
     main = fx.git(repo, "rev-parse", "refs/heads/main")
     assert "what will happen; nothing starts until you confirm" in text
     assert f"{fx.branch_of(RUN)} at {tip[:7]}" in text and f"main at {main[:7]}" in text
-    files = page.evaluate("[...document.querySelectorAll('.integrate-card ul.conflicts li')].map((li) => li.innerText.replace(/\\s+/g, ' ').trim())")
+    files = page.evaluate("[...document.querySelectorAll('.assign-card ul.conflicts li')].map((li) => li.innerText.replace(/\\s+/g, ' ').trim())")
     assert files == ["INDEX.md generated: regenerated, not merged by hand", "stock.py"]
     assert "prepare → resolve → test → review → ship" in text
     assert "waits for your approval" not in text
-    options = page.evaluate("[...document.querySelectorAll('.integrate-card select.integrate-tier option')].map((o) => o.value)")
-    assert options[0] == "" and "heavy" in options and "base" in options
-    assert page.is_enabled(".integrate-card button.integrate-start")
+    assert "bring it onto main: an agent resolves 2 conflicted files" in page.inner_text(".assign-card .assign-plan")
+    assert not page.query_selector(".assign-card select"), "the card has no tier picker: the layer's tiers are used"
+    assert page.is_enabled(".assign-card button.assign-start")
     no_personal_paths(page)
     shot(page, "integrate-preview-1280.png")
     narrow = tab(running, 390, 844)
     open_preview(narrow, RUN)
-    narrow.locator(".integrate-card").scroll_into_view_if_needed()
-    wide = narrow.evaluate("""[...document.querySelectorAll('.integrate-card, .integrate-card *')]
+    narrow.locator(".assign-card").scroll_into_view_if_needed()
+    wide = narrow.evaluate("""[...document.querySelectorAll('.assign-card, .assign-card *')]
         .filter((el) => el.getBoundingClientRect().right > window.innerWidth + 1).map((el) => el.className || el.tagName)""")
     assert wide == [], f"the preview fits a phone's width: {wide}"
     shot(narrow, "integrate-preview-390.png")
     clean = tab(running)
     open_preview(clean, fx.CLEAN)
-    assert "none: the branch applies cleanly" in clean.inner_text(".integrate-card")
-    clean.click(".integrate-card button.integrate-close")
-    until(clean, "!document.querySelector('.integrate-card')")
+    assert "none: the branch applies cleanly" in clean.inner_text(".assign-card")
+    clean.click(".assign-card button.assign-close")
+    until(clean, "!document.querySelector('.assign-card')")
     assert sorted(p.name for p in (layer / "agents").iterdir()) == before, "looking starts nothing"
 
 
@@ -194,9 +198,9 @@ def test_click_resolve_lands_the_work_and_empties_needs_you(scenario, tab):
     main = fx.git(repo, "rev-parse", "refs/heads/main")
     open_(page, "/runs")
     needs_you(page, 5)
-    page.click(f'#main tbody tr[data-key="pantry/{RUN}"] button.integrate-open')
-    page.wait_for_selector(".integrate-card button.integrate-start:not([disabled])")
-    page.click(".integrate-card button.integrate-start")
+    page.click(f'#main tbody tr[data-key="pantry/{RUN}"] button.assign-open')
+    page.wait_for_selector(".assign-card button.assign-start:not([disabled])")
+    page.click(".assign-card button.assign-start")
     until(page, f"location.hash.startsWith('#/run/pantry/') && !location.hash.includes('{RUN}')", 30000)
     new = page.evaluate("location.hash.split('/')[3].split('?')[0]")
     page.wait_for_selector(".g-node[data-step='prepare']")
@@ -319,12 +323,13 @@ def test_refused_integration_says_why(scenario, tab):
     running, layer, _repo = scenario
     page = tab(running)
     open_preview(page, fx.CHANGED)
-    page.wait_for_selector(".integrate-card .integrate-refused")
-    text = page.inner_text(".integrate-card")
-    assert "cannot be integrated" in text
+    page.wait_for_selector(".assign-card .assign-refused")
+    text = page.inner_text(".assign-card")
+    assert "a person decides" in text and "This is never given to an agent" in text
     assert "branch-changed: a person changed chore/f0000005-round-the-total since the run ended" in text
-    assert not page.query_selector(".integrate-card button.integrate-start")
+    assert not page.query_selector(".assign-card button.assign-start")
+    assert not page.query_selector(".assign-card button.assign-approve"), "nor is it a person's to approve here"
     no_personal_paths(page)
     open_preview(page, fx.PROTECTED)
-    assert "protected-path: run f0000004 changes deploy/release.cfg" in page.inner_text(".integrate-card")
+    assert "protected-path: run f0000004 changes deploy/release.cfg" in page.inner_text(".assign-card")
     assert fx.integration_runs(layer) == []

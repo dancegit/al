@@ -88,10 +88,10 @@ def test_offer_only_for_conflict_runs_whose_review_passed(scenario):
     for run in (fx.ACCEPTANCE, fx.CLEAN):
         offer = summary(model, run)["integrate"]
         assert offer == {"offered": True, "why": "", "conflict": True, "script": True}, run
-        assert item(model, run)["next"] == f"merge {fx.branch_of(run)} into main, or `al integrate`, or `al settle`"
+        assert item(model, run)["next"] == f"merge {fx.branch_of(run)} into main, or `al integrate`, or `al settle`, or Give to an agent"
     rejected = summary(model, fx.REJECTED)["integrate"]
     assert rejected["offered"] is False and rejected["why"] == "its review rejected it" and rejected["conflict"] is False
-    assert item(model, fx.REJECTED)["next"] == f"merge {fx.branch_of(fx.REJECTED)} into main, or `al settle`"
+    assert item(model, fx.REJECTED)["next"] == f"merge {fx.branch_of(fx.REJECTED)} into main, or `al settle`, or Give to an agent"
     # a protected path and a changed branch are the runtime's to refuse: the page offers, the preview says no
     for run in (fx.PROTECTED, fx.CHANGED):
         assert summary(model, run)["integrate"]["offered"] is True, run
@@ -168,10 +168,10 @@ def test_failed_integration_keeps_original_in_needs_you_with_why(scenario):
     failed = item(model, fx.ACCEPTANCE)
     assert failed["bucket"] == "needs-you"
     assert failed["reason"] == f"integration {NEW} did not land: {why}"
-    assert failed["next"] == f"merge {fx.branch_of(fx.ACCEPTANCE)} into main, or `al integrate`, or `al settle`"
+    assert failed["next"] == f"merge {fx.branch_of(fx.ACCEPTANCE)} into main, or `al integrate`, or `al settle`, or Give to an agent"
     assert summary(model, fx.ACCEPTANCE)["integrate"]["offered"] is True, "it can be integrated again"
     own = item(model, NEW)                 # the failed integration run itself is not "started again"
-    assert own["bucket"] == "needs-you" and own["next"] == f"integrate {fx.ACCEPTANCE} again, or `al settle`"
+    assert own["bucket"] == "needs-you" and own["next"] == f"integrate {fx.ACCEPTANCE} again, or `al settle`, or Give to an agent"
     assert summary(model, NEW)["integrate"]["offered"] is False
     # once the original is settled, its failed integration needs nobody either
     d.write_settlement(layer, fx.ACCEPTANCE, as_="abandoned", who="Ada Example", via="dashboard", status="handed-over")

@@ -50,6 +50,8 @@ def test_al_runs_default_lists_what_needs_you(scenario):
     runs = [line for line in lines[1:] if LINE.match(line)]
     nexts = [line for line in lines[1:] if line.lstrip().startswith("→ ")]
     assert len(runs) == len(nexts) == 6   # each run with its next action
+    for run, line in zip(runs, nexts):    # and each can be given to an agent
+        assert line.endswith(f"; or: al assign {scenario['layer']} {run.split()[0]}"), line
     text = cp.stdout
     assert "review PR #7" in text and "waiting at approve" in text and "review-rejected" in text
     assert f"--replaces {sf.OLD_FAILURE}" in text and f"al settle {scenario['layer']} {sf.OPEN[0]} --as" in text

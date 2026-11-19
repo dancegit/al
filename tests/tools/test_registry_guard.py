@@ -113,7 +113,7 @@ def test_full_example_layer_is_fully_registered(layer):
     reg = guard(layer)
     assert scripts_of(layer) == sorted(reg["scripts"]), "the registry names exactly the scripts al gen wrote"
     names = [e["name"] for e in reg["entries"] if e["source"] == "kit"]
-    assert names == ["integrate", "promote-sprint-main", "promote-hotfix-main", "improve", "decider"]
+    assert names == ["integrate", "assign", "promote-sprint-main", "promote-hotfix-main", "improve", "decider"]
     assert not any(e["off"] for e in reg["entries"] if e["kind"] in ("workflow", "kit-workflow")), "all scripts exist"
     # what the generated launcher prints is the same registry
     printed = sh([sys.executable, layer / "adws" / "dispatch.py", "--registry", "--json"])
@@ -164,7 +164,7 @@ def test_al_run_names_the_kit_way(generated):
     cp = al("run", layer, "/nope", "x", ok=False, env=env)
     assert cp.returncode == 2 and "no workflow or command named nope; known: /plan-build, /sdlc, /zte, " in cp.stderr
     assert cp.stderr.strip().endswith(
-        "/integrate (kit), /promote-sprint-main (kit), /promote-hotfix-main (kit), /improve (kit), /decider (kit)")
+        "/integrate (kit), /assign (kit), /promote-sprint-main (kit), /promote-hotfix-main (kit), /improve (kit), /decider (kit)")
     after = sorted(p.name for p in (layer / "agents").iterdir()) if (layer / "agents").is_dir() else []
     assert after == before, "nothing was started"
 
@@ -174,14 +174,14 @@ def test_explain_lists_kit_workflows(generated, tmp_path):
     al("explain", generated["layer"], "--md", out, env=generated["env"])
     text = out.read_text()
     paragraph = text.split("## In one paragraph", 1)[1].split("## Block by block", 1)[0]
-    assert ("The kit adds 5 more a person or a run can start: `integrate`, `promote-sprint-main`, "
+    assert ("The kit adds 6 more a person or a run can start: `integrate`, `assign`, `promote-sprint-main`, "
             "`promote-hotfix-main`, `improve` and `decider`.") in paragraph
     assert "6 workflows (`plan-build`, `sdlc`, `zte`, `hotfix`, `candidate` and `race`)" in paragraph
     heading = "### Kit workflows (every layer gets them; not declared in the definition)"
     assert text.count(heading) == 1
     section = text.split(heading, 1)[1].split("\n### ", 1)[0]
     bullets = [line for line in section.splitlines() if line.startswith("- ")]
-    assert [line.split("`")[1] for line in bullets] == ["integrate", "promote-sprint-main", "promote-hotfix-main",
+    assert [line.split("`")[1] for line in bullets] == ["integrate", "assign", "promote-sprint-main", "promote-hotfix-main",
                                                        "improve", "decider"]
     by_name = {line.split("`")[1]: line for line in bullets}
     assert "started with `al integrate LAYER RUN` or from the dashboard" in by_name["integrate"]
@@ -204,7 +204,7 @@ def test_explain_says_promote_is_off_without_stages(app, tmp_path):
     out = tmp_path / "explained.md"
     al("explain", layer, "--md", out)
     text = out.read_text()
-    assert "The kit adds 4 more a person or a run can start: `integrate`, `promote`, `improve` and `decider`." in text
+    assert "The kit adds 5 more a person or a run can start: `integrate`, `assign`, `promote`, `improve` and `decider`." in text
     line = next(line for line in text.splitlines() if line.startswith("- `promote`"))
     assert "setting `agentic.rkt` (`stages`): off; turn it on: declare stages, e.g. `(delivery sprint)`" in line
 

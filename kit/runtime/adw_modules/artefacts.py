@@ -13,6 +13,7 @@ from .errors import LayerError, StepFailed
 
 GLOB_KINDS = {"junit", "coverage", "image", "video", "audio", "trace", "html", "file"}
 FFMPEG_TIMEOUT = 120
+GIT_TIMEOUT = 120
 
 
 def sha256_of(path: Path) -> str:
@@ -67,18 +68,56 @@ def extract_keyframes(source: Path, target_dir: Path, count: int) -> tuple[list[
         return [], f"keyframe extraction failed for {source.name}: {exc}"
 
 
-def _glob_matches(worktree: Path, option: dict[str, Any]) -> list[tuple[str, Path]]:
+def _changed_by_run(layer: Any, state: Any, worktree: Path) -> set[str]:
+    """The paths this run changed in its worktree: new, modified and ignored files (build output)
+    as `git status` lists them, plus what the run committed since it left the target branch. Read
+    only; any git failure gives an empty set (the order of an artefact's files is then by name)."""
+    del state
+
+    def git(*args: str) -> str:
+        result = subprocess.run(["git", "-C", str(worktree), *args], capture_output=True, text=True,
+                                timeout=GIT_TIMEOUT, check=False)
+        if result.returncode != 0:
+            raise ValueError(result.stderr.strip() or f"git exited {result.returncode}")
+        return result.stdout
+
+    try:
+        if Path(git("rev-parse", "--show-toplevel").strip()).resolve() != Path(worktree).resolve():
+            return set()                        # a directory inside another repository says nothing
+        changed: set[str] = set()
+        fields = git("status", "--porcelain", "-z", "--untracked-files=all", "--ignored=matching").split("\0")
+        index = 0
+        while index < len(fields):
+            entry = fields[index]
+            index += 1
+            if len(entry) < 4:
+                continue
+            changed.add(entry[3:])
+            if entry[0] in "RC":                # a rename or copy: the next field is the old path
+                index += 1
+        base = git("merge-base", "HEAD", str(layer.default_branch)).strip()
+        changed |= {name for name in git("diff", "--name-only", "-z", base).split("\0") if name}
+        return changed
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError, KeyError):
+        return set()
+
+
+def _glob_matches(worktree: Path, option: dict[str, Any],
+                  changed: set[str] | None = None) -> tuple[list[tuple[str, Path]], int]:
+    """(the files of an artefact option to hand over, how many more matched and were left out).
+    The files this run changed come first, then the others, each group by name; an image artefact
+    keeps the first `maxFiles` of them."""
     pattern = str(option.get("glob") or "")
     if not pattern:
         raise LayerError(f"artefact {option.get('id')!r} has an empty glob")
-    matches = [
-        (path.relative_to(worktree).as_posix(), path)
-        for path in sorted(worktree.glob(pattern))
-        if path.is_file() and path.resolve().is_relative_to(worktree)
-    ]
+    changed = changed or set()
+    matches = sorted(((path.relative_to(worktree).as_posix(), path) for path in worktree.glob(pattern)
+                      if path.is_file() and path.resolve().is_relative_to(worktree)),
+                     key=lambda item: (0 if item[0] in changed else 1, item[0]))
+    total = len(matches)
     if option.get("kind") == "image":
         matches = matches[: max(0, int(option.get("maxFiles", 0)))]
-    return matches
+    return matches, total - len(matches)
 
 
 def _log_matches(layer: Any, state: Any) -> list[tuple[str, Path]]:
@@ -144,11 +183,28 @@ def skip_entries(state: Any) -> list[dict[str, Any]]:
     return entries
 
 
+def left_out_entries(state: Any) -> list[dict[str, Any]]:
+    """One `left-out` entry per artefact id whose limit (`#:max-files`) left matching files out:
+    how many, of how many. Like the `skips` entries they go to the reviewers' manifest only."""
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in getattr(state, "artefacts", None) or []:
+        artefact_id = str(record.get("id"))
+        left = int(record.get("left_out") or 0) if isinstance(record, dict) else 0
+        if left <= 0 or artefact_id in seen:
+            continue
+        seen.add(artefact_id)
+        matched = int(record.get("matched") or 0)
+        entries.append({"id": artefact_id, "type": "left-out", "step": record.get("step", ""), "path": "",
+                        "left_out": left, "matched": matched, "limit": matched - left})
+    return entries
+
+
 def write_manifest(layer: Any, state: Any) -> Path:
     target = manifest_path(layer, state.adw_id)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(state.artefacts + skip_entries(state), indent=2) + "\n", encoding="utf-8")
+    temporary.write_text(json.dumps(state.artefacts + skip_entries(state) + left_out_entries(state), indent=2) + "\n", encoding="utf-8")
     temporary.replace(target)
     return target
 
@@ -165,6 +221,9 @@ def _clear(run_root: Path, artefact_id: str) -> None:
 def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str) -> list[dict[str, Any]]:
     """Copy each artefact option's matches into artefacts/<adw_id>/<id>/, store them, update the manifest.
 
+    An image artefact hands over at most its `maxFiles` files, those this run changed first; when
+    more matched, its records say so (`left_out`, `matched`) and the manifest gets a `left-out` entry.
+
     A collection REPLACES the previous one of the same id: its manifest entries and copied files
     (keyframes too) go, so a screenshot a later e2e run no longer produces is not shown to a
     reviewer again. Logs lose nothing by this: every attempt's log stays in agents/<id>/checks/
@@ -175,20 +234,31 @@ def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str
     run_root = storage.artefacts_root(layer) / state.adw_id
     collected: list[dict[str, Any]] = []
     replaced: set[str] = set()
+    changed: set[str] | None = None      # what this run changed: asked of git once per collection
     for artefact_id in artefact_ids:
         option = layer.option("artefacts", artefact_id)
         kind = option["kind"]
+        left_out = 0
         if kind == "log":
             matches = _log_matches(layer, state)
         elif kind in GLOB_KINDS:
             if worktree is None or not worktree.is_dir():
                 raise StepFailed(producing_step, f"artefact {artefact_id!r} needs a worktree, none exists")
-            matches = _glob_matches(worktree, option)
+            if changed is None:
+                changed = _changed_by_run(layer, state, worktree)
+            matches, left_out = _glob_matches(worktree, option, changed)
         else:
             raise LayerError(f"Unknown artefact kind: {kind}")
         _clear(run_root, str(option["id"]))
         replaced.add(str(option["id"]))
-        collected.extend(_record(layer, state, store, option, producing_step, rel, src) for rel, src in matches)
+        records = [_record(layer, state, store, option, producing_step, rel, src) for rel, src in matches]
+        if left_out > 0:
+            total = len(records) + left_out
+            for record in records:
+                record.update(left_out=left_out, matched=total)
+            print(f"[adw {state.adw_id}] artefact {option['id']}: {len(records)} of {total} files handed over, "
+                  f"{left_out} left out (limit {len(records)}); files of this change first")
+        collected.extend(records)
     state.artefacts[:] = [item for item in state.artefacts if item.get("id") not in replaced] + collected
     write_manifest(layer, state)
     return collected

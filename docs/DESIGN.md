@@ -391,6 +391,60 @@ therefore needs no agent call to start an integration: `integrate.after_run()` (
 beside `decide.after_run`) starts it, detached, when the run ended handed over and is eligible, the
 decider's mode is `auto` and the settings say `"decider": true`.
 
+**Modes: a rejected run goes round once more.** "Give to an agent" (`al assign`, below) continues a
+run whose review rejected it. Such a run has no worktree any more (`envs.py` removes it when a run
+ends handed over), so it continues the way an integration does, in a mode that `integration_adw(…,
+mode=, extra=)` records in the synthetic ADW's `integration` and that adds up to two steps of kind
+`integrate`:
+
+- mode `conflict` is everything above, unchanged (its `integration` has no `mode` key);
+- mode `blockers`: `prepare`, `resolve`, **`address`**, the checks, the review, `ship`. `address` is the
+  review's patch round done once, outside `review.py`: the review step's own `patch` and `implement`
+  commands (`agents.run_agent`, steps `address-patch` and `address-implement`), with the blockers in
+  the format of `review._patch_round`, a person's approvals and their note as the request. Integrating
+  first and then addressing the blockers is the step order; when the target has not moved, `prepare`
+  applies cleanly and `resolve` calls no agent;
+- mode `proof`: `prepare`, `resolve`, (`address`, only when the proof must be produced: the agent runs
+  the plan's proof commands and a changed file outside the artefact globs fails the step), **`proof`**
+  (the files found for the original run become the artefacts `found-image`, `found-video` and
+  `found-file` through `artefacts.add_files`; otherwise the layer's artefacts are collected again), the
+  checks as the workflow declares them (not forced to `whenAffected`: they must run to produce the
+  proof), the review, `ship`.
+
+In both modes the review runs **one** round with no further patch round: `integration.review_retries`
+is 0, and `steps._execute_step` hands `review.run_review` a per-run copy of the layer whose review
+option has that `maxRetries` (`integrate.with_review_retries`, the way `delivery.scope` copies a
+layer). `review.py`, the gate and `ship.py` are not changed, so a rejected review never ships: the
+attempt ends handed over, `integration.json` on the original says `failed` with `its review rejected
+it again: …`, and the next attempt takes that run as its `source` (its branch, tip and blockers; the
+records stay on the original). `eligible(mode=, source=, allow_protected=)` asks for a rejected review
+in these modes (`not-rejected` otherwise), for a review step that can patch in mode `blockers`
+(`no-patch-round`), and lets through a changed protected path a person approved (the gate still judges
+it). The brief says which mode it is, lists the blockers, the approvals and the note, and what the
+run did about them.
+
+**Give to an agent: one function decides the plan.** `adw_modules/assign.py` `plan(layer, run)` maps
+why a run stopped to what an agent does about it; `al assign` (the layer's generated `adws/assign.py`,
+written by `al gen` for every layer and required by `al check`, like `adws/integrate.py`), the
+dashboard's "Give to an agent" and the stand-in (`assign.after_run`, which the runner calls where it
+called `integrate.after_run`) all use it. Three existing mechanisms carry every row: the integration
+run in its three modes; `--resume` of the run itself for a failed check (on the heavy tier), a login
+failure, a time limit and a died process (a failed run keeps its worktree); and `launch.start(…,
+replaces=)` for a run that failed before changing anything. A "needs a person" item (a blocker or a
+failed step that matches `assign.PERSON_MARKERS`, a `protected-path:` or `layer-change` gate reason, a
+`REQUIRES HUMAN` request) is never given to an agent: the plan's kind is `person`, and
+`assign.approve` records the person's approval of exactly that item (its id is a hash of its text).
+Layer-change workflows, spending limits, integrity failures and promotions cannot be approved there.
+The record is `agents/<run>/assign.json`: `attempts` (`n`, `at`, `by` cli | dashboard | decider, `who`,
+`kind`, `note`, `run`, `reason`: the stop key when given, `outcome` started | landed | passed |
+stopped, `after`: the stop key afterwards, `why`) and `approvals` (`id`, `kind`, `text`, `path`, `by`,
+`at`, `via`). An attempt's outcome is settled lazily by the next reader, from the run it started. The
+limits are constants of `assign.py`, not vocabulary: a person gives a run to an agent `MAX_CLICKS` (2)
+times, `--override` once more; the stand-in `MAX_STAND_IN` (1) time, only for the kinds `integrate`,
+`blockers` and `proof`, and only with `"decider": true` in `templates/integrate.json` and the decider's
+mode `auto`. The bulk order (`assign.order`) starts resumes and restarts first, then the integration
+runs, which the lock below runs one at a time.
+
 **One at a time.** `integrate.run()` holds `agents/.integrate.lock` (an flock, so it dies with the
 process) around `runner.main`. A second request waits, keeping its skeleton `state.json` alive; because
 a worktree is created only inside the runner, it starts at the target head that already holds the
@@ -1064,8 +1118,11 @@ to its check, a re-check and the reviewers to the review step).
 | `integrate.queued` | `behind` (the integration run that holds the layer's lock) |
 | `integrate.lock` / `integrate.unlock` | `holder` (this run), `waited` / `held` (seconds): one integration of a layer at a time |
 | `integrate.prepared` | `run` (the run it integrates), `target`, `target_head`, `base`, `conflicts` (files), `generated` (files) |
-| `integrate.resolved` | `resolved`, `regenerated`, `undecidable` (files, from the agent's report) |
+| `integrate.resolved` | `resolved`, `regenerated`, `undecidable` (files, from the agent's report); after an `address` step: `addressed` (blockers), `mode` |
 | `integrate.result` | `run`, `result` (landed / staged / pull-request / failed / waiting), `why`, `commit`, `target` |
+| `assign.attempt` | on the run that was given to an agent: `n`, `by` (cli / dashboard / decider), `kind`, `run` (the run it started or resumed), `reason` (the stop key), `note`, `override` |
+| `assign.outcome` | `n`, `kind`, `run`, `outcome` (landed / passed / stopped), `after` (the stop key afterwards), `why`; once per attempt |
+| `assign.approval` | `item`, `kind`, `text`, `by`, `via`: a person approved exactly this "needs a person" item |
 | `step.discipline` | after a `run` step that may not commit: `step`, `ok`, `head_before`, `head_after`, `branch_before`, `branch_after`, `refs` (`created`, `moved`, `deleted`), `main_checkout` (new status lines), `layer_entries` (new top-level names), `violations` (kinds: `committed`, `head-moved`, `ref-created`, `ref-moved`, `ref-deleted`, `main-checkout-changed`, `layer-entry`), `texts`, `restored`, `not_restored`; after a step that may commit (the `commit` template or `#:may-commit #t`): `step`, `ok`, `left_out_restored` (the uncommitted paths under the layer directory or a protected path it restored). The same facts are in the step's record in `state.json` (`discipline`, or `left_out` on a commit step) |
 | `standin.decision` | a decision of the stand-in that did not act, or a person's answer: `entry` (its id in `decisions.jsonl`), `who` (stand-in / person), `via` (run / loop / asked / cli / mail / webhook / dashboard), `kind`, `action`, `answer`, `status` (suggested / refused / escalated / failed / skipped), `reason`, `summary` |
 | `standin.action` | an action that was taken: the same fields with `status` acted, `auto` (true when the stand-in acted alone) and `outcome` (what happened next) |

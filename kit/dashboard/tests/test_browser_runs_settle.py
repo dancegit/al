@@ -102,8 +102,8 @@ def test_runs_opens_on_needs_you_with_only_open_runs(scenario, tab):
     assert ids == sorted(sf.OPEN + [sf.WAITING, sf.OLD_FAILURE])
     assert all(r["reason"].strip() and r["next"].strip() for r in got), got
     by_id = {r["key"].split("/", 1)[1]: r for r in got}
-    assert by_id[sf.PR_RUN]["next"] == "review PR #7"
-    assert by_id[sf.OLD_FAILURE]["next"] == "Start again"
+    assert by_id[sf.PR_RUN]["next"].split("\n")[0].strip() == "review PR #7, or Give to an agent"
+    assert by_id[sf.OLD_FAILURE]["next"].split("\n")[0].strip() == "Start again, or Give to an agent"
     assert by_id[sf.WAITING]["reason"] == "waiting at approve"
     assert page.inner_text("#crumbs").strip() == "6 need you"
     assert chips(page) == ["Needs you (6)", "Running (5)", "Landed (8)", "Settled (7)", "All (27)"]
