@@ -67,6 +67,7 @@ NEEDS: dict[str, tuple[str, ...]] = {
     "improve": ("git", "uv", "racket"),
     "init": ("git",), "check": ("git",), "verify": ("git",), "scout": ("git",),
     "create": ("git", "racket"), "adopt-all": ("git", "racket"), "result": (),
+    "snapshot": ("git",),
 }
 
 

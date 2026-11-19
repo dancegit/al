@@ -148,7 +148,7 @@ def test_actions_disabled_without_al_say_where_it_looked(tmp_path, workspace, ta
         open_(page, "/repo/fern")
         page.wait_for_selector('.al-panel [data-action="scout"]')
         buttons = page.locator(".al-panel .action button")
-        assert buttons.count() == len(d.ACTIONS)
+        assert buttons.count() == sum(1 for a in d.ACTIONS.values() if a.listed)
         assert all(buttons.nth(i).is_disabled() for i in range(buttons.count()))
         why = page.locator('.al-panel [data-action="scout"] .why').inner_text()
         assert why.startswith("needs the al tool; looked for: /nonexistent")

@@ -82,6 +82,8 @@ if [ -e "$root/.curl-tamper" ]; then { cat "$src"; echo tampered; } > "$out"; el
     "nixos-rebuild": 'exit 0\n',
     "claude": 'echo "0.0.0 (stub)"\n',
     "id": f'echo "{HOST_USER}"\n',
+    # the fake host's free space: ample, so the preflight does not depend on the disk of the machine running the tests
+    "df": 'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"\necho "/dev/x 209715200 1 104857600 1% /"\n',
 }
 
 

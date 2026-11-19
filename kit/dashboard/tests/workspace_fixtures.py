@@ -105,8 +105,10 @@ if command in BEHAVIOUR.get("streams", {{}}):
             sys.stdout.buffer.flush()
             time.sleep(BEHAVIOUR.get("line_sleep", 0))
 time.sleep(BEHAVIOUR.get("hold", {{}}).get(command, 0))
-if command in BEHAVIOUR.get("fail", {{}}):
-    code, text = BEHAVIOUR["fail"][command]
+failing = next((key for key in BEHAVIOUR.get("fail", {{}})
+                if key.split()[0] == command and all(word in sys.argv[2:] for word in key.split()[1:])), None)
+if failing is not None:
+    code, text = BEHAVIOUR["fail"][failing]
     if text and command == "doctor":
         print(text, flush=True)
     elif text:
@@ -190,7 +192,8 @@ def fake_al(path: Path, *, sleep: float = 0, exit: int = 0, out: str = "", lines
     `out`, sleeps `sleep` seconds and exits `exit`. `streams[command]`: that subcommand prints the file's
     lines byte for byte (each followed by `line_sleep` seconds) and nothing else, then fails or exits; `hold[command]`: that subcommand
     then sleeps that many seconds (which keeps its step running). `fail[command] = (code, text)`: that subcommand (argv[1]) then prints
-    `text`, when there is one, on stderr (on stdout for `doctor`, like al doctor --for) and exits `code`.
+    `text`, when there is one, on stderr (on stdout for `doctor`, like al doctor --for) and exits `code`; a key
+    with more words (`"author --raw"`) fails only the calls of that subcommand that have all of them.
     `doctor` otherwise prints ok and exits 0 at once; `create APP --choices --json` prints `choices`
     (default CHOICES) and `result LAYER --json` prints `card` (default CARD), each at once. It can be
     rewritten between runs."""

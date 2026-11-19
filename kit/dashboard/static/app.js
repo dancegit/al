@@ -4267,14 +4267,33 @@
       rows: () => rows.map((r) => ({ key: r.key, value: r.current(), changed: r.current() !== r.detected })) };
   }
 
-  /** The confirmation of a writing action: its command lines, what it writes, (adopt) the dry run's diff and
-   * (create, adopt) the placement that was previewed and the detected choices, each editable. */
-  function confirmAction(repo, action, preview, done) {
+  /** Preview the restore of snapshot `snapId` of `repo` ({key, name}) and open the confirm dialog. */
+  async function startRestore(repo, snapId, button, note) {
+    button.disabled = true;
+    try {
+      const answer = await api.post("/api/action", { repo: repo.key, action: "restore", snapshot: snapId });
+      confirmAction(repo, { name: "restore", description: "restore a snapshot of the layer (takes a snapshot of the current state first)" },
+        answer, (job) => go(`#/job/${enc(job)}`), { snapshot: snapId });
+    } catch (error) {
+      note.className = "why error";
+      note.textContent = error.message;
+    } finally { button.disabled = false; }
+  }
+
+  /** The confirmation of a writing action: its command lines, what it writes, (adopt) the dry run's diff,
+   * (regen) the hand-edited files it overwrites, (restore) what the restore changes, (create, adopt) the
+   * placement that was previewed and (create, adopt, reauthor) the detected choices, each editable.
+   * `typed` holds the value the preview was asked with ({request} of improve, {snapshot} of restore): the
+   * confirmation sends the same, as the server binds it to the preview. */
+  function confirmAction(repo, action, preview, done, typed = {}) {
     const overlay = document.getElementById("overlay");
     const close = () => { overlay.hidden = true; clear(overlay); };
     const status = h("div", { class: "dim", "data-role": "preview-status" });
     const diff = h("div", { class: "preview-diff" });
     const diffPart = h("div", { hidden: true }, h("h4", { text: "What the dry run would write" }), diff);
+    const textSlot = h("pre", { class: "doc-raw", "data-role": "preview-text" });
+    const textTitle = h("h4", {});
+    const textPart = h("div", { hidden: true }, textTitle, textSlot);
     const choicesSlot = h("div", { class: "choices-slot" });
     const choicesPart = h("div", { hidden: true }, h("h4", { text: "Detected choices" }),
       h("div", { class: "dim", text: "what al author will declare, each with the fact that supports it; change any before you confirm" }), choicesSlot);
@@ -4284,7 +4303,7 @@
     confirm.addEventListener("click", async () => {
       confirm.disabled = true;
       try {
-        const body = { repo: repo.key, action: action.name, confirm: preview.nonce };
+        const body = { repo: repo.key, action: action.name, confirm: preview.nonce, ...typed };
         if (preview.placement) body.placement = preview.placement.name;   // the one that was previewed
         const changed = form ? form.changed() : {};
         if (Object.keys(changed).length) body.choices = changed;
@@ -4304,13 +4323,16 @@
         h("strong", { text: PLACEMENT_LABEL[preview.placement.name] || preview.placement.name }), " → ",
         h("span", { class: "mono", text: preview.placement.path })) : null,
       h("h4", { text: "It runs" }), h("div", { class: "commands" }, preview.commands.map((line) => h("code", { class: "cmd", text: line }))),
+      typed.request ? h("div", { class: "typed-request", "data-role": "typed-request" }, "request: ", h("q", { text: typed.request })) : null,
+      typed.snapshot ? h("div", { class: "typed-snapshot", "data-role": "typed-snapshot" }, "snapshot: ", h("span", { class: "mono", text: typed.snapshot })) : null,
       h("h4", { text: "It writes" }), h("ul", { class: "writes" }, (preview.writes.length ? preview.writes : ["nothing outside the jobs directory"]).map((path) => h("li", { class: "mono", text: path }))),
-      choicesPart, diffPart,
+      choicesPart, diffPart, textPart,
       status, h("div", { class: "actions-row" }, confirm, cancel)));
     overlay.hidden = false;
     overlay.onclick = close;
     if (preview.job) {
-      status.textContent = action.name === "adopt" ? "running the dry run and detecting choices…" : "detecting choices…";
+      status.textContent = action.name === "adopt" ? "running the dry run and detecting choices…"
+        : action.name === "regen" ? "listing hand edits…" : action.name === "restore" ? "previewing the restore…" : "detecting choices…";
       waitForJob(preview.job, (job) => job.status !== "running").then(async (job) => {
         if (job.status !== "passed") {
           status.className = "why error";
@@ -4322,6 +4344,14 @@
           const doc = await api(`/api/job/doc?id=${enc(job.id)}&name=preview.diff.txt`);
           replace(diff, renderDiff(doc.text));
           diffPart.hidden = false;
+        }
+        if (names.includes("edits") || names.includes("restore")) {
+          const [name, title] = names.includes("edits") ? ["hand-edits.txt", "Hand-edited generated files it overwrites"]
+            : ["restore.txt", "What the restore changes"];
+          const doc = await api(`/api/job/doc?id=${enc(job.id)}&name=${name}`);
+          textTitle.textContent = title;
+          textSlot.textContent = doc.text;
+          textPart.hidden = false;
         }
         if (names.includes("choices")) {
           const doc = await api(`/api/job/doc?id=${enc(job.id)}&name=choices.json`);
@@ -4415,19 +4445,21 @@
       renderPanel(data);
     }
 
-    function runAction(repo, action, button, picker) {
+    function runAction(repo, action, button, picker, field) {
       return async () => {
         button.disabled = true;
         try {
           const body = { repo: repo.key, action: action.name };
           if (picker) body.placement = picker.value();
+          const typed = field ? { request: field.value.trim() } : {};
+          Object.assign(body, typed);
           const answer = await api.post("/api/action", body);
-          if (answer.preview) confirmAction(repo, action, answer, (job) => go(`#/job/${enc(job)}`));
+          if (answer.preview) confirmAction(repo, action, answer, (job) => go(`#/job/${enc(job)}`), typed);
           else go(`#/job/${enc(answer.job)}`);
         } catch (error) {
           const note = panel.querySelector(`[data-action="${action.name}"] .why`);
           if (note) { note.className = "why error"; note.textContent = error.message; }
-        } finally { button.disabled = !action.available || (!!picker && !picker.value()); }
+        } finally { button.disabled = !action.available || (!!picker && !picker.value()) || (!!field && !field.value.trim()); }
       };
     }
 
@@ -4447,11 +4479,20 @@
           show((of(picker.value()) || action).commands);
           if (!picker.value()) button.disabled = true;
         } else show(action.commands);
-        button.addEventListener("click", runAction(repo, action, button, picker));
+        let field = null;
+        if (action.param === "request") {   // improve: what to change, one line; the button waits for it
+          field = h("input", { type: "text", class: "improve-request", "data-role": "improve-request", maxlength: 2000,
+            placeholder: "what to change, in plain words", "aria-label": `${action.name}: what to change`, disabled: !action.available });
+          button.disabled = true;
+          field.addEventListener("input", () => { button.disabled = !action.available || !field.value.trim(); });
+          field.addEventListener("keydown", (event) => { if (event.key === "Enter" && !button.disabled) button.click(); });
+        }
+        button.addEventListener("click", runAction(repo, action, button, picker, field));
         return h("div", { class: `action${action.available ? "" : " off"}`, dataset: { action: action.name } },
           h("div", { class: "action-head" }, button, h("span", { class: "dim", text: action.description }),
             action.writes ? h("span", { class: "badge warn", text: "writes · asks first" }) : null),
           picker ? picker.el : null,
+          field,
           commands,
           h("div", { class: "why", text: action.available ? "" : action.why }));
       });
@@ -4475,13 +4516,32 @@
               title: "generate this repository's layer step by step" })] : null),
           data.al.found ? null : h("div", { class: "why", text: `The al tool was not found; the actions need it. Looked for: ${data.al.looked.join(", ")}` }),
           toolsTable(data.al.tools || []),
+          (data.help || []).length ? h("ul", { class: "action-help", "data-role": "action-help" }, data.help.map((line) => h("li", { text: line }))) : null,
           actions),
+        (data.snapshots || []).length ? snapshotsCard(repo, data.snapshots) : null,
         data.jobs.length ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", { text: "Jobs" })),
           h("div", { class: "job-list" }, data.jobs.map((job) => h("a", { class: "job-row", href: `#/job/${enc(job.id)}` },
             pill(job.status), h("span", { class: "mono", text: job.id }), h("span", { text: job.action + (job.preview ? " (dry run)" : "") }),
             h("span", { class: "faint", text: fmt.ago(job.created) }), jobProposal(job))))) : null,
         data.summary ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", { text: "Existing agent setup" })),
           h("div", { class: "md" }, renderMarkdown(data.summary))) : null);
+    }
+
+    /** The layer's snapshots (al snapshot), newest first, each with the command that restores it and a
+     * button that previews that restore (POST /api/action restore, then the confirm dialog). */
+    function snapshotsCard(repo, snapshots) {
+      return h("div", { class: "card snapshots", "data-role": "snapshots" },
+        h("div", { class: "card-head" }, h("h3", { text: "Snapshots" }),
+          h("span", { class: "dim", text: "backups of the layer folder; a restore takes a snapshot of the current state first" })),
+        h("table", { class: "snapshot-list" }, h("tbody", {}, snapshots.map((snap) => {
+          const note = h("span", { class: "why" });
+          const button = h("button", { type: "button", class: "btn writes", "data-role": "restore", text: "restore…",
+            disabled: !store.actions.enabled });
+          button.addEventListener("click", () => startRestore(repo, snap.id, button, note));
+          return h("tr", { dataset: { snapshot: snap.id } },
+            h("td", { class: "mono", text: snap.id }), h("td", { text: snap.kind }), h("td", { class: "faint", text: snap.created }),
+            h("td", { text: snap.note }), h("td", {}, h("code", { class: "cmd", text: snap.restore })), h("td", {}, button, " ", note));
+        }))));
     }
 
     /** What al doctor sees on this machine: each tool, where it was found (or why not), its version. */
@@ -4901,7 +4961,8 @@
             h("span", { class: "card-key", text: label }), h("span", { class: "card-value" }, value)))
           : h("dl", { class: "kv" }, rows.map(([label, role, value]) => [h("dt", { text: label }), h("dd", { "data-role": role }, value)]));
         return h("div", { class: `card job-outcome${card ? " result-card" : ""} s-passed`, "data-role": "outcome" },
-          h("div", { class: "outcome-title" }, pill("passed"), h("span", { text: made ? " the layer is written" : " done" })), body);
+          h("div", { class: "outcome-title" }, pill("passed"), h("span", { text: made ? " the layer is written" : " done" })), body,
+          o.diff ? definitionDiff(o.diff) : null);
       }
       return h("div", { class: `card job-outcome s-${o.status}`, "data-role": "outcome" },
         h("div", { class: "outcome-title" }, pill(o.status), h("span", { text: " at step " }), h("strong", { class: "mono", "data-role": "outcome-step", text: o.step || "?" })),
@@ -4910,7 +4971,32 @@
           job.retry_from && store.actions.enabled ? h("div", { class: "job-retry" }, retryButton(job)) : null,
           jobProposal(job),
           o.log ? h("a", { class: "btn", href: fileUrl(`steps/${o.log}`), download: true, "data-role": "download-log", text: "Download log" }) : null),
-        o.lines.length ? h("pre", { class: "outcome-lines", "data-role": "lines", text: o.lines.join("\n") }) : null);
+        o.lines.length ? h("pre", { class: "outcome-lines", "data-role": "lines", text: o.lines.join("\n") }) : null,
+        o.definition_aside ? h("div", { class: "dim", "data-role": "definition-aside",
+          text: "the old definition is kept beside it as agentic.rkt.before-…" }) : null,
+        o.restore ? restoreOffer(job, o.restore) : null);
+    }
+
+    /** A failed regen or reauthor: the snapshot its first step took, and a button that previews its restore. */
+    function restoreOffer(job, offer) {
+      const note = h("span", { class: "why" });
+      const button = h("button", { type: "button", class: "btn writes", "data-role": "restore-snapshot", text: `restore ${offer.snapshot}…`,
+        disabled: !store.actions.enabled });
+      button.addEventListener("click", () => startRestore({ key: job.repo, name: job.repo_name }, offer.snapshot, button, note));
+      return h("div", { class: "restore-offer", "data-role": "restore-offer" },
+        h("div", { text: `the snapshot ${offer.snapshot} taken before this job can bring the layer back` }),
+        h("code", { class: "cmd", text: offer.command }), h("div", { class: "outcome-actions" }, button, " ", note));
+    }
+
+    /** A passed reauthor: the diff of the old definition against the new one (its doc definition.diff.txt). */
+    let diffText = null;
+    function definitionDiff(name) {
+      const slot = h("div", { class: "preview-diff", "data-role": "definition-diff" });
+      const fill = () => replace(slot, renderDiff(diffText));
+      if (diffText !== null) fill();
+      else api(`/api/job/doc?id=${enc(id)}&name=${enc(name)}`).then((doc) => { diffText = doc.text; fill(); })
+        .catch((error) => replace(slot, h("div", { class: "why error", text: error.message })));
+      return h("div", { class: "definition-diff" }, h("h4", { text: "What changed in agentic.rkt" }), slot);
     }
 
     function stepChip(step, isSelected) {
