@@ -282,3 +282,32 @@ def test_steps_detail_has_skipped_from_state(ev):
     data = detail(model_for(ev["layer"]), "e1000001")
     assert data["steps_detail"]["test"]["skipped"] == 3
     assert data["steps_detail"]["lint"]["skipped"] is None
+
+
+# ---------------------------------------------------------------- an agent that left commands running
+
+def test_a_step_whose_agent_left_commands_running_says_they_were_stopped(ev):
+    path = ev["agents"] / "e1000001" / "events.jsonl"
+    lines = path.read_text().splitlines()
+    last = json.loads(lines[-1])
+    lines.append(json.dumps({"ts": last["ts"], "seq": last["seq"] + 1, "type": "agent.leftovers", "step": "build",
+                             "grace": 30.0, "stopped": [{"pid": 4242, "command": "sleep 300", "where": "host"}]}))
+    path.write_text("\n".join(lines) + "\n")
+    data = detail(model_for(ev["layer"]), "e1000001")
+    nodes = {n["id"]: n for n in data["graph"]["nodes"]}
+    assert nodes["build"]["left"] is True and nodes["build"]["leftovers"] == 1
+    assert nodes["build"]["note"] == "the agent finished; its leftover commands were stopped"
+    build = next(a for a in data["agents"] if a["dir"] == "build")
+    assert build["leftovers"] == ["sleep 300"]
+    assert nodes["classify"]["left"] is False and "note" not in nodes["classify"]
+
+
+def test_the_arrow_out_of_a_running_step_says_waiting(ev):
+    data = detail(model_for(ev["layer"]), "e1000002")
+    nodes = {n["id"]: n for n in data["graph"]["nodes"]}
+    assert nodes["test"]["status"] == "running"
+    out = [e for e in data["graph"]["edges"] if e["from"] == "test" and e["kind"] == "flow"]
+    assert out and all(e.get("status") == "waiting" for e in out if nodes[e["to"]]["status"] == "pending")
+    assert any(e.get("status") == "waiting" for e in out)
+    passed = {"passed", "done"}
+    assert not [e for e in data["graph"]["edges"] if nodes[e["from"]]["status"] in passed and "status" in e]

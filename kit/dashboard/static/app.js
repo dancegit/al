@@ -1087,7 +1087,11 @@
         d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
         lx = x1 + dx; ly = (y1 + y2) / 2 - 4;
       }
-      edgesLayer.appendChild(s("path", { d, class: `g-edge ${edge.kind}${taken ? " taken" : ""}`, "marker-end": `url(#${marker})` }));
+      const waiting = !opts.static && edge.status === "waiting";
+      edgesLayer.appendChild(s("path", { d, class: `g-edge ${edge.kind}${taken ? " taken" : ""}${waiting ? " waiting" : ""}`, "marker-end": `url(#${marker})` }));
+      if (waiting && edge.kind === "flow") {
+        labelsLayer.appendChild(s("text", { x: lx, y: ly, "text-anchor": "middle", class: "g-edge-label waiting", text: "waiting" }));
+      }
       if (edge.label && (edge.kind === "resolve" || edge.kind === "patch")) {
         labelsLayer.appendChild(s("text", { x: lx, y: ly, "text-anchor": "middle", class: `g-edge-label ${edge.kind}`,
           text: edge.kind === "resolve" ? `↻ ${edge.label}` : `↺ ${edge.label}` }));
@@ -1114,11 +1118,12 @@
         if (node.type === "check" && node.skipped) meta.push(`${node.skipped} skipped`);
         if (node.type === "check" && node.outcome === "reused") meta.push("reused");
         if (node.resolves) meta.push(`${node.resolves} fix`);
+        if (node.left) meta.push("leftover commands stopped");
       } else if (node.when && node.when !== "always") {
         meta.push(`when ${node.when.replace("class-", "")}`);
       }
       const agentLine = node.agent ? `agent ${node.agent.id || "?"} · ${node.agent.kind}${node.agent.model ? ` · ${node.agent.model}` : ""}${node.agent.tier ? ` · tier ${node.agent.tier}${node.agent.tier_from ? ` (${node.agent.tier_from})` : ""}` : ""}` : "";
-      const title = [`${node.label} (${node.type})`, node.sub, agentLine, status !== "pending" ? status : "", node.detail || ""].filter(Boolean).join("\n");
+      const title = [`${node.label} (${node.type})`, node.sub, agentLine, status !== "pending" ? status : "", node.detail || "", opts.static ? "" : node.note || ""].filter(Boolean).join("\n");
       const subText = node.agent && !opts.static ? `${node.sub ? `${String(node.sub).split(" @")[0]} · ` : ""}${shortModel(node.agent)}` : node.sub;
       const g = s("g", { class: classes.join(" "), tabindex: opts.onNode ? 0 : null, "data-step": node.step, "data-node": node.id,
         onclick: opts.onNode ? () => opts.onNode(node) : null,
