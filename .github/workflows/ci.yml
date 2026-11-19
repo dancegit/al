@@ -1,9 +1,15 @@
 # The fast suites, exactly as docs/EXAMPLES.md#tests lists them: no container engine, no browser, no
 # agent, no secret. tests/tools/test_publish_ready.py checks this file: least privilege, every action
 # pinned to a commit, a time limit per job, and every command below written in that document.
+# CI runs on pushes to main and integration and on pull requests into main; the tools suite runs on
+# Python 3.12 (the version on GitHub's Ubuntu image) and on the newest.
 name: ci
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [main, integration]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -65,6 +71,10 @@ jobs:
   tools:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.15"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -86,6 +96,7 @@ jobs:
           version: "0.13.8"
           enable-cache: true
           ignore-nothing-to-cache: true
+          python-version: ${{ matrix.python }}
       - run: uv run --with pytest --with pytest-xdist --with pyyaml --with jsonschema pytest tests/tools -q -n 4 -m "not podman and not browser and not slow"
 
   docs:

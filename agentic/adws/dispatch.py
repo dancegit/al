@@ -7,8 +7,9 @@
 
   dispatch.py [PROMPT] [--source KIND:REF] [--adw NAME] [--class C] [--dry-run]
   dispatch.py --start (--adw NAME | --command NAME) --request-key KEY [--class C] [--model-set T]
-              [--model T=ID …] [--issue none|start|trigger] [--confirm-duplicate] [--confirm-ships]
-              [--dry-run] [--replaces OLD] [--decider off|suggest|auto] [--json]   < prompt
+              [--testing LEVEL] [--model T=ID …] [--issue none|start|trigger] [--confirm-duplicate] [--confirm-ships]
+              [--dry-run] [--replaces OLD] [--decider off|suggest|auto] [--approve WHAT …] [--who WHO] [--json]   < prompt
+  dispatch.py --grant RUN --approve WHAT [--approve WHAT …] [--who WHO] [--json]
   dispatch.py --pr-state N [--json]
   dispatch.py --command NAME [runner flags: --prompt-file F --adw-id ID --class C --dry-run …]
   dispatch.py --resume ID [--answer] [--json]   [< answer]
@@ -21,7 +22,9 @@ the layer's one start path (adw_modules/launch.py): it reads the prompt from std
 detached and prints the result (with --json: one JSON line); exit 0 started or issue created,
 2 invalid, 3 refused (day limit or usage threshold), 4 needs a confirmation, 1 failed.
 --replaces OLD names the run the start begins again ("Start again"); --decider MODE is the stand-in's
-mode for that run (the run's own --decider; without it the layer's mode applies). --command alone runs one
+mode for that run (the run's own --decider; without it the layer's mode applies). --approve WHAT pre-approves a
+decision only a person may take for the run (approvals.py), given by --who. --grant RUN approves
+WHAT for a run that stopped for an approver and resumes it; exit 0 resumed, 1 refused, 2 invalid. --command alone runs one
 command or hop in the foreground as a recorded run (what a single-command start executes).
 --registry prints what the layer can run (adw_modules/registry.py: its workflows, the kit's
 workflows, its commands), read only; with --json the whole registry as one JSON line.
@@ -37,7 +40,9 @@ exit 0 done, 2 invalid, 3 refused (the run is running), 1 failed.
 --helper answers the dashboard's voice helper: the prompt (at most 64 KiB) on stdin, one answer of the
 layer's helper agent with no tools (adw_modules/helper.py); prints one JSON line {"status": "ok",
 "reply", "cost", "model"} or {"status": unavailable|failed|invalid, "error"}; exit 0 ok, 2 invalid,
-1 otherwise. The (PEP 723) script header is prepended by `al gen`.
+1 otherwise. In a layer with `(placement …)` the launched workflow script decides where the run
+executes and, when that is another host, stays as the run's proxy (adw_modules/remoterun.py); nothing
+here changes for that. The (PEP 723) script header is prepended by `al gen`.
 """
 import argparse
 import json
@@ -78,9 +83,32 @@ def start(a: argparse.Namespace) -> int:
         return done({"status": "invalid", "error": str(exc)})
     target = launch.Target("workflow", a.adw) if a.adw else launch.Target("command", a.command)
     return done(launch.start(layer, target, prompt, request_key=a.request_key or "", klass=a.klass,
-                             model_set=a.model_set, models=a.model, issue=a.issue,
+                             model_set=a.model_set, models=a.model, issue=a.issue, testing=a.testing,
                              confirm_duplicate=a.confirm_duplicate, confirm_ships=a.confirm_ships,
-                             dry_run=a.dry_run, replaces=a.replaces or "", decider=a.decider or ""))
+                             dry_run=a.dry_run, replaces=a.replaces or "", decider=a.decider or "",
+                             approvals=a.approve,
+                             approved_by=a.who or ""))
+
+
+def grant(a: argparse.Namespace) -> int:
+    from adw_modules import approvals
+
+    def done(result: dict, code: int) -> int:
+        if a.json:
+            print(json.dumps(result), flush=True)
+        else:
+            print(f"dispatch: {result['status']}: {result.get('message') or ''}", flush=True)
+        return code
+
+    if not a.approve:
+        return done({"status": "invalid", "reason": "bad-approval", "message": "--grant needs --approve WHAT"}, 2)
+    try:
+        for what in a.approve:
+            approvals.parse(what)
+    except ValueError as exc:
+        return done({"status": "invalid", "reason": "bad-approval", "message": str(exc)}, 2)
+    result = approvals.grant_and_resume(LAYER, a.grant, a.approve, a.who or "dashboard", "dashboard")
+    return done(result, 0 if result["status"] == "resumed" else 1)
 
 
 def pr_state(a: argparse.Namespace) -> int:
@@ -220,6 +248,8 @@ def main() -> int:
     ap.add_argument("--request-key", help="with --start: the same key never starts a second run")
     ap.add_argument("--model-set", metavar="TIER")
     ap.add_argument("--model", action="append", default=[], metavar="TIER=MODEL_ID")
+    ap.add_argument("--testing", metavar="LEVEL", help="with --start: the depth of the run's checks "
+                    "(light|standard|heavy or smoke|targeted|full)")
     ap.add_argument("--issue", choices=("none", "start", "trigger"), default="none",
                     help="with --start: also log the request as a forge issue")
     ap.add_argument("--confirm-duplicate", action="store_true")
@@ -227,10 +257,14 @@ def main() -> int:
     ap.add_argument("--replaces", metavar="OLD", help="with --start: the run this start begins again")
     ap.add_argument("--decider", choices=("off", "suggest", "auto"),
                     help="with --start: the stand-in's mode for this run")
+    ap.add_argument("--approve", action="append", default=[], metavar="WHAT",
+                    help="with --start or --grant: an approval for the run (repeatable)")
+    ap.add_argument("--who", metavar="WHO", help="with --approve: who approves")
+    ap.add_argument("--grant", metavar="RUN", help="approve --approve WHAT for stopped run RUN and resume it")
     ap.add_argument("--pr-state", type=int, metavar="N", help="is pull request N merged? (read only)")
     ap.add_argument("--registry", action="store_true", help="print what the layer can run (read only)")
     ap.add_argument("--json", action="store_true",
-                    help="with --start, --pr-state, --resume, --stop, --helper or --registry: print one JSON line")
+                    help="with --start, --grant, --pr-state, --resume, --stop, --helper or --registry: print one JSON line")
     ap.add_argument("--resume", metavar="ID", help="continue a waiting, failed or handed-over run, detached")
     ap.add_argument("--answer", action="store_true", help="with --resume: a person's answer to a waiting run on stdin")
     ap.add_argument("--stop", metavar="ID", help="stop a run running on this host")
@@ -238,6 +272,8 @@ def main() -> int:
     a = ap.parse_args()
     if a.registry:
         return registry_cli(a)
+    if a.grant:
+        return grant(a)
     if a.pr_state is not None:
         return pr_state(a)
     if a.helper:

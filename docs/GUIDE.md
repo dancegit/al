@@ -2164,6 +2164,40 @@ runtime again) refuses `#:approval agent` or `auto` into a stage where agents ma
   other than its `#:environment-name`; `#:back-merge` naming FROM or TO.
 - A `#:frozen` period that is not `"YYYY-MM-DD..YYYY-MM-DD"` with real dates, the first not after the second.
 
+### How al itself delivers
+
+Runs of al's own layer (`agentic/agentic.rkt`) land on the branch `integration`, which is cut from `main`.
+They never land on `main`. A run's gate integrates against `integration`. The layer declares:
+
+```racket
+(stage integration #:branch "integration" #:from main #:accepts (chore bug feature patch) #:entry merge)
+(stage main #:branch "main" #:accepts () #:agents-may-merge #f
+       #:checks (test-docs test-compiler test-runtime test-tools test-dashboard test-integration))
+(promotion integration -> main #:approval human #:approvers 1 #:method merge)
+(testing targeted #:on-stage full #:batch ((every 5) (after-hours 24)))
+```
+
+The full suites run on the `integration` head per batch, after 5 changes or 24 hours. They run again
+before a promotion is offered, because they are the checks of `main`. They are not the checks of
+`integration`: a stage's checks are added to every run that delivers into it.
+
+The branch has to exist before the first run delivers to it. Until then a run ends `stage-missing`. A
+person creates `integration` once from `main` and publishes it to the remote.
+
+A person moves a batch into `main`. It is merged, so each feature's commits stay visible:
+
+```bash
+al promote agentic integration main --dry-run   # what would happen; changes nothing
+al promote agentic integration main             # checks, pack, waits for a person's approval
+al decide agentic integration main approve --by NAME
+al promote agentic integration main             # merges into main
+```
+
+The promotion button on the dashboard does the same.
+
+CI runs on pushes to `main` and `integration` and on pull requests into `main`. A difference between
+Python versions therefore shows on `integration` first.
+
 ## Delivery
 
 - Style: sprint

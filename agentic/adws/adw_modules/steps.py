@@ -14,11 +14,14 @@ from . import affected
 from . import artefacts
 from . import discipline
 from . import checkenv
+from . import coverage_map
+from . import delivery
 from . import events
 from . import journal as journal_module
 from . import models
 from . import skips
 from . import slots
+from . import testing
 from .agents import run_agent
 from .budget import BudgetExceeded
 from .errors import LayerError, RunStopped, StepFailed, StepWaiting
@@ -121,16 +124,112 @@ def run_command(argv: list[str], cwd: Path, env: dict[str, str], timeout: int,
     return code, output
 
 
+def _phase(state: Any, name: str) -> str:
+    """`check` in the check step itself, `recheck` when another step (a review round) runs it."""
+    return "check" if running_step(state) in ("", name) else "recheck"
+
+
+def plan_for(layer: Any, state: Any, env_stack: Any, step: dict[str, Any], phase: str, tree: str | None = None,
+             reference: str | None = None) -> Any:
+    """What one check runs now (testing.plan_check). The tree and what the change is measured
+    against are computed only when a depth below full is asked; the gate measures against the
+    run's base, a check step against the cmd's last pass (affected.reference). Never raises: a
+    depth that cannot be decided runs the full form and says why."""
+    try:
+        asked = testing.normalise(step["depth"]) if step.get("depth") else testing.run_depth(layer, state, phase)[0]
+        if asked != "full":
+            if tree is None:
+                tree = affected.tree(layer, state, env_stack)
+            if reference is None:
+                reference = (affected.base(layer, state, env_stack) if phase == "gate"
+                             else affected.reference(layer, state, env_stack, step, tree))
+        return testing.plan_check(layer, state, env_stack, step, phase, reference or "", tree or "")
+    except Exception as exc:  # noqa: BLE001 — a depth that cannot be decided means "run it all"
+        why = f"the depth could not be decided ({type(exc).__name__}: {exc})"[:300]
+        print(f"[adw {state.adw_id}] check {step.get('name')}: {why}; running the full form")
+        return testing.CheckPlan("full", "full", dict(layer.cmd(step["cmd"])), why, None, "tests", "")
+
+
+def _tracked(layer: Any, plan: Any) -> bool:
+    """Whether a result carries its depth: the layer declares (testing …), or a depth below full
+    was asked (--testing, the local setting). A layer without the clause records what it did before."""
+    return bool(testing.policy(layer)["declared"] or plan.depth != "full" or plan.asked != "full")
+
+
+def _depth_fields(acc: dict[str, Any]) -> dict[str, Any]:
+    return {"depth": acc.get("depth"), "selected": acc.get("selected"), "total": acc.get("total"),
+            "strategies": dict(acc.get("strategies") or {})}
+
+
+def _work_root(layer: Any, state: Any, env_stack: Any) -> Path:
+    worktree = str(getattr(state, "worktree", "") or "")
+    if worktree and Path(worktree).is_dir():
+        return Path(worktree)
+    sandbox = getattr(env_stack, "sandbox", None)
+    if sandbox is not None and getattr(sandbox, "worktree", None):
+        return Path(sandbox.worktree)
+    return Path(layer.app_root)
+
+
+def _head(state: Any, env_stack: Any, step: str) -> str:
+    try:
+        result = delivery.tree_git(state, env_stack, ["rev-parse", "HEAD"], step=step)
+    except Exception:  # noqa: BLE001 — an unknown commit only means the timing is not keyed by one
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _coverage_form(layer: Any, state: Any, env_stack: Any, plan: Any, tree: str) -> str:
+    """The cmd's #:coverage-run when this run records coverage: a full run of a cmd that declares
+    #:record-coverage, on a tree that is exactly HEAD's (the map is keyed by that commit)."""
+    command = plan.command
+    recipe = str(command.get("recordCoverage") or "none")
+    if plan.depth != "full" or recipe == "none" or not command.get("coverageRun") or not command.get("coverageFile"):
+        return ""
+    if not tree or tree != affected.head_tree(layer, state, env_stack):
+        return ""
+    return str(command["coverageRun"])
+
+
+def _after_full_pass(layer: Any, state: Any, env_stack: Any, plan: Any, name: str, seconds: float,
+                     log_text: str, coverage: bool) -> None:
+    """A passing full run: the suite's timing and size, and the coverage map its coverage form wrote."""
+    command = plan.command
+    commit = _head(state, env_stack, name)
+    try:
+        testing.note_full_run(layer, command, seconds, log_text, commit)
+    except OSError as exc:
+        print(f"[adw {state.adw_id}] check {name}: the suite timing was not recorded: {exc}")
+    if not coverage or not commit:
+        return
+    notes: list[str] = []
+    root = _work_root(layer, state, env_stack)
+    recipe = str(command.get("recordCoverage"))
+    tests = coverage_map.read_recipe(recipe, root / str(command["coverageFile"]), root,
+                                     prefix=str(command.get("testRoot") or ""), notes=notes)
+    for note in notes:
+        print(f"[adw {state.adw_id}] check {name}: {note}")
+    if tests:
+        path = coverage_map.save(layer, command, commit, recipe, tests)
+        print(f"[adw {state.adw_id}] check {name}: coverage map of {len(tests)} tests recorded at {commit[:7]} "
+              f"({Path(path).relative_to(layer.layer_dir).as_posix()})")
+
+
 def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
-              attempt_offset: int = 0, timeout: int | None = None, decision: Any = None) -> int:
+              attempt_offset: int = 0, timeout: int | None = None, decision: Any = None, plan: Any = None) -> int:
     """Run a check step's cmd once; `timeout` overrides the cmd's own time limit. `decision` is
-    what affected.decide said about this attempt (its tree and definition are not computed again)."""
+    what affected.decide said about this attempt (its tree and definition are not computed again);
+    `plan` what testing.plan_check chose (the form that runs; computed here when not given)."""
     name = str(step["name"])
     if env_stack.read_only:
         raise StepFailed(name, "check refused in read-only host environment")
-    command = layer.cmd(step["cmd"])
     tree_before = decision.tree if decision is not None else affected.tree(layer, state, env_stack)
-    cmd = str(command["run"])
+    if plan is None:
+        plan = plan_for(layer, state, env_stack, step, _phase(state, name), tree=tree_before)
+    command = plan.command
+    tracked = _tracked(layer, plan)
+    coverage_run = _coverage_form(layer, state, env_stack, plan, tree_before) if tracked else ""
+    cmd = coverage_run or str(command["run"])
     check_dir = Path(layer.layer_dir) / "agents" / state.adw_id / "checks"
     check_dir.mkdir(parents=True, exist_ok=True)
     attempt = max(_log_number(check_dir, name), attempt_offset + 1)
@@ -149,8 +248,13 @@ def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
         exit_code, _output = run_command(argv, stack.cwd, stack.process_env(),
                                           int(timeout or command.get("timeout", 1800)), log_path=log_path)
         exit_code, report, problems = _skip_rules(layer, state, step, log_path, started_wall, exit_code)
-        events.emit("check.end", **span, exit=exit_code, seconds=round(time.monotonic() - started, 3),
-                    **_skip_fields(report, env_id))
+        seconds = time.monotonic() - started
+        acc = None
+        if tracked:
+            log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
+            acc = testing.accounting(plan, seconds, log_text, str(step["cmd"]), layer)
+        events.emit("check.end", **span, exit=exit_code, seconds=round(seconds, 3),
+                    **_skip_fields(report, env_id), **(_depth_fields(acc) if acc is not None else {}))
     # a result belongs to a tree only when the command left the worktree as it found it
     tree = tree_before if tree_before and tree_before == affected.tree(layer, state, env_stack) else ""
     outcome = affected.PASSED if exit_code == 0 else affected.FAILED
@@ -161,12 +265,19 @@ def run_check(layer: Any, state: Any, step: dict[str, Any], env_stack: Any,
         record["skip_rule"] = problems
     if env_id:
         record["in"] = env_id
+    if acc is not None:
+        record["testing"] = acc
     state.checks[name] = record
     affected.record(state, check=str(step["cmd"]), step=name, phase=span["phase"], outcome=outcome, tree=tree,
                     definition=(decision.definition if decision is not None
                                 else affected.definition(layer, state, command, step)),
-                    exit=exit_code, log=relative_log, why=decision.why if decision is not None else "")
+                    exit=exit_code, log=relative_log, why=decision.why if decision is not None else "",
+                    **({"depth": plan.depth, "testing": acc} if acc is not None else {}))
     state.save(layer.layer_dir)
+    if acc is not None:
+        print(f"[adw {state.adw_id}] check {name}: {testing.accounting_text(acc)}")
+        if exit_code == 0 and plan.depth == "full":
+            _after_full_pass(layer, state, env_stack, plan, name, seconds, log_text, bool(coverage_run))
     if report is not None:
         artefacts.write_manifest(layer, state)  # reviewers see the skips without a #:collect
     return exit_code
@@ -235,7 +346,7 @@ def _decided(layer: Any, state: Any, step: dict[str, Any], decision: Any, phase:
         log_path = Path(layer.layer_dir) / "agents" / state.adw_id / "checks" / f"{name}.not-affected.log"
     if log_path is not None:
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(log_path).write_text(_decision_text(cmd_name if phase == "gate" else name, decision, entry),
+        Path(log_path).write_text(_decision_text(cmd_name if phase in ("gate", "evidence") else name, decision, entry),
                                   encoding="utf-8")
         log = Path(log_path).relative_to(layer.layer_dir).as_posix()
     else:
@@ -244,10 +355,12 @@ def _decided(layer: Any, state: Any, step: dict[str, Any], decision: Any, phase:
                 outcome=outcome, why=decision.why, paths=list(decision.paths), paths_total=decision.paths_total,
                 tree=decision.tree, from_step=str(source.get("step") or "") if reused else "",
                 from_phase=str(source.get("phase") or "") if reused else "", log=log)
+    # a reused result shows the depth of the pass it reuses
+    depth = {"depth": source.get("depth"), "testing": source.get("testing")} if reused and source.get("testing") else {}
     recorded = affected.record(state, check=cmd_name, step=name, phase=phase, outcome=outcome, tree=decision.tree,
                                definition=decision.definition, exit=0 if reused else None, log=log, why=decision.why,
                                paths=decision.paths, paths_total=decision.paths_total,
-                               **({"from": source} if reused else {}))
+                               **({"from": source} if reused else {}), **depth)
     if phase == "check":
         # exit 0 because the gate counts a check step without a record as failed; `outcome` is
         # what every reader shows, so a check that was not run is never displayed as passed
@@ -258,6 +371,8 @@ def _decided(layer: Any, state: Any, step: dict[str, Any], decision: Any, phase:
             earlier = state.checks.get(str(source.get("step"))) or {}
             if earlier.get("log") == log and earlier.get("skips"):
                 record["skips"] = earlier["skips"]
+            if depth.get("testing"):
+                record["testing"] = dict(depth["testing"])
         else:
             record = {"cmd": cmd, "exit": 0, "outcome": outcome, "why": decision.why,
                       "paths": list(decision.paths), "paths_total": decision.paths_total,
@@ -282,18 +397,30 @@ def run_logged(layer: Any, state: Any, env_stack: Any, command: dict[str, Any], 
     `#:require affected`, when no changed path is under what it covers; both are recorded."""
     span = {"step": step, "owner": running_step(state), "phase": phase, "cmd": str(command["name"]),
             "attempt": 1, "log": Path(log_path).relative_to(layer.layer_dir).as_posix()}
-    # the gate re-runs a cmd where its check step runs it (#:in) and under the same skip rules
-    check = checkenv.check_for_cmd(layer, state, str(command["name"])) if phase == "gate" else None
-    decision = None
-    if phase == "gate":
-        decision = affected.decide_gate(layer, state, env_stack, command, check, _review_option(layer, state))
+    # the gate re-runs a cmd where its check step runs it (#:in) and under the same skip rules; the
+    # evidence step (evidence.py) runs a cmd no check step runs, and decides and records it the same way
+    decided = phase in ("gate", "evidence")
+    check = checkenv.check_for_cmd(layer, state, str(command["name"])) if decided else None
+    decision = plan = None
+    run_line = str(command["run"])
+    if decided:
+        option = _review_option(layer, state) if phase == "gate" else {}
+        if phase == "gate":
+            # the gate's depth: the run's per-run depth, full when a person asked for full before it ships;
+            # a different form is a different definition, so a targeted pass is never reused for full
+            plan = plan_for(layer, state, env_stack, {**(check or {}), "name": step, "cmd": str(command["name"])}, "gate")
+        decision = affected.decide_gate(layer, state, env_stack, command, check, option,
+                                        command=plan.command if plan is not None else None)
         if decision.action != affected.RUN:
             entry = _decided(layer, state, {"name": step, "cmd": str(command["name"])}, decision, phase, log_path)
-            print(f"[adw {state.adw_id}] gate: {command['name']} not run: {affected.summary_text(entry)}")
+            print(f"[adw {state.adw_id}] {phase}: {command['name']} not run: {affected.summary_text(entry)}")
             return 0
+        if plan is not None:
+            run_line = str(plan.command["run"])
+    tracked = plan is not None and _tracked(layer, plan)
     stack = checkenv.stack_for(layer, state, check, env_stack) if check is not None else env_stack
     env_id = checkenv.target(layer.adw(state.adw), check) if check is not None else None
-    argv = stack.wrap(str(command["run"]))
+    argv = stack.wrap(run_line)
     events.emit("check.start", **span)
     started = time.monotonic()
     started_wall = time.time()
@@ -303,15 +430,26 @@ def run_logged(layer: Any, state: Any, env_stack: Any, command: dict[str, Any], 
     if check is not None:
         code, report, _problems = _skip_rules(layer, state, check, log_path, started_wall, code)
         fields = _skip_fields(report, env_id)
-    events.emit("check.end", **span, exit=code, seconds=round(time.monotonic() - started, 3), **fields)
+    seconds = time.monotonic() - started
+    acc = None
+    if tracked:
+        log_text = Path(log_path).read_text(encoding="utf-8", errors="replace") if Path(log_path).is_file() else ""
+        acc = testing.accounting(plan, seconds, log_text, str(command["name"]), layer)
+        fields.update(_depth_fields(acc))
+    events.emit("check.end", **span, exit=code, seconds=round(seconds, 3), **fields)
     if decision is not None:
         # the result belongs to the shipping tree only when that is what the command ran on and left
         tree = decision.tree if decision.tree and decision.tree == affected.tree(layer, state, env_stack) else ""
         affected.record(state, check=str(command["name"]), step=step, phase=phase,
                         outcome=affected.PASSED if code == 0 else affected.FAILED, tree=tree,
                         definition=decision.definition, exit=code, log=span["log"], why=decision.why,
-                        paths=decision.paths, paths_total=decision.paths_total)
+                        paths=decision.paths, paths_total=decision.paths_total,
+                        **({"depth": plan.depth, "testing": acc} if acc is not None else {}))
         state.save(layer.layer_dir)
+        if acc is not None:
+            print(f"[adw {state.adw_id}] gate: {command['name']}: {testing.accounting_text(acc)}")
+            if code == 0 and plan.depth == "full":
+                _after_full_pass(layer, state, env_stack, plan, step, seconds, log_text, False)
     return code
 
 
@@ -369,17 +507,20 @@ def run_check_with_resolve(layer: Any, state: Any, step: dict[str, Any], env_sta
     retries = max(0, int(step.get("retries", 0)))
     owner = running_step(state)
     in_round = redecide and owner not in ("", name)
+    phase = "check" if owner in ("", name) else "recheck"
     for attempt in range(retries + 1):
-        decision = affected.decide(layer, state, env_stack, step)
+        # the depth first: the form it chooses is part of the definition affected.decide compares
+        plan = plan_for(layer, state, env_stack, step, phase)
+        decision = affected.decide(layer, state, env_stack, step, command=plan.command)
         if decision.action != affected.RUN:
-            entry = _decided(layer, state, step, decision, "check" if owner in ("", name) else "recheck")
+            entry = _decided(layer, state, step, decision, phase)
             print(f"[adw {state.adw_id}] check {name} not run: {affected.summary_text(entry)}")
             if in_round:
                 _redecide_not_affected(layer, state, env_stack)
             return False
-        exit_code = run_check(layer, state, step, env_stack, decision=decision)
+        exit_code = run_check(layer, state, step, env_stack, decision=decision, plan=plan)
         if exit_code == 124:
-            exit_code = _retry_time_limit(layer, state, step, env_stack, decision)
+            exit_code = _retry_time_limit(layer, state, step, env_stack, decision, plan)
         final = exit_code == 0 or not step.get("resolve") or attempt == retries
         if final:
             # Collected on failure too: screenshots of a failing run are the proof a human needs.
@@ -392,7 +533,7 @@ def run_check_with_resolve(layer: Any, state: Any, step: dict[str, Any], env_sta
                                    f"log {state.checks[name]['log']}")
         log_path = Path(layer.layer_dir) / state.checks[name]["log"]
         lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-150:]
-        resolve_args = [str(layer.cmd(step["cmd"])["run"]), "\n".join(lines)]
+        resolve_args = [str(plan.command["run"]), "\n".join(lines)]
         resolve_command = layer.command(step["resolve"])
         model_set = str(resolve_command.get("modelSet", "base"))
         output = run_agent(layer, state, f"{name}-resolve-{attempt + 1}", step["resolve"], resolve_args,
@@ -423,7 +564,8 @@ def _redecide_not_affected(layer: Any, state: Any, env_stack: Any) -> None:
             state.save(layer.layer_dir)
 
 
-def _retry_time_limit(layer: Any, state: Any, step: dict[str, Any], env_stack: Any, decision: Any = None) -> int:
+def _retry_time_limit(layer: Any, state: Any, step: dict[str, Any], env_stack: Any, decision: Any = None,
+                      plan: Any = None) -> int:
     """A check that hit its time limit runs once more with twice the limit, without the resolve
     agent: a slow (shared) machine is not broken code. Timing out again fails the step."""
     name = str(step["name"])
@@ -434,7 +576,7 @@ def _retry_time_limit(layer: Any, state: Any, step: dict[str, Any], env_stack: A
     entry: dict[str, Any] = {"limit": limit, "retry_limit": 2 * limit, "log": first_log}
     state.step_record(name, "check").setdefault("time_limit_retries", []).append(entry)
     state.save(layer.layer_dir)
-    exit_code = run_check(layer, state, step, env_stack, timeout=2 * limit, decision=decision)
+    exit_code = run_check(layer, state, step, env_stack, timeout=2 * limit, decision=decision, plan=plan)
     entry["exit"] = exit_code
     state.save(layer.layer_dir)
     if exit_code == 124:
@@ -533,9 +675,13 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
             raise StepFailed(str(step["name"]), "check refused in read-only host environment")
         run_check_with_resolve(layer, state, step, env_stack)
     elif kind == "review":
-        from . import review
+        from . import convergence, integrate, review
 
-        review.run_review(layer, state, step, env_stack)
+        # an assigned run (integrate.py, modes blockers and proof) reviews once, with no patch round
+        try:
+            review.run_review(integrate.with_review_retries(layer, adw), state, step, env_stack)
+        finally:
+            convergence.after_review(layer, state, step)
     elif kind == "ship":
         if env_stack.read_only:
             raise StepFailed(str(step["name"]), "ship refused in read-only host environment")
@@ -547,6 +693,9 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
 
             delivery.after_ship(layer, state)
         affected.publish(layer, state)  # what each check proved, next to the pull request text
+        from . import batch
+
+        batch.after_landing(layer, state)  # the full suites per batch: started when one is due; never raises
     elif kind == "fan-out":
         from . import fanout
 
@@ -559,11 +708,79 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
         from . import integrate
 
         integrate.run_step(layer, state, adw, step, env_stack)
+    elif kind == "batch":  # a step of a batch run (batch.batch_adw, the kit workflow verify-batch)
+        from . import batch
+
+        batch.run_step(layer, state, adw, step, env_stack)
     else:
         raise LayerError(f"Unknown ADW step kind: {kind!r}")
 
 
 DELIVER_STEP = "deliver"
+PROVE_STEP = "prove"
+EVIDENCE_STEP = "evidence"
+FRESHEN_REVIEW_STEP = "freshen-review"
+FRESHEN_SHIP_STEP = "freshen-ship"
+
+
+def _plans(layer: Any, step: dict[str, Any]) -> bool:
+    """A run step whose command writes the plan (#:output path), not a patch plan."""
+    if step.get("kind") != "run":
+        return False
+    try:
+        command = layer.command(str(step.get("command")))
+    except (LayerError, KeyError):
+        return False
+    return command.get("output") == "path" and command.get("template") != "plan-patch"
+
+
+def _prove(layer: Any, state: Any, adw: dict[str, Any], env_stack: Any) -> None:
+    """The provability check of the plan's Proof plan (proofplan.py), recorded as step `prove` only
+    when the plan has the table; a plan without one is recorded as such and changes nothing."""
+    from . import proofplan
+
+    parsed = proofplan.parse(proofplan.plan_text(state, layer))
+    if parsed["table"] == "absent":
+        state.proof_plan = {"plan": state.plan, "table": "absent"}
+        state.save(layer.layer_dir)
+        return
+    _run_recorded(layer, state, PROVE_STEP, PROVE_STEP, lambda: proofplan.check(layer, state, adw, env_stack))
+
+
+def _review_kind(layer: Any, adw: dict[str, Any]) -> str:
+    try:
+        return str(layer.option("reviews", adw["review"]).get("kind") or "")
+    except (LayerError, KeyError):
+        return ""
+
+
+def _freshen(layer: Any, state: Any, adw: dict[str, Any], env_stack: Any, when: str) -> None:
+    """Bring the target branch's new commits in before the review or ship (freshen.py), recorded
+    as `freshen-<when>` only when the target moved."""
+    from . import freshen
+
+    if not getattr(state, "worktree", ""):
+        return
+    if any(item.get("kind") in ("integrate", "promote") for item in adw.get("steps") or []):
+        return  # an integration or promotion run brings its target in itself
+    if freshen.behind(layer, state, env_stack) > 0:
+        _run_recorded(layer, state, f"freshen-{when}", "freshen",
+                      lambda: freshen.run(layer, state, adw, env_stack, when))
+
+
+def _before_review(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_stack: Any) -> None:
+    """Before an agent or auto review: the target branch, then the evidence pack (evidence.py),
+    recorded as `evidence` when there is a Proof plan table or an approval."""
+    from . import evidence, proofplan
+
+    if _review_kind(layer, adw) not in ("agent", "auto"):
+        return
+    _freshen(layer, state, adw, env_stack, "review")
+    if proofplan.has_table(state) or state.approvals:
+        _run_recorded(layer, state, EVIDENCE_STEP, EVIDENCE_STEP,
+                      lambda: evidence.run(layer, state, adw, step, env_stack))
+    else:
+        evidence.prepare_context(layer, state, adw, step, env_stack)
 
 
 def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_stack: Any) -> None:
@@ -571,6 +788,9 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
     record = state.step_record(name, kind)
     # a rejected review is finished: re-running it on --resume would repeat its agent calls and commits
     if record.get("status") in ("passed", REJECTED):
+        prove = next((r for r in state.steps if r.get("name") == PROVE_STEP), None)
+        if _plans(layer, step) and prove is not None and prove.get("status") != "passed":
+            _prove(layer, state, adw, env_stack)  # a resume after a stop before the build (al approve)
         return
     stopped = getattr(state, "stopped_by", "")
     if stopped:  # a stop that a step swallowed while it ran still ends the run before the next step
@@ -591,7 +811,13 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
 
         _run_recorded(layer, state, DELIVER_STEP, DELIVER_STEP,
                       lambda: delivery.before_ship(layer, state, adw, step, env_stack))
+    elif kind == "ship" and review_outcome(state)[0] is not False and not env_stack.read_only:
+        _freshen(layer, state, adw, env_stack, "ship")
+    if kind == "review":
+        _before_review(layer, state, adw, step, env_stack)
     _run_recorded(layer, state, name, kind, lambda: _execute_step(layer, state, adw, step, env_stack), step)
+    if _plans(layer, step):
+        _prove(layer, state, adw, env_stack)
 
 
 def _run_recorded(layer: Any, state: Any, name: str, kind: str, work: Any, step: dict[str, Any] | None = None) -> None:
@@ -629,6 +855,13 @@ def _run_recorded(layer: Any, state: Any, name: str, kind: str, work: Any, step:
             # the review returned so a later ship step can route the work to a person: not a pass
             ended(REJECTED, detail, f"[adw {state.adw_id}] step {name} ({kind}) rejected: {detail}")
             return
+    if kind == "batch":
+        from . import batch
+
+        why = batch.skipped(state, name)
+        if why:  # bisect and fix of a green batch
+            ended("skipped", why, f"[adw {state.adw_id}] step {name} ({kind}) skipped: {why}")
+            return
     if kind == "check" and (state.checks.get(name) or {}).get("outcome") == affected.NOT_AFFECTED:
         check = state.checks[name]
         detail = f"not affected: {check.get('why')} ({int(check.get('paths_total') or 0)} paths compared)"
@@ -663,6 +896,8 @@ def _pass_detail(state: Any, step: dict[str, Any]) -> str:
                 f"{str(check.get('tree') or '')[:8]}, log {check.get('log')}")
     if step.get("kind") == "check" and name in state.checks:
         detail = f"exit {state.checks[name]['exit']}, log {state.checks[name]['log']}"
+        if isinstance(state.checks[name].get("testing"), dict):  # passed — targeted: ran 14 of 812 tests …
+            detail = f"passed — {testing.accounting_text(state.checks[name]['testing'])}; log {state.checks[name]['log']}"
         record = next((r for r in state.steps if r.get("name") == name), {})
         retried = [r for r in record.get("time_limit_retries") or [] if r.get("exit") == 0]
         if retried:

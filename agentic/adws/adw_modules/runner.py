@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import getpass
 import json
 import os
 import re
@@ -15,8 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import affected, budget, checkenv, decide, delivery, envs, envsource, events, integrate, ir, models
-from . import nested_engine, notify, prepare, sandbox, skips
+from . import affected, approvals, assign, budget, checkenv, decide, delivery, envs, envsource, events, ir, models
+from . import nested_engine, notify, placement, prepare, sandbox, selfrun, skips, testing
 from . import state as state_module, steps
 from . import slots
 from .agents import CLASSES
@@ -110,14 +111,26 @@ the stand-in decider (when a run stops and is handed to a person):
                          resume only), at most #:max-actions-per-run times per run (without a declaration:
                          twice). It never merges or deploys: a resumed run passes every check and the gate again.
 
+where the run executes (only for a layer that declares (placement …)):
+  --on HOST              run on this host of #:hosts (`home` is this machine) instead of letting the
+                         scheduler pick one; refused when the host cannot take the run
+  --follow               with --adw-id: follow a run on another host again after its proxy here died,
+                         and finish it here
+  --restart              with --adw-id: start a lost run again on another host (or --on HOST) from the
+                         last commit it pushed
+
 notifications: a --dry-run sends none of the layer's (notify …) messages unless --notify is given.
 
 exit codes: 0 passed or handed-over (the workflow ran to its end; handed-over: a rejected review or a
               gate that fell back, so a person decides; see the summary's handoff line),
             1 failed (handed to a person where the workflow ships),
             2 usage error, 3 refused: the layer's day limit (#:day-usd) or its subscription usage threshold (#:limit-stop-percent) is reached,
+              or no host can take the run,
             75 waiting: a script step is waiting for something outside; run again with --resume
 """
+
+
+TESTING_CHOICES = (*testing.LEVELS, *testing.DEPTHS)
 
 
 def _parser(adw: str) -> argparse.ArgumentParser:
@@ -139,7 +152,36 @@ def _parser(adw: str) -> argparse.ArgumentParser:
     parser.add_argument("--replaces", metavar="OLD", help="this run starts run OLD (8 hex chars) again; OLD then "
                         "reads as replaced by this run")
     parser.add_argument("--decider", choices=decide.MODES, help="the stand-in decider for this run (see below)")
+    parser.add_argument("--testing", choices=TESTING_CHOICES, metavar="LEVEL",
+                        help="how deep this run's checks go: light|standard|heavy (also smoke|targeted|full); "
+                             "default: the local setting, else the layer's (testing …)")
+    parser.add_argument("--approve", action="append", default=[], metavar="WHAT",
+                        help="pre-approve a decision only a person may take, for this run (repeatable): "
+                             "vocabulary, edit:PATH, dependency:NAME")
+    parser.add_argument("--approved-by", metavar="WHO", default=os.environ.get("AL_APPROVED_BY") or _user(),
+                        help="who gave the --approve approvals (default: AL_APPROVED_BY, else the login name)")
+    parser.add_argument("--on", metavar="HOST", help="run on this host of the layer's (placement …)")
+    parser.add_argument("--follow", action="store_true", help="follow --adw-id on its host again and finish it here")
+    parser.add_argument("--restart", action="store_true", help="start the lost run --adw-id again on another host")
     return parser
+
+
+def _user() -> str:
+    try:
+        return getpass.getuser()
+    except (KeyError, OSError):
+        return "unknown"
+
+
+def _record_approvals(state: state_module.ADWState, args: argparse.Namespace) -> None:
+    """The run's --approve approvals, each validated (a bad one is a usage error), recorded with who and when."""
+    whats = list(getattr(args, "approve", None) or [])
+    try:
+        tokens = [approvals.parse(what) for what in whats]
+    except ValueError as exc:
+        raise UsageError(f"--approve: {exc}") from exc
+    if tokens:
+        approvals.record(state, tokens, str(getattr(args, "approved_by", "") or _user()), "start")
 
 
 def _stdin_allowed(layer: Any, adw: dict[str, Any]) -> bool:
@@ -176,12 +218,16 @@ def _new_state(adw_name: str, adw: dict[str, Any], args: argparse.Namespace, req
     if fixed is not None and fixed not in CLASSES:
         raise LayerError(f"prompt source returned unknown class {fixed!r}")
     initial = fixed or (adw.get("classes") or ["chore"])[0]
-    return state_module.ADWState(
+    requested = getattr(args, "testing", None)
+    state = state_module.ADWState(
         adw_id=args.adw_id or state_module.new_adw_id(), adw=adw_name, prompt=request.prompt,
         source=request.source, klass=initial, class_fixed=fixed is not None, dry_run=args.dry_run,
         model_set=request.model_set or "", fanout_parent=fanout_parent(),
         replaces=getattr(args, "replaces", None) or "", decider=getattr(args, "decider", None) or "",
+        testing={"requested": testing.normalise(requested)} if requested else {},
     )
+    _record_approvals(state, args)
+    return state
 
 
 def _check_replaces(layer: Any, old: str) -> str:
@@ -257,14 +303,19 @@ def _resumed_state(layer: Any, adw_name: str, args: argparse.Namespace) -> state
     state.usage.pop("stopped", None)
     if state.decision.get("status") == "resuming":  # the decider (or a person's answer) started this resume
         state.decision["status"] = "resumed"
+    if getattr(args, "testing", None):  # a resume may ask for another depth; later checks use it
+        state.testing["requested"] = testing.normalise(args.testing)
+    _record_approvals(state, args)
     return state
 
 
 def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
     def shown(data: dict[str, Any]) -> str:
-        # a check that was not run is never shown as its exit code: not affected or reused, with why
-        return (affected.summary_text(data) if data.get("outcome") in (affected.NOT_AFFECTED, affected.REUSED)
-                else str(data["exit"]))
+        # a check that was not run is never shown as its exit code: not affected or reused, with why;
+        # a result that carries its depth (testing …) says it: passed (targeted: ran 2 of 43 tests …)
+        if data.get("outcome") in (affected.NOT_AFFECTED, affected.REUSED) or isinstance(data.get("testing"), dict):
+            return affected.summary_text(data)
+        return str(data["exit"])
 
     checks = ", ".join(f"{name}={shown(data)}" + (f" ({skips.summary_text(data['skips'])})"
                                                   if skips.summary_text(data.get("skips") or {}) else "")
@@ -282,10 +333,12 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"status:    {state.status}",
         f"branch:    {state.branch or 'none'}",
         *([f"tiers:     {_tiers_line(state)}"] if state.models else []),
+        *[f"testing:   {line}" for line in [_testing_line(layer, state)] if line],
         f"plan:      {state.plan or 'none'}",
         f"checks:    {checks}",
         *([f"gate:      {gate}"] if gate else []),
         f"review:    {review}",
+        *([f"proof:     {_proof_line(state)}"] if _proof_line(state) else []),
         f"cost:      {budget.summary(state)}",
         *([f"models:    {_models_line(state)}"] if state.agent_calls else []),
         f"ship:      {ship}",
@@ -296,6 +349,7 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         *([f"replaces:  {state.replaces}"] if state.replaces else []),
         *([handoff] if handoff else []),
         *([f"decision:  {_decision_line(state)}"] if state.decision else []),
+        *([f"host:      {_host_line(state)}"] if state.remote else []),
         f"artefacts: {len(state.artefacts)}",
         *([f"resume:    {resume_command(state)}"] if state.status == "waiting" else []),
         f"state:     {state_module.run_dir(layer.layer_dir, state.adw_id) / 'state.json'}",
@@ -314,6 +368,20 @@ def _kept_line(state: state_module.ADWState) -> str:
         line = f"no branch; {kept.get('artefacts', 0)} files as artefacts"
     too_large = len(kept.get("too_large") or [])
     return line + (f", {too_large} too large for the artefacts" if too_large else "")
+def _host_line(state: state_module.ADWState) -> str:
+    """Where the run executed, e.g. `build-2 (delivered chore/1a2b3c4d-tidy at 0123456789ab; gate on home)`."""
+    remote = state.remote
+    delivered = remote.get("delivered") or {}
+    parts = []
+    if delivered.get("sha"):
+        parts.append(f"delivered {delivered.get('branch')} at {str(delivered['sha'])[:12]}")
+    if remote.get("lost"):
+        parts.append(f"lost: {remote['lost'].get('reason')}")
+    elif remote.get("phase") == "gate" and not selfrun.active():
+        parts.append("gate on home")
+    if remote.get("restart_of"):
+        parts.append(f"started again after {remote['restart_of']}")
+    return str(remote.get("host") or "?") + (f" ({'; '.join(parts)})" if parts else "")
 
 
 def _delivery_line(state: state_module.ADWState) -> str:
@@ -333,6 +401,27 @@ def _delivery_line(state: state_module.ADWState) -> str:
     where = f" @ {d['environment_name']}" if d.get("environment_name") else ""
     return (f"{d.get('stage')} -> {d.get('branch')} ({d.get('entry', 'merge')}; "
             f"delivered={d.get('delivered')}){where}")
+
+
+def _proof_line(state: state_module.ADWState) -> str:
+    """What the plan's Proof plan came to, e.g. `3 criteria, 3 proven; 1 round; 2 debt tasks filed` or
+    `stopped at prove: needs-declaration (layer author)`; "" for a plan without the table."""
+    plan = state.proof_plan or {}
+    if plan.get("table") not in ("parsed", "invalid"):
+        return ""
+    stopped = plan.get("stopped") or {}
+    if stopped:
+        return f"stopped at {stopped.get('at')}: {stopped.get('outcome')} ({stopped.get('party')})"
+    rows = list(plan.get("rows") or [])
+    proven = sum(1 for row in rows if row.get("state") == "proven")
+    rounds = len((state.review or {}).get("rounds") or [])
+    debt = len(plan.get("debt") or [])
+    parts = [f"{len(rows)} criteri{'on' if len(rows) == 1 else 'a'}, {proven} proven"]
+    if rounds:
+        parts.append(f"{rounds} round{'' if rounds == 1 else 's'}")
+    if debt:
+        parts.append(f"{debt} debt task{'' if debt == 1 else 's'} filed")
+    return "; ".join(parts)
 
 
 def _review_line(state: state_module.ADWState) -> str:
@@ -398,7 +487,8 @@ def _integration_line(state: state_module.ADWState) -> str:
         if report.get("undecidable"):
             what += f", {len(report['undecidable'])} undecidable"
     seen = ", ".join(str(item.get("file")) for item in i.get("seen_before") or [])
-    line = (f"run {i.get('run')} onto {i.get('target')}"
+    mode = str(i.get("mode") or "conflict")
+    line = ((f"{mode} of " if mode != "conflict" else "") + f"run {i.get('run')} onto {i.get('target')}"
             + (f" at {str(i['target_head'])[:7]}" if i.get("target_head") else "")
             + f" ({what}{f'; conflicted before: {seen}' if seen else ''})")
     if state.status == "waiting":
@@ -419,6 +509,36 @@ def resume_command(state: state_module.ADWState) -> str:
         return (f"uv run adws/promote.py run {promotion['from']} {promotion.get('to', '')} "
                 f"--resume --adw-id {state.adw_id}")
     return f"uv run adws/adw_{state.adw}.py --resume --adw-id {state.adw_id}"
+
+
+def _testing_line(layer: Any, state: state_module.ADWState) -> str:
+    """`targeted (layer policy); escalated: core path a/core/x.py`: the depth this run's checks
+    asked for, its source, and why a check ran deeper. "" for a layer without (testing …) and a run
+    that asked for no depth, so their summary reads as before."""
+    data = state.testing if isinstance(state.testing, dict) else {}
+    try:
+        declared = bool(testing.policy(layer)["declared"])
+    except (LayerError, KeyError, TypeError):
+        declared = False
+    if not declared and not data:
+        return ""
+    depth, source = data.get("depth"), data.get("source")
+    if not depth:
+        try:
+            depth, source = testing.run_depth(layer, state, "check")
+        except (LayerError, OSError):
+            return ""
+    line = f"{depth} ({source})"
+    reasons: list[str] = []
+    for found in (data.get("escalated") or {}).values():
+        reasons += [reason for reason in found if reason not in reasons]
+    if reasons:
+        line += "; escalated: " + "; ".join(reasons)
+    if testing.requested_full(layer.layer_dir, state.adw_id):
+        line += f"; gate: full ({testing.SOURCE_REQUEST})"
+    if data.get("batch_started"):
+        line += f"; started batch {data['batch_started']}"
+    return line
 
 
 def _tiers_line(state: state_module.ADWState) -> str:
@@ -449,16 +569,35 @@ def _speak(layer: Any, line: str) -> None:
         print(f"[adw] warning: spoken summary failed: {exc}", file=sys.stderr)
 
 
-def _execute(layer: Any, state: state_module.ADWState, adw: dict[str, Any], stack: envs.EnvStack) -> None:
+def _execute(layer: Any, state: state_module.ADWState, adw: dict[str, Any], stack: envs.EnvStack,
+             take_over: bool = False) -> None:
     stack.setup()
     state.save(layer.layer_dir)
+    contained = selfrun.active()
+    if contained:
+        selfrun.after_setup(layer, state, stack)   # a run that starts again continues from its pushed commit
+    elif state.remote.get("phase") == "gate" and (take_over or not state.remote.get("taken_over")):
+        from . import remoterun
+
+        if not state.remote.get("taken_over"):   # once: a resumed run keeps what it did here since
+            remoterun.place_result(layer, state, stack)   # the commit the run delivered on its host, fetched here
+        failure = remoterun.remote_failure(state) if take_over else None
+        if failure is not None:
+            raise failure   # the run failed on its host: the handoff happens here
     envsource.ensure_ready(layer, state, stack)  # the repository's own base image or dev shell, as of now
     sandbox.preflight(layer, state, adw, stack)  # podman stacks: current image, and what the workflow needs is there
     checkenv.preflight(layer, state, adw, stack)  # the podman environments its checks run #:in
     state.save(layer.layer_dir)
     prepare.run(layer, state, adw, stack)        # #:prepare (or postCreateCommand): once per run
     for step in adw.get("steps", []):
+        if contained and step.get("kind") == "ship":
+            selfrun.deliver(layer, state, adw, step, stack)   # the home machine ships, through its gate
+            continue
         steps.run_step(layer, state, adw, step, stack)
+        if contained:
+            selfrun.checkpoint(layer, state, stack, step)
+    if contained and "delivered" not in state.remote:
+        selfrun.deliver(layer, state, adw, None, stack)   # a workflow without a (ship) step: its work still goes home
 
 
 def _hand_off(layer: Any, state: state_module.ADWState, adw: dict[str, Any], stack: envs.EnvStack,
@@ -489,6 +628,24 @@ def _decision_line(state: state_module.ADWState) -> str:
     answered = (d.get("answers") or [{}])[-1].get("kind") if d.get("answers") else ""
     return (f"{d.get('mode', '?')} {d.get('action', '?')} from {d.get('from_step') or '?'} ({d.get('status', '?')})"
             + (f"; answered {answered}" if answered else ""))
+
+
+def _stopped(layer: Any, state: state_module.ADWState, adw: dict[str, Any], stack: envs.EnvStack,
+             failure: BaseException, args: argparse.Namespace) -> None:
+    """A run stopped: here it is handed to a person and reported; on another host its work is
+    pushed, and the home machine hands it over."""
+    if selfrun.active():
+        selfrun.deliver_stopped(layer, state, adw, stack, failure)
+        return
+    _hand_off(layer, state, adw, stack, failure)
+    if isinstance(failure, RunStopped):  # a person stopped it: the stand-in decider does not resume it
+        state.error = STOPPED + (f"; {state.error}" if getattr(state, "error", "") else "")
+    else:
+        decide.consider(layer, state, adw, stack, args)
+        if decide.keeps_worktree(state):  # the resume (now, or after a person's `go`) continues in it
+            stack.keep_worktree = True
+    if notify.report(layer, state, force=bool(getattr(args, "notify", False)), at="handover"):
+        state.save(layer.layer_dir)
 
 
 def _overrides_text(over: dict[str, Any]) -> str:
@@ -551,8 +708,13 @@ def _stoppable(state: state_module.ADWState):
 
 
 def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: argparse.Namespace,
-         request: Request | None) -> int:
+         request: Request | None, take_over: bool = False) -> int:
+    """`take_over`: the run executed on another host and continues here (remoterun.take_over); a
+    run that failed there fails here right after setup, so the failure branch below hands it over.
+    In a self-contained run (selfrun.active()) the run ends `delivered`, a failure pushes its work
+    instead of handing it over, and nothing is notified: the home machine does all of that."""
     exit_code = 1
+    contained = selfrun.active()
     stack = envs.build(layer, state, list(adw.get("environment", [])))
     envsource.apply_publish(layer, stack)  # a dev container's forwardPorts, published like #:publish
     stack.keep_worktree = bool(args.keep_worktree)
@@ -566,8 +728,8 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
                overrides=state.overrides or None, models=state.models or None,
                limits=state.budget.get("limits") or None, replaces=state.replaces or None)
     try:
-        if request is not None and request.hooks is not None:
-            request.hooks.on_start(state)
+        if request is not None and request.hooks is not None and not take_over:
+            request.hooks.on_start(state)   # a taken-over run was announced when it was placed
         with slots.slot(layer, "runs", f"adw {state.adw_id}"):
             if stack.worktree_option:
                 for removed in envs.collect_garbage(layer, stack.worktree_option):
@@ -575,9 +737,11 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
             if any(nested_engine.enabled(option) for option in sandbox.podman_options(layer)):
                 for removed in nested_engine.collect_stale_volumes(layer):
                     print(f"[adw {state.adw_id}] gc: removed stale nested-engine volume {removed}")
-            _execute(layer, state, adw, stack)
-        reasons = handover_reasons(layer, state, adw)
-        if reasons:
+            _execute(layer, state, adw, stack, take_over)
+        reasons = [] if contained else handover_reasons(layer, state, adw)
+        if contained:
+            state.status = "delivered"
+        elif reasons:
             state.ship["handed_over"] = reasons
             state.status = HANDED_OVER
             print(f"[adw {state.adw_id}] run handed over to a person: {', '.join(reasons)}")
@@ -593,27 +757,16 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
     except (StepFailed, LayerError) as exc:
         state.status = "failed"
         print(f"[adw {state.adw_id}] run failed: {exc}")
-        _hand_off(layer, state, adw, stack, exc)
-        if isinstance(exc, RunStopped):  # a person stopped it: the stand-in decider does not resume it
-            state.error = STOPPED + (f"; {state.error}" if getattr(state, "error", "") else "")
-        else:
-            decide.consider(layer, state, adw, stack, args)
-            if decide.keeps_worktree(state):  # the resume (now, or after a person's `go`) continues in it
-                stack.keep_worktree = True
-        if notify.report(layer, state, force=bool(getattr(args, "notify", False)), at="handover"):
-            state.save(layer.layer_dir)
+        _stopped(layer, state, adw, stack, exc, args)
     except Exception as exc:  # last-resort boundary: record the crash in state instead of leaving it "running"
         state.status = "failed"
         print(f"[adw {state.adw_id}] run crashed: {type(exc).__name__}: {exc}")
         traceback.print_exc()
-        _hand_off(layer, state, adw, stack, exc)
-        decide.consider(layer, state, adw, stack, args)
-        if decide.keeps_worktree(state):  # the resume (now, or after a person's `go`) continues in it
-            stack.keep_worktree = True
-        if notify.report(layer, state, force=bool(getattr(args, "notify", False)), at="handover"):
-            state.save(layer.layer_dir)
+        _stopped(layer, state, adw, stack, exc, args)
     finally:
-        if state.status != "waiting":  # a waiting run keeps its worktree for --resume
+        # a waiting run keeps its worktree for --resume; a run on a host pushed its work, and the home
+        # machine keeps it after it took the run over
+        if state.status != "waiting" and not contained:
             from . import keep
 
             try:
@@ -623,7 +776,7 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
                 stack.keep_worktree = True
             state.save(layer.layer_dir)
         try:
-            stack.teardown(state.status in ("passed", HANDED_OVER))
+            stack.teardown(state.status in ("passed", HANDED_OVER, "delivered"))
         except (StepFailed, LayerError, OSError) as exc:
             print(f"[adw {state.adw_id}] teardown failed: {exc}")
             state.status, exit_code = "failed", 1
@@ -645,7 +798,7 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
         beat.stop()
         state.ended = state_module.now()
         state.save(layer.layer_dir)
-        if notify.report(layer, state, force=bool(getattr(args, "notify", False))):
+        if not contained and notify.report(layer, state, force=bool(getattr(args, "notify", False))):
             state.save(layer.layer_dir)
         events.emit("run.end", status=state.status, exit=exit_code)
     return exit_code
@@ -688,22 +841,34 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
             models.check_overrides(layer, definition, over)
         except LayerError as exc:
             raise UsageError(str(exc)) from exc
+        contained = selfrun.active()
+        placed = placement.declared(layer) is not None and not contained
+        if (args.on or args.follow or args.restart) and not placed:
+            raise UsageError("--on, --follow and --restart need a layer that declares (placement auto #:hosts (…))")
+        if args.follow or args.restart:
+            if not args.adw_id or args.resume or (args.follow and args.restart):
+                raise UsageError("--follow and --restart take --adw-id RUN (and not each other or --resume)")
+            return _remote_again(layer, adw, definition, args)
         if args.replaces:
             _check_replaces(layer, args.replaces)
-        request = None if args.resume else resolve_request(layer, definition, args)
-        state = _resumed_state(layer, adw, args) if args.resume else _new_state(adw, definition, args, request)
-        if not args.resume and not state.replaces:   # a reopened task or issue started again after a failure
-            state.replaces = previous_attempt(layer, state.source, state.adw_id)
+        if contained:
+            request, state = _contained_start(layer, adw, definition, args)
+        else:
+            request = None if args.resume else resolve_request(layer, definition, args)
+            state = _resumed_state(layer, adw, args) if args.resume else _new_state(adw, definition, args, request)
+            if not args.resume and not state.replaces:   # a reopened task or issue started again after a failure
+                state.replaces = previous_attempt(layer, state.source, state.adw_id)
         if synthetic is not None:
             state.definition = dict(synthetic)
-        if recompute:
+        if recompute and not contained:
             state.overrides = over
             state.models = models.resolve_tiers(layer, str(definition.get("agent") or ""), over)
-        state.budget["limits"] = budget.limits(layer, state.overrides)
-        refused = budget.refuse_start(layer, state.budget["limits"], state.adw_id)
-        if refused:
-            print(f"adw_{adw}: refused: {refused}", file=sys.stderr)
-            return budget.EXIT_REFUSED
+        if not contained:   # a run on another host keeps the limits its home machine decided
+            state.budget["limits"] = budget.limits(layer, state.overrides)
+            refused = budget.refuse_start(layer, state.budget["limits"], state.adw_id)
+            if refused:
+                print(f"adw_{adw}: refused: {refused}", file=sys.stderr)
+                return budget.EXIT_REFUSED
         try:  # where the run delivers (a layer with stages); refused before any worktree exists
             target = delivery.for_run(layer, definition, state)
         except delivery.DeliveryError as exc:
@@ -717,6 +882,19 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
             state.delivery.pop("refused", None)
             state.delivery.pop("reason", None)
         state.save(layer.layer_dir)
+        decision = None
+        if placed and not args.resume:   # where the run executes; refused before anything is created
+            try:
+                decision = placement.decide(layer, definition, state, on=args.on)
+            except placement.Refused as exc:
+                print(f"adw_{adw}: refused: {exc}", file=sys.stderr)
+                state.status, state.ended = "failed", state_module.now()
+                state.save(layer.layer_dir)
+                return budget.EXIT_REFUSED
+            if decision["host"] != placement.HOME:
+                from . import remoterun
+
+                return remoterun.run_remote(layer, state, definition, args, request, decision)
     except UsageError as exc:
         parser.print_usage(sys.stderr)
         print(f"adw_{adw}: error: {exc}", file=sys.stderr)
@@ -729,14 +907,63 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
         tee = _Tee(sys.stdout, log)
         if layer.delivery:
             events.emit("delivery.target", **layer.delivery)
+        if decision is not None:
+            placement.emit_decision(decision)
         try:
             with contextlib.redirect_stdout(tee), _stoppable(state):
                 exit_code = _run(layer, state, definition, args, request)
                 lines = summary_lines(layer, state)
-                print("\n".join(lines))
+                print("\n".join(lines), flush=True)  # out before integrate.finish() reports the run as ended
         finally:
             tee.close()
-    decide.after_run(layer, state)  # a resume the decider chose starts once this run has ended
-    integrate.after_run(layer, state, args)  # a handed-over run the decider may integrate (integrate.py)
-    _speak(layer, f"ADW {adw} {state.adw_id} {state.status}. Ship: {state.ship.get('action', 'none')}.")
+    if not selfrun.active():   # on a host the home machine does these, after it took the run over
+        decide.after_run(layer, state)  # a resume the decider chose starts once this run has ended
+        assign.after_run(layer, state, args)  # a handed-over run the decider may give to an agent (assign.py)
+        _speak(layer, f"ADW {adw} {state.adw_id} {state.status}. Ship: {state.ship.get('action', 'none')}.")
     return exit_code
+
+
+def _contained_start(layer: Any, adw: str, definition: dict[str, Any],
+                     args: argparse.Namespace) -> tuple[Request, state_module.ADWState]:
+    """The request and the state of a self-contained run: what the home machine resolved (class,
+    tiers, limits, delivery target, dry run) comes in the seed; no prompt source is asked here."""
+    seed = selfrun.seed()
+    if seed.get("run") != args.adw_id or seed.get("adw") != adw:
+        raise LayerError("the run's seed names another run or workflow")
+    try:
+        prompt = args.prompt_file.read_text(encoding="utf-8").strip() if args.prompt_file else str(seed.get("prompt") or "")
+    except OSError as exc:
+        raise UsageError(f"cannot read --prompt-file: {exc}") from exc
+    fixed = str(seed.get("klass") or "") if seed.get("class_fixed") else None
+    request = Request(prompt, str(seed.get("source") or "cli"), fixed, str(seed.get("model_set") or "") or None, None)
+    args.klass, args.dry_run = fixed, bool(seed.get("dry_run"))
+    state = selfrun.restored_state(layer, seed) or _new_state(adw, definition, args, request)
+    state.dry_run = bool(seed.get("dry_run"))
+    state.overrides = dict(seed.get("overrides") or {})
+    state.models = dict(seed.get("models") or {})
+    state.budget["limits"] = dict(seed.get("limits") or {})
+    if seed.get("delivery"):
+        state.delivery = dict(seed["delivery"])
+    state.remote.setdefault("host", str(seed.get("host") or ""))
+    state.remote["base"] = _base_commit(layer)
+    return request, state
+
+
+def _base_commit(layer: Any) -> str:
+    result = subprocess.run(["git", "-C", str(layer.app_root), "rev-parse", "--verify", "--quiet",
+                             f"refs/heads/{layer.default_branch}"], capture_output=True, text=True, timeout=120, check=False)
+    return result.stdout.strip()
+
+
+def _remote_again(layer: Any, adw: str, definition: dict[str, Any], args: argparse.Namespace) -> int:
+    """--follow / --restart of a run that executes (or executed) on another host."""
+    from . import remoterun
+
+    state = state_module.load(layer.layer_dir, args.adw_id)
+    if state.adw != adw:
+        raise LayerError(f"run {args.adw_id} belongs to ADW {state.adw!r}, not {adw!r}")
+    target = delivery.for_run(layer, definition, state)   # the target the run started with
+    if target is not None:
+        layer = delivery.scope(layer, target)
+    work = remoterun.restart if args.restart else remoterun.reattach
+    return work(layer, definition, args)

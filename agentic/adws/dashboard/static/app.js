@@ -169,6 +169,11 @@
       if (n < 1048576) return `${(n / 1024).toFixed(1)} kB`;
       return `${(n / 1048576).toFixed(1)} MB`;
     },
+    kb(n) {
+      if (n === null || n === undefined) return "—";
+      if (n < 1048576) return `${Math.round(n / 1024)} MB`;
+      return `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} GB`;
+    },
     time(epoch) {
       if (!epoch) return "—";
       const d = new Date(epoch * 1000);
@@ -269,6 +274,62 @@
     return el;
   }
 
+  /** Where a run executes: the host of a run its layer placed on another machine, `home` for one that stayed
+   *  (nothing for a layer that places no runs). */
+  function hostBadge(run) {
+    if (!run || !run.host) return null;
+    const remote = run.remote;
+    const phase = remote ? remote.phase : "";
+    const seen = remote && remote.last_seen ? ` · last answer ${fmt.time(remote.last_seen)} (${fmt.ago(remote.last_seen)})` : "";
+    const title = !remote ? "runs on the home machine"
+      : phase === "remote" ? `runs on ${run.host}${seen}`
+        : phase === "gate" ? `ran on ${run.host}; the gate and what follows run on the home machine`
+          : phase === "lost" ? `${run.host} stopped answering${seen}` : `placed on ${run.host}${seen}`;
+    const note = phase === "gate" ? " · gate at home" : (phase === "lost" ? " · no answer" : "");
+    return h("span", { class: `badge host${phase === "lost" ? " lost" : ""}`, title, dataset: { host: run.host }, text: `⌂ ${run.host}${note}` });
+  }
+
+  /** One layer's block of the "Hosts" panel: each declared host with this layer's runs on it now and what it
+   *  answered in the scheduler's last survey (the load facts are as old as that survey). */
+  function hostsPanel(layer, runs) {
+    const hosts = layer.hosts || [];
+    const at = (hosts.find((x) => x.at) || {}).at || null;
+    const el = h("div", { class: "hosts-layer", dataset: { layer: layer.key } },
+      h("div", { class: "name" }, h("a", { href: `#/layer/${enc(layer.key)}`, text: layer.name || layer.key }),
+        h("span", { class: "faint survey" }, at ? ["load as of the last survey, ", h("span", { class: "num", "data-since": at, text: fmt.dur(now() - at) }), " ago"]
+          : "no survey yet")));
+    const mine = (runs || []).filter((r) => r.layer === layer.key && r.status === "running");
+    for (const host of hosts) {
+      // a run executes on its host while its phase is `remote`; before and after (the gate) on the home machine
+      const here = mine.filter((r) => (r.remote && r.remote.phase === "remote" ? r.host : "home") === host.host);
+      const max = host.max_runs === null || host.max_runs === undefined ? "?" : host.max_runs;
+      const row = h("div", { class: `host-row${host.state === "silent" ? " silent" : ""}`, dataset: { host: host.host } },
+        h("span", { class: "host-name", text: host.host }),
+        h("span", { class: "num", title: here.map((r) => r.id).join("\n") || "none of this layer's runs" },
+          "runs ", h("b", { text: `${here.length}/${max}` }), host.pending ? h("span", { class: "faint", text: ` +${host.pending} starting` }) : null));
+      if (host.state === "silent") {
+        row.appendChild(h("span", { class: "badge bad", title: host.silent || "", text: "no answer" }));
+        if (host.silent) row.appendChild(h("span", { class: "faint", text: host.silent }));
+      } else if (host.state !== "ok") {
+        row.appendChild(h("span", { class: "faint", text: "not surveyed yet" }));
+      } else {
+        const logins = Object.entries(host.logins || {}).filter(([, v]) => v !== "not needed");
+        appendAll(row, [
+          h("span", { class: "num", title: "1-minute load average / CPUs" }, "load ", h("b", { text: host.load1 === null ? "—" : host.load1.toFixed(2) }),
+            host.cpus ? h("span", { class: "faint", text: ` / ${host.cpus} cpu` }) : null),
+          h("span", { class: "num" }, "memory free ", h("b", { text: fmt.kb(host.mem_available_kb) }),
+            host.mem_total_kb ? h("span", { class: "faint", text: ` of ${fmt.kb(host.mem_total_kb)}` }) : null),
+          h("span", { class: "num" }, "disk free ", h("b", { text: fmt.kb(host.disk_free_kb) })),
+          host.image === null ? h("span", { class: "faint", text: "image: not needed" })
+            : h("span", { class: `badge ${host.image ? "good" : "warn"}`, text: host.image ? "image present" : "image missing" }),
+          logins.length ? logins.map(([agent, how]) => h("span", { class: `badge${how === "none" ? " bad" : ""}`, title: `how ${agent} logs in on ${host.host}`,
+            text: `${agent}: ${how === "none" ? "no login" : how}` })) : h("span", { class: "faint", text: "login: not needed" })]);
+      }
+      el.appendChild(row);
+    }
+    return el;
+  }
+
   /** A promotion run's badge: which stage goes where, and whether it waits for people. */
   function promotionBadge(run) {
     const p = run && run.promotion;
@@ -292,6 +353,140 @@
     if (o.ship === "pr") return h("span", { class: "badge info", text: "PR" });
     if (o.ship) return h("span", { class: "badge", text: o.ship });
     return null;
+  }
+
+  /** A check's depth: full plain, targeted and smoke marked (they ran fewer tests than the whole suite). */
+  function depthPill(depth) {
+    return depth ? h("span", { class: `depth-pill d-${depth}`, title: depth === "full" ? "the whole suite ran"
+      : `${depth}: fewer tests than the whole suite ran; the full suites are proven per batch`, text: depth }) : null;
+  }
+
+  /** A run a batch bisected a failure to: "broke the batch". */
+  function brokeBatchBadge(run) {
+    const b = run && run.broke_batch;
+    if (!b) return null;
+    return h("span", { class: "badge bad broke-batch-badge",
+      title: `the full suites on ${b.branch} failed in batch ${b.batch}${(b.failing || []).length ? `: ${b.failing.join(", ")}` : ""}${b.fix_run ? `; fix run ${b.fix_run}` : ""}`,
+      text: "broke the batch" });
+  }
+
+  /** "about 9 min", "under a minute", "no data yet": a level's typical check time. */
+  function typicalMinutes(minutes) {
+    if (minutes === null || minutes === undefined) return "no data yet";
+    return minutes < 1 ? "under a minute" : `about ${Math.round(minutes)} min`;
+  }
+
+  /** An ISO time as "2026-11-16 14:07 (2 d ago)". */
+  function isoWhen(value) {
+    const epoch = Date.parse(value || "") / 1000;
+    return isFinite(epoch) ? `${fmt.time(epoch)} (${fmt.ago(epoch)})` : (value || "—");
+  }
+
+  const testingChoice = new Map();   // layer key -> the level picked on the panel, not applied yet
+  const testingNotes = new Map();    // layer key -> {text, error}: the last answer, kept when the page reloads
+
+  /** The Layer page's Testing panel: the three levels (light = smoke, standard = targeted, heavy = full) with
+   * their typical minutes and a switch (the local setting), each command's miss rate, and per stage or default
+   * branch the batch state with "Run the full suites now". */
+  function testingPanel(layer, reload) {
+    const t = layer.testing;
+    if (!t) return null;
+    const key = layer.key;
+    const last = testingNotes.get(key);
+    const note = h("span", { class: `testing-note faint${last && last.error ? " error" : ""}`, role: "status", text: last ? last.text : "" });
+    const show = (text, error) => {
+      testingNotes.set(key, { text, error });
+      for (const n of new Set([note, ...document.querySelectorAll(".testing-panel .testing-note")])) { n.textContent = text; n.classList.toggle("error", error); }
+    };
+    let picked = testingChoice.get(key) || t.level;
+    const apply = h("button", { type: "button", class: "btn primary testing-apply", text: "Apply", disabled: !t.writable });
+    const levels = h("div", { class: "testing-levels", role: "radiogroup", "aria-label": "testing level" });
+    const mark = () => {
+      for (const b of levels.children) {
+        b.classList.toggle("picked", b.dataset.level === picked);
+        b.setAttribute("aria-checked", b.dataset.level === picked ? "true" : "false");
+      }
+      apply.disabled = !t.writable || picked === t.level;   // nothing to change; Reset goes back to the layer file
+    };
+    for (const l of t.levels || []) {
+      const allowed = (t.allowed || {})[l.level] || { ok: true, why: "" };
+      levels.appendChild(h("button", { type: "button", role: "radio", class: `testing-level${l.level === t.level ? " current" : ""}`,
+        dataset: { level: l.level }, disabled: !t.writable || !allowed.ok,
+        title: allowed.ok ? `${l.level}: each run's checks at depth ${l.depth}` : allowed.why,
+        onclick: () => { picked = l.level; testingChoice.set(key, l.level); mark(); } },
+        h("b", { text: l.level }), depthPill(l.depth), h("span", { class: "minutes", text: typicalMinutes(l.minutes) })));
+    }
+    mark();
+    const send = async (body, button) => {
+      button.disabled = true;
+      try {
+        await api.post("/api/testing", { layer: key, ...body });
+        testingChoice.delete(key);
+        show(body.reset ? "reset: runs started from now on use the layer file's level" : "saved; applies to runs started from now on", false);
+        reload();
+      } catch (err) {
+        show(String(err.message || err), true);
+        button.disabled = false;
+      }
+    };
+    apply.addEventListener("click", () => send({ level: picked }, apply));
+    const reset = t.local ? h("button", { type: "button", class: "btn testing-reset", text: "Reset", disabled: !t.writable,
+      title: "drop the local setting: runs use the layer file's level again", onclick: (e) => send({ reset: true }, e.target) }) : null;
+    const policy = t.policy || {};
+    const rhythm = [policy.batchEvery ? `every ${policy.batchEvery} landings` : "", policy.batchAfterHours ? `after ${policy.batchAfterHours} h` : ""].filter(Boolean).join(" or ");
+    const commands = (t.commands || []).length ? h("div", { class: "table-wrap" }, h("table", { class: "testing-commands" },
+      h("thead", {}, h("tr", {}, ["command", "forms", "targeted runs", "misses", "miss rate", ""].map((label) => h("th", { text: label })))),
+      h("tbody", {}, t.commands.map((c) => h("tr", { dataset: { cmd: c.cmd } },
+        h("td", { class: "mono", text: c.cmd }), h("td", {}, c.forms.map((f) => depthPill(f))),
+        h("td", { class: "num", text: String(c.targeted) }), h("td", { class: "num", text: String(c.misses) }),
+        h("td", { class: "num", title: Object.entries(c.by_strategy || {}).map(([s, v]) => `${s}: ${v.misses} of ${v.targeted} missed`).join("\n"),
+          text: c.rate === null || c.rate === undefined ? "—" : `${c.rate}%` }),
+        h("td", {}, c.fallback ? h("span", { class: "pill-fallback", title: `the miss rate is above ${policy.maxMissPercent}%: this command runs its full form until it falls`,
+          text: "runs full" }) : null)))))) : null;
+    const batches = (t.batches || []).map((b) => {
+      const lb = b.last;
+      const runLink = (id) => h("a", { class: "mono", href: `#/run/${enc(key)}/${enc(id)}`, text: id });
+      const start = h("button", { type: "button", class: "btn batch-run", text: "Run the full suites now", disabled: !(t.batch || {}).enabled,
+        title: (t.batch || {}).enabled ? `start the kit workflow verify-batch on ${b.branch}` : (t.batch || {}).why });
+      start.addEventListener("click", async () => {
+        start.disabled = true;
+        try {
+          const answer = await api.post("/api/batch", { layer: key, ...(b.stage ? { stage: b.stage } : {}) });
+          go(answer.url);
+        } catch (err) {
+          show(String(err.message || err), true);
+          start.disabled = false;
+        }
+      });
+      const state = !lb ? h("span", { class: "faint", text: "no batch yet" })
+        : h("span", { class: `batch-${lb.status}`, text: lb.status === "green" ? "✓ green" : "✗ red" });
+      const facts = lb ? [
+        h("span", { class: "dim", text: `${lb.depth || "full"} on ${String(lb.head || "").slice(0, 7) || "?"}, ${isoWhen(lb.at)}` }),
+        lb.run ? h("span", {}, "batch ", runLink(lb.run)) : null,
+        h("span", { class: "dim", text: `${(lb.delivered || []).length} change${(lb.delivered || []).length === 1 ? "" : "s"} proven` })] : [];
+      const red = lb && lb.status === "red" ? h("div", { class: "batch-culprit" },
+        h("span", {}, "culprit ", lb.culprit_run ? runLink(lb.culprit_run) : h("span", { class: "mono", text: lb.culprit || "not found (no failing commit: a flaky test?)" })),
+        lb.fix_run ? h("span", {}, " · fix run ", runLink(lb.fix_run)) : null,
+        (lb.failing || []).length ? h("span", { class: "mono dim", text: ` · ${lb.failing.join(", ")}` }) : null) : null;
+      const since = b.delivered_since || [];
+      return h("div", { class: "batch-row", dataset: { stage: b.stage || "", branch: b.branch } },
+        h("div", { class: "batch-head" }, h("b", { text: b.stage || "default branch" }), h("span", { class: "mono dim", text: b.branch }), state, ...facts,
+          h("span", { class: "spacer" }), start),
+        red,
+        h("div", { class: "batch-next dim" }, `landed since: ${since.length}`, since.length ? [" (", since.slice(0, 8).flatMap((id, i) => [i ? ", " : "", runLink(id)]),
+          since.length > 8 ? ` … and ${since.length - 8} more` : "", ")"] : null, ` · next batch: ${b.next}`));
+    });
+    return h("div", { class: "card testing-panel", dataset: { layer: key } },
+      h("div", { class: "card-head" }, h("h3", { text: "Testing" }),
+        h("span", { class: "dim", text: "how deep each run's checks go; the full suites are proven per batch" }), h("span", { class: "spacer" }),
+        h("span", { class: "testing-source", text: `level ${t.level} · from the ${t.source}` })),
+      t.note ? h("div", { class: "testing-undeclared", text: t.note }) : null,
+      h("div", { class: "testing-switch" }, levels, h("span", { class: "testing-actions" }, apply, reset, note)),
+      t.error ? h("div", { class: "why error", text: t.error }) : null,
+      !t.writable && t.why ? h("div", { class: "testing-why", text: t.why }) : null,
+      t.declared ? h("div", { class: "faint testing-policy", text: `layer file: ${t.layer_depth} per run, ${policy.onStage || "full"} per batch${rhythm ? `, a batch ${rhythm}` : ", no batch rhythm"}; applies to runs started from now on` }) : null,
+      commands,
+      batches.length ? h("div", { class: "testing-batches" }, h("h4", { text: "Batches" }), batches) : null);
   }
 
   async function api(path) {
@@ -839,7 +1034,7 @@
   }
 
   // =========================================================================== components: workflow graph
-  const GLYPH = { passed: "✓", failed: "✗", running: "●", pending: "○", skipped: "–", done: "•", unknown: "?", died: "⊘", waiting: "⏸", rejected: "⊗", "handed-over": "↪", "not-affected": "∅", reused: "↺" };
+  const GLYPH = { passed: "✓", failed: "✗", running: "●", pending: "○", skipped: "–", done: "•", unknown: "?", died: "⊘", waiting: "⏸", rejected: "⊗", "handed-over": "↪", "not-affected": "∅", reused: "↺", lost: "⌁" };
   // a check that was not run, in the runtime's own words (affected.summary_text)
   function checkResultText(r) {
     if (r.outcome === "not-affected") return `not affected (${r.why || "no covered path changed"}; ${r.paths_total ?? (r.paths || []).length} paths compared)`;
@@ -1553,6 +1748,9 @@
     const usage = h("div", { class: "usage" });
     const modelsBox = h("div", { class: "models" });
     const standinBox = h("div", { class: "standins" });
+    const hostsHead = h("div", { class: "card-head" }, h("h2", { text: "Hosts" }), h("span", { class: "spacer" }),
+      h("span", { class: "faint", text: "where placed runs execute; runs are live, the load is what each host last answered" }));
+    const hostsBox = h("div", { class: "hosts" });
     const recent = h("div", { class: "table-wrap" });
     const containerNote = h("span", { class: "faint" });
     main.append(strip,
@@ -1564,7 +1762,9 @@
       h("div", { class: "card-head" }, h("h2", { text: "Stand-in" }), h("span", { class: "spacer" }),
         h("span", { class: "faint", text: "a strong model that proposes, or takes, the routine decisions a run waits on you for" })), standinBox,
       h("div", { class: "card-head", style: null }, h("h2", { text: "Slots and ports" })), pools,
+      hostsHead, hostsBox,
       h("div", { class: "card-head" }, h("h2", { text: "Recently finished" })), recent);
+    hostsBox.style.marginBottom = "18px";
     grid.style.marginBottom = "18px";
     pools.style.marginBottom = "18px";
     usage.style.marginBottom = "18px";
@@ -1600,7 +1800,7 @@
       replace(el,
         h("div", { class: "head" }, h("span", { class: `dot s-${run.waiting ? "waiting" : "running"}` }),
           h("span", { class: "where", text: `${run.layer} · ${run.adw}` }), h("span", { class: "mono faint", text: run.id }),
-          run.dry_run ? h("span", { class: "badge", text: "dry run" }) : null, promotionBadge(run), h("span", { class: "spacer" }), progress(run.steps)),
+          run.dry_run ? h("span", { class: "badge", text: "dry run" }) : null, hostBadge(run), promotionBadge(run), h("span", { class: "spacer" }), progress(run.steps)),
         h("div", { class: "title", text: run.title || "(no request text)" }),
         h("div", { class: "doing" }, h("span", { class: "step", text: current.step ? `▶ ${current.step}` : "▶" }),
           h("span", { class: "action", text: run.waiting ? `waiting for a free ${run.waiting} slot` : (current.action || "working") })),
@@ -1622,7 +1822,7 @@
       const runs = store.runList();
       const running = runs.filter((r) => r.status === "running").sort((a, b) => (a.started || 0) - (b.started || 0));
       const day = runs.filter((r) => r.started && r.started > now() - 86400);
-      const finishedDay = day.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over");
+      const finishedDay = day.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over" || r.status === "lost");
       const handedDay = finishedDay.filter((r) => r.status === "handed-over").length;
       const costDay = day.reduce((sum, r) => sum + (r.cost || 0), 0);
       replace(strip,
@@ -1651,7 +1851,15 @@
       renderModels();
       renderStandins();
       renderPools();
+      renderHosts(runs);
       renderRecent(runs);
+    }
+
+    /** The "Hosts" section: only for layers that place their runs on hosts. */
+    function renderHosts(runs) {
+      const placed = store.layers.filter((layer) => (layer.hosts || []).length);
+      hostsHead.hidden = hostsBox.hidden = !placed.length;
+      replace(hostsBox, placed.map((layer) => hostsPanel(layer, runs)));
     }
 
     function renderUsage() {
@@ -1804,8 +2012,9 @@
     const totals = h("div", { class: "strip" });
     const report = h("div", { class: "start-report", role: "status" });   // what "Start all again" did, kept while rows change
     const standinBar = h("div", { class: "standin-bar" });                // "Ask the stand-in for all N", for a selected layer
+    const giveAll = h("div", { class: "assign-all-bar" });                // "Give all N to agents", in the Needs-you view
     const table = h("table");
-    main.append(chips, filters, totals, standinBar, report, h("div", { class: "table-wrap" }, table));
+    main.append(chips, filters, totals, standinBar, giveAll, report, h("div", { class: "table-wrap" }, table));
     const showReport = (lines) => {
       groupState.lines = lines;
       replace(report, lines.map((line) => h("div", { class: line.ok ? "ok" : "error", text: line.text })));
@@ -1817,7 +2026,7 @@
       const runs = store.runList();
       const uniq = (key) => [...new Set(runs.map((r) => r[key]).filter(Boolean))].sort();
       replace(filters, select("layer", "layers", store.layers.map((l) => l.key)), select("adw", "workflows", uniq("adw")),
-        select("status", "statuses", ["running", "passed", "handed-over", "failed", "died", "waiting", "unknown"]), select("klass", "classes", uniq("klass")),
+        select("status", "statuses", ["running", "passed", "handed-over", "failed", "lost", "died", "waiting", "unknown"]), select("klass", "classes", uniq("klass")),
         h("label", {}, "from", from), h("label", {}, "to", to), search);
     }
 
@@ -1890,7 +2099,7 @@
       replace(standinBar, button);
     }
 
-    function groupRow(group, members, columns) {
+    function groupRow(group, members, columns, hosted) {
       const open = groupState.open.has(group.id);
       const again = h("button", { type: "button", class: "btn start-all", text: "Start all again", onclick: async (e) => {
         e.stopPropagation();
@@ -1908,25 +2117,45 @@
       return h("tr", { class: "group-row", dataset: { group: group.id } },
         h("td", {}, pill("failed")), h("td", { class: "num", text: fmt.time(Math.max(...members.map((r) => r.started || 0))) }),
         h("td", { text: members[0].layer }), h("td", { text: [...new Set(members.map((r) => r.adw))].join(", ") }),
+        hosted ? h("td", { class: "host-cell" }) : null,
         h("td", { class: "mono dim", text: members.map((r) => r.id).join(" ") }),
-        h("td", { class: "title-cell", colspan: columns - 6 }, h("b", { text: `${members.length} runs: ${group.step}, same reason` }),
+        h("td", { class: "title-cell", colspan: columns - (hosted ? 7 : 6) }, h("b", { text: `${members.length} runs: ${group.step}, same reason` }),
           h("div", { class: "reason dim", text: group.reason || "" })),
         h("td", { class: "next" }, toggle, again));
     }
 
-    function runRow(run, needs) {
+    /** "Give all N to agents": N = the shown needs-you runs whose layer has adws/assign.py; one layer at a time. */
+    function renderGiveAll(runs, needs) {
+      const mine = needs ? runs.filter((r) => r.assign && r.assign.script) : [];
+      if (!mine.length) { replace(giveAll); return; }
+      const layers = [...new Set(mine.map((r) => r.layer))];
+      const button = h("button", { type: "button", class: "btn integrate assign-all", text: `Give all ${mine.length} to agents`,
+        disabled: layers.length !== 1,
+        title: layers.length !== 1 ? "runs of several layers are shown: choose one layer in the filter first"
+          : "see what an agent would do for each run, in the order they start; nothing starts until you confirm",
+        onclick: async () => {
+          const results = await assignAllDialog(layers[0]);
+          if (!results) return;
+          showReport([{ ok: true, text: `Give all to agents (${layers[0]}):` }, ...results.map((r) => ({ ok: r.status !== "error",
+            text: r.status === "started" ? `${r.run} → ${r.run_id && r.run_id !== r.run ? r.run_id : "resumed in place"} (${r.kind})` : `${r.run}: ${r.status}${r.why ? `: ${r.why}` : ""}` }))]);
+        } });
+      replace(giveAll, button, h("span", { class: "faint", text: " each run's plan is shown first" }));
+    }
+
+    function runRow(run, needs, hosted) {
       const open = () => go(`#/run/${enc(run.layer)}/${enc(run.id)}`);
       const base = [h("td", {}, pill(run.status)), h("td", { class: "num", text: fmt.time(run.started) }), h("td", { text: run.layer }), h("td", { text: run.adw }),
+        hosted ? h("td", { class: "host-cell" }, hostBadge(run)) : null,
         h("td", { class: "mono dim", text: run.id })];
       if (needs) {
         return h("tr", { "data-key": run.key, class: `${run.key === selectedKey ? "selected" : ""}${run.group ? " group-member" : ""}`, onclick: open },
           ...base, h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }),
           h("td", { class: "reason" }, limitBadge(run) || budgetBadge(run), run.reason || "",
             run.suggestion ? h("div", { class: "proposal", text: proposalText(run) }) : null),
-          h("td", { class: "next mono" }, run.next || "", run.integrate && run.integrate.offered
-            ? h("button", { type: "button", class: "btn integrate integrate-open", text: "Resolve with an agent",
-              title: "an agent brings this run onto its target branch: conflicts, checks, review, ship; you see what it will do first",
-              onclick: (event) => { event.stopPropagation(); go(routeHash(["run", run.layer, run.id], { integrate: "1" })); } }) : null));
+          h("td", { class: "next mono" }, run.next || "", run.assign && run.assign.script
+            ? h("button", { type: "button", class: "btn integrate assign-open", text: "Give to an agent",
+              title: "an agent takes this run from where it stopped; you see the plan first, and nothing ships without the checks, the review and the gate",
+              onclick: (event) => { event.stopPropagation(); go(routeHash(["run", run.layer, run.id], { assign: "1" })); } }) : null));
       }
       const bucket = bucketOf(run);
       const why = bucket === "landed" ? h("span", { class: "landing", text: landedText(run) })
@@ -1936,14 +2165,14 @@
         h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }), h("td", {}, progress(run.steps)),
         h("td", { class: "right num", ...(run.status === "running" ? { "data-since": run.started } : {}), text: run.status === "running" ? fmt.dur(now() - (run.started || now())) : fmt.dur(run.duration) }),
         h("td", { class: "right num", text: fmt.cost(run.cost) }), h("td", { class: "right num dim", text: fmt.tokens((run.tokens || {}).out) }),
-        h("td", {}, why || outcomeBadge(run), why ? null : promotionBadge(run), run.dry_run ? h("span", { class: "badge", text: "dry" }) : null));
+        h("td", {}, why || outcomeBadge(run), why ? null : promotionBadge(run), brokeBatchBadge(run), run.dry_run ? h("span", { class: "badge", text: "dry" }) : null));
     }
 
     function render() {
       renderChips();
       renderStandinBar();
       const runs = filtered();
-      const finished = runs.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over");
+      const finished = runs.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over" || r.status === "lost");
       const passed = finished.filter((r) => r.status === "passed").length;
       const handedOver = finished.filter((r) => r.status === "handed-over").length;
       const costs = runs.map((r) => r.cost).filter((c) => c !== null && c !== undefined);
@@ -1953,9 +2182,11 @@
         stat("handed over", handedOver),
         stat("total cost", fmt.cost(costs.reduce((a, b) => a + b, 0))), stat("median cost", fmt.cost(median(costs))),
         stat("median time", fmt.dur(median(durations))), stat("total time", fmt.dur(durations.reduce((a, b) => a + b, 0))));
+      const hosted = runs.some((r) => r.host);   // a host column only when a layer places its runs
       const body = h("tbody");
       const needs = params.view === "needs-you";
-      const columns = needs ? 8 : 12;
+      renderGiveAll(runs, needs);
+      const columns = (needs ? 8 : 12) + (hosted ? 1 : 0);
       const shown = new Set();
       for (const run of runs) {
         const group = needs && run.group && run.group.count > 1 ? run.group : null;
@@ -1963,17 +2194,17 @@
           if (shown.has(group.id)) continue;
           shown.add(group.id);
           const members = runs.filter((r) => r.group && r.group.id === group.id);
-          body.appendChild(groupRow(group, members, columns));
-          if (groupState.open.has(group.id)) for (const member of members) body.appendChild(runRow(member, true));
+          body.appendChild(groupRow(group, members, columns, hosted));
+          if (groupState.open.has(group.id)) for (const member of members) body.appendChild(runRow(member, true, hosted));
           continue;
         }
-        body.appendChild(runRow(run, needs));
+        body.appendChild(runRow(run, needs, hosted));
       }
       const empty = !store.loaded ? "loading…" : needs ? "nothing needs you" : "no runs match";
       if (!runs.length) body.appendChild(h("tr", {}, h("td", { colspan: columns, class: "dim", text: empty })));
       const head = needs
-        ? [header("status"), header("started", "time"), header("layer"), header("workflow"), header("id"), header("request"), header("reason"), header("next")]
-        : [header("status"), header("started", "time"), header("layer"), header("workflow"), header("id"), header("class"),
+        ? [header("status"), header("started", "time"), header("layer"), header("workflow"), hosted ? header("host") : null, header("id"), header("request"), header("reason"), header("next")]
+        : [header("status"), header("started", "time"), header("layer"), header("workflow"), hosted ? header("host") : null, header("id"), header("class"),
           header("request"), header("steps"), header("time", "duration", true), header("cost", "cost", true), header("out tok", null, true),
           header(params.view === "landed" ? "landed" : params.view === "settled" ? "settled" : "outcome")];
       table.className = needs ? "needs-you" : "";
@@ -2142,12 +2373,12 @@
       } });
       return b;
     };
-    const offer = sm.integrate || {};
-    const canResolve = offer.offered && sm.bucket === "needs-you";
-    const resolve = canResolve || (offer.script && offer.conflict && sm.bucket === "needs-you" && sm.status === "handed-over")
-      ? h("button", { type: "button", class: "btn primary integrate integrate-open", text: "Resolve with an agent", disabled: !canResolve,
-        title: canResolve ? "an agent brings this run onto its target branch: conflicts, checks, review, ship; you see what it will do first" : offer.why || "",
-        onclick: () => { integrateOpen.add(sm.key); reload(true); } }) : null;
+    const canGive = !!(sm.assign && sm.assign.script);
+    const resolve = sm.bucket === "needs-you"
+      ? h("button", { type: "button", class: "btn primary integrate assign-open", text: "Give to an agent", disabled: !canGive,
+        title: canGive ? "an agent takes this run from where it stopped; you see the plan first, and nothing ships without the checks, the review and the gate"
+          : "run `al gen` to add adws/assign.py",
+        onclick: () => { assignOpen.add(sm.key); reload(true); } }) : null;
     const button = h("button", { type: "button", class: "btn primary settle-go", text: "Settle", onclick: async () => {
       button.disabled = true;
       localStorage.setItem("al.settle.who", who.value.trim());
@@ -2257,6 +2488,214 @@
     return card;
   }
 
+  const assignOpen = new Set();       // run keys whose "Give to an agent" plan is open
+  const assignPreviews = new Map();   // run key -> {at, promise}: one preview (and its confirmation) per look
+  const assignForm = new Map();       // run key -> {note, override}: kept while the card is rebuilt
+  const ASSIGN_KINDS = { integrate: "bring it onto its target", blockers: "address the review's blockers", proof: "collect the proof",
+    person: "a person decides", check: "resume from the failed check", resume: "resume", "start-again": "start again", none: "nothing to give" };
+
+  function loadAssign(layerKey, sm, fresh) {
+    const cached = assignPreviews.get(sm.key);
+    if (cached && !fresh && Date.now() - cached.at < 60000) return cached.promise;
+    const promise = fetch(`/api/assign/preview?layer=${enc(layerKey)}&run=${enc(sm.id)}`, { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        let data = null;
+        try { data = await response.json(); } catch (_err) { data = null; }
+        if (!response.ok) throw new Error((data && data.error) || `${response.status} preview`);
+        return data;
+      });
+    assignPreviews.set(sm.key, { at: Date.now(), promise });
+    promise.catch(() => assignPreviews.delete(sm.key));
+    return promise;
+  }
+
+  /** "Give to an agent": the plan that follows from why the run stopped (GET /api/assign/preview: why it
+   * stopped, the steps, for an integration the branch, the target and the conflicted files, the blockers,
+   * what only a person decides, the earlier attempts and the limit), a sentence for the agent, then Start
+   * (POST /api/assign with the preview's nonce), which goes to the run to watch. A "needs a person" item is
+   * approved here by name ("I approve this, continue"); the card then shows the remaining plan. */
+  function assignCard(detail, layerKey, reload) {
+    const sm = detail.summary;
+    const form = assignForm.get(sm.key) || { note: "", override: false };
+    assignForm.set(sm.key, form);
+    const content = h("div", { class: "assign-preview", text: "looking at what it would do…" });
+    const note = h("div", { class: "assign-note", role: "status" });
+    const close = h("button", { type: "button", class: "toggle assign-close", text: "close", onclick: () => {
+      assignOpen.delete(sm.key);
+      card.remove();
+    } });
+    const card = h("div", { class: "card assign-card" },
+      h("div", { class: "card-head" }, h("h2", { text: "Give to an agent" }), h("span", { class: "spacer" }),
+        h("span", { class: "faint", text: "what will happen; nothing starts until you confirm" }), close),
+      content, note);
+    const sha = (text) => String(text || "").slice(0, 7);
+    const kv = (pairs) => h("dl", { class: "kv" }, pairs.filter(([, v]) => v !== null && v !== undefined && v !== "").map(([k, v]) => [h("dt", { text: k }), h("dd", {}, v)]));
+    const refresh = () => loadAssign(layerKey, sm, true).then(show).catch((error) => {
+      replace(content, h("span", { class: "badge warn", text: error.message }));
+    });
+    const planSteps = (steps) => {   // a line that starts with three spaces belongs to the step before it
+      const list = h("ol", { class: "assign-steps" });
+      for (const line of steps || []) {
+        if (/^ {3}/.test(line) && list.lastChild) list.lastChild.appendChild(h("div", { class: "sub dim", text: line.trim() }));
+        else list.appendChild(h("li", { text: line }));
+      }
+      return list;
+    };
+    const decision = (p, d) => {
+      const open = d.approvable && !d.approved;
+      const who = open ? h("input", { type: "text", class: "assign-who", placeholder: "your name", maxlength: 80,
+        value: localStorage.getItem("al.settle.who") || localStorage.getItem("al.promotion.by") || "", "aria-label": "your name" }) : null;
+      const approve = open ? h("button", { type: "button", class: "btn primary assign-approve", text: "I approve this, continue",
+        disabled: !(p.start && p.start.enabled && p.nonce), title: p.start && !p.start.enabled ? p.start.why : "you approve exactly this item; nothing starts yet",
+        onclick: async () => {
+          approve.disabled = true;
+          localStorage.setItem("al.settle.who", who.value.trim());
+          try {
+            const answer = await api.post("/api/assign", { layer: layerKey, run: sm.id, action: "approve", item: d.id, who: who.value.trim(), confirm: p.nonce });
+            assignPreviews.set(sm.key, { at: Date.now(), promise: Promise.resolve(answer) });
+            replace(note, h("span", { class: "badge ok", text: "approved: this is what remains" }));
+            show(answer);
+          } catch (error) {
+            replace(note, h("span", { class: "badge warn", text: error.message }));
+            if (error.status === 409) refresh();
+            else approve.disabled = false;
+          }
+        } }) : null;
+      return h("div", { class: `assign-decision${d.approved ? " approved" : ""}`, dataset: { item: d.id } },
+        h("div", {}, h("span", { class: `badge ${d.approved ? "ok" : "warn"}`, text: d.approved ? `approved by ${d.approved.by}` : open ? "a person decides" : "a person's only" }),
+          " ", h("span", { class: "decision-text", text: d.text })),
+        d.approved ? h("div", { class: "faint", text: `${d.approved.at || ""}; it is quoted to the agent and to the review` })
+          : open ? h("div", { class: "buttons" }, who, approve)
+            : h("div", { class: "faint", text: "This is never given to an agent: do it yourself, or settle the run below." }));
+    };
+    const show = (p) => {
+      const stop = p.stop || {};
+      const merge = p.integrate && p.integrate.eligible ? p.integrate : null;
+      const refusal = p.integrate && !p.integrate.eligible && p.integrate.reason ? `${p.integrate.reason}: ${p.integrate.why}` : "";
+      const generated = new Set((merge && merge.generated) || []);
+      const files = !merge ? null : merge.conflicts === null || merge.conflicts === undefined ? h("span", { class: "faint", text: "known once it starts" })
+        : !merge.conflicts.length ? h("span", { class: "clean", text: "none: the branch applies cleanly (no agent is needed for the resolve step)" })
+          : h("ul", { class: "conflicts" }, merge.conflicts.map((name) => h("li", {}, h("span", { class: "mono", text: name }),
+            generated.has(name) ? " " : null, generated.has(name) ? h("span", { class: "badge", text: "generated: regenerated, not merged by hand" }) : null)));
+      const decisions = p.decisions || [], attempts = p.attempts || [];
+      const limited = p.blocked === "limit";
+      const startable = p.kind !== "none" && p.kind !== "person" && (!p.blocked || limited);
+      const text = h("input", { type: "text", class: "assign-note-text", placeholder: "add a sentence for the agent (optional)", maxlength: 500,
+        value: form.note, "aria-label": "a sentence for the agent", oninput: () => { form.note = text.value; } });
+      const override = limited ? h("input", { type: "checkbox", class: "assign-override", checked: form.override,
+        onchange: () => { form.override = override.checked; ready(); } }) : null;
+      const start = h("button", { type: "button", class: "btn primary assign-start", text: "Start",
+        title: p.start && !p.start.enabled ? p.start.why : "", onclick: async () => {
+          start.disabled = true;
+          try {
+            const answer = await api.post("/api/assign", { layer: layerKey, run: sm.id, action: "start", confirm: p.nonce,
+              note: text.value.trim(), override: !!(override && override.checked) });
+            assignOpen.delete(sm.key);
+            assignPreviews.delete(sm.key);
+            assignForm.delete(sm.key);
+            if (location.hash === answer.url) reload(); else location.hash = answer.url;
+          } catch (error) {
+            assignPreviews.delete(sm.key);
+            replace(note, h("span", { class: "badge warn", text: error.message }));
+            if (error.status === 409) refresh();
+            else ready();
+          }
+        } });
+      function ready() { start.disabled = !(p.start && p.start.enabled && p.nonce && (!limited || (override && override.checked))); }
+      ready();
+      replace(content, kv([
+        ["stopped", h("span", { class: "assign-stopped", text: stop.why || p.status || "" })],
+        ["plan", h("div", { class: "assign-plan", dataset: { kind: p.kind } },
+          h("div", {}, h("span", { class: "badge info assign-kind", text: ASSIGN_KINDS[p.kind] || p.kind }), " ", h("b", { class: "assign-summary", text: p.summary || "" })),
+          p.kind === "person" || p.kind === "none" ? null : planSteps(p.steps))],
+        ["cannot start", p.blocked && !limited && p.kind !== "person" ? h("span", { class: "assign-refused" },
+          h("span", { class: "badge warn", text: p.blocked }), h("span", { class: "refusal", text: ` ${p.blocked_why || ""}` })) : ""],
+        ["a person decides", decisions.length ? h("div", { class: "assign-decisions" }, decisions.map((d) => decision(p, d))) : ""],
+        ["refused", refusal ? h("span", { class: "assign-refused" }, h("span", { class: "refusal", text: refusal })) : ""],
+        ["branch", merge ? h("span", {}, h("span", { class: "mono", text: merge.branch }), ` at ${sha(merge.tip)} (it is not changed)`) : ""],
+        ["target", merge ? h("span", {}, h("span", { class: "mono", text: merge.target }), ` at ${sha(merge.target_head)}`) : ""],
+        ["conflicted files", files],
+        ["steps", merge ? (merge.steps || []).join(" → ") : ""],
+        ["approval", merge && merge.approval === "person" ? "waits for your approval before it ships" : ""],
+        ["queue", merge && (merge.ahead || []).length ? `queued behind ${merge.ahead.join(", ")}` : ""],
+        ["blockers", (p.blockers || []).length ? h("ul", { class: "issues assign-blockers" }, p.blockers.map((b) => h("li", { class: "sev-blocker" },
+          h("div", { class: "desc", text: b.description || "" }), b.resolution ? h("div", { class: "res", text: `resolution: ${b.resolution}` }) : null))) : ""],
+        ["proof found", (p.found || []).length ? h("span", { class: "mono", text: p.found.join(", ") }) : ""],
+        ["proof commands", (p.commands || []).length ? h("span", { class: "mono", text: p.commands.join(" ; ") }) : ""],
+        ["resumes from", p.from_step ? `${p.from_step}${p.tier ? ` (agent steps on the ${p.tier} tier)` : ""}` : ""],
+        ["attempts", attempts.length ? h("ul", { class: "assign-attempts" }, attempts.map((a) => h("li", {},
+          `${a.at ? `${fmt.time(Date.parse(a.at) / 1000)} · ` : ""}by ${a.by || "?"}${a.who ? ` (${a.who})` : ""} · ${a.kind || "?"} · `,
+          a.run ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(a.run)}`, text: a.run }) : "no run",
+          ` · ${a.outcome || "?"}${a.why ? `: ${a.why}` : ""}`))) : ""],
+        ["limit", h("span", { class: `assign-limit${limited ? " reached" : ""}`,
+          text: `given to an agent ${p.clicks || 0} of 2 times${limited ? `: ${p.blocked_why || "the limit is reached"}` : ""}` })],
+        ["note", startable ? text : ""],
+        ["override", limited ? h("label", { class: "assign-override-label" }, override, " give it once more (override)") : ""],
+      ]), h("div", { class: "buttons" }, startable ? start : null,
+        p.start && !p.start.enabled ? h("span", { class: "faint", text: p.start.why }) : null,
+        !startable && p.kind === "person" && !decisions.some((d) => d.approvable && !d.approved)
+          ? h("span", { class: "faint", text: "A person does this, or settles the run below." }) : null));
+    };
+    loadAssign(layerKey, sm, false).then(show).catch((error) => {
+      replace(content, h("span", { class: "badge warn", text: error.message }));
+    });
+    return card;
+  }
+
+  /** "Give all N to agents" of the Needs-you view: the plans of one layer's runs in the order they would
+   * start (GET /api/assign/bulk), then Start N (POST /api/assign {action: "bulk"} with that preview's
+   * nonce). Resolves with the answer's results, or null when the person cancelled. */
+  function assignAllDialog(layerKey) {
+    return new Promise((resolve) => {
+      const overlay = document.getElementById("overlay");
+      let done = false;
+      let watch = null;
+      const finish = (answer) => {
+        if (done) return;
+        done = true;
+        if (watch) watch.disconnect();
+        overlay.hidden = true;
+        clear(overlay);
+        overlay.onclick = null;
+        resolve(answer);
+      };
+      const list = h("div", { class: "assign-bulk-list", text: "looking at what each would do…" });
+      const note = h("div", { class: "assign-note", role: "status" });
+      const go = h("button", { class: "btn primary confirm-go assign-bulk-start", type: "button", text: "Start", disabled: true });
+      const cancel = h("button", { class: "btn confirm-cancel", type: "button", text: "Cancel", onclick: () => finish(null) });
+      const title = `Give the stopped runs of ${layerKey} to agents`;
+      replace(overlay, h("div", { class: "panel start-confirm assign-bulk", role: "dialog", "aria-modal": "true", "aria-label": title,
+        onclick: (e) => e.stopPropagation() },
+        h("h3", { text: title }),
+        h("p", { class: "confirm-message", text: "In this order: resumes and restarts first, then one integration at a time. Nothing ships without the checks, the review and the gate." }),
+        list, note, h("div", { class: "confirm-buttons" }, cancel, go)));
+      overlay.hidden = false;
+      overlay.onclick = () => finish(null);
+      watch = new MutationObserver(() => { if (overlay.hidden) finish(null); });
+      watch.observe(overlay, { attributes: true, attributeFilter: ["hidden"] });
+      cancel.focus();
+      api(`/api/assign/bulk?layer=${enc(layerKey)}`).then((p) => {
+        if (done) return;
+        replace(list, h("ol", { class: "assign-bulk-plans" }, (p.plans || []).map((plan) => h("li", { class: plan.skip ? "skipped" : "", dataset: { run: plan.run } },
+          h("span", { class: "mono", text: plan.run }), " ", h("span", { class: "dim", text: plan.title || "" }),
+          h("div", { class: plan.skip ? "skip dim" : "summary", text: plan.skip ? `skipped: ${plan.skip}` : plan.summary || plan.kind }))))
+          , !(p.plans || []).length ? h("div", { class: "dim", text: "no run of this layer needs you" }) : null);
+        go.textContent = `Start ${p.startable || 0}`;
+        go.disabled = !(p.start && p.start.enabled && p.nonce && p.startable);
+        if (p.start && !p.start.enabled) replace(note, h("span", { class: "faint", text: p.start.why }));
+        go.onclick = async () => {
+          go.disabled = true;
+          try {
+            const answer = await api.post("/api/assign", { layer: layerKey, action: "bulk", confirm: p.nonce });
+            finish(answer.results || []);
+          } catch (error) {
+            replace(note, h("span", { class: "badge warn", text: error.message }));
+          }
+        };
+      }).catch((error) => { replace(list, h("span", { class: "badge warn", text: error.message })); });
+    });
+  }
+
   /** On an integration run that waits at its approve step: who approves, then it ships. */
   function approveCard(detail, layerKey, reload) {
     const sm = detail.summary;
@@ -2279,6 +2718,17 @@
       h("div", { class: "card-head" }, h("h2", { text: "Approve and ship" }), h("span", { class: "spacer" }),
         h("span", { class: "faint", text: `the conflicts are resolved, the checks and the review passed; run ${sm.integrates} lands when you approve` })),
       h("div", { class: "settle-fields" }, who, h("div", { class: "buttons" }, button, note)));
+  }
+
+  /** The Status block's "given to an agent": "1 of 2; last: stopped", with a link to the last attempt's run. */
+  function givenFact(sm, layerKey) {
+    const given = sm.assign || {}, attempts = given.attempts || [];
+    if (!attempts.length) return "";
+    const last = attempts[attempts.length - 1];
+    return h("span", { class: "assign-fact" }, `${given.clicks || 0} of 2; last: ${last.outcome || "?"}`,
+      last.run && last.run !== sm.id ? " (" : null,
+      last.run && last.run !== sm.id ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(last.run)}`, text: last.run }) : null,
+      last.run && last.run !== sm.id ? ")" : null, last.why ? `: ${last.why}` : "");
   }
 
   /** "Start again" for a failed or died run nothing replaces yet: the same request, recorded as replacing it. */
@@ -2356,6 +2806,13 @@
 
     const reload = debounce(load, 350);
 
+    /** Why and when a run was lost, from its `remote` record (state.json). */
+    function lostNote(remote) {
+      const lost = remote && typeof remote.lost === "object" && remote.lost ? remote.lost : {};
+      const at = typeof lost.at === "string" ? Date.parse(lost.at) / 1000 : null;
+      return `${typeof lost.reason === "string" && lost.reason ? ` · ${lost.reason}` : ""}${at ? ` · ${fmt.time(at)}` : ""}`;
+    }
+
     function renderHead() {
       const sm = detail.summary;
       const prompt = h("div", { class: "prompt", title: "click to expand", text: detail.state.prompt || sm.prompt || "", onclick: () => prompt.classList.toggle("open") });
@@ -2367,14 +2824,16 @@
             sm.kit ? h("span", { class: "badge kit", title: "a workflow the kit gives every layer; the layer's definition does not declare it", text: "kit" }) : null,
             h("span", { class: "mono dim", text: sm.id }),
             h("span", { class: "badge", text: sm.layer }), sm.klass ? h("span", { class: "badge", text: `class ${sm.klass}` }) : null,
-            sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, outcomeBadge(sm),
+            sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, hostBadge(sm), outcomeBadge(sm),
             sm.status === "handed-over" && (sm.outcome.handover || []).length
               ? h("span", { class: "badge handed-over", title: "why a person decides", text: `↪ ${sm.outcome.handover.join(", ")}` }) : null,
-            promotionBadge(sm),
+            promotionBadge(sm), brokeBatchBadge(sm),
             sm.fanout_parent ? h("a", { class: "badge info", href: `#/run/${enc(layerKey)}/${enc(sm.fanout_parent)}`,
               text: sm.fanout && sm.fanout.index ? `candidate ${sm.fanout.index} of ${sm.fanout_parent}${sm.fanout.step ? ` (${sm.fanout.step})` : ""}` : `candidate of ${sm.fanout_parent}` }) : null,
             sm.status === "died" ? h("span", { class: "badge died", title: "state.json still says running, but its heartbeat stopped and its process is gone",
               text: `process died · last seen ${fmt.ago(sm.last_seen)} (${fmt.time(sm.last_seen)})` }) : null,
+            sm.status === "lost" ? h("span", { class: "badge lost", title: "its host stopped answering; the run is finished here and can be started again",
+              text: `lost${lostNote(detail.state.remote)}` }) : null,
             sm.waiting ? h("span", { class: "badge warn", text: `waiting for a ${sm.waiting} slot` }) : null,
             sm.status === "waiting" ? h("span", { class: "badge waiting", title: "a script step exited with a code it declares as waiting; the worktree is kept",
               text: `⏸ waiting${sm.waiting_step ? ` at ${sm.waiting_step.name}` : ""} · resume: ${sm.resume || ""}` }) : null,
@@ -2392,6 +2851,7 @@
             startAgainButton(sm), askStandinButton(sm),
             h("button", { class: "toggle", type: "button", text: "copy link", title: "copy a deep link to this view", onclick: (e) => copyLink(e.target) })),
           prompt,
+          testingLine(sm),
           sm.problem ? h("div", { class: "badge warn", text: sm.problem }) : null),
         h("div", { class: "figures" }, fig("time", elapsed), fig(costLabel(sm) ? "cost (API-equivalent)" : "cost", h("b", { text: fmt.cost(sm.cost_children ? (sm.cost || 0) + sm.cost_children : sm.cost) },
           sm.cost_standin ? h("small", { class: "cost-standin", text: ` (stand-in ${fmt.cost(sm.cost_standin)})` }) : null,
@@ -2414,6 +2874,35 @@
         }
       });
       return button;
+    }
+
+    /** "Testing: targeted (layer policy) · escalated: …", whether a person asked for the full suites
+     * before it ships, and while the run runs the button that asks. */
+    function testingLine(sm) {
+      const t = detail.testing;
+      if (!t || !(t.depth || t.declared || t.requested_full)) return null;
+      const head = t.depth ? (t.source ? ` (${t.source})` : "") : "decided at its first check";
+      const parts = [];
+      if ((t.escalation || []).length) parts.push(`escalated: ${t.escalation.join("; ")}`);
+      if (t.requested_full) parts.push(`full before it ships: asked by ${t.requested_full.by || "a person"}${t.requested_full.at ? ` ${isoWhen(t.requested_full.at)}` : ""}`);
+      const note = h("span", { class: "faint testing-request-note", role: "status" });
+      const ask = sm.status === "running" && t.declared && !t.requested_full
+        ? h("button", { type: "button", class: "btn full-before-ship", text: "Full before it ships",
+          title: "the gate runs the full suites before this run ships, whatever depth its checks ran at" }) : null;
+      if (ask) {
+        ask.addEventListener("click", async () => {
+          ask.disabled = true;
+          try {
+            await api.post("/api/run-testing", { layer: layerKey, adw_id: runId, depth: "full" });
+            load();
+          } catch (err) {
+            note.textContent = String(err.message || err);
+            ask.disabled = false;
+          }
+        });
+      }
+      return h("div", { class: "testing-line" }, h("span", { class: "dim", text: "Testing: " }), depthPill(t.depth),
+        h("span", { text: `${head}${parts.map((p) => ` · ${p}`).join("")}` }), ask, note);
     }
 
     function renderTabs() {
@@ -2440,10 +2929,22 @@
       if (detail.promotion) body.appendChild(promotionCard(detail, layerKey, load));
       const sm = detail.summary;
       if (sm.suggestion) body.appendChild(suggestionCard(detail, layerKey, load));
-      if (state.params.integrate === "1") integrateOpen.add(sm.key);
-      const canIntegrate = sm.status === "handed-over" && !sm.settled && sm.bucket === "needs-you";
-      if (!canIntegrate) integrateOpen.delete(sm.key);
-      if (integrateOpen.has(sm.key)) body.appendChild(integrateCard(detail, layerKey));
+      const broke = (detail.testing && detail.testing.broke_batch) || sm.broke_batch;
+      if (broke) {
+        // a batch's full suites failed and bisect named this run: the batch, the failing tests and the fix run
+        const run = (id) => h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(id)}`, text: id });
+        body.appendChild(h("div", { class: "card broke-batch", role: "alert" },
+          h("div", { class: "card-head" }, h("h3", { text: "This run broke the batch" }), h("span", { class: "badge bad", text: "broke the batch" })),
+          h("div", {}, "The full suites on ", h("span", { class: "mono", text: broke.branch || "?" }), " failed in batch ",
+            /^[0-9a-f]{8}$/.test(broke.batch || "") ? run(broke.batch) : h("span", { class: "mono", text: broke.batch || "?" }),
+            broke.at ? ` (${isoWhen(broke.at)})` : "", "; bisect named this run: its targeted checks passed, the whole did not."),
+          (broke.failing || []).length ? h("div", {}, "Failing: ", h("span", { class: "mono", text: broke.failing.join(", ") })) : null,
+          h("div", {}, broke.fix_run ? ["Fix run: ", run(broke.fix_run)] : "No fix run was opened (the layer's #:on-batch-failure has no open-fix).")));
+      }
+      if (state.params.assign === "1") assignOpen.add(sm.key);
+      const canAssign = sm.bucket === "needs-you" && !sm.settled && sm.assign && sm.assign.script;
+      if (!canAssign) assignOpen.delete(sm.key);
+      if (assignOpen.has(sm.key)) body.appendChild(assignCard(detail, layerKey, load));
       if (sm.integrates && sm.status === "waiting" && sm.waiting_step && sm.waiting_step.name === "approve") body.appendChild(approveCard(detail, layerKey, load));
       if (!["running", "unknown"].includes(sm.status) && !sm.settled) body.appendChild(settleCard(detail, layerKey, (redraw) => (redraw === true ? renderOverview() : load())));
       const grid = h("div", { class: "grid-2" }, h("div", { class: "stack" }, timelineCard(), decisionsCard(detail), costsCard()), h("div", { class: "stack" }, outcomeCard()));
@@ -2504,6 +3005,62 @@
             h("td"), h("td", { class: "right num", text: fmt.cost(total) }), h("td"))))));
     }
 
+    /** The plan's Proof plan (state.json proof_plan): a state per criterion from the moment the plan
+     * exists, the stop box with who can clear it (and the Approve button for an approver), the evidence
+     * pack. Every text is set as text. */
+    function proofPlanCard(pp) {
+      const block = h("div", { class: "outcome-block proof-plan", "data-role": "proof-plan" },
+        h("div", { class: "card-head" }, h("h3", { text: "Proof plan" }),
+          pp.stopped && pp.stopped.at ? h("span", { class: "badge bad", text: `stopped at ${pp.stopped.at}` })
+            : pp.why_stopped ? h("span", { class: "badge", text: pp.why_stopped }) : null));
+      const packOf = new Map((pp.pack || []).map((row) => [row.id, row]));
+      block.appendChild(h("div", { class: "table-wrap" }, h("table", { class: "proof proof-plan-table" },
+        h("thead", {}, h("tr", {}, ["#", "Criterion", "Proven by", "State", "Evidence"].map((label) => h("th", { text: label })))),
+        h("tbody", {}, (pp.rows || []).map((row) => {
+          const pack = packOf.get(row.id);
+          const evidence = pack ? [pack.check, pack.exit === null || pack.exit === undefined ? "" : `exit ${pack.exit}`,
+            pack.tree ? `tree ${pack.tree}` : "", `${pack.passed || 0} passed, ${pack.skipped || 0} skipped`,
+            (pack.files || []).length ? `${pack.files.length} file${pack.files.length === 1 ? "" : "s"}` : "", pack.note]
+            .filter(Boolean).join(" · ") : row.outcome && !/^proven/.test(row.outcome) ? `${row.outcome}: ${row.why}` : row.outcome || "";
+          return h("tr", { "data-criterion": row.id, "data-state": row.state },
+            h("td", { class: "mono", text: row.id }), h("td", { text: row.criterion }), h("td", { class: "mono", text: row.command }),
+            h("td", {}, h("span", { class: `badge proof-state ps-${row.state}`, text: row.state })),
+            h("td", { class: "dim", text: evidence }));
+        })))));
+      const stop = pp.stopped || {};
+      if (stop.at) {
+        const box = h("div", { class: "proof-stop", "data-party": stop.party },
+          h("div", { class: "why", text: (stop.reason || "").split("\n")[0] }),
+          h("dl", { class: "kv" },
+            h("dt", { text: "who can clear it" }), h("dd", { text: stop.party || "" }),
+            ...(pp.rows || []).filter((row) => row.fix && !/^proven/.test(row.outcome || "")).flatMap((row) =>
+              [h("dt", { text: row.id }), h("dd", { class: "mono", text: row.fix })]),
+            ...(stop.question ? [h("dt", { text: "question" }), h("dd", { text: stop.question })] : [])));
+        if (stop.party === "approver" && (stop.approvals || []).length && detail.summary.status === "failed") {
+          const result = h("span", { class: "dim approve-result" });
+          const button = h("button", { type: "button", class: "approve-go", text: `Approve ${stop.approvals.join(", ")}`,
+            onclick: async () => {
+              button.disabled = true;
+              try {
+                const answer = await api.post("/api/approve", { layer: layerKey, run: runId, what: stop.approvals });
+                result.textContent = answer.message || "resumed";
+              } catch (err) {
+                result.textContent = err.message;
+                button.disabled = false;
+              }
+            } });
+          box.appendChild(h("div", { class: "approve-row" }, button, " ", result));
+        }
+        block.appendChild(box);
+      }
+      if ((pp.debt || []).length) {
+        block.appendChild(h("div", { class: "proof-debt" }, h("div", { class: "dim", text: "debt filed" }),
+          h("ul", { class: "issues" }, pp.debt.map((item) => h("li", {}, h("span", { text: item.text }), " ",
+            h("span", { class: "dim mono", text: item.where }))))));
+      }
+      return block;
+    }
+
     function outcomeCard() {
       const sm = detail.summary, blocks = [];
       const kv = (pairs) => h("dl", { class: "kv" }, pairs.filter(([, v]) => v !== null && v !== undefined && v !== "").map(([k, v]) => [h("dt", { text: k }), h("dd", {}, v)]));
@@ -2524,6 +3081,7 @@
             h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(sm.integration.run)}`, text: sm.integration.run }),
             ` ${sm.integration.status}${sm.integration.commit ? ` in ${sm.integration.commit.slice(0, 7)}` : ""}${sm.integration.why ? `: ${sm.integration.why}` : ""}`) : ""],
           ["integrates", sm.integrates ? h("a", { class: "mono integrates-fact", href: `#/run/${enc(layerKey)}/${enc(sm.integrates)}`, text: sm.integrates }) : ""],
+          ["given to an agent", givenFact(sm, layerKey)],
           ["next", sm.bucket === "needs-you" ? sm.next : ""]])));
       if (detail.budget) {
         const b = detail.budget, stop = b.stopped;
@@ -2612,14 +3170,21 @@
           if (r.outcome === "reused") return `tree ${String(r.tree || "").slice(0, 8)}${r.from && r.from.log ? ` · log ${r.from.log}` : ""}`;
           return [r.tree ? `tree ${String(r.tree).slice(0, 8)}` : "", r.log ? `log ${r.log}` : ""].filter(Boolean).join(" · ");
         };
+        // the depth each ran at (targeted testing); only for ledgers that record it, so older runs read as before
+        const depths = detail.proof.some((r) => r.depth);
         blocks.push(h("div", { class: "outcome-block", "data-role": "proof" }, h("div", { class: "card-head" }, h("h3", { text: "What the checks proved" })),
-          h("div", { class: "table-wrap" }, h("table", { class: "proof" },
-            h("thead", {}, h("tr", {}, ["Check", "Where", "Result", "Evidence"].map((label) => h("th", { text: label })))),
-            h("tbody", {}, detail.proof.map((r) => h("tr", { "data-outcome": r.outcome },
+          h("div", { class: "table-wrap" }, h("table", { class: `proof${depths ? " with-depth" : ""}` },
+            h("thead", {}, h("tr", {}, ["Check", "Where", "Result", ...(depths ? ["Depth"] : []), "Evidence"].map((label) => h("th", { text: label })))),
+            h("tbody", {}, detail.proof.map((r) => h("tr", { "data-outcome": r.outcome, "data-depth": r.depth || "" },
               h("td", { class: "mono", text: r.check }), h("td", { text: r.where }),
               h("td", {}, h("span", { class: `badge ${cls[r.outcome] || ""}`, text: checkResultText(r) })),
+              depths ? h("td", { class: "depth" }, depthPill(r.depth),
+                // the accounting reads on from the pill: "targeted" + ": ran 14 of 812 tests …"
+                r.accounting && r.accounting !== r.depth ? h("span", { class: "accounting",
+                  text: r.depth && r.accounting.startsWith(r.depth) ? r.accounting.slice(r.depth.length) : ` ${r.accounting}` }) : null) : null,
               h("td", { class: "dim", text: evidence(r) }))))))));
       }
+      if (detail.proof_plan && (detail.proof_plan.rows || []).length) blocks.push(proofPlanCard(detail.proof_plan));
       const review = detail.review;
       if (review && (review.rounds.length || review.mode)) {
         const block = h("div", { class: "outcome-block" }, h("div", { class: "card-head" }, h("h3", { text: "Review" }),
@@ -2708,8 +3273,16 @@
     /** Each review round's verdicts, every reviewer's issues and the patch between rounds. */
     function reviewRounds(review) {
       const out = [];
+      const pp = detail.proof_plan || {};
+      const progress = new Map((pp.rounds || []).map((r) => [r.round, r]));
       for (const round of review.rounds) {
         out.push(h("div", { class: "dim", text: `round ${round.round}: ${round.success ? "approved" : "not approved"}` }));
+        const moved = progress.get(round.round);
+        if (moved) {
+          out.push(h("div", { class: "round-progress", "data-round": round.round,
+            text: `resolved ${moved.resolved.length} · still open ${moved.open.length} · new ${moved.new.length}`
+              + (moved.seconds ? ` · ${fmt.dur(moved.seconds)}` : "") }));
+        }
         for (const reviewer of round.reviewers) {
           const issues = [...reviewer.issues].sort((a, b) => ["blocker", "tech_debt", "skippable"].indexOf(a.severity) - ["blocker", "tech_debt", "skippable"].indexOf(b.severity));
           out.push(h("div", { class: "reviewer" },
@@ -2726,6 +3299,7 @@
               round.patch.rerun.length ? ` → re-checked ${round.patch.rerun.join(", ")}` : "")));
         }
       }
+      if (pp.why_stopped) out.push(h("div", { class: "dim rounds-stopped", text: `rounds ended: ${pp.why_stopped}` }));
       return out;
     }
 
@@ -2870,7 +3444,15 @@
       for (const child of [...body.children]) child.remove();
       const card = h("div", { class: "card" });
       body.appendChild(card);
-      if (!detail.artefacts.length) { card.appendChild(h("div", { class: "empty", text: "This run collected no artefacts." })); return; }
+      const leftOut = (entry) => h("div", { class: "left-out", dataset: { id: entry.id },
+        title: entry.matched ? `${entry.matched} files matched; the artefact's limit handed ${entry.matched - entry.left_out} of them over, files of this change first` : "" },
+        `${entry.id}: ${entry.left_out} more file${entry.left_out === 1 ? "" : "s"} matched and ${entry.left_out === 1 ? "was" : "were"} not handed to the reviewers`);
+      const left = detail.left_out || [];
+      if (!detail.artefacts.length) {
+        card.appendChild(h("div", { class: "empty", text: "This run collected no artefacts." }));
+        for (const entry of left) card.appendChild(leftOut(entry));
+        return;
+      }
       const file = (path) => `/files/${enc(layerKey)}/${path.split("/").map(enc).join("/")}`;
       const groups = new Map();
       for (const art of detail.artefacts) {
@@ -2884,6 +3466,7 @@
         const type = items[0].type;
         const group = h("div", { class: "art-group" }, h("div", { class: "card-head" }, h("h3", { text: id }), h("span", { class: "badge", text: type }),
           h("span", { class: "dim", text: `collected by step ${items[0].step}` }), h("span", { class: "dim", text: `${items.length} file${items.length === 1 ? "" : "s"}` })));
+        for (const entry of left.filter((e) => e.id === id)) group.appendChild(leftOut(entry));
         if (type === "image") {
           group.appendChild(h("div", { class: "thumbs" }, items.map((art) => h("div", { class: "thumb", onclick: () => lightbox(file(art.path)) },
             h("img", { src: file(art.path), alt: art.name, loading: "lazy" }), h("div", { class: "cap", text: `${art.name} · ${fmt.bytes(art.bytes)}` })))));
@@ -2902,6 +3485,7 @@
         }
         card.appendChild(group);
       }
+      for (const entry of left.filter((e) => !groups.has(`${e.id}`))) card.appendChild(leftOut(entry));
     }
 
     // ------------------------------------------------------------------ documents tab
@@ -3136,6 +3720,17 @@
       const issue = h("select", { class: "start-issue", "aria-label": "log as an issue" });
       const issueRow = h("label", { class: "start-row", hidden: !catalog.issue.available }, h("span", { text: "issue" }), issue);
       const classRow = h("label", { class: "start-row" }, h("span", { text: "class" }), klass);
+      // how deep this run's checks go (al run --testing): the layer's level unless chosen here
+      const levels = (layer.testing && layer.testing.levels) || [];
+      const testing = h("select", { class: "start-testing", "aria-label": "testing depth of this run",
+        title: "light = smoke, standard = the tests the change concerns, heavy = the full suites" },
+        h("option", { value: "", text: `layer default${layer.testing ? ` (${layer.testing.level})` : ""}` }),
+        levels.map((l) => h("option", { value: l.level, text: `${l.level} (${l.depth}${l.minutes !== null && l.minutes !== undefined ? `, ${typicalMinutes(l.minutes)}` : ""})` })));
+      const testingRow = h("label", { class: "start-row", hidden: !levels.length }, h("span", { text: "testing" }), testing);
+      // decisions only a person may take, pre-approved for this run (approvals.py); the gate is unchanged
+      const approvals = h("input", { type: "text", class: "mono start-approvals", "aria-label": "pre-approve for this run",
+        placeholder: "pre-approve, comma-separated: vocabulary, edit:PATH, dependency:NAME" });
+      const approvalsRow = h("label", { class: "start-row start-approvals-row" }, h("span", { text: "approve" }), approvals);
       const unattended = h("div", { class: "start-unattended" });
       const note = h("div", { class: "start-note faint" });
       const go = h("button", { class: "btn primary start-go", type: "button", text: "Start" });
@@ -3222,6 +3817,8 @@
         issueRow.hidden = !catalog.issue.available;
         summary.textContent = e.summary + (e.description ? ` — ${e.description}` : "");
         classRow.hidden = e.kind !== "workflow";
+        testingRow.hidden = e.kind !== "workflow" || !levels.length;
+        approvalsRow.hidden = e.kind !== "workflow";
         const options = [["none", "do not log it as an issue"], ["start", "log it as an issue and start now"]];
         if (e.kind === "workflow" && catalog.issue.trigger.includes(e.name)) options.push(["trigger", "create the issue and let the trigger start it"]);
         const previous = issue.value;
@@ -3305,6 +3902,9 @@
         const out = { layer: layer.key, request_key: key, issue: issue.value || "none", model_set: tier.value || null, models, ...extra };
         if (e.kind === "workflow" && klass.value) out.class = klass.value;
         if (decider.value) out.decider = decider.value;
+        if (e.kind === "workflow" && testing.value) out.testing = testing.value;
+        const given = approvals.value.split(",").map((a) => a.trim()).filter(Boolean);
+        if (e.kind === "workflow" && given.length) out.approvals = given;
         if (typed() !== null) out.text = prompt.value;
         else { out.target = { kind: e.kind, name: e.name }; out.prompt = prompt.value; }
         return out;
@@ -3346,12 +3946,12 @@
         h("span", { text: "stand-in" }), decider);
       const modelsRow = modelInputs.length ? h("div", { class: "start-models" }, modelInputs) : null;
       const actions = h("div", { class: "start-actions" }, go, h("span", { class: "faint", text: "Ctrl+Enter" }), note);
-      promptOnly.push(classRow, tierRow, deciderRow, issueRow, modelsRow, actions);
+      promptOnly.push(classRow, tierRow, testingRow, deciderRow, issueRow, approvalsRow, modelsRow, actions);
       replace(body,
         inputBox,
         h("div", { class: "start-controls" },
           h("label", { class: "start-row" }, h("span", { text: "run" }), select),
-          classRow, tierRow, deciderRow, issueRow),
+          classRow, tierRow, testingRow, deciderRow, issueRow, approvalsRow),
         modelsRow,
         summary, unattended, kitBox,
         (catalog.problems || []).length ? h("div", { class: "why registry-problems", text: catalog.problems.join("; ") }) : null,
@@ -3362,6 +3962,21 @@
   }
 
   // =========================================================================== views: Layers
+  /** The layer's review numbers over its runs with a Proof plan (dashboard.review_convergence =
+   * al kpis' Reviews and proof); nothing for a layer without such runs. */
+  function reviewsLine(rv) {
+    if (!rv || !rv.runs_with_proof_plan) return null;
+    const rounds = rv.rounds_per_run || {};
+    const top = (rv.missing_declarations || [])[0];
+    return h("div", { class: "adw-stats layer-reviews", "data-role": "reviews" },
+      h("span", { class: "dim", text: "Reviews" }),
+      h("span", {}, h("b", { text: rounds.mean === null || rounds.mean === undefined ? "-" : rounds.mean.toFixed(1) }), " rounds per run"),
+      h("span", {}, h("b", { text: rv.repeated_blockers }), " repeated blockers"),
+      h("span", {}, h("b", { text: (rv.idle_hours || 0).toFixed(1) }), " idle hours"),
+      (rv.stopped_early || {}).runs ? h("span", {}, h("b", { text: rv.stopped_early.runs }), " stopped early") : null,
+      top ? h("span", { class: "mono missing-declaration", title: "the declaration stops asked for most often", text: `add first: ${top.declaration}` }) : null);
+  }
+
   function LayersView(main, crumbs) {
     crumbs.textContent = "watched layers";
     const startHost = h("div", { class: "start-host" });
@@ -3387,7 +4002,7 @@
       clear(grid);
       for (const layer of store.layers) {
         const runs = store.runList().filter((r) => r.layer === layer.key);
-        const finished = runs.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over");
+        const finished = runs.filter((r) => r.status === "passed" || r.status === "failed" || r.status === "handed-over" || r.status === "lost");
         const passed = finished.filter((r) => r.status === "passed").length;
         const handedOver = finished.filter((r) => r.status === "handed-over").length;
         const cost = runs.reduce((sum, r) => sum + (r.cost || 0), 0);
@@ -3398,7 +4013,8 @@
           h("div", { class: "adw-stats" }, h("span", {}, h("b", { text: runs.length }), " runs"), h("span", {}, h("b", { text: fmt.pct(finished.length ? passed / finished.length : null) }), " passed"),
             handedOver ? h("span", {}, h("b", { text: handedOver }), " handed over") : null,
             h("span", {}, h("b", { text: fmt.cost(cost) }), " total"), h("span", {}, h("b", { text: layer.adws.length }), " workflows")),
-          h("div", { class: "piter" }, layer.adws.map((name) => h("span", { class: "badge", text: name })))));
+          h("div", { class: "piter" }, layer.adws.map((name) => h("span", { class: "badge", text: name }))),
+          reviewsLine(layer.reviews)));
       }
       if (!store.layers.length) grid.appendChild(h("div", { class: "empty", text: store.loaded ? "No layers found. Start with --layer DIR or --scan DIR." : "connecting…" }));
     }
@@ -3438,6 +4054,7 @@
           h("div", { class: "figures" }, [["runs", st.count], ["pass rate", fmt.pct(st.pass_rate)], ["total cost", fmt.cost(st.cost_total)], ["median time", fmt.dur(st.duration_median)]]
             .map(([label, value]) => h("div", { class: "stat" }, h("div", { class: "label", text: label }), h("div", { class: "value", text: value }))))));
       replace(rest,
+        testingPanel(layer, load),
         (data.promotions || []).length ? h("div", { class: "card promotions-section" },
           h("div", { class: "card-head" }, h("h3", { text: "Promotions" }), h("span", { class: "dim", text: "a stage moves into the next once people accept it" }),
             h("span", { class: "spacer" }), h("span", { class: "promotion-note", role: "status" })),

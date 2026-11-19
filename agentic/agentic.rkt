@@ -2,7 +2,8 @@
 ;; The agentic layer of the al repository itself ("al for al").
 ;; Work comes from the command line or a task file; a run is started by hand or by a poller;
 ;; agents work in a private git worktree; the repository's own test suites are the checks;
-;; a human reviews a branch and PR.md. No forge, no zero-touch.
+;; a human reviews a branch and PR.md. Runs land on the branch integration; a person promotes a batch
+;; of them into main.
 (agentic-layer #:name "al"
                #:description "Agentic layer for al, the generator of agentic layers"
                #:llm-txt "LLM.txt"
@@ -101,6 +102,17 @@
           #:require-checks (test-docs test-compiler test-runtime test-tools test-dashboard-proof test-integration) #:require affected
           #:allowed-classes (chore bug feature) #:max-diff-lines 4000)
   (dashboard local #:port 8770)   ; 8765 is often taken by other tools
+  ;; Every run lands on integration; main changes only by a promotion a person approves.
+  (stage integration #:branch "integration" #:from main #:accepts (chore bug feature patch) #:entry merge)
+  ;; The full suites are main's checks: the promotion runs them on the integration head before it is offered.
+  ;; They sit on main, not on integration, because a stage's checks are added to every run delivering there.
+  (stage main #:branch "main" #:accepts () #:agents-may-merge #f
+         #:checks (test-docs test-compiler test-runtime test-tools test-dashboard test-integration))
+  ;; Merge, not squash: each feature's commits stay visible on main. No version, no tag, no deploy.
+  (promotion integration -> main #:approval human #:approvers 1 #:method merge)
+  ;; Per run: the checks a change affects, as before (no cmd has a #:targeted form). Per batch: the full
+  ;; suites on the integration head, after 5 landed changes or 24 hours.
+  (testing targeted #:on-stage full #:batch ((every 5) (after-hours 24)))
 
   (command prime #:template prime)
   (command classify #:template classify #:output json)
@@ -161,7 +173,7 @@
       (run build #:command implement #:args ("$plan"))))
 
   (adw sdlc #:description "Plan, build, run the repository's test suites, document, commit; a human reviews the branch and PR.md"
-       #:input (cli tasklist) #:trigger (manual cron) #:environment (worktree) #:review human
+       #:input (cli tasklist) #:trigger (manual cron) #:environment (worktree) #:review human #:deliver-to integration
     (steps
       (compose plan-build)
       (check test-compiler #:cmd test-compiler #:resolve resolve-test #:collect (log))
@@ -175,7 +187,7 @@
       (ship)))
 
   (adw reviewed #:description "Everything sdlc does, then two independent reviewer agents must both approve before a human gets the branch and PR.md; never merges"
-       #:input (cli tasklist) #:trigger (manual cron) #:environment (worktree) #:review two-reviewers
+       #:input (cli tasklist) #:trigger (manual cron) #:environment (worktree) #:review two-reviewers #:deliver-to integration
     (steps
       (compose plan-build)
       (check test-compiler #:cmd test-compiler #:resolve resolve-test #:collect (log))
@@ -189,7 +201,7 @@
       (ship)))
 
   (adw zte #:description "Zero-touch: plan, build and test inside a container; two reviewer agents and every suite must pass; then merge without a person"
-       #:input (cli tasklist) #:trigger (manual cron) #:environment (worktree sandbox) #:review zero-touch
+       #:input (cli tasklist) #:trigger (manual cron) #:environment (worktree sandbox) #:review zero-touch #:deliver-to integration
     (steps
       (compose plan-build)
       (check test-docs #:cmd test-docs #:resolve resolve-test #:collect (log) #:when-affected #t)

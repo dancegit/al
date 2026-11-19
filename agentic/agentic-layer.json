@@ -4,6 +4,7 @@
       "agent": "claude-code",
       "changes": "codebase",
       "classes": [],
+      "deliverTo": "",
       "description": "Classify the request, plan it by class, implement the plan; nothing else",
       "environment": [
         "worktree"
@@ -85,6 +86,7 @@
       "agent": "claude-code",
       "changes": "codebase",
       "classes": [],
+      "deliverTo": "integration",
       "description": "Plan, build, run the repository's test suites, document, commit; a human reviews the branch and PR.md",
       "environment": [
         "worktree"
@@ -269,6 +271,7 @@
       "agent": "claude-code",
       "changes": "codebase",
       "classes": [],
+      "deliverTo": "integration",
       "description": "Everything sdlc does, then two independent reviewer agents must both approve before a human gets the branch and PR.md; never merges",
       "environment": [
         "worktree"
@@ -453,6 +456,7 @@
       "agent": "claude-code",
       "changes": "codebase",
       "classes": [],
+      "deliverTo": "integration",
       "description": "Zero-touch: plan, build and test inside a container; two reviewer agents and every suite must pass; then merge without a person",
       "environment": [
         "worktree",
@@ -754,6 +758,8 @@
     "commands": [
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "racket",
           "schemas",
@@ -761,26 +767,52 @@
           "kit/runtime/tests/full.layer.json"
         ],
         "description": "The language rules: the compiler accepts the examples and rejects each invalid definition with the documented error",
+        "maxTargeted": 200,
         "name": "test-compiler",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "PLTCOLLECTS=\"$PWD/racket:\" raco test racket/al/tests/compiler-test.rkt",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "kit/runtime",
           "racket",
           "schemas"
         ],
         "description": "The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container",
+        "maxTargeted": 200,
         "name": "test-runtime",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q)",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "tools",
           "tests/tools",
@@ -790,13 +822,26 @@
           "meta"
         ],
         "description": "The al command itself works: eject, in-repo layers, al improve, dashboard generation",
+        "maxTargeted": 200,
         "name": "test-tools",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "env -u AL_APP_ROOT uv run --with pytest --with pytest-xdist --with pyyaml --with jsonschema pytest tests/tools -q -n 4",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 3600
       },
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "README.md",
           "docs",
@@ -806,43 +851,95 @@
           "tests/tools/test_readme.py"
         ],
         "description": "Links, images and commands shown in the README and the documents resolve, and the generated references are current",
+        "maxTargeted": 200,
         "name": "test-docs",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "if [ -f tests/tools/test_readme.py ]; then env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_readme.py tests/tools/test_generated_references.py -q; else echo 'this branch started before the README check existed: nothing to run'; fi",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "The dashboard's model and HTTP server work: unit and HTTP tests, no browser",
+        "maxTargeted": 200,
         "name": "test-dashboard",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "(cd kit/dashboard && uv run --with pytest pytest -q tests)",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "The dashboard tests plus the real-browser tests of the page in the host's Chrome",
+        "maxTargeted": 200,
         "name": "test-dashboard-browser",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "(cd kit/dashboard && uv run --with pytest --with playwright pytest -q tests)",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "kit/dashboard",
           "kit/runtime"
         ],
         "description": "The dashboard's unit, HTTP and real-browser tests, with screenshots of the page written to kit/dashboard/shots",
+        "maxTargeted": 200,
         "name": "test-dashboard-proof",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "(cd kit/dashboard && rm -rf shots && AL_DASHBOARD_SHOTS=shots uv run --with pytest --with playwright pytest -q tests)",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 2400
       },
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "tools",
           "kit",
@@ -852,9 +949,20 @@
           "tests/integration"
         ],
         "description": "The default tier of full runs on the five pinned example repositories passes with the mock agent, and generated prompts equal the golden snapshots",
+        "maxTargeted": 200,
         "name": "test-integration",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 3600
       }
     ],
@@ -1137,6 +1245,7 @@
     "status": "stable",
     "waitSeconds": 3600
   },
+  "cycle": null,
   "dashboard": {
     "also": [],
     "bind": "127.0.0.1",
@@ -1148,6 +1257,7 @@
     "systemd": false,
     "tokenEnv": ""
   },
+  "delivery": null,
   "description": "Agentic layer for al, the generator of agentic layers",
   "environments": [
     {
@@ -1283,6 +1393,35 @@
       "status": "stable"
     }
   ],
+  "promotions": [
+    {
+      "adw": "sdlc",
+      "after": [],
+      "approval": "human",
+      "approvers": 1,
+      "backMerge": [],
+      "from": "integration",
+      "hotfix": false,
+      "method": "merge",
+      "origin": "declared",
+      "present": [
+        "summary",
+        "changes",
+        "proof",
+        "demo",
+        "checks",
+        "notes",
+        "excluded"
+      ],
+      "requires": [
+        "checks",
+        "acceptance"
+      ],
+      "tag": "",
+      "to": "main",
+      "version": null
+    }
+  ],
   "promptInputs": [
     {
       "allowStdin": true,
@@ -1382,12 +1521,79 @@
   ],
   "schemaVersion": "agentic-layer-v1",
   "services": [],
+  "stages": [
+    {
+      "accepts": [
+        "chore",
+        "bug",
+        "feature",
+        "patch"
+      ],
+      "agentsMayMerge": true,
+      "branch": "integration",
+      "checks": [],
+      "deployCmd": "",
+      "entry": "merge",
+      "environmentName": "",
+      "from": "main",
+      "frozen": [],
+      "frozenWhilePromoting": false,
+      "into": "",
+      "name": "integration",
+      "origin": "declared"
+    },
+    {
+      "accepts": [],
+      "agentsMayMerge": false,
+      "branch": "main",
+      "checks": [
+        "test-docs",
+        "test-compiler",
+        "test-runtime",
+        "test-tools",
+        "test-dashboard",
+        "test-integration"
+      ],
+      "deployCmd": "",
+      "entry": "merge",
+      "environmentName": "",
+      "from": "",
+      "frozen": [],
+      "frozenWhilePromoting": false,
+      "into": "",
+      "name": "main",
+      "origin": "declared"
+    }
+  ],
   "standIn": null,
   "storage": {
     "dir": "artefacts",
     "id": "local",
     "kind": "local",
     "status": "stable"
+  },
+  "testing": {
+    "batchAfterHours": 24,
+    "batchEvery": 5,
+    "depth": "targeted",
+    "escalateClasses": [],
+    "escalateDiffLines": 1500,
+    "escalateFiles": 40,
+    "escalateOn": [
+      "lockfile",
+      "layer",
+      "unmapped"
+    ],
+    "escalatePaths": [],
+    "fixAdw": "",
+    "maxMissPercent": 10,
+    "onBatchFailure": [
+      "bisect",
+      "open-fix"
+    ],
+    "onStage": "full",
+    "perRun": "inherit",
+    "reviewRounds": "inherit"
   },
   "triggers": [
     {

@@ -6009,6 +6009,8 @@ class Model:
             entry = result.get("entry") if isinstance(result.get("entry"), dict) else {}
             if entry.get("id"):
                 standin_via_layer(layer, ["note", "--json"], stdin={"ref": entry["id"], "outcome": text})
+        with self.lock:                                       # done: once the page sees it, it may be queued again
+            self.standin_pending.discard(self._standin_key(layer, item))
         self.drop_standin_view(layer)
         if job is None and RUN_ID.match(str(item.get("run") or "")):
             self.refresh_run(layer, str(item["run"]))
