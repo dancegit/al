@@ -441,47 +441,112 @@
     "commands": [
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "Every pre-commit hook passes on all files: ruff lint rules B, E, F, I, UP, W; ruff format; uv.lock matches pyproject.toml; codespell; whitespace and end-of-file hooks. Hooks rewrite files in place and exit non-zero when they changed something.",
+        "maxTargeted": 200,
         "name": "lint",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "uv run --locked --no-default-groups --group pre-commit pre-commit run --show-diff-on-failure --color=always --all-files",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "mypy in strict mode reports no errors for src and tests/type_check.",
+        "maxTargeted": 200,
         "name": "typecheck",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "uv run --locked --no-default-groups --group dev tox run -e typing",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "The pytest suite in tests passes on Python 3.12 against the locked dependency versions, with every warning treated as an error; writes a JUnit XML report.",
+        "maxTargeted": 200,
         "name": "test",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "TOX_ENV=py3.12 uv run --locked --no-default-groups --group dev tox run -- --junitxml=.tox/reports/junit.xml",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "The sdist and wheel build into dist/.",
+        "maxTargeted": 200,
         "name": "build",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "uv build",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "The Sphinx documentation builds to docs/_build/dirhtml with warnings treated as errors.",
+        "maxTargeted": 200,
         "name": "docs",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "uv run --locked --no-default-groups --group dev tox run -e docs",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       }
     ],

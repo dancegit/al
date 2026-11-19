@@ -103,6 +103,13 @@ class ADWState:
     # the run's own `--decider MODE` (off, suggest, auto); "", and then left out of state.json, for a run
     # started without the flag: the layer's mode applies
     decider: str = ""
+    # the run's testing depth (testing.py): {requested (--testing), depth, source, escalation: {tree: [reasons]},
+    # escalated: {cmd: [reasons]}, batch_started}; empty, and then left out of state.json, for a run of a
+    # layer without (testing …) that asked for nothing
+    testing: dict[str, Any] = field(default_factory=dict)
+    # a batch run (batch.py): {branch, stage, head, since, delivered, commits, owners, checks, status,
+    # culprit, culprits, fix_run, revert, skipped}; empty, and then left out of state.json, for every other run
+    batch: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -146,6 +153,10 @@ class ADWState:
                 data.pop("integration", None)  # only an integration run has one
             if not data.get("decider"):
                 data.pop("decider", None)  # only a run started with --decider has one
+            if not data.get("testing"):
+                data.pop("testing", None)  # a layer without (testing …) writes the state.json of before
+            if not data.get("batch"):
+                data.pop("batch", None)  # only a batch run has one
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")

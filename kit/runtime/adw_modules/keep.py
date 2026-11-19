@@ -204,6 +204,8 @@ def _skip(layer: Any, state: Any, adw: dict[str, Any], env_stack: Any) -> bool:
         return True
     if getattr(state, "promotion", None) or any(item.get("kind") == "promote" for item in adw.get("steps", [])):
         return True
+    if getattr(state, "batch", None) or any(item.get("kind") == "batch" for item in adw.get("steps", [])):
+        return True  # a batch run (batch.py) changes nothing to keep: bisect and a revert stay in its worktree
     if state.dry_run or state.status == "waiting" or getattr(env_stack, "read_only", False):
         return True
     return not state.worktree or not Path(state.worktree).is_dir()

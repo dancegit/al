@@ -394,6 +394,9 @@ def _scripts(ir: Mapping[str, Any], entries: list[dict[str, Any]]) -> dict[str, 
         scripts["adws/dashboard.py"] = {"role": "dashboard", "entries": []}
     # the stand-in's one entry (`al decider`, the dashboard's stand-in loop): every generated layer has it
     scripts["adws/standin.py"] = {"role": "stand-in", "entries": []}
+    # the full suites per batch (`al batch`, the dashboard's "Run the full suites now"; batch.py): every
+    # generated layer has it
+    scripts["adws/verify_batch.py"] = {"role": "batch", "entries": []}
     return scripts
 
 

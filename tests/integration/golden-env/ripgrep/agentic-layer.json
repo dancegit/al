@@ -296,47 +296,112 @@
     "commands": [
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "every Rust file in the workspace is formatted as rustfmt.toml requires",
+        "maxTargeted": 200,
         "name": "format",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "cargo fmt --all --check",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "the rg binary and every workspace crate compile; produces target/debug/rg",
+        "maxTargeted": 200,
         "name": "build",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "cargo build --verbose --workspace",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "unit tests, doc tests and the integration target pass for every workspace crate, each integration test once on the default regex engine and once on PCRE2; builds target/debug/rg",
+        "maxTargeted": 200,
         "name": "test",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "cargo test --verbose --workspace --features pcre2",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "the options in crates/core/flags/complete/rg.zsh equal the options in rg --help; needs zsh and an existing target/release/rg or target/debug/rg, so it must run after build or test",
+        "maxTargeted": 200,
         "name": "e2e",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "ci/test-complete",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "rustdoc for every workspace crate, private items included, builds with no warnings",
+        "maxTargeted": 200,
         "name": "docs",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --document-private-items --workspace",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       }
     ],

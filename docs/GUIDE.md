@@ -1568,6 +1568,94 @@ steps run only when affected; `al verify` and `al sandbox doctor` list the check
 | every check runs although the change was small | a changed path no check covers, or one two selective checks declare; the summary and the log of each check name it | cover the path with one check, or make one of the two `#:always #t` |
 | a check always runs again at the gate | it changed files in the worktree while it ran (its result then belongs to no tree), or it is `#:reuse #f` | write reports to an ignored directory |
 
+### Test what a change touches, prove the whole per batch
+
+Affected checks decide which suites run; a depth decides how much of a suite runs. Give a test
+command a targeted form, where `{tests}` is filled with the test files that concern the change, and
+say in one clause how deep runs go and how often the whole is proven:
+
+```racket
+(codebase #:root "../myapp" #:languages (python)
+  (cmd unit "pytest -q" #:covers ("shop" "tests") #:always #f
+       #:targeted "pytest -q {tests}"            ; also {files} (changed files) and {packages} (Go, Rust)
+       #:smoke "pytest -q tests/test_cart.py"     ; when selection finds nothing
+       #:select (changed-tests imports)))         ; also path-map, coverage, command
+
+(testing targeted
+  #:batch ((every 5) (after-hours 24))            ; the full suites, once per batch
+  #:escalate ((paths "shop/core/**") (lockfile) (layer) (unmapped))
+  #:on-batch-failure (bisect open-fix))
+```
+
+A layer without `(testing …)` runs every check in full, as before; `al explain` and `al verify` say
+so. With it, a run that changed `shop/cart.py` runs the tests that import it and none of the 40
+others:
+
+```text
+[adw a0000001] check unit: targeted: ran 2 of 43 tests (imports 2): 1 s instead of about 1 s
+…
+testing:   targeted (layer policy)
+checks:    unit=passed (targeted: ran 2 of 43 tests (imports 2): 1 s instead of about 1 s)
+gate:      unit=reused from unit, same tree 439be255
+```
+
+"Instead of about" is the last passing full run of that command; until there is one the line says
+the full suite's size is not known yet. A change under a core path, a lockfile, the layer, a large
+diff or a covered path no strategy maps to a test runs the whole suite and says why:
+
+```text
+testing:   targeted (layer policy); escalated: core path shop/core/rules.py (shop/core/**)
+checks:    unit=passed (full (escalated: core path shop/core/rules.py (shop/core/**)))
+```
+
+**Choosing the level.** `al testing LAYER` shows the policy, this machine's level and how long a
+run's checks typically take at each level:
+
+```text
+testing: targeted per run, targeted in review rounds, full per batch (layer policy, depth targeted)
+testing: a batch runs the full suites (full) every 2 landed changes
+level: standard = targeted (layer policy)
+  light     smoke     -
+  standard  targeted  -                 <- this machine
+  heavy     full      -
+miss rates (targeted runs a batch verified; above 10% a command runs full):
+  no targeted runs yet
+settings: ~/code/myapp.al/agents/settings/testing.json (local to this machine, never committed); applies to runs started from now on; one run: al run … --testing LEVEL
+```
+
+`al testing LAYER --set heavy` (or the dashboard's Testing panel) makes the next runs use the full
+suites; `--reset` goes back to the layer's policy; `al run LAYER /zte … --testing full` changes one
+run. `al testing LAYER --full-before-ship RUN` asks a running run to prove the full suites at its
+gate. A level below full is refused while a zero-touch workflow lands on the default branch and no
+batch rhythm is declared, with the compiler's words.
+
+**Batches.** The kit workflow `verify-batch` runs every check at full depth on a stage head or the
+default branch. It starts by itself when a landing makes it due, when a cycle closes, and a
+promotion's checks on a stage head count as that stage's batch; `al batch LAYER run [--stage S]
+[--if-due]` starts one by hand. `al batch LAYER status`:
+
+```text
+main: no batch yet
+  delivered since: none
+  next: not due: 0 of 2 changes landed
+```
+
+When a batch fails, `bisect` runs only the failing tests on the commits since the last green batch
+and names the run that broke it (its run page says "broke the batch"), `open-fix` starts a fix run
+with the failing tests, that run and its plan, and `revert` prepares a branch `al/revert/<batch>`
+(created, never moved). If the culprit's check of that command had passed below full depth, it is
+a **miss**: counted, and its changed files are mapped to the failing tests, so the next change to
+them runs them. `al kpis` shows the miss rate per command and per strategy; above
+`#:max-miss-percent` (default 10) a command runs full until the rate drops:
+
+```text
+Testing
+  command  targeted runs  misses  miss rate        by strategy                                   targeted s  full s
+  test                 2       1  50% (runs full)  changed-tests 1/2, imports 1/2, coverage 0/1         36s  9m 00s
+```
+
+`al verify` prints the same `testing:` lines next to its `coverage:` lines.
+
 ## How work is delivered
 
 Without anything declared, every run starts from `(codebase #:default-branch …)` and ships into it (or hands a

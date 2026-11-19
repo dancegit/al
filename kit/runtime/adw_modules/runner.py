@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from . import affected, budget, checkenv, decide, delivery, envs, envsource, events, integrate, ir, models
-from . import nested_engine, notify, prepare, sandbox, skips
+from . import nested_engine, notify, prepare, sandbox, skips, testing
 from . import state as state_module, steps
 from . import slots
 from .agents import CLASSES
@@ -120,6 +120,9 @@ exit codes: 0 passed or handed-over (the workflow ran to its end; handed-over: a
 """
 
 
+TESTING_CHOICES = (*testing.LEVELS, *testing.DEPTHS)
+
+
 def _parser(adw: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=f"adw_{adw}", description=f"Run the {adw} ADW.", epilog=OVERRIDES_HELP,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -139,6 +142,9 @@ def _parser(adw: str) -> argparse.ArgumentParser:
     parser.add_argument("--replaces", metavar="OLD", help="this run starts run OLD (8 hex chars) again; OLD then "
                         "reads as replaced by this run")
     parser.add_argument("--decider", choices=decide.MODES, help="the stand-in decider for this run (see below)")
+    parser.add_argument("--testing", choices=TESTING_CHOICES, metavar="LEVEL",
+                        help="how deep this run's checks go: light|standard|heavy (also smoke|targeted|full); "
+                             "default: the local setting, else the layer's (testing …)")
     return parser
 
 
@@ -176,11 +182,13 @@ def _new_state(adw_name: str, adw: dict[str, Any], args: argparse.Namespace, req
     if fixed is not None and fixed not in CLASSES:
         raise LayerError(f"prompt source returned unknown class {fixed!r}")
     initial = fixed or (adw.get("classes") or ["chore"])[0]
+    requested = getattr(args, "testing", None)
     return state_module.ADWState(
         adw_id=args.adw_id or state_module.new_adw_id(), adw=adw_name, prompt=request.prompt,
         source=request.source, klass=initial, class_fixed=fixed is not None, dry_run=args.dry_run,
         model_set=request.model_set or "", fanout_parent=fanout_parent(),
         replaces=getattr(args, "replaces", None) or "", decider=getattr(args, "decider", None) or "",
+        testing={"requested": testing.normalise(requested)} if requested else {},
     )
 
 
@@ -257,14 +265,18 @@ def _resumed_state(layer: Any, adw_name: str, args: argparse.Namespace) -> state
     state.usage.pop("stopped", None)
     if state.decision.get("status") == "resuming":  # the decider (or a person's answer) started this resume
         state.decision["status"] = "resumed"
+    if getattr(args, "testing", None):  # a resume may ask for another depth; later checks use it
+        state.testing["requested"] = testing.normalise(args.testing)
     return state
 
 
 def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
     def shown(data: dict[str, Any]) -> str:
-        # a check that was not run is never shown as its exit code: not affected or reused, with why
-        return (affected.summary_text(data) if data.get("outcome") in (affected.NOT_AFFECTED, affected.REUSED)
-                else str(data["exit"]))
+        # a check that was not run is never shown as its exit code: not affected or reused, with why;
+        # a result that carries its depth (testing …) says it: passed (targeted: ran 2 of 43 tests …)
+        if data.get("outcome") in (affected.NOT_AFFECTED, affected.REUSED) or isinstance(data.get("testing"), dict):
+            return affected.summary_text(data)
+        return str(data["exit"])
 
     checks = ", ".join(f"{name}={shown(data)}" + (f" ({skips.summary_text(data['skips'])})"
                                                   if skips.summary_text(data.get("skips") or {}) else "")
@@ -282,6 +294,7 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"status:    {state.status}",
         f"branch:    {state.branch or 'none'}",
         *([f"tiers:     {_tiers_line(state)}"] if state.models else []),
+        *[f"testing:   {line}" for line in [_testing_line(layer, state)] if line],
         f"plan:      {state.plan or 'none'}",
         f"checks:    {checks}",
         *([f"gate:      {gate}"] if gate else []),
@@ -419,6 +432,36 @@ def resume_command(state: state_module.ADWState) -> str:
         return (f"uv run adws/promote.py run {promotion['from']} {promotion.get('to', '')} "
                 f"--resume --adw-id {state.adw_id}")
     return f"uv run adws/adw_{state.adw}.py --resume --adw-id {state.adw_id}"
+
+
+def _testing_line(layer: Any, state: state_module.ADWState) -> str:
+    """`targeted (layer policy); escalated: core path a/core/x.py`: the depth this run's checks
+    asked for, its source, and why a check ran deeper. "" for a layer without (testing …) and a run
+    that asked for no depth, so their summary reads as before."""
+    data = state.testing if isinstance(state.testing, dict) else {}
+    try:
+        declared = bool(testing.policy(layer)["declared"])
+    except (LayerError, KeyError, TypeError):
+        declared = False
+    if not declared and not data:
+        return ""
+    depth, source = data.get("depth"), data.get("source")
+    if not depth:
+        try:
+            depth, source = testing.run_depth(layer, state, "check")
+        except (LayerError, OSError):
+            return ""
+    line = f"{depth} ({source})"
+    reasons: list[str] = []
+    for found in (data.get("escalated") or {}).values():
+        reasons += [reason for reason in found if reason not in reasons]
+    if reasons:
+        line += "; escalated: " + "; ".join(reasons)
+    if testing.requested_full(layer.layer_dir, state.adw_id):
+        line += f"; gate: full ({testing.SOURCE_REQUEST})"
+    if data.get("batch_started"):
+        line += f"; started batch {data['batch_started']}"
+    return line
 
 
 def _tiers_line(state: state_module.ADWState) -> str:
@@ -733,7 +776,7 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
             with contextlib.redirect_stdout(tee), _stoppable(state):
                 exit_code = _run(layer, state, definition, args, request)
                 lines = summary_lines(layer, state)
-                print("\n".join(lines))
+                print("\n".join(lines), flush=True)  # out before integrate.finish() reports the run as ended
         finally:
             tee.close()
     decide.after_run(layer, state)  # a resume the decider chose starts once this run has ended

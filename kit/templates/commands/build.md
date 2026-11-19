@@ -27,7 +27,7 @@ TASK: $1
 - Read `{{readme}}` and the Relevant Files that TASK touches before changing anything. Think hard about the smallest change that fully satisfies TASK.
 - Do exactly what TASK asks. No refactoring, no extra features, no reformatting of code you did not need to change.
 - Read each file before editing it and match the surrounding style, naming and error handling.
-- Add or update a test for every behaviour you change, next to the existing tests for that code.
+- Write or extend the tests of every behaviour you change, next to the existing tests for that code: they are what the targeted checks run for this change (test files the change adds or modifies always run).
 - Add a dependency only when TASK cannot be done without it, using `{{package_manager}}`.
 - Do not modify anything under a protected path. If TASK requires it, do the rest and report it on a line starting `REQUIRES HUMAN`.
 - If TASK turns out to need a design decision or touches more than a handful of files, stop and report that it needs a plan instead of guessing.
@@ -65,6 +65,7 @@ All must exit 0 before you report.
 ## Report
 
 - A bullet summary of what you changed and why, with `REQUIRES HUMAN` lines called out.
+- The test files you added or changed, one per line, or "none" with the reason.
 - The pass/fail result of each validation command.
 - The output of `git diff --stat` (plus `git status --short` if you created files).
 

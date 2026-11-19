@@ -264,9 +264,10 @@
          (when (and (not (hash-ref compiled 'always)) (null? (hash-ref compiled 'covers)))
            (fail "~a: #:always #f needs #:covers: without declared paths the command would never run" who))
          (for ([entry (in-list (hash-ref compiled 'covers))])
-           (when (or (string=? entry "") (regexp-match? #rx"^/" entry) (member ".." (string-split entry "/")))
+           (when (outside-repository? entry)
              (fail "~a: #:covers ~s must be a path or glob relative to the repository root, without `..` or a leading `/`"
                    who entry)))
+         (check-cmd-forms compiled who)
          (set! cmds (cons compiled cmds))]
         [(paths)
          (when paths (fail "(codebase): (paths …) given twice"))
@@ -285,6 +286,55 @@
              'commands (reverse cmds)
              'paths (or paths (compile-fields (rec-fields 'paths) '() "(paths)"))
              'conditionalDocs (reverse docs)))
+
+;; A path or glob that is empty, absolute, or climbs out of the repository with `..`.
+(define (outside-repository? p)
+  (or (string=? p "") (regexp-match? #rx"^/" p) (and (member ".." (string-split p "/")) #t)))
+
+(define targeted-placeholders '("{tests}" "{files}" "{packages}"))
+(define path-map-placeholders '("{name}" "{dir}"))
+
+;; The narrower forms of a cmd (#:targeted, #:smoke) and how its tests are selected.
+(define (check-cmd-forms c who)
+  (define targeted (hash-ref c 'targeted))
+  (unless (string=? targeted "")
+    (define phs (placeholders-in targeted))
+    (for ([ph (in-list phs)])
+      (unless (member ph targeted-placeholders)
+        (fail "~a: #:targeted: unknown placeholder ~a; placeholders are ~a" who ph (string-join targeted-placeholders " "))))
+    (when (null? phs)
+      (fail "~a: #:targeted ~s needs {tests}, {files} or {packages}: that is where the selected tests go" who targeted)))
+  (define select (hash-ref c 'select))
+  (when (and (member "path-map" select) (null? (hash-ref c 'pathMap)))
+    (fail "~a: #:select names path-map, but #:path-map is empty" who))
+  (when (and (member "command" select) (string=? (hash-ref c 'selectCmd) ""))
+    (fail "~a: #:select names command, but #:select-cmd is empty" who))
+  (when (and (not (string=? (hash-ref c 'selectCmd) "")) (not (member "command" select)))
+    (fail "~a: #:select-cmd is given, but #:select does not name command" who))
+  (when (and (member "coverage" select) (equal? (hash-ref c 'recordCoverage) "none"))
+    (fail "~a: #:select names coverage, but #:record-coverage is none: no full run records a map" who))
+  (when (and (not (equal? (hash-ref c 'recordCoverage) "none"))
+             (or (string=? (hash-ref c 'coverageRun) "") (string=? (hash-ref c 'coverageFile) "")))
+    (fail "~a: #:record-coverage ~a needs #:coverage-run and #:coverage-file" who (hash-ref c 'recordCoverage)))
+  (when (< (hash-ref c 'maxTargeted) 1)
+    (fail "~a: #:max-targeted must be at least 1" who))
+  (for ([k '(testRoot coverageFile)] [kw '("#:test-root" "#:coverage-file")])
+    (define p (hash-ref c k))
+    (when (and (not (string=? p "")) (outside-repository? p))
+      (fail "~a: ~a ~s must be a path relative to the repository root, without `..` or a leading `/`" who kw p)))
+  (for ([entry (in-list (hash-ref c 'pathMap))])
+    (define source (hash-ref entry 'source))
+    (for ([p (in-list (list source (hash-ref entry 'tests)))])
+      (when (outside-repository? p)
+        (fail "~a: #:path-map pattern ~s must be a path relative to the repository root, without `..` or a leading `/`" who p))
+      (for ([ph (in-list (placeholders-in p))])
+        (unless (member ph path-map-placeholders)
+          (fail "~a: #:path-map pattern ~s: unknown placeholder ~a; placeholders are ~a"
+                who p ph (string-join path-map-placeholders " ")))))
+    (define tests (hash-ref entry 'tests))
+    (for ([ph (in-list (remove-duplicates (placeholders-in tests)))])
+      (unless (member ph (placeholders-in source))
+        (fail "~a: #:path-map: ~s uses ~a, which its source ~s does not have" who tests ph source)))))
 
 (define include-unexpanded
   "(include \"FILE\") is resolved by `#lang al` when the file is compiled; compile agentic.rkt itself (racket agentic.rkt or al compile), not its datum")
@@ -571,6 +621,94 @@
                   (list* (cons '#:from (cadr d)) (cons '#:to (cadddr d)) kws)
                   who))
 
+;; --- testing: how deep a run's checks go ------------------------------------------------------
+
+(define escalate-items "(paths G …) (diff-lines N) (files N) (lockfile) (layer) (unmapped) (class C …)")
+(define batch-items "(every N) (after-hours H)")
+
+;; (testing [DEPTH] #:k v …) → the testing record. #:escalate ITEMS and #:batch ITEMS are sugar for
+;; the escalate-… and batch-… fields; a written #:escalate replaces the defaults of every escalate
+;; field it does not set (no (lockfile) item = no lockfile escalation).
+(define (compile-testing d)
+  (define who "(testing …)")
+  (define-values (pos kws) (split-kwargs (cdr d) who))
+  (when (> (length pos) 1)
+    (fail "~a: unexpected ~s; write (testing DEPTH #:field value …)" who (cadr pos)))
+  (when (and (pair? pos) (assq '#:depth kws))
+    (fail "~a: #:depth is given twice: as (testing ~a …) and as #:depth" who (car pos)))
+  (define folded '())   ; (field-keyword . value) from the items, in the order written
+  (define (fold! sugar-kw field-kw v)
+    (when (assq field-kw kws)
+      (fail "~a: ~a is given twice: in ~a and as ~a" who field-kw sugar-kw field-kw))
+    (when (assq field-kw folded)
+      (fail "~a: ~a: two items stand for ~a; give it once" who sugar-kw field-kw))
+    (set! folded (append folded (list (cons field-kw v)))))
+  (define (items-of sugar-kw text)
+    (define p (assq sugar-kw kws))
+    (and p
+         (if (list? (cdr p))
+             (for/list ([it (in-list (cdr p))])
+               (unless (and (pair? it) (symbol? (car it)) (list? it))
+                 (fail "~a: ~a item ~s; items are ~a" who sugar-kw it text))
+               it)
+             (fail "~a: ~a takes a list of items, e.g. ((~a)); items are ~a" who sugar-kw
+                   (if (eq? sugar-kw '#:batch) "every 5" "lockfile") text))))
+  (define (one-arg sugar-kw it text)
+    (unless (= (length it) 2) (fail "~a: ~a item ~s; items are ~a" who sugar-kw it text))
+    (cadr it))
+  ;; #:escalate
+  (define escalate (items-of '#:escalate escalate-items))
+  (when escalate
+    (define on '())
+    (for ([it (in-list escalate)])
+      (define (bad) (fail "~a: #:escalate item ~s; items are ~a" who it escalate-items))
+      (case (car it)
+        [(paths) (when (null? (cdr it)) (bad)) (fold! '#:escalate '#:escalate-paths (cdr it))]
+        [(diff-lines) (fold! '#:escalate '#:escalate-diff-lines (one-arg '#:escalate it escalate-items))]
+        [(files) (fold! '#:escalate '#:escalate-files (one-arg '#:escalate it escalate-items))]
+        [(lockfile layer unmapped)
+         (unless (null? (cdr it)) (bad))
+         (when (memq (car it) on) (fail "~a: #:escalate item (~a) is given twice" who (car it)))
+         (set! on (append on (list (car it))))]
+        [(class)
+         (when (ormap keyword? (cdr it))
+           (fail "~a: (class …) takes work classes; a size is not known to al" who))
+         (when (null? (cdr it)) (bad))
+         (fold! '#:escalate '#:escalate-classes (cdr it))]
+        [else (bad)]))
+    (unless (null? on) (fold! '#:escalate '#:escalate-on on))
+    ;; every escalate field neither an item nor written as a field: off
+    (for ([kw '(#:escalate-paths #:escalate-diff-lines #:escalate-files #:escalate-on #:escalate-classes)]
+          [off (list '() 0 0 '() '())])
+      (unless (or (assq kw folded) (assq kw kws))
+        (set! folded (append folded (list (cons kw off)))))))
+  ;; #:batch
+  (define batch (items-of '#:batch batch-items))
+  (when batch
+    (for ([it (in-list batch)])
+      (define (at-least-1 letter v)
+        (when (and (exact-integer? v) (< v 1))
+          (fail "~a: #:batch (~a ~a): ~a must be at least 1" who (car it) v letter))
+        v)
+      (case (car it)
+        [(every) (fold! '#:batch '#:batch-every (at-least-1 "N" (one-arg '#:batch it batch-items)))]
+        [(after-hours) (fold! '#:batch '#:batch-after-hours (at-least-1 "H" (one-arg '#:batch it batch-items)))]
+        [else (fail "~a: #:batch item ~s; items are ~a" who it batch-items)])))
+  (define t
+    (compile-fields (rec-fields 'testing)
+                    (append (if (pair? pos) (list (cons '#:depth (car pos))) '())
+                            (filter (lambda (p) (not (memq (car p) '(#:escalate #:batch)))) kws)
+                            folded)
+                    who))
+  (for ([k '(batchEvery batchAfterHours escalateDiffLines escalateFiles)]
+        [kw '("#:batch-every" "#:batch-after-hours" "#:escalate-diff-lines" "#:escalate-files")]
+        [zero '("not by count" "not by time" "no limit" "no limit")])
+    (when (< (hash-ref t k) 0)
+      (fail "~a: ~a must be 0 (~a) or more (got ~a)" who kw zero (hash-ref t k))))
+  (unless (<= 0 (hash-ref t 'maxMissPercent) 100)
+    (fail "~a: #:max-miss-percent must be 0–100 (got ~a)" who (hash-ref t 'maxMissPercent)))
+  t)
+
 ;; --- whole layer ------------------------------------------------------------------------
 
 ;; --- dashboard ----------------------------------------------------------------------------
@@ -624,8 +762,9 @@
     (define promotions '())
     (define hosts '())
     (define registry #f)
+    (define testing #f)
     (define clause-heads
-      (append (map family-name (all-families)) '(codebase command hop expert adw stage delivery promotion host registry include)))
+      (append (map family-name (all-families)) '(codebase command hop expert adw stage delivery promotion host registry testing include)))
 
     (for ([c (in-list clauses)])
       (parameterize ([current-clause (car c)])
@@ -697,6 +836,10 @@
            (when registry (fail "(registry …): only one (registry …) may be declared"))
            (hash-set! clause-of 'registry-clause (car c))
            (set! registry (compile-keyword-record 'registry d))]
+          [(eq? (car d) 'testing)
+           (when testing (fail "(testing …): only one (testing …) may be declared"))
+           (hash-set! clause-of 'testing-clause (car c))
+           (set! testing (compile-testing d))]
           [(eq? (car d) 'adw) (set! adw-clauses (cons c adw-clauses))]
           [(eq? (car d) 'include) (fail include-unexpanded)]
           [else (fail "unknown clause (~a …); clauses are: ~a" (car d) (names clause-heads))])))
@@ -1175,6 +1318,15 @@
               (unless (member (car r) (hash-ref (cdr r) 'accepts))
                 (fail "~a: #:deliver-to ~a, but stage `~a` does not accept class ~a (its #:accepts is (~a)); add the class to the stage's #:accepts or narrow the ADW's #:classes"
                       who deliver-to deliver-to (car r) (string-join (hash-ref (cdr r) 'accepts) " "))))))
+        ;; below full depth, what lands on the final stage without a person is proven per batch
+        (when (and testing ship-i (equal? (hash-ref rv 'kind) "auto") (member (hash-ref rv 'ship) '("merge" "deploy")))
+          (define per-run (let ([p (hash-ref testing 'perRun)]) (if (equal? p "inherit") (hash-ref testing 'depth) p)))
+          (define lands-on-final?
+            (or (null? stage-list) (ormap (lambda (r) (eq? (cdr r) final-stage)) (stage-routes a))))
+          (when (and (not (equal? per-run "full")) lands-on-final?
+                     (= 0 (hash-ref testing 'batchEvery)) (= 0 (hash-ref testing 'batchAfterHours)))
+            (fail "~a ships to ~a without a person at testing depth ~a, but no batch verification is declared: add #:batch ((every N)) or ((after-hours H)) to (testing …), or #:per-run full"
+                  who (if final-stage (hash-ref final-stage 'branch) (hash-ref codebase 'defaultBranch)) per-run)))
         (when (equal? (hash-ref rv 'kind) "auto")
           (define shipping? (member (hash-ref rv 'ship) '("merge" "deploy")))
           (when shipping?
@@ -1397,4 +1549,6 @@
                      'cycle (single 'cycle)
                      'delivery (or delivery 'null)
                      'promotions promotion-list)))
-    (if (null? toolchains) ir (hash-set ir 'toolchains toolchains))))
+    ;; no (testing …): exactly the IR of before (no testing key; every check runs its full form)
+    (define ir* (if (null? toolchains) ir (hash-set ir 'toolchains toolchains)))
+    (if testing (hash-set ir* 'testing testing) ir*)))

@@ -2,7 +2,7 @@
 
   dispatch.py [PROMPT] [--source KIND:REF] [--adw NAME] [--class C] [--dry-run]
   dispatch.py --start (--adw NAME | --command NAME) --request-key KEY [--class C] [--model-set T]
-              [--model T=ID …] [--issue none|start|trigger] [--confirm-duplicate] [--confirm-ships]
+              [--testing LEVEL] [--model T=ID …] [--issue none|start|trigger] [--confirm-duplicate] [--confirm-ships]
               [--dry-run] [--replaces OLD] [--decider off|suggest|auto] [--json]   < prompt
   dispatch.py --pr-state N [--json]
   dispatch.py --command NAME [runner flags: --prompt-file F --adw-id ID --class C --dry-run …]
@@ -73,7 +73,7 @@ def start(a: argparse.Namespace) -> int:
         return done({"status": "invalid", "error": str(exc)})
     target = launch.Target("workflow", a.adw) if a.adw else launch.Target("command", a.command)
     return done(launch.start(layer, target, prompt, request_key=a.request_key or "", klass=a.klass,
-                             model_set=a.model_set, models=a.model, issue=a.issue,
+                             model_set=a.model_set, models=a.model, issue=a.issue, testing=a.testing,
                              confirm_duplicate=a.confirm_duplicate, confirm_ships=a.confirm_ships,
                              dry_run=a.dry_run, replaces=a.replaces or "", decider=a.decider or ""))
 
@@ -215,6 +215,8 @@ def main() -> int:
     ap.add_argument("--request-key", help="with --start: the same key never starts a second run")
     ap.add_argument("--model-set", metavar="TIER")
     ap.add_argument("--model", action="append", default=[], metavar="TIER=MODEL_ID")
+    ap.add_argument("--testing", metavar="LEVEL", help="with --start: the depth of the run's checks "
+                    "(light|standard|heavy or smoke|targeted|full)")
     ap.add_argument("--issue", choices=("none", "start", "trigger"), default="none",
                     help="with --start: also log the request as a forge issue")
     ap.add_argument("--confirm-duplicate", action="store_true")

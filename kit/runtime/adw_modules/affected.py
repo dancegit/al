@@ -222,8 +222,8 @@ def tree(layer: Any, state: Any, env_stack: Any) -> str:
                     if not real.is_absolute():
                         real = Path(state.worktree) / real
                 index = Path(scratch) / "index"
-                if real.is_file():  # a missing index starts empty
-                    shutil.copyfile(real, index)
+                if real.is_file():  # a missing index starts empty; copy2 keeps its mtime, so git still
+                    shutil.copy2(real, index)  # re-hashes racily clean entries (a same-size edit in the same second)
                 _git(state, env_stack, ["add", "-A"], index)
                 for relative in _copy_files(layer, state):
                     with contextlib.suppress(_GitFailed):
@@ -306,6 +306,12 @@ def record(state: Any, **entry: Any) -> dict[str, Any]:
                   "log": str(source.get("log", ""))} if source else None),
         "at": datetime.now(timezone.utc).isoformat(),
     }
+    # the depth and its accounting (testing.accounting), only where the run tracks depths: an
+    # entry of a layer without (testing …) is exactly what it was before
+    if entry.get("depth"):
+        item["depth"] = str(entry["depth"])
+    if isinstance(entry.get("testing"), dict):
+        item["testing"] = dict(entry["testing"])
     _ledger(state).append(item)
     return item
 
@@ -360,23 +366,44 @@ def _selection(layer: Any, state: Any, env_stack: Any, name: str, reference: str
     return decision
 
 
-def decide(layer: Any, state: Any, env_stack: Any, step: dict[str, Any]) -> Decision:
-    """What a check step (or a review round's re-check of it) does now."""
+def reference(layer: Any, state: Any, env_stack: Any, step: dict[str, Any], tree_hash: str = "",
+              definition_hash: str | None = None) -> str:
+    """What a check's change is measured against: the tree of the cmd's latest pass in this run
+    (with `definition_hash`: of that definition, as `decide` compares; without: of any depth, on
+    another tree than `tree_hash`, so a review round selects from what its patch touched), else
+    the run's base. "" when git fails."""
+    try:
+        name = str(layer.cmd(step["cmd"]).get("name") or step["cmd"])
+    except (LayerError, KeyError, AttributeError):
+        name = str(step.get("cmd") or "")
+    if definition_hash is not None:
+        previous = last_pass(state, name, definition_hash)
+    else:
+        previous = next((entry for entry in reversed(_ledger(state))
+                         if entry.get("check") == name and entry.get("outcome") == PASSED and entry.get("tree")
+                         and entry.get("tree") != tree_hash), None)
+    return str(previous["tree"]) if previous else base(layer, state, env_stack)
+
+
+def decide(layer: Any, state: Any, env_stack: Any, step: dict[str, Any],
+           command: dict[str, Any] | None = None) -> Decision:
+    """What a check step (or a review round's re-check of it) does now. `command` is the form the
+    depth chose (testing.plan_check); its line is part of the definition, so a pass at one depth is
+    never reused for another."""
     decision = Decision()
     try:
         cmd = layer.cmd(step["cmd"])
         name = str(cmd.get("name") or step["cmd"])
         decision.tree = tree(layer, state, env_stack)
-        decision.definition = definition(layer, state, cmd, step)
+        decision.definition = definition(layer, state, command if command is not None else cmd, step)
         if cmd.get("reuse", True) is not False:
             source = passing(state, name, decision.definition, decision.tree)
             if source is not None:
                 decision.action, decision.source, decision.why = REUSE, source, "the same tree already passed"
                 return decision
         if step.get("whenAffected"):
-            previous = last_pass(state, name, decision.definition)
-            reference = str(previous["tree"]) if previous else base(layer, state, env_stack)
-            return _selection(layer, state, env_stack, name, reference, decision.tree, decision)
+            since = reference(layer, state, env_stack, step, decision.tree, decision.definition)
+            return _selection(layer, state, env_stack, name, since, decision.tree, decision)
     except Exception as exc:  # noqa: BLE001 — a decision that cannot be made means "run the check"
         _warn(state, f"the decision for check {step.get('name')}", exc)
         decision.action, decision.source = RUN, None
@@ -384,14 +411,15 @@ def decide(layer: Any, state: Any, env_stack: Any, step: dict[str, Any]) -> Deci
 
 
 def decide_gate(layer: Any, state: Any, env_stack: Any, cmd: dict[str, Any], step: dict[str, Any] | None,
-                option: dict[str, Any]) -> Decision:
+                option: dict[str, Any], command: dict[str, Any] | None = None) -> Decision:
     """What the gate does with one required cmd. Only a tree that is exactly what ships (the
     worktree's content equals HEAD's tree) can reuse a pass or be judged not affected; the
-    comparison for `#:require affected` is always against the run's base, never a later pass."""
+    comparison for `#:require affected` is always against the run's base, never a later pass.
+    `command` is the form the gate's depth chose (part of the definition, as in `decide`)."""
     decision = Decision()
     try:
         name = str(cmd.get("name", ""))
-        decision.definition = definition(layer, state, cmd, step)
+        decision.definition = definition(layer, state, command if command is not None else cmd, step)
         current = tree(layer, state, env_stack)
         if not current or current != head_tree(layer, state, env_stack):
             return decision  # uncommitted changes, or unknown: the gate runs the cmd, its result has no tree
@@ -411,23 +439,52 @@ def decide_gate(layer: Any, state: Any, env_stack: Any, cmd: dict[str, Any], ste
 
 # ---------------------------------------------------------------- what a reader sees
 
+def _depth_text(entry: dict[str, Any]) -> str:
+    """The accounting of a result that carries one (testing.accounting_text); "" otherwise."""
+    acc = entry.get("testing")
+    if not isinstance(acc, dict):
+        return ""
+    from . import testing  # testing imports this module
+
+    return testing.accounting_text(acc)
+
+
 def summary_text(entry: dict[str, Any]) -> str:
     """One result in words: `passed`, `failed (exit N)`, `not affected (WHY; N paths compared)`,
-    `reused from STEP, same tree HASH8`."""
+    `reused from STEP, same tree HASH8`. A result that carries its depth (a layer that declares
+    (testing …)) adds it: `passed (targeted: ran 14 of 812 tests …)`, `passed (full)`."""
     outcome = str(entry.get("outcome") or "")
     if outcome == NOT_AFFECTED:
         return f"not affected ({entry.get('why') or 'no reason recorded'}; {int(entry.get('paths_total') or 0)} paths compared)"
     if outcome == REUSED:
         source = entry.get("from") or {}
         return f"reused from {source.get('step') or '?'}, same tree {str(entry.get('tree') or '')[:8]}"
+    depth = _depth_text(entry)
+    depth = f" ({depth})" if depth else ""
     if outcome == PASSED or (not outcome and entry.get("exit") == 0):
-        return "passed"
-    return f"failed (exit {entry.get('exit')})"
+        return "passed" + depth
+    return f"failed (exit {entry.get('exit')})" + depth
+
+
+def depth_cell(entry: dict[str, Any]) -> str:
+    """The short depth of a result for a table: `targeted 14/812`, `targeted 14`, `full`, `smoke`;
+    "" for a result without one (not run, or a layer without (testing …))."""
+    acc = entry.get("testing") if isinstance(entry.get("testing"), dict) else {}
+    depth = str(entry.get("depth") or acc.get("depth") or "")
+    if not depth:
+        return ""
+    if depth == "targeted":
+        ran, total = acc.get("ran"), acc.get("total")
+        if ran is not None and total:
+            return f"targeted {ran}/{total}"
+        return f"targeted {ran}" if ran is not None else "targeted"
+    return depth
 
 
 def rows(layer: Any, state: Any) -> list[dict[str, Any]]:
     """Per check, in the order the run first met it: its latest result in a check step or a review
-    round, then its latest result at the gate."""
+    round, then its latest result at the gate. A row carries `depth` and `testing` when its result
+    has them (a reused result: those of the pass it reuses)."""
     del layer
     ledger = _ledger(state)
     result: list[dict[str, Any]] = []
@@ -441,9 +498,13 @@ def rows(layer: Any, state: Any) -> list[dict[str, Any]]:
             where = ("gate" if entry.get("phase") == "gate"
                      else f"{entry.get('step')} (review round)" if entry.get("phase") == "recheck"
                      else str(entry.get("step")))
-            result.append({"check": check, "where": where,
-                           **{key: entry.get(key) for key in ("outcome", "why", "tree", "exit", "log", "paths",
-                                                              "paths_total", "from")}})
+            row = {"check": check, "where": where,
+                   **{key: entry.get(key) for key in ("outcome", "why", "tree", "exit", "log", "paths",
+                                                      "paths_total", "from")}}
+            for key in ("depth", "testing"):
+                if entry.get(key):
+                    row[key] = entry[key]
+            result.append(row)
     return result
 
 
@@ -469,9 +530,16 @@ def report_markdown(layer: Any, state: Any) -> str:
     table = rows(layer, state)
     if not table:
         return ""
-    lines = [REPORT_HEADING, "", "| Check | Where | Result | Evidence |", "| --- | --- | --- | --- |"]
+    # a Depth column only where depths are tracked: a layer without (testing …) keeps its report
+    depths = any(depth_cell(row) for row in table)
+    if depths:
+        lines = [REPORT_HEADING, "", "| Check | Where | Depth | Result | Evidence |",
+                 "| --- | --- | --- | --- | --- |"]
+    else:
+        lines = [REPORT_HEADING, "", "| Check | Where | Result | Evidence |", "| --- | --- | --- | --- |"]
     for row in table:
-        lines.append(f"| `{_cell(row['check'])}` | {_cell(row['where'])} | {_cell(summary_text(row))} | "
+        depth = f" {_cell(depth_cell(row) or '—')} |" if depths else ""
+        lines.append(f"| `{_cell(row['check'])}` | {_cell(row['where'])} |{depth} {_cell(summary_text(row))} | "
                      f"{_cell(_evidence(layer, row))} |")
     compared = list(dict.fromkeys(path for row in table for path in row.get("paths") or []))
     total = max([len(compared)] + [int(row.get("paths_total") or 0) for row in table])

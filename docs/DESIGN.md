@@ -246,6 +246,68 @@ posted as one comment on the run's pull request after shipping or a handoff
 table. `al verify` and `al sandbox doctor` print `coverage:` lines before their last line: the checks that declare no
 `#:covers`, and the `(paths #:source …)` entries no check covers.
 
+### Depths, batches and misses
+
+Affected checks choose which suites run; a depth chooses how much of a suite runs. A codebase cmd
+keeps `#:run` as its full form and may add `#:targeted "pytest -q {tests}"` (`{tests}`, `{files}`,
+`{packages}`) and `#:smoke "…"`. The layer says how deep runs go with one `(testing DEPTH …)`
+clause; without it every check runs its full form, exactly as before, and `al explain`, `al verify`
+and the dashboard say so in a note. The policy is decided in `adw_modules/testing.py`, the selection
+in `selection.py`, the coverage maps in `coverage_map.py` and the batch in `batch.py`; `steps.py`
+(`plan_for`, `run_check`, `run_logged`) is the only seam, as for affected checks.
+
+**The depth of a run** (`testing.run_depth`), first match wins: a person's "full before it ships"
+(`agents/<id>/testing-request.json`, written by `al testing --full-before-ship` or the dashboard; it
+reaches the gate), `al run --testing LEVEL`, the local setting `agents/settings/testing.json`
+(light = smoke, standard = targeted, heavy = full; `al testing --set` or the dashboard), the layer's
+`#:per-run` (check steps and the gate) or `#:review-rounds` (re-checks in a review round). A step
+that names its depth (a batch, a promotion's checks: `#:on-stage`) wins over all of these.
+
+**One check's plan** (`testing.plan_check`): a cmd without a narrower form runs full; then the run
+escalates to full, with the reason recorded, for a core path (`#:escalate ((paths …))`), more changed
+lines or files than allowed, a lockfile, the agentic layer, a work class listed in
+`(class …)`, or (per cmd) a changed path under `#:covers` that no strategy maps to a test
+(`unmapped`); a cmd whose miss rate is above `#:max-miss-percent` runs full and says so. Otherwise
+selection runs the strategies in order and unites them: `changed-tests` (always first), then
+`#:select` (`path-map`, `imports` for Python, JavaScript/TypeScript, Go packages and Rust crates,
+`coverage`, `command` through `#:select-cmd`), then `learned` (what earlier misses taught). More
+than `#:max-targeted` selected runs full; nothing selected runs the smoke form, else full, never
+nothing. The filled command is part of the check's definition hash, so a targeted pass is never
+reused where full is asked for.
+
+**Honest accounting.** Every result that carries a depth (a layer with the clause, or a run that
+asked for one) records `{depth, asked, why, selected, units, strategies, ran, total, seconds,
+full_seconds}`; `ran` comes from the test runner's own summary, `total` and `full_seconds` from the
+last passing full run (`agents/testing/suites.json`). The run summary reads `unit=passed (targeted:
+ran 3 of 43 tests (changed-tests 1, imports 1): 2 s instead of about 1 min)` and a `testing:` line;
+"What the checks proved" has a Depth column; the promotion pack shows the depth per check. Nothing
+that was not run is called passed.
+
+**Two guarantees.** Per run: the selected tests pass for the tree that ships (at depth D). Per
+batch: the full suites pass for the head of the branch the runs land on. The kit workflow
+`verify-batch` (every layer has `adws/verify_batch.py`; `al batch`; the dashboard's "Run the full
+suites now") is a synthetic run like a promotion: `open` (pin the head; the commits and runs since
+the last green batch), `checks` (every check cmd at `#:on-stage` depth), `record`, `bisect` (red:
+only the failing tests, binary search over the first-parent commits since the last green batch),
+`fix` (red: `open-fix` starts a fix run with the failing tests, the culprit and its plan; `revert`
+prepares `al/revert/<batch>`, created and never moved), `close`. It starts by itself after a landing
+when `#:batch ((every N) (after-hours H))` says it is due, when a cycle closes, and a promotion's
+checks on a stage head count as that stage's batch. The compiler refuses a zero-touch workflow that
+can land on the final stage below full depth without a batch rhythm.
+
+**Misses.** When bisect names a run whose check of that cmd passed below full depth, that is a
+miss: `agents/testing/misses.jsonl` (the batch, the run, the cmd, its strategies, the failing tests,
+the changed files), and `agents/testing/learned.json` maps those files to those tests, so the next
+change to them selects them. `testing.miss_rates` (per cmd and strategy over the newest 50 runs
+batches verified) feeds `al kpis`, the dashboard and the full fallback. A failure bisect cannot pin
+to a commit (a flaky test) records no miss. Files under `agents/testing/`: `suites.json`,
+`batches.jsonl`, `misses.jsonl`, `learned.json`, `coverage/CMD.json` (keyed by commit: a file
+changed since that commit is unknown to the map).
+
+The protected gate counts exit codes only, so a targeted pass is exit 0 there; the depth is in the
+ledger, the summary, the report and `al explain`'s per-run guarantee. The pull request body built by
+the protected `ship.py` does not yet show the depth.
+
 ## How work is delivered
 
 A layer may declare **stages**: `(stage NAME #:branch "…" #:from STAGE #:into STAGE #:accepts (…)
@@ -1037,7 +1099,7 @@ to its check, a re-check and the reviewers to the review step).
 | `agent.start` | `step` (the agent's directory: `build`, `test-resolve-1`, `review-2-1`, `patch-1`, …), `owner`, `agent` (option id), `agent_kind` (claude-code / codex / custom / mock), `model`, `model_set` (= `tier`), `tier`, `tier_from` (override / request / step / command), `model_from` (agent / override), `effort`; emitted before the call waits for an `agents` slot (a `slot.wait` / `slot.acquire` with `who` = `adw <id> step <dir>` follows) |
 | `agent.end` | as `agent.start`, plus `status` (passed / failed), `seconds`, and when the transcript says so `cost` (USD), `turns`, `duration_ms`; `billing` (subscription / api-key, when the transcript's init event says so; else empty); `error` on failure |
 | `check.start` | `step` (check step, or `gate` / `deploy`), `owner`, `phase` (check / recheck / gate / deploy), `cmd` (codebase cmd name), `attempt`, `log` (layer-relative) |
-| `check.end` | as `check.start`, plus `exit`, `seconds`; when the output had a test report `skipped` (count), `skip_reasons` (`[[reason, count]]`, at most 5, most frequent first) and `skip_source` (`pytest`, `go`, `go (no -v)`, `cargo`, `mocha`, `junit:<file>`, joined with `+`); `in` (the environment option) for a check that runs `#:in` one. A gate re-run of a check's cmd carries the same fields |
+| `check.end` | as `check.start`, plus `exit`, `seconds`; for a result that carries its depth (a layer with `(testing …)`) `depth` (smoke / targeted / full), `selected`, `total` (the full suite's size, or null) and `strategies` (`{strategy: count}`); when the output had a test report `skipped` (count), `skip_reasons` (`[[reason, count]]`, at most 5, most frequent first) and `skip_source` (`pytest`, `go`, `go (no -v)`, `cargo`, `mocha`, `junit:<file>`, joined with `+`); `in` (the environment option) for a check that runs `#:in` one. A gate re-run of a check's cmd carries the same fields |
 | `check.decision` | a check that was not run, in place of a `check.start` / `check.end` pair: `step` (check step, or `gate`), `owner`, `phase` (check / recheck / gate), `cmd`, `outcome` (not-affected / reused), `why`, `paths` (the changed paths compared, at most 50), `paths_total`, `tree` (the worktree's tree hash), `from_step` and `from_phase` (where the reused pass ran; empty otherwise), `log` (the decision's text; for a reused check step the log of the run that passed) |
 | `script.start` / `script.end` | `step`, `owner`, `cmd` (codebase cmd name), `log` (layer-relative); `script.end` adds `exit`, `seconds` |
 | `script.event` | `step`, `owner` (the script step), `line` (the line number in the script's own `events.jsonl`), `foreign` (that line's JSON object, unchanged) |
@@ -1046,6 +1108,9 @@ to its check, a re-check and the reviewers to the review step).
 | `limit.stop` | `step`, `window`, `cause` (reached = the CLI refused or cut off the call / threshold), `status`, `used`, `percent` (the threshold, or null), `resets_at`, `reason` (`limit:<window>: …; resets …`) |
 | `limit.wait` | `step` (the call that waits), `window`, `used`, `percent`, `resets_at`, `seconds` |
 | `review.round` | `step`, `round`, `success`, `reviewers`, `issues` (`{blocker, tech_debt, skippable}` counts), `summary` |
+| `batch.open` | a batch run's `open` step: `branch`, `stage`, `head`, `since` (the last green head or the merge base, or empty), `commits` (count), `delivered` (run ids) |
+| `batch.bisect` | `culprits` (`{cmd: run id, "commit SHA (no run)" or empty}`) |
+| `batch.result` | `id`, `branch`, `stage`, `head`, `status` (green / red), `depth`, `culprit`, `fix_run`, `delivered` |
 | `gate.decision` | `action` (pr / merge / deploy / none), `ship`, `reasons` |
 | `ship.result` | `action`, `shipped`, `target`, `pr_url`, `reasons` |
 | `handoff` | `status` (opened / skipped / failed), `reason`, `stopped_at`, `target`, `pr_url` |

@@ -144,6 +144,31 @@
                        (field agent 'id "") kind))
          '())]))
 
+;; (testing targeted|smoke …) while no check cmd has a narrower form: the policy changes nothing.
+(define (targeted-without-forms ir)
+  (define t (field ir 'testing #f))
+  (define (resolved key)
+    (define v (field t key "inherit"))
+    (if (equal? v "inherit") (field t 'depth "full") v))
+  (cond
+    [(not (hash? t)) '()]
+    [(andmap (lambda (d) (equal? d "full")) (list (field t 'depth "full") (resolved 'perRun) (resolved 'reviewRounds))) '()]
+    [else
+     (define names
+       (remove-duplicates
+        (append (for*/list ([adw (in-list (field ir 'adws))]
+                            [st (in-list (field adw 'steps))]
+                            #:when (equal? (field st 'kind "") "check"))
+                  (field st 'cmd ""))
+                (append* (map (lambda (rv) (field rv 'requireChecks)) (field ir 'reviews))))))
+     (define cmds (filter (lambda (c) (member (field c 'name "") names)) (field (field ir 'codebase #f) 'commands)))
+     (if (ormap (lambda (c) (or (non-empty-string? (field c 'targeted "")) (non-empty-string? (field c 'smoke ""))))
+                cmds)
+         '()
+         (list (format "(testing ~a) changes nothing: no check cmd declares #:targeted or #:smoke, so every check runs its full form"
+                       (field t 'depth ""))))]))
+
 (define (layer-warnings ir)
   (append (unused-environments ir) (credentials-outside ir) (scope-command ir) (nix-not-in-container ir)
-          (check-outside-sandbox ir) (require-affected-ships ir) (helper-agent-without-toolless-mode ir)))
+          (check-outside-sandbox ir) (require-affected-ships ir) (helper-agent-without-toolless-mode ir)
+          (targeted-without-forms ir)))

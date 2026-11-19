@@ -1,8 +1,8 @@
 # al work dashboard
 
-A live view of what the agents of one or more layers are doing (with three guarded writes: which
-model each tier uses, starting work: a workflow, a single command or a failed run again, and settling
-a finished run), which runs still need someone, which runs are in
+A live view of what the agents of one or more layers are doing (with guarded writes: which
+model each tier uses, how deep each run's checks go, starting work: a workflow, a single command, a failed
+run again or a batch of the full suites, and settling a finished run), which runs still need someone, which runs are in
 flight and what each agent is doing right now, the workflow of every run as a graph that colours
 in as steps finish, where the time went, what it cost, and every agent's transcript formatted for
 people. One Python file (standard library only) serves one page (HTML, CSS and vanilla JS, no
@@ -77,14 +77,15 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | **Kept on a branch** | on the run page of a workflow without a ship step: the branch its work was committed on, the commit, how many files changed, each kept file as a link to its copy in `artefacts/<id>/kept-files/`, the whole change as `changes.diff` (the files and the diff open in the Documents viewer), the files too large to copy (they are on the branch only); "nothing changed" when the run left nothing, "keeping failed" with the reason when the worktree was kept instead |
 | **Repos** (`4`) | the workspace: every git repository of the folder(s), searchable, with its state badge (`layer`: an `agentic.rkt` in it or in a sibling `NAME.al`; `setup`: rule files, prompts, workflow scripts or a hand-built suite, the same detection as `al scout`; `none`), branch, a mark for uncommitted changes and its last activity; **refresh** rescans. A selected repository (`#/repo/<key>`) shows al scout's "Existing agent setup" summary, its layer with a link to its workflows and runs, its jobs, and the **al** panel: one button per action with the exact command line(s) it runs, disabled with the reason when it does not apply (`needs the al tool; looked for …`, `--read-only`, `--no-actions`, the state), and a tools table: what `al doctor` sees on this machine (racket, raco, uv, git, the author agent's CLI: where each was found, or the sentence saying where al looked, and its version; kept 5 minutes). **create** and **adopt** have a placement picker above their command lines: **beside the repository** (`<folder>/<name>.al`) or **inside the repository** (`<repository>/agentic`), each with what it means, the resulting path and three checks (exists and is kept / will be created; writable; not a layer yet), disabled with its reason when it cannot be used; the command lines are those of the selected placement. A writing action first shows what it runs and writes (for adopt the dry run's diff, line by line; for create and adopt the placement with its path and the detected choices, each editable, with a sentence saying what it decides and its fact) and runs on **Confirm**. **generate a layer…** beside **refresh**, and **guided** in the al panel of a repository without a layer, open guided generation (below) |
 | **Job** | one action (`#/job/<id>`), in the order a person reads it: the header (repository, action, for a create or adopt its placement (`placement: inside the repository`), status, exit code, duration, why it failed, `needs a person: N` when the author left items out, **Download full output**); once it ended, the **outcome** card: for a passed job what was created (the layer with the files added, changed and removed) or adopted, what is `UNVERIFIED` and the next action (the last `next: …` line the steps printed); for a passed create or adopt the same card also holds the **result card** of its `result` step (forge clause, workflows, adopted rules, commands and suite workflows, what was left behind, unverified commands, the next steps, the first of which is the next action; paths as the job shows them), for a failed or interrupted job the failing step, the reason in one sentence (a generic "exited N" is replaced by the step's last error), up to 12 last relevant lines, **Retry from STEP** (asks first; the steps from the first that did not pass run again in the same job, a retried `author` with `--accept-existing`) and **Download log**; the **steps row**, one chip per step with status, exit code and time, a failed step's reason, and under the running one what it is doing right now ("reading the CI files", "compiling, attempt 2", "writing agentic.rkt", or a plain step's last line); the **activity** of the selected step (the running one, else the failed one, else the last agent step, so `author` rather than `scout`; a click picks another and the address keeps it as `?step=`): an agent step's journal with its messages as Markdown, one line per tool call (tool, target, result size, duration), errors in red, the final report and the totals, hooks, start-up, rate limits and other bookkeeping only with **show everything**; a plain step's own output as text (ANSI stripped); both the latest rows with **show earlier** and a search box, and the step's log (an agent step's **raw events**) and journal to download; the author's **Decisions** and **Left out and why** cards; the layer's files it added, changed or removed, and whether the repository changed (for a layer written inside the repository, when only `agentic/` changed: "the layer was written inside the repository: N path(s); commit agentic/ with the code", not a warning); its documents (`LLM.txt` of scout, `preview.diff.txt` of an adopt preview, `choices.json` of a create or adopt preview, `result.json`, `verify.json`, `EXPLAIN.md`); and, collapsed, **Full output** (every step as it ran, ANSI colours; an agent step condensed), opened by itself for a job from before the `steps/` files |
-| **Layers** (`3`) | a **Start work** panel (below), then each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists. After the declared workflows comes everything else the layer can run, from the runtime's registry: the group **Kit workflows** (`integrate`, one `promote-FROM-TO` per declared promotion or `promote` when the layer has no stages, `improve`, `decider`), each card with a `kit` mark, what it is for, the input it takes, how it is started, its setting, its steps (a graph when the registry has a definition) and its runs; an entry that is off (its setting says so, or its script is missing) is dimmed, marked `off`, with what turns it on. Then **Commands (single-command runs)** with the runs recorded as `command:NAME`, and **Suite commands** (the codebase commands `script` steps run) |
+| **Layers** (`3`) | a **Start work** panel (below), then each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists. After the declared workflows comes everything else the layer can run, from the runtime's registry: the group **Kit workflows** (`integrate`, one `promote-FROM-TO` per declared promotion or `promote` when the layer has no stages, `improve`, `decider`), each card with a `kit` mark, what it is for, the input it takes, how it is started, its setting, its steps (a graph when the registry has a definition) and its runs; an entry that is off (its setting says so, or its script is missing) is dimmed, marked `off`, with what turns it on. Then **Commands (single-command runs)** with the runs recorded as `command:NAME`, and **Suite commands** (the codebase commands `script` steps run) | A layer's page opens with its **Testing** panel (see "Testing depth and batches")
 
 The **Start work** panel (on the Layers view; a layer chooser when several are watched) takes a
 request, any workflow of the layer (adopted ones included) or a single command or hop (one recorded
 step in the layer's normal environment that never ships), picked from a list or typed as `/NAME …`
 with completion (arrow keys, Enter, Esc; `/command:NAME` when a workflow has the same name). It says
 in one line what the choice does and whether anything ships without a person, takes an optional
-class, tier and model ids, and, when the layer has a forge, can log the request as an issue ("start
+class, tier and model ids, a **testing** depth for a workflow (layer default, light, standard or heavy,
+each with its typical minutes; passed to the launcher as `--testing`), and, when the layer has a forge, can log the request as an issue ("start
 now", or "let the trigger start it" for a workflow a cron or webhook trigger starts from issues). A
 workflow that merges or deploys without a person, and the same request again within five minutes,
 open a confirmation dialog. Then the page opens the new run. When starting is off, the panel says why
@@ -206,7 +207,8 @@ chat. Keys: `j`/`k` move through runs, nodes or transcript events, `Enter` opens
 ## What it reads, and how
 
 Everything comes from files the runtime already writes. The dashboard itself writes
-agents/settings/models.json (the Models panel) and, for the actions, its jobs directory; starting
+agents/settings/models.json (the Models panel), agents/settings/testing.json (the Testing panel),
+agents/<id>/testing-request.json ("Full before it ships") and, for the actions, its jobs directory; starting
 work is done by the layer's own `adws/dispatch.py --start`, which writes the run's files; the
 actions run `al`, which writes what that command writes. `--read-only` turns all of it off, and
 `--no-start` and `--no-actions` each turn off their own.
@@ -218,6 +220,11 @@ actions run `al`, which writes what that command writes. `--read-only` turns all
 | `agents/<id>/state.json` | status, class, request, step records (status, start, end, detail, the agent, model and model tier used), every agent call's tier and why it was chosen (`agent_calls`), cost and spending limits (`cost`, `budget`: a run a limit stopped carries a distinct "budget stop" mark; `cost.billing` for "API-equivalent"), what the run recorded about subscription usage (`usage`: billing mode, the limit that stopped it, waits), script steps (`scripts`), checks (with `outcome` and `why` when the runtime recorded them), what the checks proved (`check_results`), review rounds, ship and gate, fan-out candidates and a candidate's parent (`fanout_parent`), artefacts. Liveness: `pid`, `host` and `heartbeat` (refreshed every ~5 s). A run whose state says running but whose heartbeat is older than 20 s while its process is gone is shown as **died**, with when it was last seen (other host, or inside the container where pids are not visible: after 5 min without a heartbeat). Older files without newer keys are fine. A run without `state.json` is shown as `unknown` from its `run.log` |
 | `agents/subscription-usage.json` | the Now view's "Subscription usage" panel: the billing mode and the latest report per usage window, written by the runtime after each agent call. Read-only, polled like the run files; a change is pushed to the page. Missing = "no data yet"; anything unreadable or of the wrong type is ignored, and its content is shown as text |
 | `agents/settings/models.json` | the Now view's "Models" panel: the layer's local model setting (`{"models": {TIER: MODEL_ID}, "version": 1}`, never committed), the same file `al models LAYER --set TIER=ID` writes. With the IR's agent tiers it gives each tier's model and its source (`local setting`, `layer`, `built-in default`). Polled like the usage file; a change is pushed to the page. An unreadable file is shown as an error and not used. Also the one file the dashboard writes (see Safety) |
+| `agents/settings/testing.json` | the Testing panel's level: the layer's local testing setting (`{"version": 1, "level": "light\|standard\|heavy"}`, never committed), the file `al testing LAYER --set LEVEL` writes; read and written by `read_testing_setting` / `write_testing_setting`, mirrors of the runtime's `testing.read_setting` / `write_setting`. An unreadable file is shown as an error and not used |
+| `agents/testing/batches.jsonl`, `misses.jsonl`, `suites.json` | written by the layer's `adw_modules/batch.py` and `testing.py`: one line per batch (`{id, branch, stage, head, since, status: green\|red, depth, checks, delivered, at, culprit, fix_run, source}`), one per miss a batch bisected to a run (`{batch, run, cmd, strategies, tests, files, at}`), and each command's full suite (`{CMD: {seconds, tests, commit, at}}`): the Testing panel's batch state, miss rates and typical minutes, and a culprit's "broke the batch". Polled like the settings; the ledger is part of every run's signature, so a new culprit is marked at once |
+| `state.json` `testing`, `checks[NAME].testing`, `check_results[].depth` | a run's depth (`{requested, depth, source, escalation}`), each check's accounting (`{depth, asked, why, selected, units, strategies, ran, total, seconds, full_seconds}`, shown in the runtime's words: "targeted: ran 14 of 812 tests (changed-tests 3, imports 9, coverage 2): 41 s instead of about 9 min") and the depth of each ledger entry (the Depth column of "What the checks proved"). Runs from before have none of it and read as before |
+| `agents/<id>/testing-request.json` | "Full before it ships" (`{"depth": "full", "by", "at"}`): written by `POST /api/run-testing` or `al testing LAYER --full-before-ship RUN`; the run's gate then runs the full suites |
+| `adws/verify_batch.py` | "Run the full suites now": its presence enables the button; `verify_batch.py run --detach --json [--stage S]` is run (see Safety) |
 | `agents/<id>/run.log` | without events: container name and removal, slot waits (`[slots] … waiting for a free runs slot`), gate re-run exit codes. Newer runtimes start each line with its UTC time, which is stripped before matching |
 | `agents/<id>/<step>/{prompt.md,raw.jsonl,output.txt,stderr.log}` | one directory per agent call (the transcript's init event also says whether the call ran on a subscription or an API key, so older runs are labelled too). `<check>-resolve-<n>` belongs to that check, `review-<n>`, `review-<round>-<n>`, `patch-<n>`, `implement-<n>` to the review step. Without events: start = `prompt.md` mtime, end = `output.txt` mtime |
 | `agents/<id>/scripts/<name>.<n>.log` | the output of a `script` step, shown when its node is opened |
@@ -364,12 +371,39 @@ work as a **card**. How to use it: "Talk to the dashboard" in `docs/GUIDE.md`.
 - **Transcript** in `<voice-dir>/<conversation>.jsonl` (mode 0600). Audio stays in memory unless **Keep
   recordings** is ticked; then utterances are written under the layer's `agents/voice/<conversation>/`.
 
+## Testing depth and batches
+
+A layer with `(testing …)` checks each run with the tests its change concerns and proves the whole per
+batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
+
+- **The Testing panel** (the layer page, first card): the three levels as a segmented control, **light**
+  (smoke), **standard** (targeted) and **heavy** (full), each with its typical minutes (the median check time
+  of the last 20 finished runs at that depth; heavy from the suite timings when no full run is known), the
+  current one marked "now", and where it comes from ("from the layer file" or "from the local setting").
+  **Apply** writes the local setting (`agents/settings/testing.json`), **Reset** removes it; both apply to
+  runs started from then on. A level the layer refuses is disabled with the reason as its title: below full
+  while a workflow that merges or deploys without a person lands on the final stage and no batch rhythm is
+  declared (the compiler's sentence, from `testing_allowed`, the mirror of `testing.setting_allowed`). A
+  layer without `(testing …)` says so: every check runs its full form. Then a table per command: its forms
+  (`full`, `targeted`, `smoke`), its targeted runs and misses over the runs delivered in batches that ended
+  (the newest 50), the miss rate (per strategy in its title) and a **runs full** pill above
+  `#:max-miss-percent`. Last, per stage (or the default branch without stages): the last batch (green or red,
+  its head, when, its run), for a red one the culprit run, the fix run and the failing tests, the runs that
+  landed since, when the next batch is due, and **Run the full suites now**.
+- **The start form** has a **testing** select (layer default, light, standard, heavy).
+- **A run's page** says its depth under the request ("Testing: targeted (layer policy) · escalated: core
+  path …"), whether a person asked for the full suites before it ships, and while the run runs a **Full
+  before it ships** button. "What the checks proved" gains a **Depth** column: a `depth-pill` (full plain,
+  targeted dashed, smoke dotted) with the accounting. A run a batch was bisected to carries a red **broke the
+  batch** badge (in its header and the runs list) and a banner with the batch run, the failing tests and the
+  fix run.
+
 ## Safety
 
 - **Writes, guarded** (and the stand-in's three, below). Only GET and HEAD, plus `POST /api/models`, `POST /api/start`,
-  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, and `POST /api/promotion` and `POST /api/integrate`, which start runs through the layer's own scripts), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
-  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle` or `/api/integrate` is
-  405 too). No endpoint changes a run's records (a settlement is a file of its own), and only an approved voice proposal can resume, answer or stop a run. All four writes pass one guard
+  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, `POST /api/promotion` and `POST /api/integrate`, which start runs through the layer's own scripts, and the three Testing writes `POST /api/testing`, `POST /api/batch` and `POST /api/run-testing`), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
+  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle`, `/api/integrate`, `/api/testing`, `/api/batch` or `/api/run-testing` is
+  405 too). No endpoint changes a run's records (a settlement and a testing request are files of their own), and only an approved voice proposal can resume, answer or stop a run. All four writes pass one guard
   (`Handler._write_guard`): the token as for every request, but from the `Authorization` header or
   the cookie only (a token in the query string is refused); a loopback `Host` when there is no
   token; an `Origin` header equal to `http://<Host>` (a missing one is refused); the
@@ -619,6 +653,31 @@ target's history; `replaced` lists later runs that start it again (`replaces`), 
 in their request, or have the same source (a task or an issue), and proposes the newest that has
 landed. An unknown kind is 400, an unknown layer or run 404. Nothing is written.
 
+### `POST /api/testing`, `POST /api/batch`, `POST /api/run-testing`
+
+All three pass the guard of every write (loopback Host or token, the token never from the URL, Origin
+naming the Host, `X-AL-Dashboard: 1`, `application/json`, at most 4 KiB, not `--read-only`) and accept
+only the keys named here.
+
+- `POST /api/testing {layer, level: light|standard|heavy}` or `{layer, reset: true}` sets or removes the
+  layer's local testing level (`agents/settings/testing.json`, replaced atomically like the model setting).
+  Any other level (a depth name included) or key is 400, an unknown layer 404; a layer whose `agents/settings`
+  is not writable here, or a level `testing_allowed` refuses, is 409 with the reason. The answer carries the
+  panel's new state; the layers are pushed to every page.
+- `POST /api/batch {layer, stage?}` ("Run the full suites now") is also refused with `--no-start` and in a
+  container without `--allow-start-in-container` (403). `stage` must be a declared stage (400). A layer
+  without `adws/verify_batch.py` (generated before batch verification) is 409 "run `al gen`". The layer's
+  own `adws/verify_batch.py run --detach --json [--stage S]` (argv list, no shell, the dashboard's token not
+  passed on, a 60 s limit) starts the kit workflow `verify-batch`: 202 `{"status": "started", "run_id",
+  "url"}`; a refusal of the layer's runtime (a batch of that branch already running, …) is 409
+  `{"error": "<reason>: <words>", "reason"}`.
+- `POST /api/run-testing {layer, adw_id, depth: "full"}` ("Full before it ships") writes
+  `agents/<id>/testing-request.json` `{"depth": "full", "by": "dashboard", "at"}` (mode 0600, atomically)
+  for a run that is running: the run's gate then runs the full suites. `depth` other than `full` or a bad
+  run id is 400, an unknown layer or run 404, a run that is not running (or died) 409.
+- `POST /api/start` accepts `testing` (`light`, `standard`, `heavy`, or empty for the layer's own level; 400
+  otherwise) and passes it to the layer's launcher as `--testing`.
+
 ## Its own podman container
 
 ```bash
@@ -824,6 +883,20 @@ panel state, hold to talk, always listen, approve, barge-in, the synthesizer fol
 motion, `--read-only` and hostile text; with `AL_DASHBOARD_SHOTS=DIR` it saves `voice-*.png` and
 `voice-exchange-{1280,390}.webm`. `tests/test_browser_voice_real.py` (markers `voice`, `slow`;
 `AL_VOICE_REAL=1` and the models set up) runs the same flow with the real engines.
+`tests/testing_fixtures.py` builds a layer with targeted testing as code (`build_testing_site`: the layer
+of `tests/start_layer.py` with a `testing` IR, commands with narrower forms, the sprint, six runs: targeted,
+escalated to full, the culprit of a red batch, its fix run, the batch run and a running run; the ledger with
+a green and a red batch, a miss and suite timings; a stand-in `adws/verify_batch.py` that records its argv).
+`tests/test_testing_model.py` checks the Testing panel's model (the undeclared note, levels and typical
+minutes, miss rates and the fallback, the setting mirrors and the refusal sentence, batches per stage with
+culprit and fix run), a run's depth and accounting, the "broke the batch" badge, the proof rows' depth and
+the watcher; `tests/test_testing_http.py` the three endpoints behind every guard, `--read-only`,
+`--no-start` and the container, and `testing` reaching the launcher's argv; `tests/test_browser_testing.py`
+(Chrome) switches the panel to heavy, a run page's depth, Depth column and "Full before it ships", the
+culprit's banner, the badge in the runs list, "Run the full suites now" and the start form's choice; with
+`AL_DASHBOARD_SHOTS=DIR` it saves `testing-panel-1280.png`, `testing-heavy-1280.png`,
+`run-targeted-accounting-1280.png`, `batch-failed-1280.png` and `start-testing-1280.png`.
+
 `tests/test_writes_together.py` runs both features in one server: `--read-only` refuses all three
 writes, `--no-start` and `--no-actions` each refuse only their own, each write has its body limit,
 and both features' GET routes and banner states are there; the voice helper's Approve follows the same

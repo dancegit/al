@@ -773,61 +773,145 @@
     "commands": [
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "",
+        "maxTargeted": 200,
         "name": "install",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "bun install && (cd api && uv sync)",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1200
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "",
+        "maxTargeted": 200,
         "name": "lint",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "bun run lint && (cd api && uv run ruff check)",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "web",
           "api"
         ],
         "description": "",
+        "maxTargeted": 200,
         "name": "test",
+        "pathMap": [
+          {
+            "source": "api/app/{dir}/{name}.py",
+            "tests": "api/tests/{dir}/test_{name}.py"
+          }
+        ],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "bun run test -- --reporter=junit --outputFile=reports/unit.xml && (cd api && uv run pytest -q)",
+        "select": [
+          "changed-tests",
+          "path-map",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "(cd api && uv run pytest -q -m smoke)",
+        "targeted": "uv run --project api pytest -q {tests}",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [
           "web"
         ],
         "description": "Playwright; writes e2e-results/",
+        "maxTargeted": 200,
         "name": "e2e",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "bun run e2e",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "",
+        "maxTargeted": 200,
         "name": "deploy",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "./scripts/deploy.sh staging",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       },
       {
         "always": true,
+        "coverageFile": "",
+        "coverageRun": "",
         "covers": [],
         "description": "the team's own script: appends the change to CHANGELOG.md",
+        "maxTargeted": 200,
         "name": "changelog",
+        "pathMap": [],
+        "recordCoverage": "none",
         "reuse": true,
         "run": "./scripts/changelog.sh",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
         "timeout": 1800
       }
     ],
@@ -1451,6 +1535,31 @@
     "region": "us-east-1",
     "secretKeyEnv": "AWS_SECRET_ACCESS_KEY",
     "status": "stable"
+  },
+  "testing": {
+    "batchAfterHours": 0,
+    "batchEvery": 5,
+    "depth": "targeted",
+    "escalateClasses": [],
+    "escalateDiffLines": 0,
+    "escalateFiles": 0,
+    "escalateOn": [
+      "lockfile",
+      "layer",
+      "unmapped"
+    ],
+    "escalatePaths": [
+      "api/schema/**"
+    ],
+    "fixAdw": "",
+    "maxMissPercent": 10,
+    "onBatchFailure": [
+      "bisect",
+      "open-fix"
+    ],
+    "onStage": "full",
+    "perRun": "inherit",
+    "reviewRounds": "inherit"
   },
   "toolchains": [
     {

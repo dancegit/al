@@ -152,7 +152,8 @@ def test_scripts_and_reserved_names(reg):
         "adws/dispatch.py": "launcher", "adws/integrate.py": "kit-workflow", "adws/promote.py": "kit-workflow",
         "adws/triggers/trigger_cron.py": "trigger", "adws/triggers/trigger_webhook.py": "trigger",
         "adws/triggers/trigger_voice.py": "trigger", "adws/voice/listen.py": "voice", "adws/voice/say.py": "voice",
-        "adws/voice/serve.py": "voice", "adws/dashboard.py": "dashboard", "adws/standin.py": "stand-in"}
+        "adws/voice/serve.py": "voice", "adws/dashboard.py": "dashboard", "adws/standin.py": "stand-in",
+        "adws/verify_batch.py": "batch"}
     assert scripts["adws/promote.py"]["entries"] == ["promote-sprint-main", "promote-hotfix-main"]
     assert scripts["adws/integrate.py"]["entries"] == ["integrate"] and scripts["adws/adw_zte.py"]["entries"] == ["zte"]
     assert scripts["adws/dispatch.py"]["entries"] == names(registry.commands(reg))

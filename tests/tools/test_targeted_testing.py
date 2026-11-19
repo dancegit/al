@@ -1,0 +1,330 @@
+"""Targeted testing as `tools/al` shows it: `al gen` writes adws/verify_batch.py for every layer and
+`al check` requires it; `al run --testing`; `al testing` (show, --set, --reset, the zero-touch refusal,
+--full-before-ship); `al batch run|status`; the Testing block of `al explain`; the `testing:` lines of
+`al verify`; the Testing table of `al kpis`; and that the dashboard's mirror of the local setting is
+read by the runtime. No network, no LLM (the mock agent), no podman.
+
+With AL_TESTING_PROOF=DIR the outputs of `al testing`, `al batch status` and the `al kpis` Testing table
+are also written to DIR (for docs/GUIDE.md)."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+from conftest import KIT, al, manifest
+
+sys.path.insert(0, str(KIT / "dashboard"))
+import dashboard  # noqa: E402
+
+sys.path.insert(0, str(KIT / "dashboard" / "tests"))
+import testing_fixtures as tf  # noqa: E402
+
+UNDECLARED = ("testing: full (this layer has no (testing …) clause, so every check runs its full form; "
+              "add (testing targeted …) and #:targeted forms to test what a change touches)")
+REFUSAL = ("(adw ship-it) ships to main without a person at testing depth targeted, but no batch verification is "
+           "declared: add #:batch ((every N)) or ((after-hours H)) to (testing …), or #:per-run full")
+
+# the conftest layer with a narrower form for `test` and a (testing …) clause; with `trunk`, a zero-touch
+# workflow `ship-it` that merges into the default branch from a container (the compiler's rule applies)
+TESTED = """#lang al
+(agentic-layer #:name "notes" #:description "Agentic layer of a tiny test app"
+  (codebase #:root "../notes" #:languages (python) #:description "A tiny app: app.py and test.sh."
+    (cmd test "./test.sh" #:timeout 60 #:description "the tests pass" #:covers ("app.py" "tests")
+         #:targeted "./test.sh {tests}" #:smoke "./test.sh")
+    (paths #:source ("app.py") #:tests ("test.sh") #:protected ("test.sh")))
+  (layer sibling)
+  TESTING
+  (environment worktree)
+  BOX
+  (command plan #:template plan-chore #:model-set heavy #:output path #:validation (test))
+  (command tidy #:template plan-chore #:model-set heavy #:output path)
+  (command commit #:template commit)
+  (command review #:template review #:output json)
+  (hop implement #:template run-plan #:takes plan)
+  (review human)
+  GATE
+  (adw change #:description "Plan, build, test; a person reviews" #:review human #:environment (worktree)
+    (steps (run plan #:command plan #:args ("$prompt")) (run build #:command implement #:args ("$plan"))
+           (check test #:cmd test) (run commit #:command commit) (review) (ship)))
+  SHIP_IT)
+"""
+SHIP_IT = """(adw ship-it #:description "Plan, build, test; merged without a person" #:review gate #:environment (worktree box)
+    (steps (run plan #:command plan #:args ("$prompt")) (run build #:command implement #:args ("$plan"))
+           (check test #:cmd test) (run commit #:command commit) (review) (ship)))"""
+
+
+def layer_with_testing(app: Path, testing: str = "(testing targeted #:batch ((every 2)))", trunk: bool = False,
+           name: str = "tested.al") -> Path:
+    layer = app.parent / name
+    layer.mkdir()
+    text = (TESTED.replace("TESTING", testing)
+            .replace("BOX", "(environment podman #:id box)" if trunk else "")
+            .replace("GATE", "(review auto #:id gate #:ship merge #:require-checks (test))" if trunk else "")
+            .replace("SHIP_IT", SHIP_IT if trunk else ""))
+    (layer / "agentic.rkt").write_text(text)
+    al("gen", layer)
+    return layer
+
+
+def proof(name: str, text: str, layer: Path | None = None) -> None:
+    """Write `text` to $AL_TESTING_PROOF/name, the layer's path shown as ~/code/myapp.al."""
+    directory = os.environ.get("AL_TESTING_PROOF")
+    if not directory:
+        return
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    if layer is not None:
+        text = text.replace(str(layer), "~/code/myapp.al")
+    (Path(directory) / name).write_text(text)
+
+
+def runtime(layer: Path, code: str) -> str:
+    """Run `code` with the layer's own runtime importable (adw_modules), in a fresh interpreter."""
+    cp = subprocess.run([sys.executable, "-c", f"import sys; sys.path.insert(0, {str(layer / 'adws')!r})\n{code}"],
+                        capture_output=True, text=True, timeout=120)
+    assert cp.returncode == 0, cp.stderr
+    return cp.stdout
+
+
+# ---------------------------------------------------------------- gen and check
+
+def test_gen_writes_verify_batch_and_check_requires_it(sibling) -> None:
+    script = sibling / "adws" / "verify_batch.py"
+    assert script.is_file() and os.access(script, os.X_OK)
+    text = script.read_text()
+    assert text.startswith("#!/usr/bin/env -S uv run --quiet --script\n")
+    assert "batch.main(Path(__file__).resolve().parent.parent, sys.argv[1:])" in text
+    assert "Generated by `al gen` for every layer — see adw_modules/batch.py" in text
+    assert "adws/verify_batch.py" in manifest(sibling)["files"]
+    al("check", sibling)
+    script.unlink()
+    cp = al("check", sibling, ok=False)
+    assert cp.returncode != 0 and "missing adws/verify_batch.py" in cp.stdout + cp.stderr
+    al("gen", sibling)
+    al("check", sibling)
+
+
+# ---------------------------------------------------------------- al run --testing
+
+def test_al_run_passes_testing(sibling) -> None:
+    cp = al("run", sibling, "/tidy", "tidy", "the", "readme", "--dry-run", "--testing", "full")
+    run_id = re.search(r"^run ([0-9a-f]{8}) started", cp.stdout, re.MULTILINE).group(1)
+    state = json.loads((sibling / "agents" / run_id / "state.json").read_text())
+    assert state["status"] == "passed"
+    assert state["testing"]["requested"] == "full"          # the runner got --testing full
+    bad = al("run", sibling, "/tidy", "x", "--dry-run", "--testing", "thorough", ok=False)
+    assert bad.returncode == 2 and "--testing" in bad.stderr
+
+
+# ---------------------------------------------------------------- al testing
+
+def test_al_testing_show_set_reset_and_refusal(sibling, app) -> None:
+    out = al("testing", sibling).stdout
+    lines = out.splitlines()
+    assert lines[0] == UNDECLARED
+    assert "level: heavy = full (the layer declares no (testing …))" in lines
+    assert "  heavy     full      -                 <- this machine" in lines
+    assert "  no targeted runs yet" in lines
+    assert lines[-1].startswith(f"settings: {sibling / 'agents/settings/testing.json'} (local to this machine")
+
+    out = al("testing", sibling, "--set", "light").stdout
+    setting = sibling / "agents" / "settings" / "testing.json"
+    assert json.loads(setting.read_text()) == {"version": 1, "level": "light"}
+    assert "level: light = smoke (local setting)" in out.splitlines()
+    assert any(line.startswith("testing: local setting light (smoke)") for line in out.splitlines())
+    data = json.loads(al("testing", sibling, "--json").stdout)
+    assert (data["declared"], data["level"], data["depth"], data["setting"]) == (False, "light", "smoke", "light")
+    assert set(data["typical_minutes"]) == {"light", "standard", "heavy"} and data["miss_rates"] == {}
+    al("testing", sibling, "--reset")
+    assert not setting.exists()
+    assert al("testing", sibling, "--set", "thorough", ok=False).returncode == 2
+    assert al("testing", sibling, "--set", "light", "--reset", ok=False).returncode == 2
+
+    layer = layer_with_testing(app)
+    out = al("testing", layer).stdout
+    proof("al-testing.txt", out, layer)
+    assert out.splitlines()[0] == ("testing: targeted per run, targeted in review rounds, full per batch "
+                                   "(layer policy, depth targeted)")
+    assert "testing: a batch runs the full suites (full) every 2 landed changes" in out
+    assert "level: standard = targeted (layer policy)" in out
+
+    # a zero-touch workflow merges into main and no batch proves the full suites there: below full is refused
+    trunk = layer_with_testing(app, "(testing targeted #:per-run full)", trunk=True, name="trunk.al")
+    refused = al("testing", trunk, "--set", "standard", ok=False)
+    assert refused.returncode == 2 and refused.stderr.strip() == f"al testing: refused: {REFUSAL}"
+    assert not (trunk / "agents" / "settings" / "testing.json").exists()
+    al("testing", trunk, "--set", "heavy")
+    assert json.loads((trunk / "agents" / "settings" / "testing.json").read_text())["level"] == "heavy"
+
+
+def test_full_before_ship_refused_for_ended_run(sibling) -> None:
+    def state(run_id: str, **fields) -> Path:
+        run = sibling / "agents" / run_id
+        run.mkdir(parents=True)
+        (run / "state.json").write_text(json.dumps({"adw_id": run_id, "adw": "change", "prompt": "x", **fields}))
+        return run
+
+    ended = state("0e0e0e01", status="passed", ended="2026-11-17T10:00:00+00:00")
+    cp = al("testing", sibling, "--full-before-ship", "0e0e0e01", ok=False)
+    assert cp.returncode == 3 and "run 0e0e0e01 is not running (it is passed)" in cp.stderr
+    assert not (ended / "testing-request.json").exists()
+    assert al("testing", sibling, "--full-before-ship", "0e0e0e09", ok=False).returncode == 4
+    assert al("testing", sibling, "--full-before-ship", "nothex!", ok=False).returncode == 2
+    now = datetime.now(timezone.utc).isoformat()
+    running = state("0e0e0e02", status="running", pid=os.getpid(), host=socket.gethostname(), heartbeat=now)
+    out = al("testing", sibling, "--full-before-ship", "0e0e0e02").stdout
+    assert out.startswith("run 0e0e0e02: full before it ships: its gate runs the full suites")
+    request = json.loads((running / "testing-request.json").read_text())
+    assert request["depth"] == "full" and request["by"] == "cli" and request["at"]
+    assert runtime(sibling, f"from adw_modules import testing; print(testing.requested_full({str(sibling)!r}, '0e0e0e02')['by'])").strip() == "cli"
+
+
+def test_local_testing_setting_is_reported_when_tracked(in_repo, app) -> None:
+    al("testing", in_repo, "--set", "light")
+    subprocess.run(["git", "-C", str(app), "add", "-f", "agentic/agents/settings/testing.json"], check=True)
+    cp = al("check", in_repo, ok=False)
+    assert cp.returncode != 0
+    assert ("agents/settings/testing.json is a local setting and must not be committed: "
+            "git rm --cached agentic/agents/settings/testing.json") in cp.stdout + cp.stderr
+
+
+# ---------------------------------------------------------------- al batch
+
+def test_al_batch_status_and_run_if_due(app) -> None:
+    layer = layer_with_testing(app)
+    status = al("batch", layer, "status")
+    proof("al-batch-status.txt", status.stdout, layer)
+    assert status.returncode == 0 and "main" in status.stdout
+    data = json.loads(al("batch", layer, "status", "--json").stdout)
+    assert data
+    due = al("batch", layer, "run", "--if-due")
+    assert due.returncode == 0 and "batch: not due" in due.stdout
+    assert not list(layer.glob("agents/*/state.json")), "a batch that is not due starts no run"
+    bad = al("batch", layer, "status", "--stage", "sprint", ok=False)
+    assert bad.returncode == 2 and "go with run" in bad.stderr
+    assert al("batch", layer, "verify", ok=False).returncode == 2
+
+
+# ---------------------------------------------------------------- al explain
+
+def test_explain_testing_block_and_guarantees(sibling, app, tmp_path) -> None:
+    plain = al("explain", sibling).stdout
+    flat = " ".join(plain.split())
+    assert "Testing  (not written down: the default)" in plain
+    assert ("This layer has no (testing …) clause, so every check runs its full form; add (testing targeted …) "
+            "and #:targeted forms to test what a change touches.") in flat
+    assert "Kit workflow: verify-batch (every layer has it)" in plain
+    assert "Kit workflow: integrate (every layer has it)" in plain
+    assert "per run: the selected tests" not in plain    # nothing is claimed for a layer that runs every check in full
+
+    trunk = layer_with_testing(app, "(testing targeted #:batch ((every 5) (after-hours 24)) #:escalate ((paths \"app.py\") (lockfile)))",
+                   trunk=True, name="trunk.al")
+    out = tmp_path / "explained.md"
+    al("explain", trunk, "--md", out)
+    text = out.read_text()
+    assert "### Testing\n" in text and "(not written down: the default)" not in text.split("### Testing")[1][:40]
+    assert ("per run: the selected tests pass for the tree that ships (depth targeted); per batch: the full suites "
+            "pass for the head of `main`") in text
+    assert "A run's checks run at depth targeted (the tests the change concerns)" in text
+    # a written #:escalate replaces every escalate default: no line or file limit unless it lists one
+    assert "- A run goes full when a change under `app.py` or a lockfile or dependency manifest changed\n" in text
+    assert "A batch runs every 5 landed changes or when a change landed and the last batch is older than 24 hours" in text
+    assert "- When a batch fails: bisect to the run that broke it" in text and "open a fix run" in text
+    assert "- `test` runs `./test.sh` — the tests pass; covers `app.py` and `tests`; targeted form selects by " \
+           "changed-tests, imports; smoke form" in text
+    assert "### Kit workflow: verify-batch (every layer has it)" in text
+    assert text.index("### Kit workflow: integrate") < text.index("### Kit workflow: verify-batch")
+
+    # a policy at full depth per run claims nothing new
+    full = layer_with_testing(app, "(testing targeted #:per-run full)", trunk=True, name="full.al")
+    al("explain", full, "--md", out)
+    assert "per run: the selected tests" not in out.read_text()
+    assert "A run's checks run at depth full (the whole suites)" in out.read_text()
+
+
+# ---------------------------------------------------------------- al verify
+
+def test_verify_prints_testing_lines(sibling, app) -> None:
+    lines = al("verify", sibling).stdout.splitlines()
+    assert lines[-1].startswith("verify: 1/1 ok")       # the result stays the last line, the coverage line before it
+    assert lines[-2].startswith("coverage: ")
+    assert lines[-3] == UNDECLARED
+
+    layer = layer_with_testing(app)
+    lines = al("verify", layer).stdout.splitlines()
+    at = lines.index("testing: targeted per run, targeted in review rounds, full per batch (layer policy, depth targeted)")
+    assert lines[at + 1] == "testing: a batch runs the full suites (full) every 2 landed changes"
+    assert lines[-1].startswith("verify: 1/1 ok")
+    al("testing", layer, "--set", "heavy")
+    assert ("testing: local setting heavy (full) in agents/settings/testing.json overrides the layer's depth on this "
+            "machine") in al("verify", layer).stdout.splitlines()
+
+    # a layer generated before targeted testing has no testing module: verify prints no testing line
+    (sibling / "adws" / "adw_modules" / "testing.py").unlink()
+    old = al("verify", sibling)
+    assert "verify: 1/1 ok" in old.stdout and "testing:" not in old.stdout + old.stderr
+    cp = al("testing", sibling, ok=False)
+    assert cp.returncode == 1 and "generated before targeted testing: run `al gen" in cp.stderr
+
+
+# ---------------------------------------------------------------- al kpis
+
+def test_kpis_testing_table(tmp_path) -> None:
+    site = tf.build_testing_site(tmp_path)
+    layer = site["layer"]
+    data = json.loads(al("kpis", layer, "--json").stdout)["testing"]
+    assert data["declared"] is True and list(data["commands"]) == ["test"]      # lint has no narrower form
+    test = data["commands"]["test"]
+    # batches verified the runs 7e570001 (targeted) and 7e570003 (targeted, the culprit); 7e570002 ran full
+    assert (test["targeted"], test["misses"], test["rate"], test["fallback"]) == (2, 1, 50.0, True)
+    assert test["by_strategy"] == {"changed-tests": {"targeted": 2, "misses": 1, "rate": 50.0},
+                                   "imports": {"targeted": 2, "misses": 1, "rate": 50.0},
+                                   "coverage": {"targeted": 1, "misses": 0, "rate": 0.0}}
+    assert test["full_seconds"] == 540.0 and test["targeted_seconds"] == 35.5   # median of 41, 30, 12 and the running 41
+    text = al("kpis", layer).stdout
+    table = text[text.index("\nTesting\n") + 1:]
+    proof("al-kpis-testing.txt", table, layer)
+    rows = table.splitlines()
+    assert rows[1].split() == ["command", "targeted", "runs", "misses", "miss", "rate", "by", "strategy", "targeted", "s",
+                               "full", "s"]
+    assert rows[2].split()[:6] == ["test", "2", "1", "50%", "(runs", "full)"]
+    assert "changed-tests 1/2, imports 1/2, coverage 0/1" in rows[2] and rows[2].split()[-3:] == ["36s", "9m", "00s"]
+    md = al("kpis", layer, "--md").stdout
+    assert "## Testing" in md and "| command | targeted runs | misses | miss rate | by strategy | targeted s | full s |" in md
+    assert "- **Miss**: a batch failure bisected to a run whose check of that command passed below full depth" in md
+    proof("al-testing-site.txt", al("testing", layer).stdout, layer)
+
+    # a layer without runs or a testing clause still has the table, and it says so
+    bare = tf.build_testing_site(tmp_path / "bare", declared=False, runs=False)
+    table = al("kpis", bare["layer"]).stdout.split("\nTesting\n")[1].splitlines()
+    assert table[1].split() == ["no", "targeted", "runs", "yet", "-", "-", "-", "-", "-", "-"]
+    assert json.loads(al("kpis", bare["layer"], "--json").stdout)["testing"] == {"declared": False, "commands": {}}
+
+
+# ---------------------------------------------------------------- the dashboard's mirror
+
+def test_settings_mirror_equal(app) -> None:
+    layer = layer_with_testing(app, "(testing targeted #:per-run full)", trunk=True, name="trunk.al")
+    setting = layer / "agents" / "settings" / "testing.json"
+    for level in ("light", "standard", "heavy"):
+        dashboard.write_testing_setting(layer, level)
+        written = setting.read_bytes()
+        assert runtime(layer, f"from adw_modules import testing; print(testing.read_setting({str(layer)!r}))").strip() == level
+        runtime(layer, f"from adw_modules import testing; testing.write_setting({str(layer)!r}, {level!r})")
+        assert setting.read_bytes() == written, "the dashboard writes the file byte for byte as the runtime does"
+        assert dashboard.read_testing_setting(layer) == level
+    dashboard.write_testing_setting(layer, None)
+    assert not setting.exists()
+    ir = json.loads((layer / "agentic-layer.json").read_text())
+    for level in ("light", "standard", "heavy"):
+        mirrored = dashboard.testing_allowed(ir, level)
+        own = json.loads(runtime(layer, "import json\nfrom pathlib import Path\nfrom adw_modules import ir, testing\n"
+                                        f"print(json.dumps(testing.setting_allowed(ir.load(Path({str(layer)!r})), {level!r})))"))
+        assert list(mirrored) == own, level
+    assert dashboard.testing_allowed(ir, "standard") == (False, REFUSAL)
+    assert al("testing", layer, "--set", "standard", ok=False).stderr.strip() == f"al testing: refused: {REFUSAL}"
