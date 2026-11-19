@@ -1193,8 +1193,9 @@ Besides `state.json` (the current picture, rewritten as it changes) and `run.log
 people, each prefixed with its UTC time), every run appends what happened, as it happens, to
 `agents/<id>/events.jsonl`. One module owns the format (`kit/runtime/adw_modules/events.py`); the
 places that print a progress line record the matching event in the same call, so the two cannot
-drift. One JSON object per line, appended with a single `write` on an `O_APPEND` file; a failed write
-never fails a run. Readers ignore types and fields they do not know, and a directory without the file
+drift. One JSON object per line, appended with a single `write` on an `O_APPEND` file; the next `seq`
+is taken under a `flock` on the file, so two writers (the run and the stand-in's loop, or two
+processes) never share one. A failed write never fails a run. Readers ignore types and fields they do not know, and a directory without the file
 is an older run (the dashboard then infers timings from file times, as before).
 
 Every event has `ts` (ISO-8601 UTC, milliseconds), `seq` (1, 2, … within the file; a resumed run
@@ -1261,6 +1262,7 @@ to its check, a re-check and the reviewers to the review step).
 | `step.discipline` | after a `run` step that may not commit: `step`, `ok`, `head_before`, `head_after`, `branch_before`, `branch_after`, `refs` (`created`, `moved`, `deleted`), `main_checkout` (new status lines), `layer_entries` (new top-level names), `violations` (kinds: `committed`, `head-moved`, `ref-created`, `ref-moved`, `ref-deleted`, `main-checkout-changed`, `layer-entry`), `texts`, `restored`, `not_restored`; after a step that may commit (the `commit` template or `#:may-commit #t`): `step`, `ok`, `left_out_restored` (the uncommitted paths under the layer directory or a protected path it restored). The same facts are in the step's record in `state.json` (`discipline`, or `left_out` on a commit step) |
 | `standin.decision` | a decision of the stand-in that did not act, or a person's answer: `entry` (its id in `decisions.jsonl`), `who` (stand-in / person), `via` (run / loop / asked / cli / mail / webhook / dashboard), `kind`, `action`, `answer`, `status` (suggested / refused / escalated / failed / skipped), `reason`, `summary` |
 | `standin.action` | an action that was taken: the same fields with `status` acted, `auto` (true when the stand-in acted alone) and `outcome` (what happened next) |
+| `decision.skipped` | a party left the run's current stop alone: `who` (`run`: its own decide step lost the stop to the stand-in's loop / `stand-in`: the loop found the run's process alive or the stop claimed), `reason`, `stop_seq` (the `seq` of the stop's `handoff` event); once per stop and party |
 
 Two more things make a run observable from outside. A check's log file grows while the check runs
 (its output goes straight to the file; when it ends the content is normalised exactly as before).
@@ -1269,6 +1271,19 @@ thread of the run, so a run whose heartbeat is old and whose process is gone has
 of memory, machine rebooted) rather than still working; the dashboard shows it as **died**, and `al
 check` lists such runs. A fan-out candidate's state names its parent (`fanout_parent`), and each step
 record names the agent (`agent`, `agent_kind`, `model`) that ran it.
+
+One process owns a run while it lives. The runner holds an exclusive `flock` on
+`agents/<id>/run.lock` (which names its `pid` and `host`) from the moment its state is known until
+it has written its summary, and releases it before it starts the resume its decider chose. A second
+`--resume` of a live run exits 3 (`refused: run ID is held by process PID on HOST`) before anything is
+saved or an environment is built, so only the owner ever replaces the run's container. Every party
+that resumes checks the lock first: the dispatch's `--resume` (the dashboard), `al answer`, the
+stand-in's loop and its apply, give to an agent, the decider's spawn and the dashboard's start again
+and resume proposals. The lock goes with its process, so a dead owner's run is taken over. While the
+run's process lives, even in its own decide step after it marked itself failed, the stand-in's loop
+leaves it alone. The run's decide step and the loop also share one claim per stop in
+`agents/<id>/decide.claim` (`seq` of the stop's `handoff` event, `by`, `pid`, `at`, `skipped`): whoever
+claims first decides that stop, and the other records `decision.skipped`.
 
 A `script` step can declare exit codes that mean "waiting for something outside" (`#:waiting-exit
 (75)`): the step and the run end `waiting` (exit 75), the worktree is kept, no hand-off is written

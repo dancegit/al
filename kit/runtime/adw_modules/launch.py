@@ -497,6 +497,11 @@ def resume(layer: Any, run_id: str, answer: str | None = None, spawn: Callable[.
         state, why = _load_run(layer, run_id)
         if state is None:
             return _result("invalid", error=why, **base)
+        held = state_module.run_holder(layer.layer_dir, run_id)
+        if held:   # a live process owns the run (its own decide step, a resume under way)
+            return _result("refused", error=f"run {run_id} is held by process {held.get('pid')} on "
+                                            f"{held.get('host')}; it is left to that process",
+                           holder_pid=held.get("pid"), **base)
         here = state.host in ("", socket.gethostname())
         if state.status == "running" or (here and state.status in RESUMABLE and _alive(int(state.pid or 0))):
             return _result("refused", error=f"run {run_id} is running", **base)

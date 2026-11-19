@@ -44,6 +44,27 @@ def test_recorder_appends_one_line_per_event_with_increasing_seq_and_resumes(tmp
     assert [e["seq"] for e in events.read(path)] == [1, 2, 3]
 
 
+def test_two_recorders_on_one_file_never_share_a_seq(tmp_path):
+    # the run's process and the stand-in's loop (or a second process) write one events.jsonl
+    path = tmp_path / "agents/aaaa0003/events.jsonl"
+    first, second = events.Recorder(path), events.Recorder(path)
+    for index in range(3):
+        first.emit("step.start", {"step": f"a{index}"})
+        second.emit("decision.skipped", {"who": "stand-in", "index": index})
+
+    def work(recorder: events.Recorder, name: str) -> None:
+        for index in range(50):
+            recorder.emit("script.event", {"by": name, "index": index})
+    threads = [threading.Thread(target=work, args=(recorder, f"{n}-{i}"))
+               for n, recorder in enumerate((first, second)) for i in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    seqs = [e["seq"] for e in events.read(path)]
+    assert seqs == list(range(1, 6 + 4 * 50 + 1))
+
+
 def test_emit_outside_a_run_is_a_no_op_and_a_failed_write_never_raises(tmp_path, capsys):
     assert events.emit("run.start") is None
     (tmp_path / "agents/aaaa0002/events.jsonl").mkdir(parents=True)   # cannot be written

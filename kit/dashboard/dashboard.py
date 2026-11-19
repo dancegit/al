@@ -324,6 +324,29 @@ def read_json(path: Path) -> Any:
         return None
 
 
+def run_holder(layer_path: Path, run_id: str) -> dict[str, Any] | None:
+    """The {"pid", "host"} of the live process holding agents/<id>/run.lock (the runtime's
+    state.run_holder), else None; None too where flock cannot be used (the launcher still refuses)."""
+    path = Path(layer_path) / "agents" / str(run_id) / "run.lock"
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            data = read_json(path)
+            data = data if isinstance(data, dict) else {}
+            return {**data, "pid": data.get("pid", 0), "host": data.get("host", "")}
+        except OSError:
+            return None
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return None
+    finally:
+        os.close(fd)
+
+
 def clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
@@ -6450,6 +6473,9 @@ class Model:
         with self.lock:
             summary = self.summaries.get(key)
         summary = summary or RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary()
+        held = run_holder(layer.path, run_id)
+        if held:
+            return None, 409, f"run {run_id} is still held by its process {held.get('pid')}: it is left to that process"
         if summary.get("status") not in ("failed", "died"):
             return None, 400, f"run {run_id} is {summary.get('status')}: only a failed or died run is started again"
         with self.lock:
@@ -9292,6 +9318,9 @@ def validate_action(model: "Model", layer: Layer, conv: Conversation, action: An
         if not isinstance(run, str) or not RUN_ID.match(run) or not (layer.path / "agents" / run).is_dir():
             return None, "no such run in this layer (use the full 8-character id)"
         status = _run_status(model, layer, run)
+        held = run_holder(layer.path, run) if kind in ("resume", "retry") else None
+        if held:
+            return None, f"run {run[:4]} is still held by its process {held.get('pid')}: it is left to that process"
         if kind == "resume" and status not in ("waiting", "failed", "handed-over"):
             return None, f"run {run[:4]} is {status}: only a waiting, failed or handed-over run can be resumed"
         if kind == "answer":
