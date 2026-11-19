@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import time
 from pathlib import Path
 
 import pytest
 
-from adw_modules import ir, state
+from adw_modules import agents, events, ir, state
 from adw_modules.agents import run_agent
 from adw_modules.envs import build
 from adw_modules.errors import StepFailed
@@ -110,7 +112,7 @@ def test_claude_stream_json_and_error(make_layer, monkeypatch, tmp_path):
     # the prompt travels on stdin (templates start with `---`, which the CLI would read as an option)
     assert argv[0] == "-p" and argv[1] == "--output-format"
     assert not any(arg.startswith("---") or arg.startswith("# ") for arg in argv)
-    assert Path(f"{record}.stdin").read_text().startswith("# text")
+    assert Path(f"{record}.stdin").read_text() == agents.with_rules("# text\nx\n")   # the rule, then the template
     for flag, value in (("--output-format", "stream-json"), ("--model", "m-heavy"),
                         ("--permission-mode", "acceptEdits"), ("--max-turns", "7"), ("--add-dir", str(layer.layer_dir))):
         assert argv[argv.index(flag) + 1] == value
@@ -123,6 +125,105 @@ def test_claude_stream_json_and_error(make_layer, monkeypatch, tmp_path):
     executable.write_text("#!/bin/sh\necho boom >&2\nexit 3\n", encoding="utf-8")
     with pytest.raises(StepFailed, match="exited 3: boom"):
         run_agent(layer, run_state, "text3", "text", [], "base", env)
+
+
+CLAUDE_AGENT = {"id": "mock-agent", "kind": "claude-code", "status": "stable", "modelBase": "m-base",
+                "modelHeavy": "m-heavy", "permissionMode": "acceptEdits", "maxTurns": 7, "timeout": 120}
+
+
+def _fake_claude(tmp_path, monkeypatch, body: str) -> Path:
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    executable = bindir / "claude"
+    executable.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    return executable
+
+
+def _gone(pid: int) -> bool:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return True
+    return stat[stat.rindex(")") + 2:].split()[0] == "Z"
+
+
+def _kill(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def test_an_agent_that_leaves_a_command_running_is_stopped_after_its_result(make_layer, monkeypatch, tmp_path):
+    child_pid, cli_pid, seen = tmp_path / "child.pid", tmp_path / "cli.pid", tmp_path / "env.txt"
+    _fake_claude(tmp_path, monkeypatch,
+                 f"echo $$ > {cli_pid}\n"
+                 f"env > {seen}\n"
+                 "cat > /dev/null\n"
+                 "printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\",\"is_error\":false}'\n"
+                 "python3 -c \"import os,sys,time; os.setsid(); open(sys.argv[1],'w').write(str(os.getpid())); "
+                 f"time.sleep(300)\" {child_pid} &\n"
+                 "sleep 300\n")
+    monkeypatch.setenv("AL_AGENT_GRACE_SECONDS", "1")
+    layer, run_state, env = setup_run(make_layer, {"agents": [CLAUDE_AGENT]})
+    pids: list[int] = []
+    try:
+        started = time.monotonic()
+        with events.recording(layer.layer_dir, run_state.adw_id):
+            assert run_agent(layer, run_state, "build", "text", [], "base", env) == "done"
+        assert time.monotonic() - started < 30
+        pids = [int(child_pid.read_text()), int(cli_pid.read_text())]
+        recorded = events.read(layer.layer_dir / "agents" / run_state.adw_id / "events.jsonl")
+        (left,) = [e for e in recorded if e["type"] == "agent.leftovers"]
+        assert left["step"] == "build" and left["grace"] == 1.0
+        assert pids[0] in [item["pid"] for item in left["stopped"]]
+        (end,) = [e for e in recorded if e["type"] == "agent.end"]
+        assert end["status"] == "passed"
+        deadline = time.monotonic() + 5
+        while not all(_gone(pid) for pid in pids) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert all(_gone(pid) for pid in pids)
+        environment = seen.read_text().splitlines()
+        assert "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1" in environment
+        assert any(line.startswith("AL_AGENT_CALL=build-") for line in environment)
+    finally:
+        for path in (child_pid, cli_pid):
+            if path.is_file() and path.read_text().strip().isdigit():
+                _kill(int(path.read_text()))
+
+
+def test_an_agent_that_exits_on_its_own_records_no_leftovers(make_layer, monkeypatch, tmp_path):
+    _fake_claude(tmp_path, monkeypatch,
+                 "cat > /dev/null\n"
+                 "printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\",\"is_error\":false}'\n")
+    monkeypatch.setenv("AL_AGENT_GRACE_SECONDS", "30")
+    layer, run_state, env = setup_run(make_layer, {"agents": [CLAUDE_AGENT]})
+    started = time.monotonic()
+    with events.recording(layer.layer_dir, run_state.adw_id):
+        assert run_agent(layer, run_state, "build", "text", [], "base", env) == "done"
+    assert time.monotonic() - started < 5
+    recorded = events.read(layer.layer_dir / "agents" / run_state.adw_id / "events.jsonl")
+    assert not [e for e in recorded if e["type"] == "agent.leftovers"]
+
+
+def test_every_rendered_prompt_carries_the_no_background_rule(make_layer):
+    layer, run_state, env = setup_run(make_layer)
+    run_state.dry_run = True
+    (layer.layer_dir / "commands" / "plan.md").write_text("---\ndescription: plan\n---\n# plan\n$ARGUMENTS\n",
+                                                          encoding="utf-8")
+    for step, command in (("text", "text"), ("plan", "plan"), ("classify", "classify")):
+        run_agent(layer, run_state, step, command, [], "base", env)
+    agents.run_prompt(layer, run_state, "decide", {"name": "decide", "template": "decide", "output": "json",
+                                                   "modelSet": "base", "isHop": False}, "Decide.", "base", env)
+    for step in ("text", "plan", "classify", "decide"):
+        written = (layer.layer_dir / "agents" / run_state.adw_id / step / "prompt.md").read_text()
+        assert "## This step ends when your turn ends" in written, step
+        assert "in the foreground with a timeout" in written, step
+    planned = (layer.layer_dir / "agents" / run_state.adw_id / "plan" / "prompt.md").read_text()
+    assert planned.startswith("---\ndescription: plan\n---\n## This step ends when your turn ends\n")
+    assert planned.endswith("\n# plan\n\n") or "\n\n# plan\n" in planned
 
 
 def test_custom_agent_and_timeout(make_layer):

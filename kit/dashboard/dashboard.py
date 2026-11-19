@@ -4095,6 +4095,15 @@ def event_spans(events: list[dict[str, Any]]) -> dict[str, Any]:
                         cost=event.get("cost") if isinstance(event.get("cost"), (int, float)) else None,
                         turns=event.get("turns") if isinstance(event.get("turns"), int) else None,
                         error=str(event.get("error") or ""), billing=str(event.get("billing") or ""))
+        elif kind == "agent.leftovers":
+            # the CLI did not exit after its final result: the runtime stopped it and what it left running
+            span = agents.setdefault(str(event.get("step") or ""), {
+                "start": at, "owner": str(event.get("owner") or ""), "agent": str(event.get("agent") or ""),
+                "agent_kind": str(event.get("agent_kind") or ""), "model": str(event.get("model") or ""),
+                **tier_fields(event)})
+            span["leftovers"] = [str(item.get("command") or item.get("pid")) for item in event.get("stopped") or []
+                                 if isinstance(item, dict)]
+            span["left"] = True
         elif kind in {"limit.status", "limit.stop", "limit.wait"}:
             seconds = event.get("seconds")
             limits.append({"type": kind, "at": at,
@@ -4390,7 +4399,8 @@ class RunModel:
                              if role == "main" and record.get("agent_kind") else {})
             info = {"dir": directory.name, "step": step, "role": role, "start": start, "end": end,
                     "status": astatus, **agg.as_dict(), "agent_id": str(ident.get("agent") or ""),
-                    "agent_kind": str(ident.get("agent_kind") or "")}
+                    "agent_kind": str(ident.get("agent_kind") or ""),
+                    "leftovers": list((span or {}).get("leftovers") or []), "left": bool((span or {}).get("left"))}
             info["model"] = str(ident.get("model") or "") or agg.model
             call = calls.get(directory.name) or {}
             info.update(tier_fields(span or call))
@@ -4838,6 +4848,10 @@ class RunModel:
             node["resolves"] = sum(1 for a in group if a["role"] == "resolve")
             node["agents"] = [a["dir"] for a in group]
             node["detail"] = short(str(record.get("detail", "")))[:300]
+            node["leftovers"] = sum(len(a["leftovers"]) for a in group)
+            node["left"] = any(a["left"] for a in group)
+            if node["left"]:
+                node["note"] = "the agent finished; its leftover commands were stopped"
             if node["type"] == "candidate":
                 record = (state.get("fanout") or {}).get(step) or {}
                 candidates = record.get("candidates") or []
@@ -4855,6 +4869,12 @@ class RunModel:
                     node["status"] = str(records.get(step, {}).get("status", "pending"))
                     if node["status"] == "passed":
                         node["status"] = "done"
+        # the arrow out of a running step into a pending one is waiting, not untaken
+        status_of = {node["id"]: node["status"] for node in graph["nodes"]}
+        for edge in graph["edges"]:
+            if edge.get("kind") in {"flow", "branch", "join", "fan"} and status_of.get(edge["from"]) == "running" \
+                    and status_of.get(edge["to"]) == "pending":
+                edge["status"] = "waiting"
         # timeline
         bars = []
         order = {name: index for index, name in enumerate(data["steps"])}
