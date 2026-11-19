@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import getpass
 import json
 import os
 import re
@@ -15,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import affected, budget, checkenv, decide, delivery, envs, envsource, events, integrate, ir, models
+from . import affected, approvals, budget, checkenv, decide, delivery, envs, envsource, events, integrate, ir, models
 from . import nested_engine, notify, prepare, sandbox, skips
 from . import state as state_module, steps
 from . import slots
@@ -139,7 +140,30 @@ def _parser(adw: str) -> argparse.ArgumentParser:
     parser.add_argument("--replaces", metavar="OLD", help="this run starts run OLD (8 hex chars) again; OLD then "
                         "reads as replaced by this run")
     parser.add_argument("--decider", choices=decide.MODES, help="the stand-in decider for this run (see below)")
+    parser.add_argument("--approve", action="append", default=[], metavar="WHAT",
+                        help="pre-approve a decision only a person may take, for this run (repeatable): "
+                             "vocabulary, edit:PATH, dependency:NAME")
+    parser.add_argument("--approved-by", metavar="WHO", default=os.environ.get("AL_APPROVED_BY") or _user(),
+                        help="who gave the --approve approvals (default: AL_APPROVED_BY, else the login name)")
     return parser
+
+
+def _user() -> str:
+    try:
+        return getpass.getuser()
+    except (KeyError, OSError):
+        return "unknown"
+
+
+def _record_approvals(state: state_module.ADWState, args: argparse.Namespace) -> None:
+    """The run's --approve approvals, each validated (a bad one is a usage error), recorded with who and when."""
+    whats = list(getattr(args, "approve", None) or [])
+    try:
+        tokens = [approvals.parse(what) for what in whats]
+    except ValueError as exc:
+        raise UsageError(f"--approve: {exc}") from exc
+    if tokens:
+        approvals.record(state, tokens, str(getattr(args, "approved_by", "") or _user()), "start")
 
 
 def _stdin_allowed(layer: Any, adw: dict[str, Any]) -> bool:
@@ -176,12 +200,14 @@ def _new_state(adw_name: str, adw: dict[str, Any], args: argparse.Namespace, req
     if fixed is not None and fixed not in CLASSES:
         raise LayerError(f"prompt source returned unknown class {fixed!r}")
     initial = fixed or (adw.get("classes") or ["chore"])[0]
-    return state_module.ADWState(
+    state = state_module.ADWState(
         adw_id=args.adw_id or state_module.new_adw_id(), adw=adw_name, prompt=request.prompt,
         source=request.source, klass=initial, class_fixed=fixed is not None, dry_run=args.dry_run,
         model_set=request.model_set or "", fanout_parent=fanout_parent(),
         replaces=getattr(args, "replaces", None) or "", decider=getattr(args, "decider", None) or "",
     )
+    _record_approvals(state, args)
+    return state
 
 
 def _check_replaces(layer: Any, old: str) -> str:
@@ -257,6 +283,7 @@ def _resumed_state(layer: Any, adw_name: str, args: argparse.Namespace) -> state
     state.usage.pop("stopped", None)
     if state.decision.get("status") == "resuming":  # the decider (or a person's answer) started this resume
         state.decision["status"] = "resumed"
+    _record_approvals(state, args)
     return state
 
 
@@ -286,6 +313,7 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"checks:    {checks}",
         *([f"gate:      {gate}"] if gate else []),
         f"review:    {review}",
+        *([f"proof:     {_proof_line(state)}"] if _proof_line(state) else []),
         f"cost:      {budget.summary(state)}",
         *([f"models:    {_models_line(state)}"] if state.agent_calls else []),
         f"ship:      {ship}",
@@ -333,6 +361,27 @@ def _delivery_line(state: state_module.ADWState) -> str:
     where = f" @ {d['environment_name']}" if d.get("environment_name") else ""
     return (f"{d.get('stage')} -> {d.get('branch')} ({d.get('entry', 'merge')}; "
             f"delivered={d.get('delivered')}){where}")
+
+
+def _proof_line(state: state_module.ADWState) -> str:
+    """What the plan's Proof plan came to, e.g. `3 criteria, 3 proven; 1 round; 2 debt tasks filed` or
+    `stopped at prove: needs-declaration (layer author)`; "" for a plan without the table."""
+    plan = state.proof_plan or {}
+    if plan.get("table") not in ("parsed", "invalid"):
+        return ""
+    stopped = plan.get("stopped") or {}
+    if stopped:
+        return f"stopped at {stopped.get('at')}: {stopped.get('outcome')} ({stopped.get('party')})"
+    rows = list(plan.get("rows") or [])
+    proven = sum(1 for row in rows if row.get("state") == "proven")
+    rounds = len((state.review or {}).get("rounds") or [])
+    debt = len(plan.get("debt") or [])
+    parts = [f"{len(rows)} criteri{'on' if len(rows) == 1 else 'a'}, {proven} proven"]
+    if rounds:
+        parts.append(f"{rounds} round{'' if rounds == 1 else 's'}")
+    if debt:
+        parts.append(f"{debt} debt task{'' if debt == 1 else 's'} filed")
+    return "; ".join(parts)
 
 
 def _review_line(state: state_module.ADWState) -> str:
@@ -733,7 +782,7 @@ def main(adw: str, layer_dir: Path, argv: list[str] | None = None, definition: d
             with contextlib.redirect_stdout(tee), _stoppable(state):
                 exit_code = _run(layer, state, definition, args, request)
                 lines = summary_lines(layer, state)
-                print("\n".join(lines))
+                print("\n".join(lines), flush=True)  # in launch.log before integrate.finish records the end
         finally:
             tee.close()
     decide.after_run(layer, state)  # a resume the decider chose starts once this run has ended

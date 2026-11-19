@@ -908,3 +908,21 @@ td.reason .proposal { color: var(--accent); margin-top: 2px; overflow-wrap: anyw
 .start-kit-preview .integrate-card { margin-top: 4px; }
 .start-complete .badge.kit { margin-left: 6px; }
 .registry-problems { margin-top: 8px; }
+/* the plan's Proof plan on the run page: a state per criterion, the stop box, the Approve button */
+.proof-plan .proof-plan-table td { word-break: normal; overflow-wrap: break-word; }
+.proof-plan .proof-plan-table td:nth-child(1), .proof-plan .proof-plan-table td:nth-child(4) { white-space: nowrap; width: 1%; }
+.proof-plan .proof-plan-table .badge.proof-state { white-space: nowrap; word-break: keep-all; }
+.badge.ps-planned { color: var(--dim); }
+.badge.ps-proven { color: var(--passed); border-color: rgba(63, 185, 80, .4); background: rgba(63, 185, 80, .08); }
+.badge.ps-failed, .badge.ps-missing, .badge.ps-files-missing { color: var(--failed); border-color: rgba(242, 85, 90, .45); background: rgba(242, 85, 90, .08); }
+.badge.ps-stale, .badge.ps-skipped-only, .badge.ps-not-run { color: var(--waiting); border-color: rgba(214, 162, 58, .45); background: rgba(214, 162, 58, .08); }
+.proof-stop { margin-top: 8px; padding: 8px 10px; border: 1px solid rgba(214, 162, 58, .45); border-radius: 6px; }
+.proof-stop .kv dd { overflow-wrap: anywhere; }
+.approve-row { margin-top: 8px; }
+.approve-go { cursor: pointer; padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(63, 185, 80, .5);
+  background: rgba(63, 185, 80, .12); color: var(--passed); font: inherit; }
+.approve-go:disabled { opacity: .5; cursor: default; }
+.proof-debt { margin-top: 8px; }
+.round-progress { font-size: 12px; color: var(--dim); margin: 2px 0 4px 18px; }
+.layer-reviews .missing-declaration { overflow-wrap: anywhere; }
+.start-approvals { width: 100%; min-width: 16rem; }

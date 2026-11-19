@@ -17,6 +17,7 @@ from .templates import render
 
 CLASSES = ("chore", "bug", "feature", "patch")
 SEVERITIES = ("blocker", "tech_debt", "skippable")
+ISSUE_KINDS = ("fixable", "needs-environment", "needs-declaration", "needs-person")  # convergence.KINDS
 GIT_TIMEOUT = 120
 _STRIPPED_ENV = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
 _MOCK_KEYS = {"output", "files", "raw_files", "layer_files", "delete", "commit", "cost", "fail", "events"}
@@ -40,6 +41,8 @@ def template_variables(layer: Any, state: Any) -> dict[str, str]:
         "plan": state.plan,
         "workflow_steps": discipline.workflow_steps(layer, state),
         "scratch_dir": str(discipline.scratch_dir(layer, state)),
+        "approvals": ", ".join(str(item.get("what")) for item in getattr(state, "approvals", None) or []) or "none",
+        "proof_dir": ".al-proof",
     }
 
 
@@ -457,6 +460,10 @@ def validate_review_verdict(obj: dict[str, Any], step: str) -> None:
             raise StepFailed(step, f"review issue needs severity in {SEVERITIES}: {issue!r}")
         if not isinstance(issue.get("description"), str) or not isinstance(issue.get("resolution"), str):
             raise StepFailed(step, f"review issue needs string description and resolution: {issue!r}")
+        if "criterion" in issue and not isinstance(issue["criterion"], str):
+            raise StepFailed(step, f"review issue criterion must be a string: {issue!r}")
+        if "kind" in issue and issue["kind"] not in ISSUE_KINDS:
+            raise StepFailed(step, f"review issue kind must be one of {ISSUE_KINDS}: {issue!r}")
 
 
 def _validate_json(obj: dict[str, Any], template: str, step: str) -> None:

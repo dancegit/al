@@ -2504,6 +2504,62 @@
             h("td"), h("td", { class: "right num", text: fmt.cost(total) }), h("td"))))));
     }
 
+    /** The plan's Proof plan (state.json proof_plan): a state per criterion from the moment the plan
+     * exists, the stop box with who can clear it (and the Approve button for an approver), the evidence
+     * pack. Every text is set as text. */
+    function proofPlanCard(pp) {
+      const block = h("div", { class: "outcome-block proof-plan", "data-role": "proof-plan" },
+        h("div", { class: "card-head" }, h("h3", { text: "Proof plan" }),
+          pp.stopped && pp.stopped.at ? h("span", { class: "badge bad", text: `stopped at ${pp.stopped.at}` })
+            : pp.why_stopped ? h("span", { class: "badge", text: pp.why_stopped }) : null));
+      const packOf = new Map((pp.pack || []).map((row) => [row.id, row]));
+      block.appendChild(h("div", { class: "table-wrap" }, h("table", { class: "proof proof-plan-table" },
+        h("thead", {}, h("tr", {}, ["#", "Criterion", "Proven by", "State", "Evidence"].map((label) => h("th", { text: label })))),
+        h("tbody", {}, (pp.rows || []).map((row) => {
+          const pack = packOf.get(row.id);
+          const evidence = pack ? [pack.check, pack.exit === null || pack.exit === undefined ? "" : `exit ${pack.exit}`,
+            pack.tree ? `tree ${pack.tree}` : "", `${pack.passed || 0} passed, ${pack.skipped || 0} skipped`,
+            (pack.files || []).length ? `${pack.files.length} file${pack.files.length === 1 ? "" : "s"}` : "", pack.note]
+            .filter(Boolean).join(" · ") : row.outcome && !/^proven/.test(row.outcome) ? `${row.outcome}: ${row.why}` : row.outcome || "";
+          return h("tr", { "data-criterion": row.id, "data-state": row.state },
+            h("td", { class: "mono", text: row.id }), h("td", { text: row.criterion }), h("td", { class: "mono", text: row.command }),
+            h("td", {}, h("span", { class: `badge proof-state ps-${row.state}`, text: row.state })),
+            h("td", { class: "dim", text: evidence }));
+        })))));
+      const stop = pp.stopped || {};
+      if (stop.at) {
+        const box = h("div", { class: "proof-stop", "data-party": stop.party },
+          h("div", { class: "why", text: (stop.reason || "").split("\n")[0] }),
+          h("dl", { class: "kv" },
+            h("dt", { text: "who can clear it" }), h("dd", { text: stop.party || "" }),
+            ...(pp.rows || []).filter((row) => row.fix && !/^proven/.test(row.outcome || "")).flatMap((row) =>
+              [h("dt", { text: row.id }), h("dd", { class: "mono", text: row.fix })]),
+            ...(stop.question ? [h("dt", { text: "question" }), h("dd", { text: stop.question })] : [])));
+        if (stop.party === "approver" && (stop.approvals || []).length && detail.summary.status === "failed") {
+          const result = h("span", { class: "dim approve-result" });
+          const button = h("button", { type: "button", class: "approve-go", text: `Approve ${stop.approvals.join(", ")}`,
+            onclick: async () => {
+              button.disabled = true;
+              try {
+                const answer = await api.post("/api/approve", { layer: layerKey, run: runId, what: stop.approvals });
+                result.textContent = answer.message || "resumed";
+              } catch (err) {
+                result.textContent = err.message;
+                button.disabled = false;
+              }
+            } });
+          box.appendChild(h("div", { class: "approve-row" }, button, " ", result));
+        }
+        block.appendChild(box);
+      }
+      if ((pp.debt || []).length) {
+        block.appendChild(h("div", { class: "proof-debt" }, h("div", { class: "dim", text: "debt filed" }),
+          h("ul", { class: "issues" }, pp.debt.map((item) => h("li", {}, h("span", { text: item.text }), " ",
+            h("span", { class: "dim mono", text: item.where }))))));
+      }
+      return block;
+    }
+
     function outcomeCard() {
       const sm = detail.summary, blocks = [];
       const kv = (pairs) => h("dl", { class: "kv" }, pairs.filter(([, v]) => v !== null && v !== undefined && v !== "").map(([k, v]) => [h("dt", { text: k }), h("dd", {}, v)]));
@@ -2620,6 +2676,7 @@
               h("td", {}, h("span", { class: `badge ${cls[r.outcome] || ""}`, text: checkResultText(r) })),
               h("td", { class: "dim", text: evidence(r) }))))))));
       }
+      if (detail.proof_plan && (detail.proof_plan.rows || []).length) blocks.push(proofPlanCard(detail.proof_plan));
       const review = detail.review;
       if (review && (review.rounds.length || review.mode)) {
         const block = h("div", { class: "outcome-block" }, h("div", { class: "card-head" }, h("h3", { text: "Review" }),
@@ -2708,8 +2765,16 @@
     /** Each review round's verdicts, every reviewer's issues and the patch between rounds. */
     function reviewRounds(review) {
       const out = [];
+      const pp = detail.proof_plan || {};
+      const progress = new Map((pp.rounds || []).map((r) => [r.round, r]));
       for (const round of review.rounds) {
         out.push(h("div", { class: "dim", text: `round ${round.round}: ${round.success ? "approved" : "not approved"}` }));
+        const moved = progress.get(round.round);
+        if (moved) {
+          out.push(h("div", { class: "round-progress", "data-round": round.round,
+            text: `resolved ${moved.resolved.length} · still open ${moved.open.length} · new ${moved.new.length}`
+              + (moved.seconds ? ` · ${fmt.dur(moved.seconds)}` : "") }));
+        }
         for (const reviewer of round.reviewers) {
           const issues = [...reviewer.issues].sort((a, b) => ["blocker", "tech_debt", "skippable"].indexOf(a.severity) - ["blocker", "tech_debt", "skippable"].indexOf(b.severity));
           out.push(h("div", { class: "reviewer" },
@@ -2726,6 +2791,7 @@
               round.patch.rerun.length ? ` → re-checked ${round.patch.rerun.join(", ")}` : "")));
         }
       }
+      if (pp.why_stopped) out.push(h("div", { class: "dim rounds-stopped", text: `rounds ended: ${pp.why_stopped}` }));
       return out;
     }
 
@@ -3136,6 +3202,10 @@
       const issue = h("select", { class: "start-issue", "aria-label": "log as an issue" });
       const issueRow = h("label", { class: "start-row", hidden: !catalog.issue.available }, h("span", { text: "issue" }), issue);
       const classRow = h("label", { class: "start-row" }, h("span", { text: "class" }), klass);
+      // decisions only a person may take, pre-approved for this run (approvals.py); the gate is unchanged
+      const approvals = h("input", { type: "text", class: "mono start-approvals", "aria-label": "pre-approve for this run",
+        placeholder: "pre-approve, comma-separated: vocabulary, edit:PATH, dependency:NAME" });
+      const approvalsRow = h("label", { class: "start-row start-approvals-row" }, h("span", { text: "approve" }), approvals);
       const unattended = h("div", { class: "start-unattended" });
       const note = h("div", { class: "start-note faint" });
       const go = h("button", { class: "btn primary start-go", type: "button", text: "Start" });
@@ -3222,6 +3292,7 @@
         issueRow.hidden = !catalog.issue.available;
         summary.textContent = e.summary + (e.description ? ` — ${e.description}` : "");
         classRow.hidden = e.kind !== "workflow";
+        approvalsRow.hidden = e.kind !== "workflow";
         const options = [["none", "do not log it as an issue"], ["start", "log it as an issue and start now"]];
         if (e.kind === "workflow" && catalog.issue.trigger.includes(e.name)) options.push(["trigger", "create the issue and let the trigger start it"]);
         const previous = issue.value;
@@ -3305,6 +3376,8 @@
         const out = { layer: layer.key, request_key: key, issue: issue.value || "none", model_set: tier.value || null, models, ...extra };
         if (e.kind === "workflow" && klass.value) out.class = klass.value;
         if (decider.value) out.decider = decider.value;
+        const given = approvals.value.split(",").map((a) => a.trim()).filter(Boolean);
+        if (e.kind === "workflow" && given.length) out.approvals = given;
         if (typed() !== null) out.text = prompt.value;
         else { out.target = { kind: e.kind, name: e.name }; out.prompt = prompt.value; }
         return out;
@@ -3346,12 +3419,12 @@
         h("span", { text: "stand-in" }), decider);
       const modelsRow = modelInputs.length ? h("div", { class: "start-models" }, modelInputs) : null;
       const actions = h("div", { class: "start-actions" }, go, h("span", { class: "faint", text: "Ctrl+Enter" }), note);
-      promptOnly.push(classRow, tierRow, deciderRow, issueRow, modelsRow, actions);
+      promptOnly.push(classRow, tierRow, deciderRow, issueRow, approvalsRow, modelsRow, actions);
       replace(body,
         inputBox,
         h("div", { class: "start-controls" },
           h("label", { class: "start-row" }, h("span", { text: "run" }), select),
-          classRow, tierRow, deciderRow, issueRow),
+          classRow, tierRow, deciderRow, issueRow, approvalsRow),
         modelsRow,
         summary, unattended, kitBox,
         (catalog.problems || []).length ? h("div", { class: "why registry-problems", text: catalog.problems.join("; ") }) : null,
@@ -3362,6 +3435,21 @@
   }
 
   // =========================================================================== views: Layers
+  /** The layer's review numbers over its runs with a Proof plan (dashboard.review_convergence =
+   * al kpis' Reviews and proof); nothing for a layer without such runs. */
+  function reviewsLine(rv) {
+    if (!rv || !rv.runs_with_proof_plan) return null;
+    const rounds = rv.rounds_per_run || {};
+    const top = (rv.missing_declarations || [])[0];
+    return h("div", { class: "adw-stats layer-reviews", "data-role": "reviews" },
+      h("span", { class: "dim", text: "Reviews" }),
+      h("span", {}, h("b", { text: rounds.mean === null || rounds.mean === undefined ? "-" : rounds.mean.toFixed(1) }), " rounds per run"),
+      h("span", {}, h("b", { text: rv.repeated_blockers }), " repeated blockers"),
+      h("span", {}, h("b", { text: (rv.idle_hours || 0).toFixed(1) }), " idle hours"),
+      (rv.stopped_early || {}).runs ? h("span", {}, h("b", { text: rv.stopped_early.runs }), " stopped early") : null,
+      top ? h("span", { class: "mono missing-declaration", title: "the declaration stops asked for most often", text: `add first: ${top.declaration}` }) : null);
+  }
+
   function LayersView(main, crumbs) {
     crumbs.textContent = "watched layers";
     const startHost = h("div", { class: "start-host" });
@@ -3398,7 +3486,8 @@
           h("div", { class: "adw-stats" }, h("span", {}, h("b", { text: runs.length }), " runs"), h("span", {}, h("b", { text: fmt.pct(finished.length ? passed / finished.length : null) }), " passed"),
             handedOver ? h("span", {}, h("b", { text: handedOver }), " handed over") : null,
             h("span", {}, h("b", { text: fmt.cost(cost) }), " total"), h("span", {}, h("b", { text: layer.adws.length }), " workflows")),
-          h("div", { class: "piter" }, layer.adws.map((name) => h("span", { class: "badge", text: name })))));
+          h("div", { class: "piter" }, layer.adws.map((name) => h("span", { class: "badge", text: name }))),
+          reviewsLine(layer.reviews)));
       }
       if (!store.layers.length) grid.appendChild(h("div", { class: "empty", text: store.loaded ? "No layers found. Start with --layer DIR or --scan DIR." : "connecting…" }));
     }

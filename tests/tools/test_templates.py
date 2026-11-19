@@ -197,3 +197,21 @@ def test_plan_templates_use_our_own_layout() -> None:
         for section in ("## Variables", "## Instructions", "## Relevant Files", "## Plan Format", "## Validation Commands",
                         "## Report"):
             assert f"\n{section}\n" in outside, f"{name}: the prompt's own section {section} keeps its name"
+
+
+def test_plan_templates_carry_the_proof_plan_table(sibling) -> None:
+    import sys
+
+    sys.path.insert(0, str(KIT / "runtime"))
+    from adw_modules import proofplan, templates
+
+    for name in ("plan-feature", "plan-bug", "plan-chore"):
+        text = (KIT / "templates" / "commands" / f"{name}.md").read_text()
+        parsed = proofplan.parse(text)
+        assert parsed["table"] == "parsed" and parsed["rows"][0]["id"] == "C1", name
+        assert "### Proof plan" in text and "${approvals}" in text and "${proof_dir}/" in text, name
+        assert "a row it cannot prove here stops the run" in text, name
+    generated = (sibling / "commands" / "plan.md").read_text()   # plan-chore, rendered by al gen
+    assert proofplan.parse(generated)["table"] == "parsed" and "${approvals}" in generated
+    rendered = templates.render(generated, {"approvals": "vocabulary", "proof_dir": ".al-proof"}, [])
+    assert "Pre-approved for this run: vocabulary." in rendered and "`.al-proof/`" in rendered

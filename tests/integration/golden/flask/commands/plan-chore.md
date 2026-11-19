@@ -37,6 +37,8 @@ Languages: python. Entry document: `README.md`. Default branch: `main`.
 - Tests: name every test to add or update, with its path. If the chore needs none, state why under What is left out.
 - Keep the commands already present under `### Commands` in the Plan Format unchanged and in order; add chore-specific commands only after them. Checkable results are observable: each one maps to a command, a test or a named artefact.
 - If the result is user-visible, name under Checkable results the artefacts that will prove it (screenshots, video, reports) and the step that produces them.
+- End How it is proven with the Proof plan table, one row per checkable result. Proven by names a Validation Command in backticks, then the test ids it runs, each in backticks. Writes lists the files it writes as globs relative to the worktree with `(count)`; files for this run only go under `${proof_dir}/` and are listed as `proof:GLOB` (relative to `${proof_dir}/`), and every one of them reaches the reviewers; `-` when it writes none. Needs lists the tokens, or `none`: `tool:NAME`, `engine:podman|docker`, `network`, `model:NAME`, `secret:NAME`, `host:ID`, `approval:KIND[:ARG]`. A decision only a person may take is `approval:edit:PATH`, `approval:dependency:NAME` or a layer word such as `approval:vocabulary`. Pre-approved for this run: ${approvals}.
+- Right after you, the runtime checks every row without an agent; a row it cannot prove here stops the run with the declaration or question, so write needs truthfully.
 - Never plan a change under a protected path. If the chore cannot be done without one, plan everything else and add a line starting `REQUIRES HUMAN` under What is left out naming the path and the reason.
 - A plan covers building and validating only: no step commits, merges, pushes, tags, releases or opens a pull request; delivery is the workflow's. Integration work (bringing in another branch or patch) is planned as 'apply onto the worktree, uncommitted', e.g. `git merge --no-commit --squash <ref>`, `git checkout <ref> -- <path>` or `git apply`.
 - A new dependency is added with `(not specified — do not add dependencies without flagging it)` and listed under What could go wrong with its justification.
@@ -103,6 +105,11 @@ Execute every command from the worktree root; all must exit 0.
 
 ### Checkable results
 <bullet per observable result, each tied to a command, a test or a named artefact>
+
+### Proof plan
+| # | Criterion | Proven by | Writes | Needs |
+|---|---|---|---|---|
+| C1 | <checkable result> | `<validation command>` `<test id>` | <globs (count), proof:GLOB, or -> | <none, or need tokens> |
 
 ## What could go wrong
 <risks; new dependencies with their justification; anything the implementer must know; "Nothing known" if none>

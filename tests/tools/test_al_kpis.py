@@ -220,3 +220,53 @@ def test_committed_kpis_file_is_the_marked_sample_of_the_fixture(scenario):
 
     assert undated(committed) == undated(generated)
     assert len(undated(committed)) == len(lines) - 1   # exactly one dated line
+
+
+def _proof_plan(rounds: int, *, stopped: str = "passed", party: str = "", repeated=(), idle: float = 0.0,
+                declarations=()) -> dict:
+    return {"table": "parsed", "rows": [], "summary": {
+        "criteria": 2, "proven": 2, "rounds": rounds, "stopped": stopped, "party": party,
+        "repeated": [{"fingerprint": f"C{i}|{cause}", "cause": cause} for i, cause in enumerate(repeated)],
+        "idle_seconds": idle, "seconds": idle, "declarations": list(declarations), "debt": 0}}
+
+
+@pytest.fixture()
+def converging(scenario) -> Path:
+    """Three runs with a Proof plan (one stopped at prove for a layer author, one passed after three
+    rounds of which two changed nothing, one stopped in evidence) and one run without."""
+    layer = scenario["layer"]
+    shutil.rmtree(layer / "agents")
+    decl = "#:max-files 30 on (artefact image #:id shots …), or write them under proof: (proof:*.png)"
+    sf.write_run(layer, A, status="failed", proof_plan=_proof_plan(0, stopped="prove:needs-declaration",
+                                                                   party="layer author", declarations=[decl]))
+    sf.write_run(layer, B, proof_plan=_proof_plan(3, repeated=["fixable", "needs-person"], idle=5400.0))
+    sf.write_run(layer, C, status="failed", proof_plan=_proof_plan(1, stopped="evidence:no-progress",
+                                                                   party="person", declarations=[decl]))
+    sf.write_run(layer, "f0000004", review={"rounds": [{"round": 1}], "verdict": {"success": True, "issues": []}})
+    return layer
+
+
+def test_convergence_section_counts_rounds_repeats_idle_hours_and_declarations(converging):
+    conv = kpis(converging)["convergence"]
+    assert conv["runs_with_proof_plan"] == 3
+    assert conv["rounds_per_run"] == {"mean": 2.0, "max": 3}
+    assert conv["stopped_early"] == {"runs": 2, "by_reason": {"prove:needs-declaration": 1, "evidence:no-progress": 1},
+                                     "by_party": {"layer author": 1, "person": 1}}
+    assert conv["repeated_blockers"] == 2 and conv["causes"] == {"fixable": 1, "needs-person": 1}
+    assert conv["idle_hours"] == 1.5
+    assert conv["missing_declarations"] == [{"declaration": "#:max-files 30 on (artefact image #:id shots …), or "
+                                                            "write them under proof: (proof:*.png)", "runs": 2}]
+    text = al("kpis", converging).stdout
+    assert "Reviews and proof" in text and "hours in rounds that changed no verdict" in text
+    assert "add first: #:max-files 30" in text
+    md = al("kpis", converging, "--md").stdout
+    assert "## Reviews and proof" in md and "**Missing declarations**" in md
+
+
+def test_convergence_numbers_equal_the_dashboard_mirror(converging):
+    sys.path.insert(0, str(KIT / "dashboard"))
+    import dashboard
+
+    states = [json.loads(path.read_text()) for path in sorted((converging / "agents").glob("*/state.json"))]
+    assert dashboard.review_convergence(states) == al_kpis.convergence_of(states) == kpis(converging)["convergence"]
+    assert dashboard.review_convergence([]) == al_kpis.convergence_of([])

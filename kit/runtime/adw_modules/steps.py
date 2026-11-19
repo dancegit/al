@@ -235,7 +235,7 @@ def _decided(layer: Any, state: Any, step: dict[str, Any], decision: Any, phase:
         log_path = Path(layer.layer_dir) / "agents" / state.adw_id / "checks" / f"{name}.not-affected.log"
     if log_path is not None:
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(log_path).write_text(_decision_text(cmd_name if phase == "gate" else name, decision, entry),
+        Path(log_path).write_text(_decision_text(cmd_name if phase in ("gate", "evidence") else name, decision, entry),
                                   encoding="utf-8")
         log = Path(log_path).relative_to(layer.layer_dir).as_posix()
     else:
@@ -282,14 +282,17 @@ def run_logged(layer: Any, state: Any, env_stack: Any, command: dict[str, Any], 
     `#:require affected`, when no changed path is under what it covers; both are recorded."""
     span = {"step": step, "owner": running_step(state), "phase": phase, "cmd": str(command["name"]),
             "attempt": 1, "log": Path(log_path).relative_to(layer.layer_dir).as_posix()}
-    # the gate re-runs a cmd where its check step runs it (#:in) and under the same skip rules
-    check = checkenv.check_for_cmd(layer, state, str(command["name"])) if phase == "gate" else None
+    # the gate re-runs a cmd where its check step runs it (#:in) and under the same skip rules; the
+    # evidence step (evidence.py) runs a cmd no check step runs, and decides and records it the same way
+    decided = phase in ("gate", "evidence")
+    check = checkenv.check_for_cmd(layer, state, str(command["name"])) if decided else None
     decision = None
-    if phase == "gate":
-        decision = affected.decide_gate(layer, state, env_stack, command, check, _review_option(layer, state))
+    if decided:
+        option = _review_option(layer, state) if phase == "gate" else {}
+        decision = affected.decide_gate(layer, state, env_stack, command, check, option)
         if decision.action != affected.RUN:
             entry = _decided(layer, state, {"name": step, "cmd": str(command["name"])}, decision, phase, log_path)
-            print(f"[adw {state.adw_id}] gate: {command['name']} not run: {affected.summary_text(entry)}")
+            print(f"[adw {state.adw_id}] {phase}: {command['name']} not run: {affected.summary_text(entry)}")
             return 0
     stack = checkenv.stack_for(layer, state, check, env_stack) if check is not None else env_stack
     env_id = checkenv.target(layer.adw(state.adw), check) if check is not None else None
@@ -533,9 +536,12 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
             raise StepFailed(str(step["name"]), "check refused in read-only host environment")
         run_check_with_resolve(layer, state, step, env_stack)
     elif kind == "review":
-        from . import review
+        from . import convergence, review
 
-        review.run_review(layer, state, step, env_stack)
+        try:
+            review.run_review(layer, state, step, env_stack)
+        finally:
+            convergence.after_review(layer, state, step)
     elif kind == "ship":
         if env_stack.read_only:
             raise StepFailed(str(step["name"]), "ship refused in read-only host environment")
@@ -564,6 +570,70 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
 
 
 DELIVER_STEP = "deliver"
+PROVE_STEP = "prove"
+EVIDENCE_STEP = "evidence"
+FRESHEN_REVIEW_STEP = "freshen-review"
+FRESHEN_SHIP_STEP = "freshen-ship"
+
+
+def _plans(layer: Any, step: dict[str, Any]) -> bool:
+    """A run step whose command writes the plan (#:output path), not a patch plan."""
+    if step.get("kind") != "run":
+        return False
+    try:
+        command = layer.command(str(step.get("command")))
+    except (LayerError, KeyError):
+        return False
+    return command.get("output") == "path" and command.get("template") != "plan-patch"
+
+
+def _prove(layer: Any, state: Any, adw: dict[str, Any], env_stack: Any) -> None:
+    """The provability check of the plan's Proof plan (proofplan.py), recorded as step `prove` only
+    when the plan has the table; a plan without one is recorded as such and changes nothing."""
+    from . import proofplan
+
+    parsed = proofplan.parse(proofplan.plan_text(state, layer))
+    if parsed["table"] == "absent":
+        state.proof_plan = {"plan": state.plan, "table": "absent"}
+        state.save(layer.layer_dir)
+        return
+    _run_recorded(layer, state, PROVE_STEP, PROVE_STEP, lambda: proofplan.check(layer, state, adw, env_stack))
+
+
+def _review_kind(layer: Any, adw: dict[str, Any]) -> str:
+    try:
+        return str(layer.option("reviews", adw["review"]).get("kind") or "")
+    except (LayerError, KeyError):
+        return ""
+
+
+def _freshen(layer: Any, state: Any, adw: dict[str, Any], env_stack: Any, when: str) -> None:
+    """Bring the target branch's new commits in before the review or ship (freshen.py), recorded
+    as `freshen-<when>` only when the target moved."""
+    from . import freshen
+
+    if not getattr(state, "worktree", ""):
+        return
+    if any(item.get("kind") in ("integrate", "promote") for item in adw.get("steps") or []):
+        return  # an integration or promotion run brings its target in itself
+    if freshen.behind(layer, state, env_stack) > 0:
+        _run_recorded(layer, state, f"freshen-{when}", "freshen",
+                      lambda: freshen.run(layer, state, adw, env_stack, when))
+
+
+def _before_review(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_stack: Any) -> None:
+    """Before an agent or auto review: the target branch, then the evidence pack (evidence.py),
+    recorded as `evidence` when there is a Proof plan table or an approval."""
+    from . import evidence, proofplan
+
+    if _review_kind(layer, adw) not in ("agent", "auto"):
+        return
+    _freshen(layer, state, adw, env_stack, "review")
+    if proofplan.has_table(state) or state.approvals:
+        _run_recorded(layer, state, EVIDENCE_STEP, EVIDENCE_STEP,
+                      lambda: evidence.run(layer, state, adw, step, env_stack))
+    else:
+        evidence.prepare_context(layer, state, adw, step, env_stack)
 
 
 def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], env_stack: Any) -> None:
@@ -571,6 +641,9 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
     record = state.step_record(name, kind)
     # a rejected review is finished: re-running it on --resume would repeat its agent calls and commits
     if record.get("status") in ("passed", REJECTED):
+        prove = next((r for r in state.steps if r.get("name") == PROVE_STEP), None)
+        if _plans(layer, step) and prove is not None and prove.get("status") != "passed":
+            _prove(layer, state, adw, env_stack)  # a resume after a stop before the build (al approve)
         return
     stopped = getattr(state, "stopped_by", "")
     if stopped:  # a stop that a step swallowed while it ran still ends the run before the next step
@@ -591,7 +664,13 @@ def run_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], 
 
         _run_recorded(layer, state, DELIVER_STEP, DELIVER_STEP,
                       lambda: delivery.before_ship(layer, state, adw, step, env_stack))
+    elif kind == "ship" and review_outcome(state)[0] is not False and not env_stack.read_only:
+        _freshen(layer, state, adw, env_stack, "ship")
+    if kind == "review":
+        _before_review(layer, state, adw, step, env_stack)
     _run_recorded(layer, state, name, kind, lambda: _execute_step(layer, state, adw, step, env_stack), step)
+    if _plans(layer, step):
+        _prove(layer, state, adw, env_stack)
 
 
 def _run_recorded(layer: Any, state: Any, name: str, kind: str, work: Any, step: dict[str, Any] | None = None) -> None:

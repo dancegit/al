@@ -67,6 +67,15 @@
         "artefact": {
           "description": "Path of the artefact that shows the issue; empty string when none.",
           "type": "string"
+        },
+        "criterion": {
+          "description": "The Proof plan criterion the issue is about (C1, C2, …); empty string when none.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Who can clear it. fixable: an agent's patch. needs-environment: a tool, engine, host or network the run lacks. needs-declaration: the layer author adds a declaration. needs-person: a decision only a person may take.",
+          "type": "string",
+          "enum": ["fixable", "needs-environment", "needs-declaration", "needs-person"]
         }
       }
     }

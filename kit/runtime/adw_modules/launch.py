@@ -272,10 +272,12 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
           model_set: str | None = None, models: Iterable[str] = (), issue: str = "none",
           confirm_duplicate: bool = False, confirm_ships: bool = False, dry_run: bool = False,
           detach: bool = True, spawn: Callable[..., Any] = _spawn, forge: Any = None,
-          replaces: str = "", decider: str = "") -> dict[str, Any]:
+          replaces: str = "", decider: str = "", approvals: Iterable[str] = (),
+          approved_by: str = "") -> dict[str, Any]:
     """Start `target` with `prompt` once per `request_key`; see the module docstring. `models` are
     TIER=MODEL_ID strings; `replaces` is the run this one starts again; `decider` is the stand-in's
-    mode for this run (`--decider MODE`), "" for the layer's. Returns {"status": started | issue-created | confirm-duplicate |
+    mode for this run (`--decider MODE`), "" for the layer's; `approvals` are decisions a person
+    pre-approves for a workflow run (approvals.py), given by `approved_by`. Returns {"status": started | issue-created | confirm-duplicate |
     confirm-ships | refused | invalid | error, …}; EXIT maps the status to an exit code."""
     model_list = [str(m) for m in models]
     layer_dir = Path(layer.layer_dir)
@@ -286,6 +288,14 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
                            str(decider or ""))
     except (LayerError, ValueError) as exc:
         return _result("invalid", error=str(exc), **base)
+    from . import approvals as approvals_module
+
+    try:
+        approval_list = [approvals_module.parse(str(item)) for item in approvals]
+    except ValueError as exc:
+        return _result("invalid", error=f"approve: {exc}", **base)
+    if approval_list and target.kind != "workflow":
+        return _result("invalid", error="approve: only a workflow run takes approvals", **base)
     replaces = str(replaces or "")
     if replaces and not RUN_ID_RE.fullmatch(replaces):
         return _result("invalid", error="replaces: a run id of 8 hexadecimal characters", **base)
@@ -378,6 +388,9 @@ def start(layer: Any, target: Target, prompt: str, *, request_key: str, klass: s
     argv += ["--dry-run"] if dry_run else []
     argv += ["--replaces", replaces] if replaces else []
     argv += ["--decider", str(decider)] if decider else []
+    for item in approval_list:
+        argv += ["--approve", item]
+    argv += ["--approved-by", str(approved_by)] if approval_list and approved_by else []
     limits = slots.limits(layer)
     queued = (f"all {max(1, limits['runs'])} run slots are in use; it waits up to {limits['wait']} s"
               if slots.free_slots(layer, "runs") == 0 else "")

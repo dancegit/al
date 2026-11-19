@@ -28,6 +28,8 @@ Languages: {{languages}}. Entry document: `{{readme}}`. Default branch: `{{defau
 - Tests: name every test to add, with its path, under Tests, and give each a step in The change, step by step. Tests come before or with the code they cover, never after the proof is run. Checkable results are observable: each one maps to a test, a command or a named artefact.
 - Keep the commands already present under `### Commands` in the Plan Format unchanged and in order; add feature-specific commands after them.
 - If the feature is user-visible, name under Checkable results the artefacts that will prove it (screenshots, video, reports), where they land, and the step that produces them.
+- End How it is proven with the Proof plan table, one row per checkable result. Proven by names a Validation Command in backticks, then the test ids it runs, each in backticks. Writes lists the files it writes as globs relative to the worktree with `(count)`; files for this run only go under `${proof_dir}/` and are listed as `proof:GLOB` (relative to `${proof_dir}/`), and every one of them reaches the reviewers; `-` when it writes none. Needs lists the tokens, or `none`: `tool:NAME`, `engine:podman|docker`, `network`, `model:NAME`, `secret:NAME`, `host:ID`, `approval:KIND[:ARG]`. A decision only a person may take is `approval:edit:PATH`, `approval:dependency:NAME` or a layer word such as `approval:vocabulary`. Pre-approved for this run: ${approvals}.
+- Right after you, the runtime checks every row without an agent; a row it cannot prove here stops the run with the declaration or question, so write needs truthfully.
 - Never plan a change under a protected path. If the feature cannot avoid one, plan everything else and add a line starting `REQUIRES HUMAN` under What is left out naming the path and the reason.
 - A plan covers building and validating only: no step commits, merges, pushes, tags, releases or opens a pull request; delivery is the workflow's. Integration work (bringing in another branch or patch) is planned as 'apply onto the worktree, uncommitted', e.g. `git merge --no-commit --squash <ref>`, `git checkout <ref> -- <path>` or `git apply`.
 - A new dependency is added with `{{package_manager}}` and justified under What could go wrong. Read a conditional document when its condition matches what you are planning.
@@ -81,6 +83,11 @@ Execute every command from the worktree root; all must exit 0.
 
 ### Checkable results
 <bullet per observable result, each tied to a test, a command or a named artefact; for a user-visible result, the artefact that proves it and where it lands>
+
+### Proof plan
+| # | Criterion | Proven by | Writes | Needs |
+|---|---|---|---|---|
+| C1 | <checkable result> | `<validation command>` `<test id>` | <globs (count), proof:GLOB, or -> | <none, or need tokens> |
 
 ## What could go wrong
 <risks; new dependencies with their justification; "Nothing known" if none>

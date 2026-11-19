@@ -148,7 +148,12 @@ def write_manifest(layer: Any, state: Any) -> Path:
     target = manifest_path(layer, state.adw_id)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(state.artefacts + skip_entries(state), indent=2) + "\n", encoding="utf-8")
+    entries = state.artefacts + skip_entries(state)
+    if getattr(state, "proof_plan", None) or getattr(state, "approvals", None):
+        from . import convergence  # the evidence pack, the approvals and the round scope for the reviewers
+
+        entries = entries + convergence.manifest_entries(layer, state)
+    temporary.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
     temporary.replace(target)
     return target
 
@@ -191,6 +196,10 @@ def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str
         collected.extend(_record(layer, state, store, option, producing_step, rel, src) for rel, src in matches)
     state.artefacts[:] = [item for item in state.artefacts if item.get("id") not in replaced] + collected
     write_manifest(layer, state)
+    from . import proofplan  # the run-scoped proof the plan declares (.al-proof/), refreshed with every collection
+
+    if proofplan.proof_globs(state):
+        collected += proofplan.collect_proof(layer, state, producing_step)
     return collected
 
 

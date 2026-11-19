@@ -693,6 +693,32 @@ What is counted:
 - **Changes on the default branch.** Runs whose work is on the layer's default branch: shipped by the
   gate, or handed over and landed afterwards.
 
+The last table, **Reviews and proof**, counts only the runs whose plan has a Proof plan
+([above](#proof-plan-pre-approvals-and-al-approve)):
+
+```text
+Reviews and proof
+                                           count
+  runs with a Proof plan                       0
+  review rounds per run, mean                  -
+  review rounds per run, max                   -
+  stopped early                                0
+  repeated blockers                            0
+  hours in rounds that changed no verdict   0.00
+```
+
+- **Runs with a Proof plan.** Runs whose plan ends with a Proof plan table; every other number of
+  this table counts only these runs.
+- **Review rounds per run.** Mean and max of the review rounds of those runs that were reviewed.
+- **Stopped early.** Runs stopped before the build or before another review round (prove, evidence, a
+  moved target, or rounds that made no progress), listed by reason and by the party who can clear it.
+- **Repeated blockers.** Blockers whose fingerprint (criterion or file, and kind) came back in a later
+  round, listed by cause (fixable, needs-environment, needs-declaration, needs-person).
+- **Hours in rounds that changed no verdict.** Idle time: review rounds whose verdict was the same as
+  the round before.
+- **Add first.** The missing declarations stops asked a layer author for, most frequent first (up to
+  five): add these first.
+
 `--since 2026-11-01` keeps the runs that started on or after that day (UTC). `--json` prints the same
 numbers as data, `--md` as a Markdown document: `tools/al kpis ~/code/myapp.al --md > docs/KPIS.md`.
 Using both, or a date in another form, is exit 2.
@@ -1331,6 +1357,63 @@ application and saves screenshots or a video; the two demo applications show one
 ([`tests/webdemo/app/e2e`](../tests/webdemo/app/e2e)). On Forgejo the pictures are attached to the pull request.
 
 What each kind of proof looks like, with real recordings you can play: [ARTEFACTS.md](ARTEFACTS.md).
+
+### Proof plan, pre-approvals and `al approve`
+
+A plan ends its *How it is proven* with a **Proof plan** table: one row per criterion, the command
+and test ids that prove it, what it writes, and what it needs.
+
+```markdown
+### Proof plan
+| # | Criterion | Proven by | Writes | Needs |
+|---|---|---|---|---|
+| C1 | the run page shows the proof | `uv run pytest -q` `tests/test_page.py::test_proof` | shots/*.png (3) | tool:chromium |
+```
+
+Right after the plan, the step `prove` (no agent) checks that every criterion can be proven where the
+run runs. When one cannot, the run stops **before the build** and names the party who can clear it:
+the **layer author** (a declaration is missing, e.g. an image limit below the screenshots the plan
+writes; the stop prints the exact declaration to add), an **approver** (a decision only a person may
+take, such as new vocabulary), or a **person** (the operator: it cannot be proven here at all). A plan
+without the table changes nothing. Files a criterion writes for this run only go under
+`.al-proof/` and are named `proof:GLOB` in the Writes column; they reach the reviewers without a
+layer change ([ARTEFACTS.md](ARTEFACTS.md#run-scoped-proof-and-what-the-evidence-step-adds)).
+
+**Pre-approve when you start.** `al run … --approve WHAT [--who NAME]` approves, for this run only, a
+decision only a person may take, so `prove` does not stop for it. WHAT is `vocabulary`, `edit:PATH` or
+`dependency:NAME`; repeat the flag for more than one. `--who` defaults to your login name. The approval
+is recorded with who and when. The gate is unchanged: an edit of a protected path still goes to a
+person.
+
+```bash
+tools/al run ~/code/myapp.al /change add a search command --approve vocabulary --approve dependency:rapidfuzz
+```
+
+**Clear a stop afterwards.** A run stopped for an approver resumes from the step that stopped once you
+approve what it asks for:
+
+```text
+usage: al approve [-h] [--who NAME] layer RUN WHAT [WHAT ...]
+```
+
+```bash
+$ tools/al approve ~/code/myapp.al b1000005 vocabulary
+approve: approved vocabulary for run b1000005; resuming from step prove
+$ tools/al approve ~/code/myapp.al b1000002 vocabulary
+al approve: refused (not-stopped-for-an-approver): run b1000002 is failed, stopped for the layer author; only a run stopped for an approver takes an approval
+```
+
+Exit: 0 resumed, 1 refused (unknown run, or not stopped for an approver), 2 bad use (e.g. an approval
+that is not of the three forms). `--who NAME` defaults to `AL_APPROVED_BY`, else your login name. The
+dashboard's **Approve** button does the same.
+
+The run summary has a `proof:` line for a plan with the table: what the Proof plan came to, or where
+the run stopped and for whom:
+
+```text
+proof:     3 criteria, 3 proven; 1 round; 2 debt tasks filed
+proof:     stopped at prove: needs-declaration (layer author)
+```
 
 ## Step 12 — Let small things ship by themselves
 

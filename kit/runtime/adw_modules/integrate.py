@@ -872,14 +872,19 @@ def _prepare(run: _Run) -> None:
 
 
 def _command(run: _Run) -> tuple[dict[str, Any], str]:
+    return resolve_command(run.layer)
+
+
+def resolve_command(layer: Any) -> tuple[dict[str, Any], str]:
     """(the command record, its prompt text): the layer's own `resolve-conflicts` when it declares
-    one, else the runtime's record and the file `al gen` wrote from the kit template."""
+    one, else the runtime's record and the file `al gen` wrote from the kit template. freshen.py
+    resolves a moved target with the same prompt."""
     try:
-        command = run.layer.command(COMMAND_NAME)
+        command = layer.command(COMMAND_NAME)
     except LayerError:
         command = dict(COMMAND)
     folder = "hops" if command.get("isHop") else "commands"
-    path = Path(run.layer.layer_dir) / folder / f"{COMMAND_NAME}.md"
+    path = Path(layer.layer_dir) / folder / f"{COMMAND_NAME}.md"
     try:
         return command, path.read_text(encoding="utf-8")
     except OSError as exc:
