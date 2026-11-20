@@ -79,7 +79,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from . import affected, delivery, events, gitsafe, ir, slots, state as state_module
+from . import affected, delivery, diskuse, events, gitsafe, ir, slots, state as state_module
 from .errors import LayerError, StepFailed, StepWaiting
 
 ADW_NAME = "integrate"
@@ -343,7 +343,8 @@ def write_record(layer: Any, run_id: str, *, run: str, status: str, why: str = "
 def write_settlement(layer: Any, run_id: str, integration_id: str, commit: str, target: str) -> dict[str, Any]:
     """agents/<original>/settlement.json for a run an integration landed. The format is the
     dashboard's (kit/dashboard/dashboard.py write_settlement; keep the two alike): {as, by, note,
-    who, at, via}, the earlier record kept under "previous" (one level), "pruned" carried over."""
+    who, at, via}, the earlier record kept under "previous" (one level), "pruned" carried over. Then
+    the original run's worktree goes (diskuse.release_worktree; its branch and record stay)."""
     path = state_module.run_dir(layer.layer_dir, run_id) / SETTLEMENT_FILE
     record: dict[str, Any] = {"as": "landed", "by": integration_id,
                               "note": f"landed by integration run {integration_id} in {commit[:7]} on {target}",
@@ -354,7 +355,17 @@ def write_settlement(layer: Any, run_id: str, integration_id: str, commit: str, 
         if earlier.get("pruned"):
             record["pruned"] = earlier["pruned"]
     _write_private(path, record)
+    with contextlib.suppress(OSError, subprocess.SubprocessError):   # settling never fails because of a worktree
+        diskuse.release_worktree(layer.layer_dir, layer.app_root, run_id, _tree_dir(layer))
     return record
+
+
+def _tree_dir(layer: Any) -> str:
+    """The worktree environment's directory (the first `kind == "worktree"` one), default `trees`."""
+    for env in (getattr(layer, "ir", None) or {}).get("environments") or []:
+        if isinstance(env, dict) and env.get("kind") == "worktree" and env.get("dir"):
+            return str(env["dir"])
+    return "trees"
 
 
 # ---------------------------------------------------------------- which runs are being integrated

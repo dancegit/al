@@ -374,7 +374,7 @@ def test_a_run_in_a_container_on_a_host_keeps_the_isolation_rules(world, make_la
     flags = envs.hardening_flags(box)
     assert "--read-only" in flags and "321" in flags
     assert "--cap-drop=ALL" in started and "--security-opt=no-new-privileges" in started
-    assert _contains(started, ["--pids-limit", "321"]) and _contains(started, ["--tmpfs", "/tmp:rw,mode=1777"])
+    assert _contains(started, ["--pids-limit", "321"]) and _contains(started, ["--tmpfs", "/tmp:rw,mode=1777,size=8g"])
     assert all(flag in started for flag in flags)
     assert "--userns=keep-id" in started and _contains(started, ["--network", "none"]) and "--privileged" not in started
     # the application's history is the clone's, read-only; the clone's working tree is not there at all
