@@ -9,7 +9,8 @@ A plan (plan-chore, plan-bug, plan-feature) ends its How it is proven with one t
 
 `parse` reads it: Proven by is the command (its first backticked span) and the test ids (the other
 spans); Writes are globs relative to the worktree with `(count)`, and `proof:GLOB` for files of this
-run only, under `.al-proof/` (PROOF_DIR); Needs are tokens (NEED_FORMS) or `none`.
+run only, under `.al-proof/` (PROOF_DIR); Needs are tokens (NEED_FORMS) or `none`. Proven by may be a declared
+check by name, its cmd verbatim, or its cmd narrowed to some tests (`narrowed`).
 
 Right after the plan step, `check` (run by steps.run_step as the step `prove`, no agent) gives
 every row one outcome: `proven-here`, `proven-on:ENV`, `needs-declaration` (the layer author adds a
@@ -48,6 +49,12 @@ _ID = re.compile(r"^C\d+$")
 _COUNT = re.compile(r"\s*\((\d+)\)\s*$")
 _SPAN = re.compile(r"`([^`]+)`")
 _ROW_TEMPLATE = "| C1 | <checkable result> | `<validation command>` `<test id>` | <globs (count), proof:GLOB, or -> | <none, or need tokens> |"
+_SELECT_FLAGS = re.compile(r"^-(?:q+|v+|x|r[A-Za-z]+)$")
+_SELECT_ARG = ("-k", "-n")
+_SHELL_OPS = {"(", ")", ";", "&&", "||", "|", "&", ";;", "<", ">", ">>"}
+_PLAIN = re.compile(r"^[A-Za-z0-9_./-]+(?:::[A-Za-z0-9_.:\[\]-]+)?$")
+_EXPR = re.compile(r"^[A-Za-z0-9_ .()\[\]-]+$")
+_N = re.compile(r"^(?:\d+|auto|logical)$")
 IMAGE = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 VIDEO = {".mp4", ".webm", ".mov", ".mkv"}
 AUDIO = {".mp3", ".wav", ".ogg", ".m4a", ".flac"}
@@ -174,10 +181,117 @@ def proof_globs(state: Any) -> list[str]:
 
 # ---------------------------------------------------------------- what proves a row
 
+def _tokens(text: str) -> list[str] | None:
+    lexer = shlex.shlex(str(text or ""), posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def _runner(tokens: list[str]) -> int | None:
+    for index, token in enumerate(tokens):
+        previous = tokens[index - 1] if index else ""
+        if (token == "pytest" or token.endswith("/pytest")) and not previous.startswith("-"):
+            return index
+        if token == "test" and previous == "raco":
+            return index
+    return None
+
+
+def _split_args(tokens: list[str], start: int) -> tuple[list[str], list[str]]:
+    for index in range(start, len(tokens)):
+        if tokens[index] in _SHELL_OPS:
+            return tokens[start:index], tokens[index:]
+    return tokens[start:], []
+
+
+def _under(path: str, roots: list[str]) -> bool:
+    if not roots:
+        return True
+    target = PurePosixPath(path.split("::")[0])
+    for root in roots:
+        base = PurePosixPath(root)
+        if target == base or base in target.parents:
+            return True
+    return False
+
+
+def _selection(args: list[str], roots: list[str]) -> tuple[list[str], list[str]] | None:
+    selection: list[str] = []
+    rest: list[str] = []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if _SELECT_FLAGS.fullmatch(token):
+            selection.append(token)
+        elif token in _SELECT_ARG:
+            if index + 1 >= len(args):
+                return None
+            value = args[index + 1]
+            if not (_EXPR if token == "-k" else _N).fullmatch(value):
+                return None
+            selection += [token, value]
+            index += 1
+        elif not token.startswith("-"):
+            part = token.split("::")[0]
+            if (not _PLAIN.fullmatch(token) or part.startswith("/") or ".." in PurePosixPath(part).parts
+                    or not _under(token, roots)):
+                return None
+            selection.append(token)
+        else:
+            rest.append(token)
+        index += 1
+    return selection, rest
+
+
+def _roots(selection: list[str]) -> list[str]:
+    roots = []
+    for index, token in enumerate(selection):
+        if token.startswith("-") or (index and selection[index - 1] in _SELECT_ARG):
+            continue
+        path = PurePosixPath(token.split("::")[0])
+        roots.append(str(path.parent) if path.suffix else str(path))
+    return roots
+
+
+def narrowed(declared_run: str, text: str) -> list[str] | None:
+    """The test selection by which `text` narrows the declared command `declared_run`, or None.
+
+    Both are tokenised (shell words and operators). Each must name a test runner (`pytest`, not an
+    argument of an option such as `--with pytest`; or `raco test`). The tokens up to and including the
+    runner must be equal, and so must the tokens after the runner's arguments (from the first shell
+    operator on). In the runner's arguments only test selection may differ: `-q`/`-v`/`-x`/`-rX`,
+    `-k EXPR` (plain characters only), `-n N`, and relative test paths or node ids without `..` that
+    lie under the declared command's own test paths when it names any (a file contributes its
+    directory). Every other argument must be equal, in order. The result is the text's selection
+    tokens; None for anything else, which stays a needs-declaration."""
+    declared, wanted = _tokens(declared_run), _tokens(text)
+    if declared is None or wanted is None:
+        return None
+    at, at_text = _runner(declared), _runner(wanted)
+    if at is None or at_text is None or declared[:at + 1] != wanted[:at_text + 1]:
+        return None
+    declared_args, declared_tail = _split_args(declared, at + 1)
+    wanted_args, wanted_tail = _split_args(wanted, at_text + 1)
+    if declared_tail != wanted_tail:
+        return None
+    own = _selection(declared_args, [])
+    if own is None:
+        return None
+    roots = _roots(own[0])
+    found = _selection(wanted_args, roots)
+    if found is None or found[1] != own[1]:
+        return None
+    return found[0]
+
+
 def resolve_command(layer: Any, adw: dict[str, Any], text: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """(check step, cmd) the text of Proven by names: a check step by name; else the check step whose
     cmd is that name or whose cmd's `run` is exactly the text; else a declared cmd no check step runs
-    (the evidence step runs it); else (None, None)."""
+    (the evidence step runs it); else the check step or declared cmd that `text` narrows to some tests
+    (see `narrowed`), with `run` set to `text` and `selection` the tests; else (None, None)."""
     text = str(text or "").strip()
     checks = [step for step in adw.get("steps") or [] if step.get("kind") == "check"]
 
@@ -197,6 +311,13 @@ def resolve_command(layer: Any, adw: dict[str, Any], text: str) -> tuple[dict[st
     for cmd in layer.ir.get("codebase", {}).get("commands") or []:
         if str(cmd.get("name")) == text or str(cmd.get("run", "")).strip() == text:
             return None, cmd
+    for step in checks:
+        cmd = cmd_of(str(step.get("cmd")))
+        if cmd is not None and (selection := narrowed(str(cmd.get("run", "")), text)) is not None:
+            return step, {**cmd, "run": text, "selection": selection}
+    for cmd in layer.ir.get("codebase", {}).get("commands") or []:
+        if (selection := narrowed(str(cmd.get("run", "")), text)) is not None:
+            return None, {**cmd, "run": text, "selection": selection}
     return None, None
 
 
@@ -367,6 +488,7 @@ def evaluate(layer: Any, state: Any, adw: dict[str, Any], stack: Any, row: dict[
         return {"outcome": "needs-declaration", "why": f"`{row.get('command')}` is no cmd or check of the layer",
                 "fix": f'(cmd {name} "{row.get("command")}") and (check {name} #:cmd {name}) in (adw {adw.get("name")} …)',
                 "party": "layer author", "approvals": [], "question": ""}
+    declared = {"cmd": str(cmd.get("name")), "selection": list(cmd.get("selection") or [])}
     where = stack
     if check is not None:
         try:
@@ -379,13 +501,13 @@ def evaluate(layer: Any, state: Any, adw: dict[str, Any], stack: Any, row: dict[
     if not problems:
         env_id = checkenv.target(adw, check) if check is not None else None
         return {"outcome": f"proven-on:{env_id}" if env_id else "proven-here", "why": "", "fix": "",
-                "party": "", "approvals": [], "question": ""}
+                "party": "", "approvals": [], "question": "", **declared}
     ranked = sorted(problems, key=lambda p: PARTY_ORDER.index(p["party"]) if p["party"] in PARTY_ORDER else -1)
     first = ranked[0]
     return {"outcome": first["outcome"], "why": "; ".join(p["why"] for p in ranked),
             "fix": "; ".join(p["fix"] for p in ranked), "party": first["party"],
             "approvals": [p["approval"] for p in ranked if p.get("approval")],
-            "question": "; ".join(p["question"] for p in ranked if p.get("question"))}
+            "question": "; ".join(p["question"] for p in ranked if p.get("question")), **declared}
 
 
 def proven(outcome: str) -> bool:
