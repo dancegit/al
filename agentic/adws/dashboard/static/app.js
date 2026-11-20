@@ -2768,6 +2768,7 @@
     let detail = null;
     let shown = "";            // the JSON text of the detail last rendered
     let loads = 0;             // completed loads, published as main.dataset.rendered
+    let proofPlanShown = { key: "", node: null };   // the Proof plan card last built, kept while its data is unchanged
     let gone = false;          // set by destroy(); a late load() then touches nothing
     let sub = null;            // the open step panel / log viewer
     let state = { tab: "overview", step: "", params: {} };
@@ -3189,7 +3190,12 @@
                   text: r.depth && r.accounting.startsWith(r.depth) ? r.accounting.slice(r.depth.length) : ` ${r.accounting}` }) : null) : null,
               h("td", { class: "dim", text: evidence(r) }))))))));
       }
-      if (detail.proof_plan && (detail.proof_plan.rows || []).length) blocks.push(proofPlanCard(detail.proof_plan));
+      if (detail.proof_plan && (detail.proof_plan.rows || []).length) {
+        // a running run's detail changes on every poll (its durations); an unchanged plan keeps its node
+        const key = JSON.stringify([detail.proof_plan, sm.status]);
+        if (proofPlanShown.key !== key) proofPlanShown = { key, node: proofPlanCard(detail.proof_plan) };
+        blocks.push(proofPlanShown.node);
+      }
       const review = detail.review;
       if (review && (review.rounds.length || review.mode)) {
         const block = h("div", { class: "outcome-block" }, h("div", { class: "card-head" }, h("h3", { text: "Review" }),
