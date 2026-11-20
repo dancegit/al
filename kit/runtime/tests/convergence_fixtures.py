@@ -33,7 +33,8 @@ def git(repo: Path, *args: str, check: bool = True) -> str:
 def converge_layer(make_layer, *, artefacts: list[dict[str, Any]] | None = None,
                    review_artefacts: list[str] | None = None, steps: list[dict[str, Any]] | None = None,
                    unit: str = UNIT_OK, protected: list[str] | None = None, tasklist: bool = False,
-                   review: dict[str, Any] | None = None) -> Path:
+                   review: dict[str, Any] | None = None, commands: list[dict[str, Any]] | None = None) -> Path:
+    cmds = list(commands) if commands is not None else [{"name": "unit", "run": unit, "timeout": 30}]
     commands = [{"name": n, "template": t, "modelSet": "base", "output": o, "description": "", "file": "",
                  "focus": [], "fabric": [], "relevant": [], "validation": []} for n, t, o in (
         ("plan", "plan-feature", "path"), ("build", "build", "text"), ("commit", "commit", "text"),
@@ -51,7 +52,7 @@ def converge_layer(make_layer, *, artefacts: list[dict[str, Any]] | None = None,
     return make_layer({
         "agents": [MOCK],
         "commands": commands,
-        "codebase": {"commands": [{"name": "unit", "run": unit, "timeout": 30}],
+        "codebase": {"commands": cmds,
                      "paths": {"protected": list(protected or [])}},
         "reviews": [{"id": "policy", "kind": "auto", "status": "stable", "command": "review", "reviewers": 2,
                      "maxRetries": 2, "artefacts": list(review_artefacts or []),
@@ -142,6 +143,30 @@ def no_progress(make_layer, app_repo) -> tuple[Path, dict[str, Any]]:
     build_writes(layer)
     script(layer, "evidence-implement-1", {"files": {"attempt.py": "FIRST_ATTEMPT = 1\n"}})
     script(layer, "evidence-implement-2", {"files": {"attempt.py": "SECOND_ATTEMPT = 2\n"}})
+    reviewers(layer)
+    return layer, {}
+
+
+def carried(make_layer, app_repo, *, touch: str) -> tuple[Path, dict[str, Any]]:
+    """Two #:when-affected checks that together cover every path: `unit` (feature.py) and `docs`
+    (README.md, tests, app.py, test.sh). The first evidence patch writes the missing proof and
+    `touch`, which only `docs` covers, so `unit` is decided not affected and its pass is carried;
+    the second patch would write `touch` again with other content."""
+    unit = {"name": "unit", "run": UNIT_OK, "timeout": 30, "covers": ["feature.py"], "always": False}
+    docs = {"name": "docs", "run": "true", "timeout": 30, "covers": ["README.md", "tests", "app.py", "test.sh"],
+            "always": False}
+    steps = [{"name": "plan", "kind": "run", "command": "plan", "args": ["$prompt"]},
+             {"name": "build", "kind": "run", "command": "build", "args": ["$plan"]},
+             {"name": "unit", "kind": "check", "cmd": "unit", "whenAffected": True},
+             {"name": "docs", "kind": "check", "cmd": "docs", "whenAffected": True},
+             {"name": "commit", "kind": "run", "command": "commit"},
+             {"name": "review", "kind": "review", "patch": "patch", "implement": "implement"},
+             {"name": "ship", "kind": "ship"}]
+    layer = converge_layer(make_layer, steps=steps, commands=[unit, docs])
+    plan_with(layer, [C1, ("C2", "the report is written", "`unit`", "proof:report.json", "none")])
+    build_writes(layer)
+    script(layer, "evidence-implement-1", {"files": {".al-proof/report.json": "{}\n", touch: "# first\n"}})
+    script(layer, "evidence-implement-2", {"files": {touch: "# second\n"}})
     reviewers(layer)
     return layer, {}
 

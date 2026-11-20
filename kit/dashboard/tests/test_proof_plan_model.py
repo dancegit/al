@@ -95,3 +95,12 @@ def test_fixture_timelines_follow_plan_prove_build(fx):
     assert after_plan == ["prove", "build"]
     builds = [r for r in records if r["name"] == "build"]
     assert len(builds) == 1 and builds[0]["status"] == "running"
+
+
+def test_pack_row_carried_shows_where_it_was_carried_from():
+    state = {"proof_plan": {"table": "parsed", "rows": [], "pack": {"rows": [
+        {"id": "C1", "state": "proven", "tree": "carried", "carried": {"from_tree": "ab" * 20, "changed": ["README.md"]}},
+        {"id": "C2", "state": "proven", "tree": "current"}]}}}
+    pack = d.proof_plan_view(state)["pack"]
+    assert pack[0]["carried"] == "carried from abababab (only README.md changed)"
+    assert pack[1]["carried"] == ""

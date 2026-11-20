@@ -211,6 +211,13 @@ re-runs the check steps that ran (`review._checks_that_ran`); whenever it does, 
 as not affected are decided again for the new tree (`steps._redecide_not_affected`), so a patch
 that touches what such a step covers runs it in the round.
 
+**Carried passes in the evidence step.** The evidence pack accepts a carried pass as proof of a
+Proof plan row unless one of the changed paths is a file the row names (one of its Writes globs, or
+the file of one of its test ids). The row then shows "carried from TREE (only PATHS changed)" and
+cites the carried pass's log. A row that stays stale because its check would be skipped again does
+not get a patch: the evidence step runs that check once in full, and
+at most once per check per evidence step.
+
 **The tree hash.** Every result is recorded with the hash of the worktree's content: `git add -A`
 into a temporary copy of the index (the real index is never written), the worktree option's
 `#:copy-files` unstaged again as `ship.commit_pending` does, then `git write-tree`. It equals
@@ -1221,6 +1228,7 @@ to its check, a re-check and the reviewers to the review step).
 | `check.start` | `step` (check step, or `gate` / `deploy`), `owner`, `phase` (check / recheck / gate / deploy), `cmd` (codebase cmd name), `attempt`, `log` (layer-relative) |
 | `check.end` | as `check.start`, plus `exit`, `seconds`; for a result that carries its depth (a layer with `(testing …)`) `depth` (smoke / targeted / full), `selected`, `total` (the full suite's size, or null) and `strategies` (`{strategy: count}`); when the output had a test report `skipped` (count), `skip_reasons` (`[[reason, count]]`, at most 5, most frequent first) and `skip_source` (`pytest`, `go`, `go (no -v)`, `cargo`, `mocha`, `junit:<file>`, joined with `+`); `in` (the environment option) for a check that runs `#:in` one. A gate re-run of a check's cmd carries the same fields |
 | `check.decision` | a check that was not run, in place of a `check.start` / `check.end` pair: `step` (check step, or `gate`), `owner`, `phase` (check / recheck / gate), `cmd`, `outcome` (not-affected / reused), `why`, `paths` (the changed paths compared, at most 50), `paths_total`, `tree` (the worktree's tree hash), `from_step` and `from_phase` (where the reused pass ran; empty otherwise), `log` (the decision's text; for a reused check step the log of the run that passed) |
+| `check.carried` | a not-affected decision that carries the cmd's last pass to a new tree (emitted with that `check.decision`; the check's `state.checks` record gets a `carried` entry): `step`, `owner`, `phase` (check / recheck), `cmd`, `from_tree` (the tree the pass ran on), `tree` (the tree it is carried to), `changed` (the changed paths, at most 50), `changed_total`, `log` (the log of the carried pass) |
 | `script.start` / `script.end` | `step`, `owner`, `cmd` (codebase cmd name), `log` (layer-relative); `script.end` adds `exit`, `seconds` |
 | `script.event` | `step`, `owner` (the script step), `line` (the line number in the script's own `events.jsonl`), `foreign` (that line's JSON object, unchanged) |
 | `budget.stop` | `step` (the agent call that crossed the limit, or the one refused), `limit` (run / step / day), `spent`, `of`, `reason` (`budget:<limit>: spent $X of $Y`) |

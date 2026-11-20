@@ -2988,6 +2988,15 @@ def approve_via_layer(layer: Layer, run_id: str, what: list[str],
 PROOF_STATES = ("planned", "proven", "missing", "failed", "stale", "skipped-only", "not-run", "files-missing")
 
 
+def _carried_text(row: dict[str, Any], text: Any) -> str:
+    """Where a pack row's pass was carried from ("" when it was not carried)."""
+    c = row.get("carried")
+    if not isinstance(c, dict) or not c.get("from_tree"):
+        return ""
+    return text(f"carried from {str(c.get('from_tree'))[:8]} "
+                f"(only {', '.join(str(x) for x in c.get('changed') or [])} changed)", 500)
+
+
 def proof_plan_view(state: dict[str, Any] | None, short: Any = lambda text: text) -> dict[str, Any]:
     """The run page's proof card; {} for a run whose plan has no Proof plan table. Every text is data
     (the page sets it as text, never as markup)."""
@@ -3019,7 +3028,7 @@ def proof_plan_view(state: dict[str, Any] | None, short: Any = lambda text: text
                   "exit": r.get("exit"), "tree": text(r.get("tree"), 20), "passed": r.get("passed"),
                   "failed": r.get("failed"), "skipped": r.get("skipped"), "note": text(r.get("note"), 500),
                   "tests": {text(k, 300): text(v, 40) for k, v in (r.get("tests") or {}).items()},
-                  "files": [text(f, 300) for f in r.get("files") or []][:50]}
+                  "files": [text(f, 300) for f in r.get("files") or []][:50], "carried": _carried_text(r, text)}
                  for r in pack.get("rows") or [] if isinstance(r, dict)],
         "rounds": rounds, "why_stopped": text(plan.get("why_stopped"), 200),
         "freshen": {when: {"behind": f.get("behind"), "touched": [text(x, 300) for x in f.get("touched") or []],

@@ -188,7 +188,9 @@ webhook's `decision` payload.
 
 A run whose plan ends with a Proof plan table has a **Proof plan** card on its run page
 (`[data-role='proof-plan']`). It has a row per criterion with its state (`planned`, `proven`,
-`files-missing`, …) from the moment the plan exists, before anything is built. When the run stopped
+`files-missing`, …) from the moment the plan exists, before anything is built. For a row proven by a
+check pass the run carried forward as not affected, the Evidence cell shows
+"carried from <tree> (only <files> changed)", with the first 8 characters of the tree the pass ran on. When the run stopped
 at `prove` or `evidence`, a stop line says why and names the party who can clear it (layer author,
 approver, person), with the fix (the exact declaration a layer author adds, or the question for an
 approver). Only for a failed run stopped for an **approver** is there an **Approve** button

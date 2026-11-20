@@ -72,6 +72,63 @@ def test_pack_row_stale_when_tree_changed(make_layer, app_repo):
     assert (row["state"], row["tree"]) == ("stale", "older")
 
 
+def _carry(layer, state, stack, changed: list[str]) -> None:
+    """A pass on tree 0…0 carried to the current tree over `changed`."""
+    _passed(layer, state, stack, tree="0" * 40)
+    state.checks["unit"]["carried"] = {"from_tree": "0" * 40, "tree": affected.tree(layer, state, stack),
+                                       "changed": list(changed), "changed_total": len(changed),
+                                       "log": state.checks["unit"]["log"]}
+
+
+def test_carried_pass_proves_a_row_whose_files_did_not_change(make_layer, app_repo):
+    layer, state, stack = _setup(make_layer, app_repo, [_row(tests=["tests/test_feature.py::test_feature"])])
+    _carry(layer, state, stack, ["README.md"])
+    (row,) = evidence.build_pack(layer, state, layer.adw(cf.ADW), stack)["rows"]
+    assert (row["state"], row["tree"]) == ("proven", "carried")
+    assert row["note"] == "carried from 00000000 (only README.md changed)"
+    assert row["carried"]["from_tree"] == "0" * 40 and row["carried"]["changed"] == ["README.md"]
+    assert row["log"] == state.checks["unit"]["log"]
+    written = (Path(layer.layer_dir) / "artefacts" / RUN / "review-context" / "evidence.md").read_text()
+    assert "carried from 00000000 (only README.md changed)" in written
+
+
+def test_carried_pass_is_stale_when_a_file_the_row_names_changed(make_layer, app_repo):
+    layer, state, stack = _setup(make_layer, app_repo, [_row(tests=["tests/test_feature.py::test_feature"])])
+    _carry(layer, state, stack, ["kit/x/tests/test_feature.py"])
+    (row,) = evidence.build_pack(layer, state, layer.adw(cf.ADW), stack)["rows"]
+    assert (row["state"], row["tree"]) == ("stale", "older")
+    assert row["note"] == "a file this criterion names changed: kit/x/tests/test_feature.py"
+    layer, state, stack = _setup(make_layer, app_repo, [_row(writes=[{"glob": "out/*.txt", "count": 1}])])
+    _carry(layer, state, stack, ["out/a.txt"])
+    (row,) = evidence.build_pack(layer, state, layer.adw(cf.ADW), stack)["rows"]
+    assert row["state"] == "stale"
+    assert row["note"] == "a file this criterion names changed: out/a.txt"
+
+
+def test_carried_pass_ignores_a_changed_test_file_of_another_suite(make_layer, app_repo):
+    layer, state, stack = _setup(make_layer, app_repo, [_row(tests=["tests/test_feature.py::test_feature"])])
+    _carry(layer, state, stack, ["tests/tools/test_own_layer.py", "kit/dashboard/tests/test_feature_view.py"])
+    (row,) = evidence.build_pack(layer, state, layer.adw(cf.ADW), stack)["rows"]
+    assert (row["state"], row["tree"]) == ("proven", "carried")
+    assert row["note"] == ("carried from 00000000 (only tests/tools/test_own_layer.py, "
+                           "kit/dashboard/tests/test_feature_view.py changed)")
+
+
+def test_force_stale_runs_each_check_once(make_layer, app_repo):
+    unit = "echo 'tests/test_feature.py::test_feature PASSED' && echo '==== 1 passed in 0.01s ===='"
+    layer, state, stack = _setup(make_layer, app_repo, [_row()], unit=unit)
+    _passed(layer, state, stack, tree="0" * 40)
+    adw = layer.adw(cf.ADW)
+    pack = evidence.build_pack(layer, state, adw, stack)
+    assert pack["rows"][0]["state"] == "stale"
+    forced: set[str] = set()
+    assert evidence._force_stale(layer, state, adw, stack, pack, forced) == ["unit"]
+    record = state.checks["unit"]
+    assert (record["outcome"], record["tree"]) == ("passed", affected.tree(layer, state, stack))
+    assert evidence._force_stale(layer, state, adw, stack, pack, forced) == []
+    assert evidence.build_pack(layer, state, adw, stack)["rows"][0]["state"] == "proven"
+
+
 def test_pack_row_skipped_only(make_layer, app_repo):
     layer, state, stack = _setup(make_layer, app_repo, [_row()])
     _passed(layer, state, stack, passed=0, skipped=3, reasons=[["chromium not installed", 3]])
