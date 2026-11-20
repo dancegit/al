@@ -900,6 +900,10 @@ view, the download, an inert `<script>` in a plan, live appearance and the step 
 `tests/test_browser_discipline.py` (Chrome) opens a build step that stayed in its step and one that
 left it, and with `AL_DASHBOARD_SHOTS=DIR` saves `step-discipline-ok.png` and
 `step-discipline-violation.png` to DIR.
+`tests/test_browser_leftovers.py` (Chrome) opens a run whose `build` agent left commands running and a
+running run, and checks the node's `leftover commands stopped` line and note and the dashed `waiting`
+edge and label; with `AL_DASHBOARD_SHOTS=DIR` it saves `run-leftovers-stopped.png` and
+`run-waiting-edge.png` to DIR.
 `tests/test_start.py` starts work through the real server and the layer's own launcher
 (`tests/start_layer.py` builds a git app and runnable layers the way `al gen` lays them out, with the
 mock agent): the catalog, a workflow and a `/plan-chore` single-command run with its plan as a
