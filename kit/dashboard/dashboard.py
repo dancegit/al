@@ -9006,12 +9006,20 @@ class VoiceServices:
             self.stop(key)
 
     def reap(self, now: float) -> list[str]:
-        """Stop the services idle for more than VOICE_IDLE seconds and forget the dead ones (Model.tick)."""
-        gone = [key for key, s in list(self.services.items())
+        """Stop the services idle for more than VOICE_IDLE seconds and forget the dead ones (Model.tick).
+        Only the service found dead or idle is stopped: one that `ensure` stored under the same key while
+        reaping (a restart for a new record dir) is left running."""
+        gone = [(key, s) for key, s in list(self.services.items())
                 if s.process.poll() is not None or now - s.last_used > VOICE_IDLE]
-        for key in gone:
-            self.stop(key)
-        return gone
+        stopped: list[str] = []
+        for key, service in gone:
+            with self.lock:
+                if self.services.get(key) is not service:   # ensure replaced it meanwhile: leave the new one
+                    continue
+                del self.services[key]
+            _stop_group(service.process)
+            stopped.append(key)
+        return stopped
 
 
 _EMPHASIS = re.compile(r"(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1")
