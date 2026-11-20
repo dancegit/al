@@ -6531,7 +6531,8 @@ class Model:
         key = f"{layer.key}/{run_id}"
         with self.lock:
             summary = self.summaries.get(key)
-        summary = summary or RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary()
+        if not summary or summary.get("status") in ("running", "unknown"):   # the watcher's read may be behind the files
+            summary = RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary()
         held = run_holder(layer.path, run_id)
         if held:
             return None, 409, f"run {run_id} is still held by its process {held.get('pid')}: it is left to that process"

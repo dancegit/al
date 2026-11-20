@@ -33,6 +33,7 @@
       "approval": "human",
       "approvers": 1,
       "backMerge": [],
+      "forgeCiTimeout": 60,
       "from": "sprint",
       "hotfix": false,
       "method": "merge",

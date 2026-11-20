@@ -1254,6 +1254,7 @@
     "host": "https://forgejo.example.org",
     "id": "forgejo",
     "kind": "forgejo",
+    "pullRequests": true,
     "repo": "acme/webshop",
     "status": "stable",
     "tokenEnv": "FORGEJO_TOKEN"
@@ -1341,6 +1342,7 @@
       "approval": "human",
       "approvers": 1,
       "backMerge": [],
+      "forgeCiTimeout": 60,
       "from": "sprint",
       "hotfix": false,
       "method": "merge",
@@ -1373,6 +1375,7 @@
       "backMerge": [
         "sprint"
       ],
+      "forgeCiTimeout": 60,
       "from": "hotfix",
       "hotfix": true,
       "method": "merge",

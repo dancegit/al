@@ -2064,6 +2064,16 @@ approved; merged by merge; no version, no tag):
 (Keep a Changelog, or the format of its last version heading). `#:present` chooses the sections of the
 presentation pack. `al explain` says each promotion in words.
 
+`#:requires` may add `forge-ci` (it needs a `(forge github …)` or `(forge forgejo …)`): the commit TO will
+point at is pushed to the forge, and every check run and commit status the forge reports for it must
+succeed within `#:forge-ci-timeout` minutes (default 60). Otherwise the promotion stops with
+`promotion:forge-ci-failed`, `promotion:forge-ci-timeout` or `promotion:forge-ci-missing`, names the failing
+check and its link, and merges nothing. `fast-forward` is the method to use with it: TO becomes the very
+commit the CI passed on. With `merge` or `squash` the merge commit is first pushed to `al/ci/<branch>`, so
+the forge's CI must run on pushes to that branch. A forge declared with `#:pull-requests #f`
+(`(forge github #:repo "owner/name" #:pull-requests #f)`) keeps runs and promotions merging locally, as
+without a forge, and pushes each branch they move; the forge is used for its CI and nothing else.
+
 ### Run it
 
 ```
@@ -2185,7 +2195,8 @@ They never land on `main`. A run's gate integrates against `integration`. The la
 (stage integration #:branch "integration" #:from main #:accepts (chore bug feature patch) #:entry merge)
 (stage main #:branch "main" #:accepts () #:agents-may-merge #f
        #:checks (test-docs test-compiler test-runtime test-tools test-dashboard test-integration))
-(promotion integration -> main #:approval human #:approvers 1 #:method merge)
+(forge github #:repo "dancegit/al" #:pull-requests #f)
+(promotion integration -> main #:approval human #:approvers 1 #:requires (checks acceptance forge-ci) #:method fast-forward)
 (testing targeted #:on-stage full #:batch ((every 5) (after-hours 24)))
 ```
 
@@ -2196,7 +2207,11 @@ before a promotion is offered, because they are the checks of `main`. They are n
 The branch has to exist before the first run delivers to it. Until then a run ends `stage-missing`. A
 person creates `integration` once from `main` and publishes it to the remote.
 
-A person moves a batch into `main`. It is merged, so each feature's commits stay visible:
+Every delivered run merges into `integration` here and then pushes it to GitHub, so GitHub's CI runs on
+`integration` after every run. A person moves a batch into `main` by fast-forward: `main` becomes exactly
+the `integration` commit that was checked. The promotion waits for GitHub's CI on that `integration` head
+and moves `main` only when every check run passed, so `main` only ever points at a commit whose CI passed:
+
 
 ```bash
 al promote agentic integration main --dry-run   # what would happen; changes nothing
@@ -2206,6 +2221,11 @@ al promote agentic integration main             # merges into main
 ```
 
 The promotion button on the dashboard does the same.
+
+A fast-forward needs `main` to be contained in `integration`. It is, as long as `main` changes only by
+promotions; a commit made on `main` directly stops the next promotion with `not-fast-forward`. The matching
+guard on GitHub is a branch protection rule on `main` with required status checks, a setting of the
+repository that al does not make for you.
 
 CI runs on pushes to `main` and `integration` and on pull requests into `main`. A difference between
 Python versions therefore shows on `integration` first.
