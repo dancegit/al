@@ -192,3 +192,27 @@ def test_shell_finder_matches_find(home, tmp_path, monkeypatch, case):
     cp = subprocess.run([shutil.which("sh", path=host_path), "-c", al_tools.shell_finder() + '\nal_find uv AL_UV || echo "none"'],
                         env={"HOME": str(home), "PATH": path}, capture_output=True, text=True, timeout=30)
     assert cp.stdout.strip() == (expected or "none"), cp.stderr
+
+
+def test_gone_dashboards_flags_a_dashboard_whose_python_is_gone(tmp_path: Path) -> None:
+    """`al doctor`'s check on a simulated /proc: only the dashboard whose interpreter has gone is listed;
+    a dashboard whose Python exists and another program whose argv0 has gone are not."""
+    fakeproc = tmp_path / "proc"
+    gone = str(tmp_path / "gone" / "bin" / "python")
+    dashboard = ["/srv/notes.al/adws/dashboard/dashboard.py", "--layer", "/srv/notes.al"]
+
+    def process(pid: int, argv: list[str], exe: str) -> None:
+        folder = fakeproc / str(pid)
+        folder.mkdir(parents=True)
+        (folder / "cmdline").write_bytes("".join(f"{part}\0" for part in argv).encode())
+        (folder / "exe").symlink_to(exe)
+
+    process(4242, [gone, *dashboard], f"{gone} (deleted)")
+    process(4343, [sys.executable, *dashboard], sys.executable)
+    process(4444, [gone, "/srv/other/serve.py"], f"{gone} (deleted)")
+    (fakeproc / "self").mkdir()
+    found = al_tools.gone_dashboards(fakeproc)
+    assert [entry["pid"] for entry in found] == [4242]
+    assert found[0]["python"] == gone
+    assert "restart the dashboard" in found[0]["sentence"]
+    assert al_tools.gone_dashboards(tmp_path / "no-proc") == []

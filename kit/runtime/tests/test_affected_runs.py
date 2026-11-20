@@ -304,6 +304,30 @@ def test_review_round_that_leaves_the_suite_s_paths_alone_does_not_run_it_again(
     assert state["ship"]["shipped"] is True
 
 
+def test_review_round_records_the_pass_it_carries(make_layer, app_repo, tmp_path):
+    """The round that leaves suite-a's paths alone carries suite-a's pass to the new tree: a
+    check.carried event and a `carried` entry on the record, whose outcome stays the real pass."""
+    layer = _layer(make_layer, tmp_path, app_repo, review={"require": "all"})
+    _build(layer, {"a/x.txt": "x\n"})
+    _script(layer, "review-1", {"output": json.dumps(REFUSED)})
+    _script(layer, "review-2-1", {"output": json.dumps(APPROVED)})
+    _script(layer, "implement-1", {"files": {"README.md": "# The app\n\nNow documented.\n"}, "commit": True})
+    assert main("zte", layer, ["Change a", "--adw-id", "afec0017"]) == 0
+    state = _state(layer, "afec0017")
+    (passed_a,) = _ledger(state, check="suite-a", phase="check")
+    (recheck_a,) = _ledger(state, check="suite-a", phase="recheck")
+    record = state["checks"]["suite-a"]
+    assert record["outcome"] == "passed"
+    carried = record["carried"]
+    assert carried["from_tree"] == passed_a["tree"] and carried["changed"] == ["README.md"]
+    assert carried["tree"] == recheck_a["tree"]
+    lines = (layer / "agents" / "afec0017" / events.FILE_NAME).read_text(encoding="utf-8").splitlines()
+    carried_events = [e for e in map(json.loads, lines) if e["type"] == "check.carried"]
+    assert [e["step"] for e in carried_events] == ["suite-a"]
+    assert "check.carried" in events.TYPES
+    assert "carried" not in state["checks"]["suite-b"]   # it never passed, so it carries nothing
+
+
 def test_review_round_reruns_only_what_the_patch_touched(make_layer, app_repo, tmp_path):
     layer = _layer(make_layer, tmp_path, app_repo)
     _build(layer, {"a/x.txt": "x\n"})

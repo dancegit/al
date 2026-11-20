@@ -2448,6 +2448,9 @@ claude  ~/.local/bin/claude (PATH)               2.1.0 (Claude Code)
 With a layer its settings count too (`local.env`, `~/.config/al/<name>.env`) and the agent CLIs are the
 ones its workflows use; without one, `claude`. `--json` prints the same rows as a document
 (`{"ok": …, "tools": [{"tool", "found", "path", "source", "version", "looked", "sentence"}]}`).
+`al doctor` also reports a running dashboard whose Python no longer exists (a pruned or rebuilt uv cache),
+one line below the table, such as `dashboard (pid 4242): its Python … no longer exists; restart the
+dashboard`; `--json` lists these under `"dashboards"` (`[{"pid", "python", "sentence"}]`).
 `--for gen,author --agent mock` checks only what those subcommands need and prints `ok`, or one sentence
 per missing tool. It exits 4 when a tool is missing; every other subcommand that finds a prerequisite
 missing stops the same way, before any work:

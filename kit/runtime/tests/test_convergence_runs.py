@@ -208,3 +208,40 @@ def test_debt_from_a_passing_review_is_filed_as_tasks(make_layer, app_repo):
     tasks = (layer / "tasks.md").read_text()
     assert "## Debt" in tasks and f"- [ ] debt from run {RUN}: feature.py" in tasks
     assert "1 debt task filed" in (layer / "agents" / RUN / "run.log").read_text()
+
+
+def _events(layer: Path, adw_id: str = RUN) -> list[dict]:
+    path = layer / "agents" / adw_id / "events.jsonl"
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_pass_carried_over_an_unrelated_patch_proves_the_rows(make_layer, app_repo):
+    layer, _ = cf.carried(make_layer, app_repo, touch="README.md")
+    code, state = _run(layer)
+    assert code == 0 and state["status"] == "passed", (state.get("steps"), _stopped(state))
+    assert [step for step in cf.agent_steps(state) if step.startswith("evidence-")] == [
+        "evidence-patch-1", "evidence-implement-1"]
+    assert [row["state"] for row in state["proof_plan"]["rows"]] == ["proven", "proven"]
+    first = next(entry for entry in state["check_results"] if entry["check"] == "unit" and entry["phase"] == "check")
+    c1 = next(row for row in state["proof_plan"]["pack"]["rows"] if row["id"] == "C1")
+    assert c1["tree"] == "carried"
+    assert c1["carried"]["changed"] == ["README.md"]
+    assert c1["carried"]["from_tree"] == first["tree"]
+    assert state["checks"]["unit"]["carried"]["from_tree"] == first["tree"]
+    carried = [e for e in _events(layer) if e["type"] == "check.carried" and e.get("cmd") == "unit"]
+    assert len(carried) == 1
+    assert carried[0]["from_tree"] == first["tree"] and carried[0]["changed"] == ["README.md"]
+
+
+def test_stale_row_whose_check_is_skipped_is_run_once_not_patched(make_layer, app_repo):
+    layer, _ = cf.carried(make_layer, app_repo, touch="tests/test_feature.py")
+    code, state = _run(layer)
+    assert code == 0 and state["status"] == "passed", (state.get("steps"), _stopped(state))
+    assert "evidence-patch-2" not in cf.agent_steps(state)
+    rechecks = [entry["outcome"] for entry in state["check_results"]
+                if entry["check"] == "unit" and entry["phase"] == "recheck"]
+    assert rechecks.count("passed") == 1
+    assert "not-affected" in rechecks and rechecks.index("not-affected") < rechecks.index("passed")
+    assert [r["forced"] for r in state["proof_plan"]["gaps"] if r.get("forced")] == [["unit"]]
+    c1 = next(row for row in state["proof_plan"]["pack"]["rows"] if row["id"] == "C1")
+    assert (c1["state"], c1["tree"]) == ("proven", "current")
