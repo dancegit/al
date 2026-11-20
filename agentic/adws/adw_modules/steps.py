@@ -355,6 +355,17 @@ def _decided(layer: Any, state: Any, step: dict[str, Any], decision: Any, phase:
                 outcome=outcome, why=decision.why, paths=list(decision.paths), paths_total=decision.paths_total,
                 tree=decision.tree, from_step=str(source.get("step") or "") if reused else "",
                 from_phase=str(source.get("phase") or "") if reused else "", log=log)
+    # a not-affected decision measured against the cmd's own last pass carries that pass to this tree
+    carried: dict[str, Any] | None = None
+    if not reused and phase in ("check", "recheck"):
+        previous = affected.last_pass(state, cmd_name, decision.definition)
+        if previous and previous.get("tree") == decision.reference and previous.get("tree") != decision.tree:
+            carried = {"from_tree": str(previous["tree"]), "tree": decision.tree, "changed": list(decision.paths),
+                       "changed_total": decision.paths_total, "log": str(previous.get("log") or ""),
+                       "step": str(previous.get("step") or ""), "phase": str(previous.get("phase") or "")}
+            events.emit("check.carried", step=name, owner=running_step(state), phase=phase, cmd=cmd_name,
+                        from_tree=carried["from_tree"], tree=carried["tree"], changed=carried["changed"],
+                        changed_total=carried["changed_total"], log=carried["log"])
     # a reused result shows the depth of the pass it reuses
     depth = {"depth": source.get("depth"), "testing": source.get("testing")} if reused and source.get("testing") else {}
     recorded = affected.record(state, check=cmd_name, step=name, phase=phase, outcome=outcome, tree=decision.tree,
@@ -377,7 +388,14 @@ def _decided(layer: Any, state: Any, step: dict[str, Any], decision: Any, phase:
             record = {"cmd": cmd, "exit": 0, "outcome": outcome, "why": decision.why,
                       "paths": list(decision.paths), "paths_total": decision.paths_total,
                       "tree": decision.tree, "log": log}
+            if carried is not None:
+                record["carried"] = carried
         state.checks[name] = record
+    elif phase == "recheck" and carried is not None:
+        # a round keeps the real pass as the record; it only notes the tree that pass is carried to
+        existing = state.checks.get(name)
+        if existing and existing.get("outcome") == affected.PASSED:
+            existing["carried"] = carried
     state.save(layer.layer_dir)
     return recorded
 

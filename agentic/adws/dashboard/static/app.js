@@ -3025,8 +3025,9 @@
         h("tbody", {}, (pp.rows || []).map((row) => {
           const pack = packOf.get(row.id);
           const evidence = pack ? [pack.check, pack.exit === null || pack.exit === undefined ? "" : `exit ${pack.exit}`,
-            pack.tree ? `tree ${pack.tree}` : "", `${pack.passed || 0} passed, ${pack.skipped || 0} skipped`,
-            (pack.files || []).length ? `${pack.files.length} file${pack.files.length === 1 ? "" : "s"}` : "", pack.note]
+            pack.tree ? `tree ${pack.tree}` : "", pack.carried, `${pack.passed || 0} passed, ${pack.skipped || 0} skipped`,
+            (pack.files || []).length ? `${pack.files.length} file${pack.files.length === 1 ? "" : "s"}` : "",
+            pack.note !== pack.carried ? pack.note : ""]
             .filter(Boolean).join(" · ") : row.outcome && !/^proven/.test(row.outcome) ? `${row.outcome}: ${row.why}` : row.outcome || "";
           return h("tr", { "data-criterion": row.id, "data-state": row.state },
             h("td", { class: "mono", text: row.id }), h("td", { text: row.criterion }), h("td", { class: "mono", text: row.command }),
