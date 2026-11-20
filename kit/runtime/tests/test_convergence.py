@@ -230,6 +230,17 @@ def test_debt_filed_to_task_list_linked_to_run(make_layer):
     assert len(state.proof_plan["debt"]) == 1
 
 
+def test_debt_request_names_the_check_that_covers_its_files(make_layer):
+    layer = _layer(make_layer, tasklist=True)
+    state = _state()
+    _passing_review(state, DEBT)
+    convergence.after_review(layer, state, {"name": "review"})
+    (item,) = state.proof_plan["debt"]
+    assert item["text"] == f"debt from run {RUN}: feature.py: a module constant — read settings"
+    assert "Proof: prove it only with the check(s) `unit` of this layer" in \
+        (Path(layer.layer_dir) / "tasks.md").read_text()
+
+
 def test_debt_falls_back_to_debt_md(make_layer):
     layer = _layer(make_layer)
     state = _state()

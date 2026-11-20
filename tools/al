@@ -1403,12 +1403,24 @@ class Generator:
             "conditional_docs": bullets([f"`{d['path']}` — {d['when']}" for d in cb["conditionalDocs"]]),
             "relevant_files": bullets([f"`{x}`" for x in [cb["readme"], *p["source"], *p["tests"]] if x]),
             "validation_commands": bullets([self.cmd_line(n) for n in self.cmds if n in ("lint", "typecheck", "test", "build")]),
+            "declared_checks": bullets(self.declared_checks(), "- (none: name a Validation Command verbatim)"),
             "focus": "", "fabric": "", "output_contract": OUTPUT_CONTRACT["text"],
             "step_block": "", "worktree_report": "",
             "layer_change_rule": self.layer_change_rule(),
             "command_name": "", "description": "", "open_braces": "{{",
             "expert_name": "", "expert_domain": "", "expert_paths": "", "expert_max_lines": "", "expertise_path": "",
         }
+
+    def declared_checks(self) -> list[str]:
+        """Every check step of every adw as "`name` — `run`", each (name, run) once, in definition order."""
+        lines: list[str] = []
+        for adw in self.ir["adws"]:
+            for step in adw.get("steps") or []:
+                if step.get("kind") == "check" and step.get("cmd") in self.cmds:
+                    line = f"`{step['name']}` — `{self.cmds[step['cmd']]['run']}`"
+                    if line not in lines:
+                        lines.append(line)
+        return lines
 
     def layer_change_rule(self) -> str:
         """The meta HOPs' rule for changing the layer itself, by placement."""

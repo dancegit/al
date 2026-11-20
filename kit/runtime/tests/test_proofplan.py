@@ -109,6 +109,42 @@ def test_command_resolved_by_check_name_cmd_name_and_run_string(make_layer):
     assert proofplan.resolve_command(layer, adw, "make proof") == (None, None)
 
 
+PYTEST_UNIT = "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q)"
+
+
+def test_a_narrowed_declared_cmd_is_proven_by_it_with_the_selection(make_layer):
+    layer = _layer(make_layer, unit=PYTEST_UNIT)
+    prefix = "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest"
+    for text, selection in ((f"{prefix} -q tests/test_x.py)", ["-q", "tests/test_x.py"]),
+                            (f"{prefix} -q -rA tests/test_y.py -k some_case)",
+                             ["-q", "-rA", "tests/test_y.py", "-k", "some_case"])):
+        result = _evaluate(layer, _row(command=text))
+        assert result["outcome"] == "proven-here", (text, result)
+        assert result["cmd"] == "unit" and result["selection"] == selection
+        check, cmd = proofplan.resolve_command(layer, layer.adw(cf.ADW), text)
+        assert check["name"] == "unit" and cmd["name"] == "unit" and cmd["run"] == text
+
+
+def test_a_narrowed_raco_cmd_is_proven_by_it(make_layer):
+    unit = 'PLTCOLLECTS="$PWD/racket:" raco test racket/demo/tests/core-test.rkt'
+    layer = _layer(make_layer, unit=unit)
+    other = _evaluate(layer, _row(command='PLTCOLLECTS="$PWD/racket:" raco test racket/demo/tests/other-test.rkt'))
+    assert other["outcome"] == "proven-here" and other["selection"] == ["racket/demo/tests/other-test.rkt"]
+    elsewhere = _evaluate(layer, _row(command='PLTCOLLECTS="$PWD/racket:" raco test racket/elsewhere/x-test.rkt'))
+    assert elsewhere["outcome"] == "needs-declaration"
+
+
+def test_another_program_directory_or_shell_stays_needs_declaration(make_layer):
+    layer = _layer(make_layer, unit=PYTEST_UNIT)
+    prefix = "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest"
+    for text in ("(cd kit/dashboard && env -u AL_APP_ROOT uv run --with pytest pytest -q tests/test_x.py)",
+                 "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest python -m pytest -q)",
+                 f"{prefix} -q ../other/tests)", f"{prefix} -q /tmp/tests)",
+                 f"{prefix} -q tests/test_x.py; touch x)", f'{prefix} -q -k "$(id)")', "make proof"):
+        result = _evaluate(layer, _row(command=text))
+        assert (result["outcome"], result["party"]) == ("needs-declaration", "layer author"), text
+
+
 # ---------------------------------------------------------------- outcomes
 
 def test_outcome_proven_here(make_layer):
