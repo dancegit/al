@@ -1284,7 +1284,9 @@ and resume proposals. The lock goes with its process, so a dead owner's run is t
 run's process lives, even in its own decide step after it marked itself failed, the stand-in's loop
 leaves it alone. The run's decide step and the loop also share one claim per stop in
 `agents/<id>/decide.claim` (`seq` of the stop's `handoff` event, `by`, `pid`, `at`, `skipped`): whoever
-claims first decides that stop, and the other records `decision.skipped`.
+claims first decides that stop, and the other records `decision.skipped`. A decide step that fails after
+it claimed the stop (an agent error, or an action it may not take) gives the claim back, so the stand-in's
+loop decides that stop once the run's process has ended.
 
 A `script` step can declare exit codes that mean "waiting for something outside" (`#:waiting-exit
 (75)`): the step and the run end `waiting` (exit 75), the worktree is kept, no hand-off is written
