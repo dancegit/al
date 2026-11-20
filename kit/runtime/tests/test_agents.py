@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from adw_modules import agents, events, ir, state
+from adw_modules import agents, envs, events, ir, state
 from adw_modules.agents import run_agent
 from adw_modules.envs import build
 from adw_modules.errors import StepFailed
@@ -206,6 +206,57 @@ def test_an_agent_that_exits_on_its_own_records_no_leftovers(make_layer, monkeyp
     assert time.monotonic() - started < 5
     recorded = events.read(layer.layer_dir / "agents" / run_state.adw_id / "events.jsonl")
     assert not [e for e in recorded if e["type"] == "agent.leftovers"]
+
+
+def test_an_agent_inside_the_container_has_its_leftovers_stopped_by_the_container_sweep(make_layer, monkeypatch,
+                                                                                         tmp_path):
+    child_pid, cli_pid = tmp_path / "child.pid", tmp_path / "cli.pid"
+    _fake_claude(tmp_path, monkeypatch,
+                 f"echo $$ > {cli_pid}\n"
+                 "cat > /dev/null\n"
+                 "python3 -c \"import os,sys,time; os.setsid(); open(sys.argv[1],'w').write(str(os.getpid())); "
+                 f"time.sleep(300)\" {child_pid} &\n"
+                 f"while [ ! -s {child_pid} ]; do sleep 0.1; done\n"
+                 "printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\",\"is_error\":false}'\n"
+                 "sleep 300\n")
+    monkeypatch.setenv("AL_AGENT_GRACE_SECONDS", "1")
+    layer, run_state, env = setup_run(make_layer, {"agents": [CLAUDE_AGENT]})
+    monkeypatch.setattr(envs.EnvStack, "agent_inside", property(lambda self: True))
+    monkeypatch.setattr(envs.EnvStack, "wrap_agent", lambda self, argv: list(argv))
+    sweeps: list[str] = []
+    real_wrap = envs.EnvStack.wrap
+
+    def spy(self, cmd):
+        sweeps.append(cmd)
+        return real_wrap(self, cmd)
+
+    monkeypatch.setattr(envs.EnvStack, "wrap", spy)
+    try:
+        started = time.monotonic()
+        with events.recording(layer.layer_dir, run_state.adw_id):
+            assert run_agent(layer, run_state, "build", "text", [], "base", env) == "done"
+        assert time.monotonic() - started < 30
+        child, cli = int(child_pid.read_text()), int(cli_pid.read_text())
+        assert len(sweeps) == 1
+        (sweep,) = sweeps
+        assert "AL_AGENT_CALL=build-" in sweep
+        assert sweep.startswith("for d in /proc/[0-9]*")
+        recorded = events.read(layer.layer_dir / "agents" / run_state.adw_id / "events.jsonl")
+        (left,) = [e for e in recorded if e["type"] == "agent.leftovers"]
+        assert left["step"] == "build"
+        inside = {item["pid"]: item for item in left["stopped"] if item["where"] == "container"}
+        assert child in inside
+        assert "python3" in inside[child]["command"]
+        (end,) = [e for e in recorded if e["type"] == "agent.end"]
+        assert end["status"] == "passed"
+        deadline = time.monotonic() + 5
+        while not (_gone(child) and _gone(cli)) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert _gone(child) and _gone(cli)
+    finally:
+        for path in (child_pid, cli_pid):
+            if path.is_file() and path.read_text().strip().isdigit():
+                _kill(int(path.read_text()))
 
 
 def test_every_rendered_prompt_carries_the_no_background_rule(make_layer):

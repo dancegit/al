@@ -149,6 +149,34 @@ def test_the_runs_decide_step_skips_a_stop_the_loop_claimed(make_layer, tmp_path
     assert strictly_increasing(run_events(layer_dir))
 
 
+@pytest.mark.parametrize("failure", ("settle", "error"))
+def test_the_loop_decides_a_stop_the_runs_decide_step_failed(failure, make_layer, tmp_path, monkeypatch, resumes):
+    layer_dir = auto_layer(make_layer, tmp_path)
+    original = decide.render_prompt
+    if failure == "settle":                  # an action the run's decide step may not take: validate fails
+        decider(layer_dir, "settle")
+    else:
+        def boom(layer, state, adw):
+            raise RuntimeError("the decide agent broke")
+        monkeypatch.setattr(decide, "render_prompt", boom)
+    assert run(layer_dir, "--decider", "auto") == 1
+    assert _state(layer_dir)["decision"]["status"] == "failed"
+    assert resumes == []
+    if failure == "error":
+        monkeypatch.setattr(decide, "render_prompt", original)
+    decider(layer_dir, "resume")
+    result = standin.consider(ir.load(layer_dir), item_for())
+    assert result["status"] == "acted", result
+    assert resumes == [ADW_ID]
+    decisions = [e for e in standin.entries(ir.load(layer_dir), run=ADW_ID) if e["type"] == "decision"]
+    assert [e["via"] for e in decisions] == ["loop"]
+    # a later look takes no second decision: the resume it started is not a new stop
+    again = standin.consider(ir.load(layer_dir), item_for())
+    assert (again["status"], again.get("reason")) == ("skipped", "a resume of the run was started"), again
+    assert resumes == [ADW_ID]
+    assert len([e for e in standin.entries(ir.load(layer_dir), run=ADW_ID) if e["type"] == "decision"]) == 1
+
+
 # ------------------------------------------------------------------------------------ every resume path
 
 def test_every_resume_path_refuses_a_live_run(make_layer, tmp_path, monkeypatch):

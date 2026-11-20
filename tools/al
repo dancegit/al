@@ -4951,8 +4951,12 @@ def doctor_cli(a: argparse.Namespace) -> int:
     else:
         names.append("claude")
     rows = tools.doctor_rows(names, layer, versions=True)
+    gone = tools.gone_dashboards()
     ok = all(row["found"] for row in rows)
-    print(json.dumps({"ok": ok, "tools": rows}, indent=2) if a.json else tools.doctor_table(rows))
+    if a.json:
+        print(json.dumps({"ok": ok, "tools": rows, "dashboards": gone}, indent=2))
+    else:
+        print("\n".join([tools.doctor_table(rows), *(d["sentence"] for d in gone)]))
     return 0 if ok else 4
 
 

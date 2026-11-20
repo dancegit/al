@@ -1,7 +1,7 @@
 """The evidence pack and the reviewer-free gap rounds (step `evidence`, before an agent or auto review).
 
 For each row of the plan's Proof plan (proofplan.py) the pack records what proves it for the exact
-tree the reviewers will read: the command's result (exit, tree, passed/failed/skipped counts, the
+tree the reviewers will read (a row narrowed to some tests: the narrowed command's own run and log): the command's result (exit, tree, passed/failed/skipped counts, the
 named test ids found in its log) and the files it wrote (collected artefacts, run-scoped proof).
 Each row gets a state: `proven`, `missing`, `failed`, `stale`, `skipped-only`, `not-run` or
 `files-missing`.
@@ -12,6 +12,10 @@ with that one line, without calling a reviewer: agents `evidence-patch-N` and
 again. A gap that survives the first patch gets one different-approach patch with the first
 attempt's diff (convergence.patch_request); one that survives that stops the run
 (`evidence:no-progress`). A gap that needs an environment, a declaration or a person stops at once.
+
+A check pass the run carried forward as not affected (`carried` on its record) proves a row when
+none of the changed paths is a file the row names; a stale row whose check would be skipped again
+has its check run once in full in the step instead of a patch.
 
 Before the pack, a change under a protected path that no `edit:PATH` approval covers stops the run
 for an approver. The pack, the approvals and the round scope reach the reviewers through the
@@ -25,7 +29,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import affected, agents, approvals, artefacts, delivery, events, proofplan, skips, state as state_module
-from . import steps, storage
+from . import steps, storage, testing
 from .errors import LayerError, StepFailed
 
 STEP = "evidence"
@@ -63,11 +67,11 @@ def _test_seen(log: str, test_id: str) -> str:
     return "named in log"
 
 
-def _run_cmd(layer: Any, state: Any, stack: Any, cmd: dict[str, Any]) -> dict[str, Any]:
+def _run_cmd(layer: Any, state: Any, stack: Any, cmd: dict[str, Any], *, label: str = "") -> dict[str, Any]:
     """Run a cmd no check step runs, once per tree (a pass on the same committed tree is reused);
     returns its ledger entry."""
     name = str(cmd.get("name"))
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name) or "cmd"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", label or name) or "cmd"
     log_path = Path(layer.layer_dir) / "agents" / state.adw_id / "checks" / f"evidence-{safe}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     steps.run_logged(layer, state, stack, cmd, log_path, step=STEP, phase=STEP)
@@ -113,6 +117,40 @@ def _files(state: Any, row: dict[str, Any]) -> tuple[list[str], list[str]]:
     return list(dict.fromkeys(found)), empty
 
 
+def _named_files(row: dict[str, Any]) -> list[str]:
+    """The files a row names: its Writes globs and the files of its test ids (`proof:` globs are
+    git-ignored and never change)."""
+    named = [str(item.get("glob") or "") for item in row.get("writes") or []]
+    named += [str(test).split("::", 1)[0] for test in row.get("tests") or []]
+    return [name for name in dict.fromkeys(named) if name]
+
+
+def _carried(record: dict[str, Any], row: dict[str, Any], current: str) -> tuple[dict[str, Any] | None, list[str]]:
+    """(the record's carried pass when it carries to the current tree, the changed paths that are
+    files the row names). Any hit means the carried pass does not prove the row."""
+    carried = record.get("carried")
+    if not isinstance(carried, dict) or not current or carried.get("tree") != current:
+        return None, []
+    outcome = record.get("outcome")
+    if not ((outcome == affected.PASSED and carried.get("from_tree") == record.get("tree"))
+            or outcome == affected.NOT_AFFECTED):
+        return None, []
+    # test ids are relative to where the command runs, so a path also matches by suffix; a doubtful
+    # match falls to stale (and a forced re-run), never to a false proof
+    named = _named_files(row)
+    hits = [str(path) for path in carried.get("changed") or []
+            if any(_matches(str(path), name) or str(path) == name or str(path).endswith("/" + name)
+                   for name in named)]
+    return carried, hits
+
+
+def _carried_note(carried: dict[str, Any]) -> str:
+    changed = [str(path) for path in carried.get("changed") or []]
+    total = int(carried.get("changed_total") or len(changed))
+    more = f" and {total - len(changed)} more" if total > len(changed) else ""
+    return f"carried from {str(carried.get('from_tree') or '')[:8]} (only {', '.join(changed)}{more} changed)"
+
+
 def _pack_row(layer: Any, state: Any, adw: dict[str, Any], stack: Any, row: dict[str, Any],
               current: str) -> dict[str, Any]:
     check, cmd = proofplan.resolve_command(layer, adw, str(row.get("command") or ""))
@@ -122,11 +160,34 @@ def _pack_row(layer: Any, state: Any, adw: dict[str, Any], stack: Any, row: dict
     log_text = ""
     if cmd is None:
         out["note"] = "the command is no cmd or check of the layer"
-    elif check is not None:
+    elif check is not None and not cmd.get("selection"):
         name = str(check.get("name"))
         out["check"] = name
         record = state.checks.get(name)
-        if not record or record.get("outcome") == affected.NOT_AFFECTED:
+        carried, hits = _carried(record, row, current) if record else (None, [])
+        if carried is not None and not hits:
+            if record.get("outcome") == affected.NOT_AFFECTED:
+                out["exit"] = 0
+                out["log"] = str(carried.get("log") or "")
+                log_text = _read(layer, out["log"])
+                report = skips.from_log(log_text)
+                if report is not None:
+                    found = report.as_dict()
+                    out.update(passed=int(found["passed"]), failed=int(found["failed"]),
+                               skipped=int(found["skipped"]), reasons=list(found["reasons"]))
+            else:
+                out["exit"] = record.get("exit")
+                found = record.get("skips") or {}
+                out.update(passed=int(found.get("passed") or 0), failed=int(found.get("failed") or 0),
+                           skipped=int(found.get("skipped") or 0), reasons=list(found.get("reasons") or []))
+                source = record.get("from") or {}
+                out["log"] = str(source.get("log") or record.get("log") or "")
+                log_text = _read(layer, out["log"])
+            out["tree"] = "carried"
+            out["carried"] = {"from_tree": carried.get("from_tree"), "changed": list(carried.get("changed") or []),
+                              "changed_total": carried.get("changed_total"), "log": carried.get("log")}
+            out["note"] = _carried_note(carried)
+        elif not record or record.get("outcome") == affected.NOT_AFFECTED:
             out["state"] = "not-run"
             out["note"] = "the check did not run" if not record else f"not affected: {record.get('why')}"
         else:
@@ -139,9 +200,13 @@ def _pack_row(layer: Any, state: Any, adw: dict[str, Any], stack: Any, row: dict
             source = record.get("from") or {}
             out["log"] = str(source.get("log") or record.get("log") or "")
             log_text = _read(layer, out["log"])
+        if hits:
+            out["note"] = f"a file this criterion names changed: {', '.join(hits)}"
     else:
-        out["check"] = f"cmd {cmd.get('name')}"
-        entry = _run_cmd(layer, state, stack, cmd)
+        # a row narrowed to some tests is proven by its own run, whose log names them (-rA, -v)
+        narrowed = bool(cmd.get("selection"))
+        out["check"] = f"narrowed {cmd.get('name')}" if narrowed else f"cmd {cmd.get('name')}"
+        entry = _run_cmd(layer, state, stack, cmd, label=f"{cmd.get('name')}-{row.get('id')}" if narrowed else "")
         out["exit"] = entry.get("exit")
         tree = str(entry.get("tree") or "")
         out["tree"] = "current" if tree and tree == current else ("older" if tree else "none")
@@ -344,6 +409,28 @@ def _patch(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], st
     return {"request": request, "patch_plan": patch_plan[:2000], "checks_rerun": rerun, "checks_failed": failed}
 
 
+def _force_stale(layer: Any, state: Any, adw: dict[str, Any], stack: Any, pack: dict[str, Any],
+                 forced: set[str]) -> list[str]:
+    """Run the check of each stale row once in full, at most once per check in this step: the
+    patch path re-decides the check and would skip it again. A failure is not raised; it shows as
+    `failed` in the next pack. Returns the names it ran."""
+    ran: list[str] = []
+    for row in pack.get("rows") or []:
+        if row.get("state") != "stale":
+            continue
+        check, _cmd = proofplan.resolve_command(layer, adw, str(row.get("command") or ""))
+        if check is None or str(check.get("name")) in forced:
+            continue
+        name = str(check.get("name"))
+        forced.add(name)
+        print(f"[adw {state.adw_id}] evidence: check {name} is stale and would be skipped; running it once in full")
+        plan = testing.CheckPlan("full", "full", dict(layer.cmd(check["cmd"])), "forced: stale in evidence", None,
+                                 "tests", "")
+        steps.run_check(layer, state, check, stack, plan=plan)
+        ran.append(name)
+    return ran
+
+
 def _tree(state: Any, stack: Any) -> str:
     from . import review
 
@@ -381,6 +468,7 @@ def run(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], stack
     history: list[dict[str, Any]] = []
     state.proof_plan["gaps"] = history
     seen: dict[str, int] = {}
+    forced: set[str] = set()
     first_diff = ""
     number = 0
     while True:
@@ -398,6 +486,12 @@ def run(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, Any], stack
             _stop(layer, state, kind, party, f"evidence:{kind}: "
                   + "; ".join(f"{gap['id']} {gap['state']}: {gap['criterion']}" for gap in hard)
                   + f"; party: {party}")
+        ran = _force_stale(layer, state, adw, stack, pack, forced)
+        if ran:
+            history[-1]["forced"] = ran
+            _collect(layer, state, adw)
+            pack = build_pack(layer, state, adw, stack)
+            continue
         if not can_patch:
             _stop(layer, state, "fixable", "person",
                   f"evidence:fixable: {lines}; the review step has no #:patch/#:implement; party: person")

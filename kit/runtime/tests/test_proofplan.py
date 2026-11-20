@@ -145,6 +145,17 @@ def test_another_program_directory_or_shell_stays_needs_declaration(make_layer):
         assert (result["outcome"], result["party"]) == ("needs-declaration", "layer author"), text
 
 
+def test_a_line_break_is_never_a_narrowed_command(make_layer):
+    assert proofplan.narrowed("uv run pytest -q", "uv run pytest -q\ntouch pwned") is None
+    assert proofplan.narrowed("uv run pytest -q", "uv run pytest -q\rtouch pwned") is None
+    assert proofplan.narrowed(PYTEST_UNIT, PYTEST_UNIT[:-1] + " tests/test_x.py\ntouch x)") is None
+    layer = _layer(make_layer, unit=PYTEST_UNIT)
+    prefix = "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest"
+    result = _evaluate(layer, _row(command=f"{prefix} -q tests/test_x.py\ntouch x)"))
+    assert result["outcome"] == "needs-declaration"
+    assert proofplan.narrowed("uv run pytest -q", "uv run pytest -q tests/x") == ["-q", "tests/x"]
+
+
 # ---------------------------------------------------------------- outcomes
 
 def test_outcome_proven_here(make_layer):

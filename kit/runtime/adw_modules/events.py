@@ -34,7 +34,7 @@ TYPES = (
     "env.build.start", "env.build.end", "env.preflight",
     "step.start", "step.end",
     "agent.start", "agent.end", "agent.leftovers",
-    "check.start", "check.end",
+    "check.start", "check.end", "check.carried",
     "script.start", "script.end", "script.event",
     "budget.stop",
     "limit.status", "limit.stop", "limit.wait",

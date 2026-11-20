@@ -2768,6 +2768,7 @@
     let detail = null;
     let shown = "";            // the JSON text of the detail last rendered
     let loads = 0;             // completed loads, published as main.dataset.rendered
+    let proofPlanShown = { key: "", node: null };   // the Proof plan card last built, kept while its data is unchanged
     let gone = false;          // set by destroy(); a late load() then touches nothing
     let sub = null;            // the open step panel / log viewer
     let state = { tab: "overview", step: "", params: {} };
@@ -3024,8 +3025,9 @@
         h("tbody", {}, (pp.rows || []).map((row) => {
           const pack = packOf.get(row.id);
           const evidence = pack ? [pack.check, pack.exit === null || pack.exit === undefined ? "" : `exit ${pack.exit}`,
-            pack.tree ? `tree ${pack.tree}` : "", `${pack.passed || 0} passed, ${pack.skipped || 0} skipped`,
-            (pack.files || []).length ? `${pack.files.length} file${pack.files.length === 1 ? "" : "s"}` : "", pack.note]
+            pack.tree ? `tree ${pack.tree}` : "", pack.carried, `${pack.passed || 0} passed, ${pack.skipped || 0} skipped`,
+            (pack.files || []).length ? `${pack.files.length} file${pack.files.length === 1 ? "" : "s"}` : "",
+            pack.note !== pack.carried ? pack.note : ""]
             .filter(Boolean).join(" · ") : row.outcome && !/^proven/.test(row.outcome) ? `${row.outcome}: ${row.why}` : row.outcome || "";
           return h("tr", { "data-criterion": row.id, "data-state": row.state },
             h("td", { class: "mono", text: row.id }), h("td", { text: row.criterion }), h("td", { class: "mono", text: row.command }),
@@ -3189,7 +3191,12 @@
                   text: r.depth && r.accounting.startsWith(r.depth) ? r.accounting.slice(r.depth.length) : ` ${r.accounting}` }) : null) : null,
               h("td", { class: "dim", text: evidence(r) }))))))));
       }
-      if (detail.proof_plan && (detail.proof_plan.rows || []).length) blocks.push(proofPlanCard(detail.proof_plan));
+      if (detail.proof_plan && (detail.proof_plan.rows || []).length) {
+        // a running run's detail changes on every poll (its durations); an unchanged plan keeps its node
+        const key = JSON.stringify([detail.proof_plan, sm.status]);
+        if (proofPlanShown.key !== key) proofPlanShown = { key, node: proofPlanCard(detail.proof_plan) };
+        blocks.push(proofPlanShown.node);
+      }
       const review = detail.review;
       if (review && (review.rounds.length || review.mode)) {
         const block = h("div", { class: "outcome-block" }, h("div", { class: "card-head" }, h("h3", { text: "Review" }),

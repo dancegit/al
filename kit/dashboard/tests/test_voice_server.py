@@ -552,6 +552,36 @@ def test_service_started_on_demand_and_reaped(voice_site, voice_server):
     assert voice.post("/api/voice/service", {"layer": "talk", "action": "jump"})[0] == 400
 
 
+def test_reap_leaves_a_service_that_replaced_the_dead_one():
+    voice = d.VoiceServices()
+    now = time.time()
+    new = d.VoiceService(process=subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                                  start_new_session=True),
+                         port=2, token="new", record_dir="rec", started=now, last_used=now)
+
+    class DeadProcess:   # the old service: dead, and `ensure` swaps in the new one between reap's check and its stop
+        pid = -1
+        swapped = False
+
+        def poll(self) -> int:
+            if not self.swapped:
+                self.swapped = True
+                voice.services["talk"] = new
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    old = d.VoiceService(process=DeadProcess(), port=1, token="old", record_dir="", started=now, last_used=now)
+    try:
+        voice.services["talk"] = old
+        assert voice.reap(time.time()) == []
+        assert voice.services["talk"] is new
+        assert new.process.poll() is None
+    finally:
+        d._stop_group(new.process)
+
+
 def test_service_token_not_in_argv_or_page(voice_site, voice_server, monkeypatch):
     monkeypatch.setenv("AL_DASHBOARD_TOKEN", "dash-secret-token")
     running = voice_server()   # --token from AL_DASHBOARD_TOKEN

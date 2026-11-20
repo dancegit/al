@@ -182,7 +182,11 @@ def proof_globs(state: Any) -> list[str]:
 # ---------------------------------------------------------------- what proves a row
 
 def _tokens(text: str) -> list[str] | None:
-    lexer = shlex.shlex(str(text or ""), posix=True, punctuation_chars=True)
+    text = str(text or "")
+    # sh separates commands at a newline, while shlex treats it as whitespace.
+    if "\n" in text or "\r" in text:
+        return None
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
         return list(lexer)

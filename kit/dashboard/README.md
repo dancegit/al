@@ -188,7 +188,9 @@ webhook's `decision` payload.
 
 A run whose plan ends with a Proof plan table has a **Proof plan** card on its run page
 (`[data-role='proof-plan']`). It has a row per criterion with its state (`planned`, `proven`,
-`files-missing`, …) from the moment the plan exists, before anything is built. When the run stopped
+`files-missing`, …) from the moment the plan exists, before anything is built. For a row proven by a
+check pass the run carried forward as not affected, the Evidence cell shows
+"carried from <tree> (only <files> changed)", with the first 8 characters of the tree the pass ran on. When the run stopped
 at `prove` or `evidence`, a stop line says why and names the party who can clear it (layer author,
 approver, person), with the fix (the exact declaration a layer author adds, or the question for an
 approver). Only for a failed run stopped for an **approver** is there an **Approve** button
@@ -486,7 +488,10 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
   /api/startable` lists for that layer: a workflow of its compiled IR or one of its commands or hops
   (400 otherwise), with a request key, a declared class and tier, valid model ids and an issue mode
   the layer supports. The dashboard then runs the layer's own `adws/dispatch.py --start --json` as a
-  short subprocess: an argv list, never a shell, the prompt on stdin. The launcher (the layer's
+  short subprocess: an argv list, never a shell, the prompt on stdin. Every layer script runs under the
+  dashboard's own Python; if that file has gone (a pruned uv cache), it runs under `uv run --quiet
+  --script`, then under `python3` from PATH, and without any of them the error names the missing
+  interpreter and says to restart the dashboard. The launcher (the layer's
   `launch.start`, the same code as `al run`) checks it all again against the compiled layer, returns
   the run of a request key it has seen (a double click or a retry starts one run), asks for a
   confirmation (409) for a workflow that merges or deploys without a person and for the same request

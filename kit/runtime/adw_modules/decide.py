@@ -44,6 +44,7 @@ E-mail reasons are a fixed vocabulary that never holds a value (an address, a ho
 """
 from __future__ import annotations
 
+import contextlib
 import email
 import email.policy
 import email.utils
@@ -446,6 +447,8 @@ def consider(layer: Any, state: Any, adw: dict[str, Any], stack: Any, args: Any)
         return _consider(layer, state, adw, stack, mode, source)
     except Exception as exc:  # noqa: BLE001 — the decider never fails a run or its hand-off
         reason = f"{type(exc).__name__}: {exc}"[:500]
+        with contextlib.suppress(OSError):
+            release_stop(layer.layer_dir, state.adw_id, "run")   # no decision: the stop is the loop's to decide
         state.decision = {**(state.decision or {}), "status": "failed", "reason": reason}
         print(f"[adw {state.adw_id}] decider failed: {reason}; the run stays with a person")
         _save(layer, state)
@@ -524,6 +527,18 @@ def claim_stop(layer_dir: Path, run_id: str, who: str) -> str:
     return lost[0] if lost else ""
 
 
+def release_stop(layer_dir: Path, run_id: str, who: str) -> None:
+    """Give back `who`'s claim on the run's current stop when it took no decision (its decide step
+    failed): the stop is open again, so the stand-in's loop decides it."""
+
+    def change(claim: dict[str, Any], stop: int) -> dict[str, Any] | None:
+        if stop <= 0 or claim.get("seq") != stop or claim.get("by") != who:
+            return None
+        return {**claim, "by": ""}
+
+    _claimed(Path(layer_dir), run_id, change)
+
+
 def note_skipped(layer_dir: Path, run_id: str, who: str, reason: str) -> None:
     """Record that `who` left the run's current stop alone: once per stop and party a `decision.skipped` event."""
     first: list[int] = []
@@ -587,6 +602,7 @@ def _consider(layer: Any, state: Any, adw: dict[str, Any], stack: Any, mode: str
     try:
         steps._run_recorded(layer, state, STEP, STEP, work)
     except StepFailed as exc:
+        release_stop(layer.layer_dir, state.adw_id, "run")   # no decision: the stop is the loop's to decide
         state.decision = {**previous, "mode": mode, "status": "failed", "reason": str(exc.reason)[:500]}
         state.decision.pop("action", None)
         print(f"[adw {state.adw_id}] decider: no decision ({exc.reason[:300]}); the run stays with a person")

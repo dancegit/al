@@ -305,10 +305,9 @@ def test_ask_for_all(notes):
 
 # ---------------------------------------------------------------- the loop
 
-def test_auto_loop_leaves_a_stop_the_run_decided_and_older_items(notes):
-    # A stop is decided once (decide.claim_stop): the new run's own decide step claims it, and when that
-    # step fails (`settle` is not an action of the run's own step) the loop does not decide it again.
-    # Before one owner per run, the loop settled this stop as a second decision.
+def test_auto_loop_handles_a_new_stop_and_leaves_older_items(notes):
+    # The new run's own decide step fails (`settle` is not an action of the run's own step) and gives its
+    # claim on the stop back (decide.release_stop): once the run's process has ended, the loop decides it.
     layer = notes["bare"]
     sf.declare(layer, "off", may=["resume", "settle"])
     sf.mock_decision(layer, "settle", settle_as="abandoned", summary="Nobody waits for this; drop it.")
@@ -319,24 +318,22 @@ def test_auto_loop_leaves_a_stop_the_run_decided_and_older_items(notes):
         assert post(running, {"layer": "bare", "mode": "auto"}, path="/api/decider")[0] == 200
         run = start_stops(running)
         off = start_stops(running, prompt="Add a second note", decider="off")
-        state = wait_state(layer, run)
-        assert state["decision"]["status"] == "failed"              # the run's own step decided (and failed)
-
-        def skipped() -> list[dict]:
-            path = layer / "agents" / run / "events.jsonl"
-            found = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-            return [e for e in found if e["type"] == "decision.skipped"]
-        (event,) = sf.wait_for(skipped, timeout=180, why="the stand-in's loop leaves the claimed stop")
-        assert (event["who"], event["reason"]) == ("stand-in", "the stop was decided by run")
-        # the new stop, the older item and the run started with its own `decider: off` stay with a person
+        row = sf.wait_for(lambda: (r := sf.run_row(running, "bare", run)) and r.get("bucket") == "settled" and r,
+                          timeout=180, why="the stand-in settles the new stop")
+        record = json.loads((layer / "agents" / run / "settlement.json").read_text())
+        assert (record["as"], record["who"], record["via"]) == ("abandoned", "stand-in", "stand-in")
+        assert row["standin_last"]["status"] == "acted" and row["standin_last"]["auto"] is True
+        assert row["standin_last"]["outcome"] == "settled as abandoned"
+        view = sf.wait_for(lambda: (v := sf.standin_of(running, "bare"))["counts"]["today"] == 1 and v)
+        assert view["log"][-1]["run"] == run and view["log"][-1]["status"] == "acted"
+        # the older item and the run started with its own `decider: off` stay with a person
         wait_state(layer, off)
         time.sleep(d.STANDIN_EVERY + 3)
-        assert len(skipped()) == 1                                  # once per stop, however often the loop looks
-        for untouched in (run, OTHER, off):
+        for untouched in (OTHER, off):
             row = sf.run_row(running, "bare", untouched)
             assert row["bucket"] == "needs-you" and row["standin_last"] is None and row["suggestion"] is None, untouched
             assert not (layer / "agents" / untouched / "settlement.json").exists()
-        assert sf.standin_of(running, "bare")["counts"]["today"] == 0
+        assert sf.standin_of(running, "bare")["counts"]["today"] == 1
     finally:
         stop_server(running)
 
