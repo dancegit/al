@@ -288,6 +288,26 @@ def _tasklist_option(layer: Any, state: Any) -> dict[str, Any] | None:
     return None
 
 
+_DEBT_PATH = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)*[\w-]+\.[A-Za-z0-9]+)(?::\d+)?")
+
+
+def _debt_checks(layer: Any, state: Any, issue: dict[str, Any]) -> list[str]:
+    """The check steps of the run's workflow that cover the files a debt issue names, in step order."""
+    try:
+        from . import affected
+
+        adw = state.definition or layer.adw(state.adw)
+        paths = list(dict.fromkeys(_DEBT_PATH.findall(str(issue.get("description") or ""))))
+        if not paths:
+            return []
+        chosen = affected.select(affected.workflow_checks(layer, adw), paths)["run"]
+        names = [str(step.get("name")) for step in adw.get("steps") or []
+                 if step.get("kind") == "check" and str(step.get("cmd")) in chosen]
+        return list(dict.fromkeys(names))
+    except Exception:  # noqa: BLE001 — a filed debt must never fail the review
+        return []
+
+
 def _file_debt(layer: Any, state: Any, text: str) -> str:
     """Put one debt task where the layer takes work: its task list, else its forge, else debt.md."""
     from . import tasklist
@@ -410,8 +430,11 @@ def _after_review(layer: Any, state: Any, step: dict[str, Any]) -> None:
                 continue
             text = f"{DEBT_PREFIX}{state.adw_id}: {issue.get('description', '')} — {issue.get('resolution', '')}"
             text = " ".join(text.split())
+            names = _debt_checks(layer, state, issue)
+            proof = (" Proof: prove it only with the check(s) " + ", ".join(f"`{name}`" for name in names)
+                     + " of this layer, optionally narrowed to test ids; name no other command.") if names else ""
             try:
-                where = _file_debt(layer, state, text)
+                where = _file_debt(layer, state, text + proof)
             except Exception as exc:  # noqa: BLE001 — a forge or a task list that fails keeps the item in state
                 where = f"not filed: {type(exc).__name__}: {exc}"[:300]
             filed.append({"fingerprint": fp, "text": text, "where": where})
