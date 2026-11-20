@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from conftest import ROOT, al
+from conftest import ROOT, SANDBOX_GIT, al
 
 LAYER = ROOT / "agentic"
 
@@ -39,5 +39,5 @@ def test_committed_own_layer_equals_its_definition() -> None:
     compiled = al("compile", LAYER).stdout
     assert compiled == (LAYER / "agentic-layer.json").read_text(), \
         "agentic/agentic-layer.json is stale; regenerate it: tools/al gen agentic"
-    cp = al("check", LAYER, ok=False)
+    cp = al("check", LAYER, ok=False, env=SANDBOX_GIT)  # git status of this repository itself
     assert cp.returncode == 0 and cp.stdout.strip().endswith("check: ok"), cp.stdout

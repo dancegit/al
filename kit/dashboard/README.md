@@ -486,7 +486,10 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
   /api/startable` lists for that layer: a workflow of its compiled IR or one of its commands or hops
   (400 otherwise), with a request key, a declared class and tier, valid model ids and an issue mode
   the layer supports. The dashboard then runs the layer's own `adws/dispatch.py --start --json` as a
-  short subprocess: an argv list, never a shell, the prompt on stdin. The launcher (the layer's
+  short subprocess: an argv list, never a shell, the prompt on stdin. Every layer script runs under the
+  dashboard's own Python; if that file has gone (a pruned uv cache), it runs under `uv run --quiet
+  --script`, then under `python3` from PATH, and without any of them the error names the missing
+  interpreter and says to restart the dashboard. The launcher (the layer's
   `launch.start`, the same code as `al run`) checks it all again against the compiled layer, returns
   the run of a request key it has seen (a double click or a retry starts one run), asks for a
   confirmation (409) for a workflow that merges or deploys without a person and for the same request
