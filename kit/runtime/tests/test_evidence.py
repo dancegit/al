@@ -115,6 +115,24 @@ def test_command_without_check_step_is_run_once_and_reused(make_layer, app_repo,
     assert second["log"] == first["log"] == f"agents/{RUN}/checks/evidence-smoke.log"
 
 
+def test_narrowed_row_is_proven_by_its_own_run(make_layer, app_repo, tmp_path):
+    fake = tmp_path / "bin" / "pytest"
+    fake.parent.mkdir()
+    fake.write_text('for arg in "$@"; do case "$arg" in -*) ;; *) echo "PASSED $arg" ;; esac; done\n'
+                    'echo "1 passed in 0.01s"\nexit 0\n')
+    test_id = "tests/test_feature.py::test_feature"
+    rows = [_row(command=f"sh {fake} -q -rA {test_id}", tests=[test_id]),
+            _row(id="C2", command="unit", tests=[test_id])]
+    layer, state, stack = _setup(make_layer, app_repo, rows, unit=f"sh {fake} -q")
+    _passed(layer, state, stack, log_text=".\n1 passed in 0.01s\n")
+    narrowed, verbatim = evidence.build_pack(layer, state, layer.adw(cf.ADW), stack)["rows"]
+    assert narrowed["tests"] == {test_id: "named in log"}
+    assert narrowed["check"] == "narrowed unit"
+    assert narrowed["log"] == f"agents/{RUN}/checks/evidence-unit-C1.log"
+    assert narrowed["state"] == "proven" and narrowed["passed"] == 1
+    assert verbatim["tests"] == {test_id: "not shown"} and verbatim["check"] == "unit"
+
+
 def test_gap_classification_env_words_and_declarations(make_layer, app_repo):
     layer = ir.load(cf.converge_layer(make_layer))
     adw = layer.adw(cf.ADW)

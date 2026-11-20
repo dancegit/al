@@ -1,7 +1,7 @@
 """The evidence pack and the reviewer-free gap rounds (step `evidence`, before an agent or auto review).
 
 For each row of the plan's Proof plan (proofplan.py) the pack records what proves it for the exact
-tree the reviewers will read: the command's result (exit, tree, passed/failed/skipped counts, the
+tree the reviewers will read (a row narrowed to some tests: the narrowed command's own run and log): the command's result (exit, tree, passed/failed/skipped counts, the
 named test ids found in its log) and the files it wrote (collected artefacts, run-scoped proof).
 Each row gets a state: `proven`, `missing`, `failed`, `stale`, `skipped-only`, `not-run` or
 `files-missing`.
@@ -63,11 +63,11 @@ def _test_seen(log: str, test_id: str) -> str:
     return "named in log"
 
 
-def _run_cmd(layer: Any, state: Any, stack: Any, cmd: dict[str, Any]) -> dict[str, Any]:
+def _run_cmd(layer: Any, state: Any, stack: Any, cmd: dict[str, Any], *, label: str = "") -> dict[str, Any]:
     """Run a cmd no check step runs, once per tree (a pass on the same committed tree is reused);
     returns its ledger entry."""
     name = str(cmd.get("name"))
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name) or "cmd"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", label or name) or "cmd"
     log_path = Path(layer.layer_dir) / "agents" / state.adw_id / "checks" / f"evidence-{safe}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     steps.run_logged(layer, state, stack, cmd, log_path, step=STEP, phase=STEP)
@@ -122,7 +122,7 @@ def _pack_row(layer: Any, state: Any, adw: dict[str, Any], stack: Any, row: dict
     log_text = ""
     if cmd is None:
         out["note"] = "the command is no cmd or check of the layer"
-    elif check is not None:
+    elif check is not None and not cmd.get("selection"):
         name = str(check.get("name"))
         out["check"] = name
         record = state.checks.get(name)
@@ -140,8 +140,10 @@ def _pack_row(layer: Any, state: Any, adw: dict[str, Any], stack: Any, row: dict
             out["log"] = str(source.get("log") or record.get("log") or "")
             log_text = _read(layer, out["log"])
     else:
-        out["check"] = f"cmd {cmd.get('name')}"
-        entry = _run_cmd(layer, state, stack, cmd)
+        # a row narrowed to some tests is proven by its own run, whose log names them (-rA, -v)
+        narrowed = bool(cmd.get("selection"))
+        out["check"] = f"narrowed {cmd.get('name')}" if narrowed else f"cmd {cmd.get('name')}"
+        entry = _run_cmd(layer, state, stack, cmd, label=f"{cmd.get('name')}-{row.get('id')}" if narrowed else "")
         out["exit"] = entry.get("exit")
         tree = str(entry.get("tree") or "")
         out["tree"] = "current" if tree and tree == current else ("older" if tree else "none")

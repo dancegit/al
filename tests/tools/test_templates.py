@@ -221,5 +221,8 @@ def test_plan_prompts_list_the_declared_checks_by_name(sibling) -> None:
     generated = (sibling / "commands" / "plan.md").read_text()   # plan-chore, rendered by al gen
     assert "Declared checks (name, then the command verbatim):\n- `test` — `./test.sh`" in generated
     assert "it never names another command" in generated
+    assert "add `-rA` (pytest) so its log has a line per test" in generated
     for name in ("plan-bug", "plan-feature", "plan-chore"):
-        assert "{{declared_checks}}" in (KIT / "templates" / "commands" / f"{name}.md").read_text(), name
+        text = (KIT / "templates" / "commands" / f"{name}.md").read_text()
+        assert "{{declared_checks}}" in text, name
+        assert "add `-rA` (pytest) so its log has a line per test" in text, name
