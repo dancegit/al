@@ -386,6 +386,37 @@ def doctor_table(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def gone_dashboards(proc: Path = Path("/proc")) -> list[dict[str, Any]]:
+    """Running dashboards whose Python no longer exists (a pruned or rebuilt uv cache): one
+    {pid, python, sentence} per process whose argv runs `…/dashboard/dashboard.py` and whose argv0 is
+    an absolute path that has gone, or whose `exe` link reads "… (deleted)". [] without a /proc."""
+    found: list[dict[str, Any]] = []
+    try:
+        entries = sorted((e for e in proc.iterdir() if e.name.isdigit()), key=lambda e: int(e.name))
+    except OSError:
+        return found
+    for entry in entries:
+        try:
+            argv = [part for part in (entry / "cmdline").read_bytes().decode("utf-8", "replace").split("\0") if part]
+            if not argv or not any(part.endswith("/dashboard/dashboard.py") for part in argv):
+                continue
+            python = ""
+            if os.path.isabs(argv[0]) and not os.path.exists(argv[0]):
+                python = argv[0]
+            else:
+                exe = os.readlink(entry / "exe")
+                if exe.endswith(" (deleted)"):
+                    python = exe[:-len(" (deleted)")]
+        except OSError:
+            continue
+        if python:
+            pid = int(entry.name)
+            found.append({"pid": pid, "python": python,
+                          "sentence": f"dashboard (pid {pid}): its Python {python} no longer exists; "
+                                      "restart the dashboard"})
+    return found
+
+
 # ------------------------------------------------------------------------------------------ al deploy
 
 def shell_finder() -> str:
