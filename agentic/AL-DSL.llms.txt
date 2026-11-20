@@ -70,6 +70,7 @@ pairs, e.g. `#:models ((fast "claude-haiku-5-5") (heavy "claude-fable-5-2" #:eff
 - A hotfix promotion (FROM's #:from and #:into are TO, TO is the final stage, and no other stage goes into FROM) may not use #:approval auto; without #:back-merge it is merged back into every other stage that accepts a class.
 - #:tag uses only {version} {cycle} {date} and is a valid tag name once filled; {version} needs #:version; {cycle} needs FROM to be the (cycle …) #:stage.
 - #:after items are (deploy) or (deploy ENV): TO needs a #:deploy-cmd, and ENV equals TO's #:environment-name.
+- #:requires forge-ci needs a forge other than `none`; #:forge-ci-timeout is 1–1440 minutes.
 - #:back-merge names declared stages other than FROM and TO.
 - A stage #:frozen period is "YYYY-MM-DD..YYYY-MM-DD" with valid dates, the first not after the second.
 - #:may-commit #t is rejected on a read-only template (review, classify, question, pull-request, branch-name, summarize): those steps never commit.
@@ -203,12 +204,14 @@ Declare at most one. Default when omitted: `(forge none)`.
   - `#:host` (string; default "github.com") — GitHub host (Enterprise supported).
   - `#:token-env` (string; default "GITHUB_TOKEN") — Environment variable holding the token (falls back to gh auth).
   - `#:bot-marker` (string; default "[ADW-BOT]") — Prefix on every comment the layer posts, so triggers ignore their own comments.
+  - `#:pull-requests` (boolean; default #t) — #t: runs and promotions bring changes in through pull requests on the forge; #f: they merge locally as without a forge (PR.md, approval.md, al decide) and then push the branch they moved to the forge, whose CI runs on it.
 
 - **`(forge forgejo …)`** — Forgejo / Gitea via the REST API (v1).
   - `#:host` (string; default REQUIRED) — Base URL, e.g. https://forgejo.example.org.
   - `#:repo` (string; default REQUIRED) — owner/name.
   - `#:token-env` (string; default "FORGEJO_TOKEN") — Environment variable holding the API token.
   - `#:bot-marker` (string; default "[ADW-BOT]") — Prefix on every comment the layer posts.
+  - `#:pull-requests` (boolean; default #t) — #t: runs and promotions bring changes in through pull requests on the forge; #f: they merge locally as without a forge (PR.md, approval.md, al decide) and then push the branch they moved to the forge, whose CI runs on it.
 
 - **`(forge gitlab …)`** [planned] — GitLab via `glab`.
   - `#:repo` (string; default REQUIRED) — group/name.
@@ -696,7 +699,8 @@ How a promotion changes the repository's version: (bump major|minor|patch) or (k
   - `#:to` (name of a declared stage; default REQUIRED) — The stage it goes into: FROM's #:into (default #:from).
   - `#:approval` (human | agent | auto; default human) — human: people approve (al decide, the dashboard, or an approving review / `/approve` on the pull request); agent: independent reviewer agents review the whole stage diff and the pack; auto: no approval. agent and auto only into a stage with #:agents-may-merge #t.
   - `#:approvers` (integer; default 1) — human: distinct people who must approve; agent: reviewer agents that must all pass. 1–9.
-  - `#:requires` (list of checks | acceptance; default (checks acceptance)) — checks: the #:checks of FROM and TO pass on the stage head; acceptance: every change is accepted or refused (or the whole promotion approved) before it merges.
+  - `#:requires` (list of checks | acceptance | forge-ci; default (checks acceptance)) — checks: the #:checks of FROM and TO pass on the stage head; acceptance: every change is accepted or refused (or the whole promotion approved) before it merges; forge-ci: the commit TO will point at is pushed to the forge and every check run and commit status the forge reports for it must succeed before TO moves (needs a forge).
+  - `#:forge-ci-timeout` (integer; default 60) — Minutes a promotion with forge-ci waits for the forge's CI on the commit (1–1440); none reported or still running then stops it.
   - `#:method` (merge | squash | fast-forward | cherry-pick; default merge) — How the stage enters TO.
   - `#:version` ((HOW LEVEL [#:field value …]), see record `version-change`; default none) — The version change, e.g. (bump minor); none = the version is not touched.
   - `#:tag` (string; default "") — Tag on the promoted commit; placeholders {version} {cycle} {date}; "" = no tag.

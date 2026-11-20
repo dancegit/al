@@ -6754,12 +6754,16 @@ class Model:
                     any_running = True
                 if fresh["status"] not in {"running", "unknown"}:
                     sig = files.signature(deep=False)
-                self.signatures[key] = sig
-                if fresh != summary:
-                    with self.lock:
-                        self.summaries[key] = fresh
-                        if fresh.get("fanout_children") != (summary or {}).get("fanout_children"):
-                            self._parents_dirty = True
+                with self.lock:
+                    # read again meanwhile (_reread, refresh_run, settle, after writing a record): that read is newer
+                    newer = self.summaries.get(key) is not summary
+                    if not newer:
+                        self.signatures[key] = sig
+                        if fresh != summary:
+                            self.summaries[key] = fresh
+                            if fresh.get("fanout_children") != (summary or {}).get("fanout_children"):
+                                self._parents_dirty = True
+                if not newer and fresh != summary:
                     self.hub.publish("run", self._decorated(fresh))
                     changed_layer = True
             for key in [k for k in list(self.summaries) if k.startswith(layer.key + "/") and k not in seen]:
@@ -8964,11 +8968,14 @@ class VoiceServices:
 
     def reap(self, now: float) -> list[str]:
         """Stop the services idle for more than VOICE_IDLE seconds and forget the dead ones (Model.tick)."""
-        gone = [key for key, s in list(self.services.items())
-                if s.process.poll() is not None or now - s.last_used > VOICE_IDLE]
-        for key in gone:
-            self.stop(key)
-        return gone
+        with self.lock:   # chosen and forgotten under the lock: ensure() may be replacing a service right now
+            gone = {key: s for key, s in self.services.items()
+                    if s.process.poll() is not None or now - s.last_used > VOICE_IDLE}
+            for key in gone:
+                del self.services[key]
+        for service in gone.values():
+            _stop_group(service.process)
+        return list(gone)
 
 
 _EMPHASIS = re.compile(r"(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1")

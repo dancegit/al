@@ -6531,7 +6531,8 @@ class Model:
         key = f"{layer.key}/{run_id}"
         with self.lock:
             summary = self.summaries.get(key)
-        summary = summary or RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary()
+        if not summary or summary.get("status") in ("running", "unknown"):   # the watcher's read may be behind the files
+            summary = RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary()
         held = run_holder(layer.path, run_id)
         if held:
             return None, 409, f"run {run_id} is still held by its process {held.get('pid')}: it is left to that process"
@@ -8963,11 +8964,14 @@ class VoiceServices:
 
     def reap(self, now: float) -> list[str]:
         """Stop the services idle for more than VOICE_IDLE seconds and forget the dead ones (Model.tick)."""
-        gone = [key for key, s in list(self.services.items())
-                if s.process.poll() is not None or now - s.last_used > VOICE_IDLE]
-        for key in gone:
-            self.stop(key)
-        return gone
+        with self.lock:   # chosen and forgotten under the lock: ensure() may be replacing a service right now
+            gone = {key: s for key, s in self.services.items()
+                    if s.process.poll() is not None or now - s.last_used > VOICE_IDLE}
+            for key in gone:
+                del self.services[key]
+        for service in gone.values():
+            _stop_group(service.process)
+        return list(gone)
 
 
 _EMPHASIS = re.compile(r"(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1")

@@ -3,7 +3,7 @@
 ;; Work comes from the command line or a task file; a run is started by hand or by a poller;
 ;; agents work in a private git worktree; the repository's own test suites are the checks;
 ;; a human reviews a branch and PR.md. Runs land on the branch integration; a person promotes a batch
-;; of them into main.
+;; of them into main after GitHub's CI passed on that exact commit.
 (agentic-layer #:name "al"
                #:description "Agentic layer for al, the generator of agentic layers"
                #:llm-txt "LLM.txt"
@@ -61,7 +61,8 @@
     (conditional-doc "docs/GUIDE.md" "When changing the behaviour or output of a tools/al subcommand, because the guide quotes it"))
 
   (layer in-repo #:dir "agentic")
-  (forge none)
+  ;; GitHub hosts the repository and its CI. Runs and promotions still merge here, then push the branch they moved (#:pull-requests #f).
+  (forge github #:repo "dancegit/al" #:pull-requests #f)
   ;; Up to ten runs at once, and ten agent calls so they do not queue on each other. Checks stay at
   ;; three at a time: they run this repository's test suites, which are the CPU-heavy part.
   (concurrency slots #:max-runs 10 #:max-agents 10 #:max-checks 3)
@@ -115,8 +116,8 @@
   ;; They sit on main, not on integration, because a stage's checks are added to every run delivering there.
   (stage main #:branch "main" #:accepts () #:agents-may-merge #f
          #:checks (test-docs test-compiler test-runtime test-tools test-dashboard test-integration))
-  ;; Merge, not squash: each feature's commits stay visible on main. No version, no tag, no deploy.
-  (promotion integration -> main #:approval human #:approvers 1 #:method merge)
+  ;; Fast-forward: main becomes exactly the integration commit whose CI passed on GitHub. No version, no tag, no deploy.
+  (promotion integration -> main #:approval human #:approvers 1 #:requires (checks acceptance forge-ci) #:method fast-forward)
   ;; Per run: the checks a change affects, as before (no cmd has a #:targeted form). Per batch: the full
   ;; suites on the integration head, after 5 landed changes or 24 hours.
   (testing targeted #:on-stage full #:batch ((every 5) (after-hours 24)))
