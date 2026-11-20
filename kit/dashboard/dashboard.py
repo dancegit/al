@@ -2230,13 +2230,48 @@ def batch_status(layer: "Layer", model: "Model") -> dict[str, Any]:
     return {"enabled": True, "why": ""}
 
 
+RESTART_HINT = "restart the dashboard"
+
+
+class InterpreterGone(OSError):
+    """Raised when no Python is left to run a layer script: the dashboard's own interpreter has gone
+    (a pruned or rebuilt uv cache) and neither uv nor python3 is on PATH."""
+
+
+def layer_python(isolated: bool = False) -> list[str]:
+    """The argv prefix that runs a layer script, checked at every call: the dashboard's own Python while
+    its file exists (a venv link into a removed cache counts as gone), else `uv run --quiet --script`
+    (every layer script carries inline script metadata), else `python3` from PATH. `isolated` adds
+    `-I` where the interpreter takes it. Raises InterpreterGone when none is left."""
+    executable = sys.executable
+    if executable and os.path.exists(executable):
+        return [executable, *(["-I"] if isolated else [])]
+    uv = shutil.which("uv")
+    if uv:
+        return [uv, "run", "--quiet", "--script"]
+    py = shutil.which("python3")
+    if py:
+        return [py, *(["-I"] if isolated else [])]
+    raise InterpreterGone(f"the dashboard's Python {executable or '(unknown)'} no longer exists and neither uv "
+                          f"nor python3 is on PATH: {RESTART_HINT}")
+
+
+def script_error(name: str, code: int, stderr: str) -> str:
+    """The error shown when a layer script failed: the line naming the missing interpreter and asking
+    for a restart when that is the cause, else "the layer's NAME failed (exit CODE)"."""
+    if RESTART_HINT in stderr:
+        lines = [line for line in stderr.strip().splitlines() if line.strip()]
+        return lines[-1] if lines else stderr.strip()
+    return f"the layer's {name} failed (exit {code})"
+
+
 def batch_via_layer(layer: Layer, argv: list[str], timeout: float = START_TIMEOUT) -> tuple[int, dict[str, Any], str]:
     """Run the layer's own `adws/verify_batch.py ARGV` (`run --detach --json [--stage S]`: it starts the
     kit workflow verify-batch detached): argv list, no shell, the dashboard's token not passed on. →
     (exit code, its JSON result, stderr tail)."""
-    command = [sys.executable, str(layer.path / BATCH_SCRIPT), *argv]
     env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
     try:
+        command = [*layer_python(), str(layer.path / BATCH_SCRIPT), *argv]
         done = subprocess.run(command, capture_output=True, cwd=str(layer.path), env=env, timeout=timeout,
                               check=False, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
@@ -2534,9 +2569,9 @@ def promotion_via_layer(layer: Layer, argv: list[str], timeout: float = START_TI
     """Run the layer's own `adws/promote.py ARGV --json` (decide, or start / continue a promotion run,
     which it detaches): argv list, no shell, the dashboard's token not passed on. → (exit code, its
     JSON result, stderr tail)."""
-    command = [sys.executable, str(layer.path / PROMOTE_SCRIPT), *argv, "--json"]
     env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
     try:
+        command = [*layer_python(), str(layer.path / PROMOTE_SCRIPT), *argv, "--json"]
         done = subprocess.run(command, capture_output=True, cwd=str(layer.path), env=env, timeout=timeout,
                               check=False, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
@@ -2558,9 +2593,9 @@ def integrate_via_layer(layer: Layer, argv: list[str], timeout: float = START_TI
     run, which it detaches), or with `script=ASSIGN_SCRIPT` its `adws/assign.py ARGV --json`: argv
     list, no shell, the dashboard's token not passed on. → (exit code, its JSON result, stderr tail)."""
     name = os.path.basename(script)
-    command = [sys.executable, str(layer.path / script), *argv, "--json"]
     env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
     try:
+        command = [*layer_python(), str(layer.path / script), *argv, "--json"]
         done = subprocess.run(command, capture_output=True, cwd=str(layer.path), env=env, timeout=timeout,
                               check=False, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
@@ -2809,10 +2844,10 @@ def standin_via_layer(layer: Layer, argv: list[str], stdin: Any = None,
     layer's runtime version): argv list, no shell, `stdin` (text, or a value sent as JSON) on its
     standard input, the dashboard's token not passed on. → (exit code, the JSON of its last output
     line, stderr tail)."""
-    command = [sys.executable, str(layer.path / STANDIN_SCRIPT), *argv]
     env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
     data = b"" if stdin is None else (stdin if isinstance(stdin, str) else json.dumps(stdin)).encode("utf-8")
     try:
+        command = [*layer_python(), str(layer.path / STANDIN_SCRIPT), *argv]
         done = subprocess.run(command, input=data, capture_output=True, cwd=str(layer.path), env=env,
                               timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
@@ -2880,7 +2915,11 @@ def start_via_layer(layer: Layer, request: dict[str, Any], timeout: float = STAR
     argv list, prompt on stdin, no shell. It reserves the run and launches it detached in its own
     session, so the run outlives this dashboard. → (exit code, its JSON result, stderr tail)."""
     target = request["target"]
-    argv = [sys.executable, str(layer.path / LAUNCHER), "--start", "--json",
+    try:
+        python = layer_python()
+    except OSError as exc:
+        return -1, {}, f"cannot run the layer's launcher: {exc}"
+    argv = [*python, str(layer.path / LAUNCHER), "--start", "--json",
             "--adw" if target["kind"] == "workflow" else "--command", target["name"],
             "--request-key", request["request_key"], "--issue", request["issue"]]
     argv += ["--class", request["class"]] if request.get("class") else []
@@ -2916,7 +2955,11 @@ def approve_via_layer(layer: Layer, run_id: str, what: list[str],
                       timeout: float = START_TIMEOUT) -> tuple[int, dict[str, Any], str]:
     """`adws/dispatch.py --grant RUN --approve W… --who dashboard --json` of the layer (its runtime
     version): records the approvals and resumes the run. → (exit code, its JSON result, stderr tail)."""
-    argv = [sys.executable, str(layer.path / LAUNCHER), "--grant", run_id, "--who", "dashboard", "--json"]
+    try:
+        python = layer_python()
+    except OSError as exc:
+        return -1, {}, f"cannot run the layer's launcher: {exc}"
+    argv = [*python, str(layer.path / LAUNCHER), "--grant", run_id, "--who", "dashboard", "--json"]
     for item in what:
         argv += ["--approve", item]
     env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
@@ -3706,9 +3749,9 @@ def pr_state_via_layer(layer: "Layer", number: int, timeout: float = 15.0) -> di
     """Ask the layer's own runtime whether pull request `number` is merged (`adws/dispatch.py
     --pr-state N --json`): argv list, no shell, the forge's credentials stay with the layer. →
     {"state": open|merged|closed|unknown, "commit", "at"}."""
-    argv = [sys.executable, str(layer.path / LAUNCHER), "--pr-state", str(int(number)), "--json"]
     env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
     try:
+        argv = [*layer_python(), str(layer.path / LAUNCHER), "--pr-state", str(int(number)), "--json"]
         done = subprocess.run(argv, capture_output=True, cwd=str(layer.path), env=env, timeout=timeout, check=False,
                               stdin=subprocess.DEVNULL)
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -5796,7 +5839,8 @@ class Model:
 
     def _launch(self, directory: Path) -> None:
         """The detached runner of the job in `directory` (dashboard.py --run-job)."""
-        proc = subprocess.Popen([sys.executable, "-I", str(Path(__file__).resolve()), "--run-job", str(directory)],
+        proc = subprocess.Popen([*layer_python(isolated=True), str(Path(__file__).resolve()), "--run-job",
+                                 str(directory)],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 start_new_session=True, close_fds=True)
         threading.Thread(target=proc.wait, name=f"job-{directory.name}", daemon=True).start()   # no zombie runner
@@ -6287,7 +6331,7 @@ class Model:
             if result.get("status") == "error":
                 return 409, {"error": f"{result.get('reason')}: {result.get('error')}", "reason": result.get("reason")}
             tail = "\n".join(stderr.strip().splitlines()[-12:])
-            return 502, {"error": f"the layer's integrate.py failed (exit {exit_code})", "stderr": tail}
+            return 502, {"error": script_error("integrate.py", exit_code, stderr), "stderr": tail}
         short = layer.shortener()
         answer = {**result, "why": short(result.get("why") or ""), "start": start, "tiers": declared_tiers(layer.ir)}
         if result.get("eligible") and start["enabled"]:
@@ -6342,7 +6386,7 @@ class Model:
             return status, {"error": f"{result.get('reason')}: {short(result.get('error') or '')}",
                             "reason": result.get("reason")}
         tail = "\n".join(stderr.strip().splitlines()[-12:])
-        return 502, {"error": f"the layer's integrate.py failed (exit {exit_code})", "stderr": tail}
+        return 502, {"error": script_error("integrate.py", exit_code, stderr), "stderr": tail}
 
     # ---------------------------------------------------------------- give to an agent
     def _assign_refusal(self, layer: Layer, exit_code: int, result: dict[str, Any], stderr: str) -> tuple[int, dict[str, Any]]:
@@ -6353,7 +6397,7 @@ class Model:
             status = 409 if reason in ASSIGN_REASONS and reason != "bad-note" or reason in INTEGRATE_REASONS else 400
             return status, {"error": f"{reason}: {short(str(result.get('error') or ''))}", "reason": reason}
         tail = "\n".join(stderr.strip().splitlines()[-12:])
-        return 502, {"error": f"the layer's assign.py failed (exit {exit_code})", "stderr": tail}
+        return 502, {"error": script_error("assign.py", exit_code, stderr), "stderr": tail}
 
     def _assign_nonce(self, layer: Layer, run_id: str, kind: str, tip: str = "", head: str = "") -> str:
         nonce, now = secrets.token_urlsafe(16), time.time()
@@ -8822,7 +8866,7 @@ class VoiceServices:
     def argv(self, layer: Layer, record_dir: str = "") -> list[str]:
         script = str(layer.path / VOICE_SERVICE)
         if self.fake_script is not None:
-            argv = [sys.executable, script, "serve", "--layer", str(layer.path), "--port", "0",
+            argv = [*layer_python(), script, "serve", "--layer", str(layer.path), "--port", "0",
                     "--fake", "--fake-script", str(self.fake_script)]
         else:
             argv = [shutil.which("uv") or "uv", "run", "--quiet", "--script", script, "serve",
@@ -9334,9 +9378,9 @@ def helper_via_layer(layer: Layer, prompt: str, timeout: float = HELPER_TIMEOUT)
     """One call of the helper's agent through the layer's own launcher (`adws/dispatch.py --helper --json`,
     prompt on stdin, no shell, the dashboard's token not passed on) → its JSON line:
     {"status": "ok", "reply", "cost", "model"} or {"status": "unavailable"|"failed"|"invalid", "error"}."""
-    argv = [sys.executable, str(layer.path / LAUNCHER), "--helper", "--json"]
     env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
     try:
+        argv = [*layer_python(), str(layer.path / LAUNCHER), "--helper", "--json"]
         done = subprocess.run(argv, input=prompt.encode("utf-8"), capture_output=True, cwd=str(layer.path), env=env,
                               timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
@@ -9358,9 +9402,9 @@ def run_control_via_layer(layer: Layer, argv: list[str], stdin: str = "", timeou
         -> tuple[int, dict[str, Any], str]:
     """`adws/dispatch.py --resume ID [--answer] --json` or `--stop ID --json` (answer on stdin), like
     start_via_layer. → (exit code, its JSON result, stderr tail)."""
-    command = [sys.executable, str(layer.path / LAUNCHER), *argv, "--json"]
     env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
     try:
+        command = [*layer_python(), str(layer.path / LAUNCHER), *argv, "--json"]
         done = subprocess.run(command, input=stdin.encode("utf-8"), capture_output=True, cwd=str(layer.path), env=env,
                               timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
@@ -9781,7 +9825,7 @@ def execute_proposal(handler: "Handler", p: Proposal) -> tuple[int, dict[str, An
     if status in ("invalid", "refused"):
         return 409, {"error": str(result.get("error") or result.get("message") or status)}
     tail = "\n".join(stderr.strip().splitlines()[-12:])
-    return 502, {"error": str(result.get("error") or f"the layer's launcher failed (exit {code})"), "stderr": tail}
+    return 502, {"error": str(result.get("error") or script_error("launcher", code, stderr)), "stderr": tail}
 
 
 # ============================================================================ HTTP
@@ -10182,7 +10226,7 @@ class Handler(BaseHTTPRequestHandler):
         if result.get("status") == "error":
             return self._json({"error": f"{result.get('reason')}: {result.get('error')}", "reason": result.get("reason")}, 409)
         tail = "\n".join(stderr.strip().splitlines()[-12:])
-        return self._json({"error": f"the layer's verify_batch.py failed (exit {code})", "stderr": tail}, 502)
+        return self._json({"error": script_error("verify_batch.py", code, stderr), "stderr": tail}, 502)
 
     def _run_testing(self) -> None:
         """POST /api/run-testing {"layer", "adw_id", "depth": "full"}: "Full before it ships": a running
@@ -10313,7 +10357,7 @@ class Handler(BaseHTTPRequestHandler):
         if outcome == "invalid":
             return 400, {"error": str(result.get("error") or "invalid request")}
         tail = "\n".join(stderr.strip().splitlines()[-12:])
-        return 502, {"error": str(result.get("error") or f"the layer's launcher failed (exit {code})"), "stderr": tail}
+        return 502, {"error": str(result.get("error") or script_error("launcher", code, stderr)), "stderr": tail}
 
     def _standin_request(self, which: str, usage: str) -> tuple[dict[str, Any], Layer] | None:
         """The checks the three stand-in writes share: every write guard, a JSON object with known keys,
@@ -10533,7 +10577,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": f"{result.get('reason')}: {result.get('error')}", "reason": result.get("reason")},
                               409 if result.get("reason") in ("not-open", "nothing-to-promote", "already-open") else 400)
         tail = "\n".join(stderr.strip().splitlines()[-12:])
-        return self._json({"error": f"the layer's promote.py failed (exit {code})", "stderr": tail}, 502)
+        return self._json({"error": script_error("promote.py", code, stderr), "stderr": tail}, 502)
 
     def _integrate(self) -> None:
         """POST /api/integrate {layer, run, action: start|approve, confirm: NONCE, model_set, who} and
@@ -10617,7 +10661,7 @@ class Handler(BaseHTTPRequestHandler):
         if status == "invalid":
             return self._error(400, str(result.get("message") or "invalid request"))
         tail = "\n".join(stderr.strip().splitlines()[-12:])
-        return self._json({"error": f"the layer's launcher failed (exit {code})", "stderr": tail}, 502)
+        return self._json({"error": script_error("launcher", code, stderr), "stderr": tail}, 502)
 
     def _integrate_preview(self, query: dict[str, list[str]]) -> None:
         """GET /api/integrate/preview?layer=K&run=ID: what the integration would do (read-only)."""
