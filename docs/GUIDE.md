@@ -475,7 +475,9 @@ doctor: 7 ok, 1 missed, 0 skipped
 - `update` — with a toolchain: re-pin nixpkgs in `env/flake.lock` and show what changed (see
   [Choose where the tools come from](#choose-where-the-tools-come-from)).
 - `prune` — remove every old image nothing uses. Runs keep the two newest old images and remove those
-  older than 14 days by themselves.
+  older than 14 days by themselves. `prune --tests` also removes the containers and images al's own test
+  suites left behind (those labelled `al.test`; see `tests/README.md`), printing `removed <ref>` for each
+  and `pruned N test leftover(s)`; it never removes an unlabelled image or this layer's current image.
 
 A workflow that collects no screenshots does not need a browser; one whose environment has no sidecars
 skips that check. To turn the browser or sidecar check off for an environment anyway, give the podman
@@ -596,9 +598,14 @@ failures at the same step with the same reason, within half an hour of each othe
 ("5 runs: preflight, same reason") followed by their ids. `al settle LAYER RUN --as
 landed|superseded|abandoned` takes `--by RUN|COMMIT` (a run of the layer or a commit of the application),
 `--note TEXT` (at most 500 characters) and `--who NAME` (default: your `git config user.name` in the
-application). It writes `agents/<run id>/settlement.json` and nothing else; settling again keeps the
-earlier record under `previous`. Exit codes: 0 written, 2 bad use, 3 refused (the run is still running, or
-`--by` names neither a run nor a commit), 4 no such run.
+application). It writes `agents/<run id>/settlement.json`, then removes the run's worktree under `trees/`
+(it keeps `agents/<id>`, `artefacts/<id>` and the branch) and prints
+`removed worktree trees/<id> (agents/<id> is kept)`, or `kept worktree trees/<id>: <reason>` when git
+and al could not remove it; settling again keeps the earlier record under `previous`. The dashboard's
+settle form and the stand-in remove the worktree the same way, and so does an integration that lands a
+run. Undoing a settlement does not bring the worktree back: the branch is kept, so a run resumed later
+needs its worktree made again from the branch. Exit codes: 0 written, 2 bad use, 3 refused (the run is
+still running, or `--by` names neither a run nor a commit), 4 no such run.
 
 Finished runs leave worktrees, containers and branches behind. `al runs LAYER prune --landed --older-than
 DAYS` removes them for runs in the Landed or Settled list that ended more than DAYS ago, and keeps the
@@ -2427,10 +2434,28 @@ claude  ~/.local/bin/claude (PATH)               2.1.0 (Claude Code)
 
 With a layer its settings count too (`local.env`, `~/.config/al/<name>.env`) and the agent CLIs are the
 ones its workflows use; without one, `claude`. `--json` prints the same rows as a document
-(`{"ok": …, "tools": [{"tool", "found", "path", "source", "version", "looked", "sentence"}]}`).
+(`{"ok": …, "tools": [{"tool", "found", "path", "source", "version", "looked", "sentence"}], "dashboards": […], "disk": …}`).
 `al doctor` also reports a running dashboard whose Python no longer exists (a pruned or rebuilt uv cache),
 one line below the table, such as `dashboard (pid 4242): its Python … no longer exists; restart the
 dashboard`; `--json` lists these under `"dashboards"` (`[{"pid", "python", "sentence"}]`).
+
+After the table, `disk:` lines say where the disk space went: the layer's worktrees (and how many belong
+to settled runs), its run records, al's podman images (the layer's current one, its old ones, those of
+al's test suites and any other `al-*`), what the test suites left, pytest's temporary directories and the
+free space where the layer is. Below 10% free a warning line follows. The figures here are invented:
+
+```
+disk: worktrees 14 (6.2G), 9 of settled runs
+disk: run records 212 (310M)
+disk: images layer 1 (1.9G), old 2 (3.6G), test 3 (2.4G), other al 4 (5.1G)
+disk: test leftovers 2 containers (0 running), 3 images (2.4G); al sandbox LAYER prune --tests removes them
+disk: pytest temp /tmp/pytest-of-ada (1.2G)
+disk: free 7.8G of 98G (8%) on /home/ada/code/myapp.al
+disk: warning: only 8% free on /home/ada/code/myapp.al; settled worktrees (al runs LAYER prune), test leftovers (al sandbox LAYER prune --tests) and pytest temp dirs can go
+```
+
+Without a layer there are no worktree and record lines; without podman the images line says
+`disk: images: podman not found`. The disk lines never change the exit code.
 `--for gen,author --agent mock` checks only what those subcommands need and prints `ok`, or one sentence
 per missing tool. It exits 4 when a tool is missing; every other subcommand that finds a prerequisite
 missing stops the same way, before any work:

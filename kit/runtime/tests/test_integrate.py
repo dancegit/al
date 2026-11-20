@@ -326,6 +326,18 @@ def test_settlement_record_is_the_dashboards_format(make_layer, app_repo):
     assert oct(path.stat().st_mode & 0o777) == "0o600"
 
 
+def test_landed_settlement_releases_the_original_worktree(make_layer, app_repo):
+    layer = conflict_layer(make_layer, app_repo)
+    state = handed_over_run(layer, app_repo, RUN)
+    tree = layer / "trees" / RUN
+    git(app_repo, "worktree", "add", "-q", str(tree), state["branch"])
+    record = integrate.write_settlement(ir.load(layer), RUN, "c0000001", "0123456789abcdef", "main")
+    assert record["as"] == "landed" and (layer / "agents" / RUN / "settlement.json").is_file()
+    assert not tree.exists() and f"/{RUN}\n" not in git(app_repo, "worktree", "list", "--porcelain") + "\n"
+    assert (layer / "agents" / RUN / "state.json").is_file()
+    assert git(app_repo, "rev-parse", "--verify", "-q", f"refs/heads/{state['branch']}")
+
+
 def test_integration_record_keeps_earlier_ones(make_layer, app_repo):
     layer = conflict_layer(make_layer, app_repo)
     handed_over_run(layer, app_repo, RUN)

@@ -158,6 +158,26 @@ def _listening(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
+def test_sandbox_prune_tests_removes_only_labelled_leftovers(layer, tmp_path):
+    machine = Machine(tmp_path)
+    current = f"al-notes:{recipe(layer)}"
+    test = {"al.test": "1", "al.test.session": "1-abcdef"}
+    fake_podman.add_image(machine.state, "al-prep-orchard:latest", test)
+    fake_podman.add_image(machine.state, current, {**test, "al.recipe": recipe(layer)})
+    fake_podman.add_image(machine.state, "al-notes:0b0b0b0b0b0b", {})
+    plain = al("sandbox", layer, "prune", env=machine.env())
+    assert "test leftover" not in plain.stdout
+    assert {t for i in fake_podman.images(machine.state) for t in i["tags"]} == {
+        "al-prep-orchard:latest", current, "al-notes:0b0b0b0b0b0b"}
+    cp = al("sandbox", layer, "prune", "--tests", env=machine.env())
+    assert "removed localhost/al-prep-orchard:latest" in cp.stdout.splitlines()
+    assert cp.stdout.splitlines()[-1] == "pruned 1 test leftover(s)"
+    assert {t for i in fake_podman.images(machine.state) for t in i["tags"]} == {current, "al-notes:0b0b0b0b0b0b"}
+    rmis = [argv for argv in machine.calls() if argv[0] == "rmi"]
+    assert all(current not in " ".join(argv) and "al-notes:0b0b" not in " ".join(argv) for argv in rmis), rmis
+    assert all("--force" not in argv and "-f" not in argv for argv in rmis)
+
+
 @pytest.mark.podman
 def test_real_registry_round_trip(layer, tmp_path):
     if shutil.which("podman") is None:

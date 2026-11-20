@@ -65,6 +65,15 @@ def make_layer(tmp_path: Path, app_repo: Path):
 
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _al_labelled_podman():
+    """Every image and container this session's tests make is labelled al.test (a podman shim first on
+    PATH) and removed when the session ends; leftovers older than six hours go when it starts."""
+    from adw_modules import diskuse
+    with diskuse.labelled_session() as session:
+        yield session
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
     config.addinivalue_line("markers", "podman: needs a working rootless podman and a local base image")
