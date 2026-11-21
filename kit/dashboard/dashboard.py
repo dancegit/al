@@ -1820,6 +1820,30 @@ def load_layer(path: Path, taken: set[str]) -> Layer | None:
     return Layer(key=key, path=path, ir=ir, sig=stat_sig(path / LAYER_FILE))
 
 
+def drop_worktree_twins(listed: list[Path], scanned: list[Path]) -> list[Path]:
+    """The scanned layer paths minus those in another worktree of a repository already listed under the same name."""
+    def identity(path: Path) -> tuple[tuple[str, str | None], bool]:
+        ir = read_json(path / LAYER_FILE)
+        name = str((ir.get("name") if isinstance(ir, dict) else None) or path.name)
+        top = next((p for p in (path, *path.parents) if os.path.lexists(p / ".git")), None)
+        if top is None:
+            return (name, None), False
+        return (name, os.path.realpath(_git_common_dir(top))), (top / ".git").is_dir()
+
+    seen = {ident for ident, _ in map(identity, listed) if ident[1] is not None}
+    idents = {path: identity(path) for path in scanned}
+    dropped: set[Path] = set()
+    for path in sorted(scanned, key=lambda p: not idents[p][1]):   # main checkouts first, stable
+        ident = idents[path][0]
+        if ident[1] is None:
+            continue
+        if ident in seen:
+            dropped.add(path)
+        else:
+            seen.add(ident)
+    return [path for path in scanned if path not in dropped]
+
+
 # ============================================================================ local model setting
 
 def check_model_id(model: Any) -> str | None:
@@ -5573,7 +5597,7 @@ class Model:
         for directory in self.layer_dirs:
             if (directory / LAYER_FILE).is_file():
                 paths.append(Path(os.path.realpath(directory)))
-        paths += find_layers(self.scan_dirs, self.scan_depth)
+        paths += drop_worktree_twins(paths, find_layers(self.scan_dirs, self.scan_depth))
         if self.workspace is not None:   # the generated layers of workspace repositories are watched like any layer
             paths += self.workspace.layer_paths()
         changed = False

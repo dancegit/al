@@ -572,6 +572,20 @@
           "whenAffected": true
         },
         {
+          "cmd": "test-podman",
+          "collect": [
+            "log"
+          ],
+          "forbidSkipReason": "podman is not installed",
+          "in": "host-engine",
+          "kind": "check",
+          "maxSkipped": -1,
+          "name": "test-podman",
+          "resolve": "resolve-test",
+          "retries": 3,
+          "whenAffected": true
+        },
+        {
           "cmd": "test-tools",
           "collect": [
             "log"
@@ -815,6 +829,36 @@
         "targeted": "",
         "testRoot": "",
         "timeout": 1800
+      },
+      {
+        "always": false,
+        "coverageFile": "",
+        "coverageRun": "",
+        "covers": [
+          "kit/runtime/adw_modules/envs.py",
+          "kit/runtime/adw_modules/nested_engine.py",
+          "kit/runtime/adw_modules/gitsafe.py",
+          "kit/runtime/tests/test_sandbox_podman.py",
+          "kit/runtime/tests/test_isolation_podman.py",
+          "kit/runtime/tests/test_nested_engine.py",
+          "kit/runtime/tests/test_nested_engine_podman.py"
+        ],
+        "description": "The sandbox's escape, isolation and nested-engine tests against this machine's real rootless podman",
+        "maxTargeted": 200,
+        "name": "test-podman",
+        "pathMap": [],
+        "recordCoverage": "none",
+        "reuse": true,
+        "run": "(cd kit/runtime && env -u AL_APP_ROOT -u PYTHONPATH uv run --with pytest pytest -q -rs tests/test_sandbox_podman.py tests/test_isolation_podman.py tests/test_nested_engine.py tests/test_nested_engine_podman.py)",
+        "select": [
+          "changed-tests",
+          "imports"
+        ],
+        "selectCmd": "",
+        "smoke": "",
+        "targeted": "",
+        "testRoot": "",
+        "timeout": 3600
       },
       {
         "always": false,
@@ -1325,6 +1369,21 @@
       "status": "stable",
       "target": "",
       "tmpSize": "8g"
+    },
+    {
+      "browser": false,
+      "flake": "",
+      "id": "host-engine",
+      "kind": "nix-devshell",
+      "nixpkgs": "github:NixOS/nixpkgs/nixos-unstable",
+      "packages": [
+        "uv",
+        "git"
+      ],
+      "pure": false,
+      "shell": "default",
+      "shellHook": "",
+      "status": "stable"
     }
   ],
   "experts": [

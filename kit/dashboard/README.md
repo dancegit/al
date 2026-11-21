@@ -41,7 +41,7 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | Flag | Meaning |
 |---|---|
 | `--layer DIR` | watch this layer (a directory with `agentic-layer.json`); repeatable |
-| `--scan DIR` | find layers below DIR, in-repo ones included (depth `--scan-depth`, default 4; `.git`, `node_modules`, `trees`, `testbeds`, … are skipped); rescanned every 10 s, so new layers appear |
+| `--scan DIR` | find layers below DIR, in-repo ones included (depth `--scan-depth`, default 4; `.git`, `node_modules`, `trees`, `testbeds`, … are skipped); rescanned every 10 s, so new layers appear; a layer in another git worktree of a repository already listed, with the same layer name, is not listed again (`--layer` always lists) |
 | `--port N` | default 8765 |
 | `--bind ADDR` | default 127.0.0.1; a non-loopback address is refused unless `--token` is given |
 | `--token T` | every request needs it (`?token=T` once, then an HttpOnly cookie; or `Authorization: Bearer T`); also read from `AL_DASHBOARD_TOKEN` |
