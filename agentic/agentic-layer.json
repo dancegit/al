@@ -1323,7 +1323,8 @@
         "HOME=/opt/claude bash -c 'curl -fsSL https://claude.ai/install.sh | bash' && chmod -R a+rX /opt/claude && ln -s /opt/claude/.local/bin/claude /usr/local/bin/claude"
       ],
       "status": "stable",
-      "target": ""
+      "target": "",
+      "tmpSize": "8g"
     }
   ],
   "experts": [

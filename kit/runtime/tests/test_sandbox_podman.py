@@ -1,8 +1,9 @@
 """Escape attempts from inside a REAL rootless podman container, asserted on the host.
 
 Skipped cleanly when podman or a usable local image is missing. Nothing large is pulled: the
-git-enabled test image is derived (once, cached as al-sandbox-test:latest) from an image that
-is already present locally."""
+git-enabled test image al-sandbox-test:v2 is derived from an image that is already present locally,
+once per session. The suite's label shim (adw_modules/diskuse.py) labels it al.test, so it is
+removed when the session ends and the next session builds it again."""
 from __future__ import annotations
 
 import hashlib
@@ -22,7 +23,7 @@ from adw_modules.state import ADWState
 
 pytestmark = pytest.mark.podman
 
-TEST_IMAGE = "localhost/al-sandbox-test:v2"  # bump when the recipe below changes (the image is cached)
+TEST_IMAGE = "localhost/al-sandbox-test:v2"  # bump when the recipe below changes (kept for the session)
 BASES = ("al-flask-envtest:latest", "docker.io/library/python:3.12-slim")
 
 

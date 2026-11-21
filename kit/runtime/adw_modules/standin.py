@@ -57,7 +57,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from . import decide, events, state as state_module
+from . import decide, diskuse, events, state as state_module
 from .errors import LayerError, StepFailed
 
 KINDS = ("resume", "restart", "answer", "integrate", "settle", "land", "promote", "retry-job")
@@ -982,7 +982,8 @@ def utc_stamp() -> str:
 def settle(layer: Any, state: Any, as_: str, by: str = "", note: str = "", who: str = "stand-in",
            via: str = "stand-in") -> dict[str, Any]:
     """Write agents/<id>/settlement.json in the dashboard's format (dashboard.write_settlement); the
-    earlier record stays under `previous`, so a person can undo it."""
+    earlier record stays under `previous`, so a person can undo it. Then the run's worktree goes
+    (diskuse.release_worktree; its branch, agents/<id> and artefacts/<id> stay)."""
     if as_ not in decide.SETTLE_AS:
         raise ApplyError(f"as is one of {', '.join(decide.SETTLE_AS)}")
     by = str(by or "")
@@ -1007,7 +1008,17 @@ def settle(layer: Any, state: Any, as_: str, by: str = "", note: str = "", who: 
         with contextlib.suppress(OSError):
             temporary.unlink()
         raise
+    with contextlib.suppress(OSError, subprocess.SubprocessError):   # settling never fails because of a worktree
+        diskuse.release_worktree(layer.layer_dir, layer.app_root, state.adw_id, _tree_dir(layer))
     return record_
+
+
+def _tree_dir(layer: Any) -> str:
+    """The worktree environment's directory (the first `kind == "worktree"` one), default `trees`."""
+    for env in (getattr(layer, "ir", None) or {}).get("environments") or []:
+        if isinstance(env, dict) and env.get("kind") == "worktree" and env.get("dir"):
+            return str(env["dir"])
+    return "trees"
 
 
 def _perform(layer: Any, state: Any, decision: dict[str, Any], who: str, via: str, extra: str,

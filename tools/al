@@ -551,6 +551,32 @@ def dashboard_kit_module():
     return module
 
 
+def diskuse_module():
+    """kit/runtime/adw_modules/diskuse.py, loaded by path as `al_diskuse`: the `disk:` lines of `al doctor`
+    and the removal of what al's test suites left (`al sandbox LAYER prune --tests`)."""
+    if "al_diskuse" in sys.modules:
+        return sys.modules["al_diskuse"]
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("al_diskuse", KIT / "runtime" / "adw_modules" / "diskuse.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["al_diskuse"] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop("al_diskuse", None)
+        raise
+    return module
+
+
+def podman_runner(tools=None):
+    """run(argv) → CompletedProcess of the podman al's tool finder finds, or None when there is none."""
+    tools = tools or tools_module()
+    podman = tools.find("podman").path
+    if not podman:
+        return None
+    return lambda argv: subprocess.run([podman, *argv], capture_output=True, text=True, timeout=120, check=False)
+
+
 def scout_step_module():
     """tools/al_scout_step.py: `al scout APP --into LAYER` (measured commands, scout.json, the scout agent)."""
     if str(ROOT / "tools") not in sys.path:
@@ -3815,6 +3841,13 @@ def sandbox_cli(a: argparse.Namespace) -> int:
                     print(f"removed volume {name}")
                 if volumes:
                     print(f"pruned {len(volumes)} nested-engine volume(s)")
+            if a.tests:   # what al's test suites left (labelled al.test), never this layer's current image
+                runner = podman_runner()
+                leftovers = diskuse_module().remove_labelled(
+                    runner, keep={sandbox.image_ref(loaded), f"al-{loaded.name}:latest"}) if runner else []
+                for ref in leftovers:
+                    print(f"removed {ref}")
+                print(f"pruned {len(leftovers)} test leftover(s)")
             return 0
         if a.action == "build":
             wanted = getattr(a, "toolchain", None)
@@ -4632,7 +4665,9 @@ def main(argv: list[str] | None = None) -> int:
                    "that runs in the environment)")
     q = actions.add_parser("shell", help="open a shell in a throwaway container, as a run's commands see it")
     q.add_argument("--env", metavar="ID", help="the podman environment (default: the first)")
-    actions.add_parser("prune", help="remove every old image of this layer that no run or container uses")
+    q = actions.add_parser("prune", help="remove every old image of this layer that no run or container uses")
+    q.add_argument("--tests", action="store_true",
+                   help="also remove the containers and images al's test suites left (labelled al.test)")
     actions.add_parser("status", help="the recipe hash and image of every podman environment, and the old images")
     q = actions.add_parser("push", help="build the image of the current recipe if needed and push it to the declared "
                            "(registry …)")
@@ -4909,7 +4944,8 @@ def tool_missing(cmd: str, e) -> int:
 
 
 def doctor_cli(a: argparse.Namespace) -> int:
-    """`al doctor [LAYER] [--for CMD,…] [--agent A] [--platform] [--json]`: exit 0, or 4 when a tool is missing."""
+    """`al doctor [LAYER] [--for CMD,…] [--agent A] [--platform] [--json]`: exit 0, or 4 when a tool is missing.
+    The default form also prints where the disk space went (`disk:` lines; `disk` in --json)."""
     tools = tools_module()
     if a.platform:
         module = platform_module()
@@ -4953,10 +4989,19 @@ def doctor_cli(a: argparse.Namespace) -> int:
     rows = tools.doctor_rows(names, layer, versions=True)
     gone = tools.gone_dashboards()
     ok = all(row["found"] for row in rows)
+    diskuse = diskuse_module()
+    disk_ir = None
+    if layer is not None and (layer / "agentic-layer.json").is_file():
+        try:
+            disk_ir = json.loads((layer / "agentic-layer.json").read_text())
+        except ValueError:
+            disk_ir = {}
+    disk = diskuse.report(layer if disk_ir is not None else None, disk_ir, run=podman_runner(tools))
     if a.json:
-        print(json.dumps({"ok": ok, "tools": rows, "dashboards": gone}, indent=2))
+        print(json.dumps({"ok": ok, "tools": rows, "dashboards": gone, "disk": disk}, indent=2))
     else:
         print("\n".join([tools.doctor_table(rows), *(d["sentence"] for d in gone)]))
+        print("\n".join(diskuse.lines(disk)))
     return 0 if ok else 4
 
 

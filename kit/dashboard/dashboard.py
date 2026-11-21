@@ -209,6 +209,7 @@ FAILURE_GROUP_SECONDS = 1800   # failures of one step and reason that end within
 LANDING_CHECKS_PER_TICK = 8    # uncached landed checks (git) per watcher tick; the others wait as "checking"
 PR_STATE_SECONDS = 600         # a forge answer about a pull request is kept this long
 LANDING_GIT_TIMEOUT = 10       # seconds per git call of a landed check
+WORKTREE_GIT_TIMEOUT = 120     # seconds for git worktree remove of a settled run
 PATCH_ID_COMMITS = 500         # commits of the target compared by patch-id
 LANDING_PATHS = 2000           # a branch that changed more paths than this is not compared path by path
 COMMIT_RX = re.compile(r"^[0-9a-f]{7,40}$")
@@ -3174,7 +3175,8 @@ def write_settlement(layer_dir: Path, run_id: str, *, as_: str, by: str = "", no
                      via: str, status: str, repo: Path | None = None) -> dict[str, Any]:
     """Write agents/<id>/settlement.json and return the record (the runtime writes the same format when
     an integration lands a run: adw_modules/integrate.py write_settlement; keep the two alike). Writing
-    again replaces the record and keeps the earlier one under "previous" (one level). Nothing else of the run is touched. Refused
+    again replaces the record and keeps the earlier one under "previous" (one level). Nothing else of the run is
+    touched here; its callers then give back the run's worktree (release_worktree). Refused
     (SettleError) for a run that is running or unknown, and when `by` is neither a run of the layer
     nor a commit `git cat-file -e` finds in `repo`."""
     if not RUN_ID.match(run_id or "") or not (Path(layer_dir) / "agents" / run_id).is_dir():
@@ -3195,6 +3197,40 @@ def write_settlement(layer_dir: Path, run_id: str, *, as_: str, by: str = "", no
             record["pruned"] = previous["pruned"]
     _write_record(Path(layer_dir) / "agents" / run_id / SETTLEMENT_FILE, record)
     return record
+
+
+def _worktree_dir(layer_ir: dict[str, Any]) -> str:
+    """The directory of the layer's worktree environment (the first `kind == "worktree"` one), default trees."""
+    for env in (layer_ir or {}).get("environments") or []:
+        if isinstance(env, dict) and env.get("kind") == "worktree" and env.get("dir"):
+            return str(env["dir"])
+    return "trees"
+
+
+def release_worktree(layer_dir: Path, layer_ir: dict[str, Any], run_id: str, repo: Path | None) -> tuple[str, str]:
+    """A settled run gives back its worktree, <layer>/<worktree dir>/<id>, and nothing else (its branch,
+    agents/<id> and artefacts/<id> stay): `git worktree remove --force`; when git refuses, the directory
+    itself and then `git worktree prune`. The twin of the runtime's adw_modules/diskuse.py
+    release_worktree (keep the two alike) → (the removed path relative to the layer, ""), ("", "")
+    without a worktree, ("", why) when it is still there."""
+    if not RUN_ID.match(run_id or ""):
+        return "", "not a run id"
+    tree_dir = _worktree_dir(layer_ir)
+    trees = Path(layer_dir) / tree_dir
+    tree = trees / run_id
+    if not tree.exists() and not tree.is_symlink():
+        return "", ""
+    relative = f"{tree_dir}/{run_id}"
+    errors: list[str] = []
+    removed = repo is not None and safe_git(repo, "worktree", "remove", "--force", str(tree),
+                                            timeout=WORKTREE_GIT_TIMEOUT, errors=errors) is not None
+    if not removed and tree.is_dir() and not tree.is_symlink() and tree.parent.resolve() == trees.resolve():
+        shutil.rmtree(tree, ignore_errors=True)
+        if repo is not None:
+            safe_git(repo, "worktree", "prune", timeout=WORKTREE_GIT_TIMEOUT)
+    if tree.exists() or tree.is_symlink():
+        return "", (errors[0] if errors else f"{relative} could not be removed")
+    return relative, ""
 
 
 def remove_settlement(layer_dir: Path, run_id: str) -> dict[str, Any] | None:
@@ -6279,6 +6315,10 @@ class Model:
             return (409 if exc.kind == "running" else 404 if exc.kind == "missing" else 400), {"error": str(exc)}
         except OSError as exc:
             return 409, {"error": f"cannot write {SETTLEMENT_FILE}: {exc.strerror or exc}"}
+        try:   # settling never fails because of a worktree
+            worktree, _why = release_worktree(layer.path, layer.ir, run_id, app_repo(layer.path, layer.ir))
+        except OSError:
+            worktree = ""
         fresh = model.summary(self._extras(layer, run_id))
         with self.lock:
             self.summaries[key] = fresh
@@ -6287,7 +6327,7 @@ class Model:
         self.refresh_attention(layer)
         self.standin_note(layer, {"run": run_id, "kind": "settle", "action": "settle",
                                   "outcome": f"settled as {record['as']}"})
-        return 200, {"status": "settled", "record": record}
+        return 200, {"status": "settled", "record": record, "worktree": worktree}
 
     # ---------------------------------------------------------------- resolve with an agent
     def _run_of(self, layer_key: str, run_id: Any) -> tuple[Layer | None, int, str]:

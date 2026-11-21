@@ -295,6 +295,21 @@ The private clones and the layers live under pytest's base temp directory (usual
 real checks build there (a Rust `target/`, `node_modules`, …); pass `--basetemp /var/tmp/al-it` to
 put them on a disk when `/tmp` is a small tmpfs (pytest empties that directory first).
 
+Disk use stays bounded on a shared machine. Each of the four suites (`kit/runtime`, `kit/dashboard`,
+`tests/tools`, `tests/integration`) has a `pytest.ini` with `tmp_path_retention_policy = failed` and
+`tmp_path_retention_count = 1`: only a session with a failed test keeps its temporary directories,
+and only the last one. Every suite also has a session-scoped autouse fixture, `_al_labelled_podman`
+(`kit/runtime/adw_modules/diskuse.py` `labelled_session`). When podman is installed it puts a small
+`podman` wrapper first on `PATH` that adds the labels `al.test=1` and `al.test.session=<id>` to every
+`podman build`, `run` and `create` (also `image build`, `container run|create`). That covers the
+images and containers a test makes directly, through the runtime or through a `tools/al` subprocess;
+a test that puts its own fake podman first on `PATH` still gets its fake. When the session ends, pass
+or fail, its labelled containers and images are removed (images by name, never with `--force`). When
+a session starts, labelled objects of any session older than 6 hours are removed. Unlabelled objects
+are never touched, so images built before this existed stay until a person removes them; `al doctor`
+lists them under `other al`, and `al sandbox LAYER prune --tests` removes labelled leftovers on demand.
+Images a suite builds (such as `al-sandbox-test:v2`) are therefore built again by every session.
+
 ### Adding a testbed
 
 1. Clone it into `testbeds/<name>` (your working copy, and the suite's read-only cache), run `tools/al init testbeds/<name> --layer layers/<name>` and

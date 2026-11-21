@@ -1947,6 +1947,10 @@
                 "description": "Build stage of #:containerfile (podman build --target). Only with #:containerfile.",
                 "type": "string"
               },
+              "tmpSize": {
+                "description": "Size limit of the run container's /tmp tmpfs (podman size syntax, e.g. 8g).",
+                "type": "string"
+              },
               "toolchain": {
                 "description": "A declared (toolchain nix …): the image is built from it with Nix instead of from #:base-image and #:packages; #:setup lines are applied as a final layer.",
                 "type": "string"
@@ -1975,7 +1979,8 @@
               "services",
               "setup",
               "status",
-              "target"
+              "target",
+              "tmpSize"
             ],
             "type": "object"
           }

@@ -880,7 +880,8 @@
         "pip install --no-cache-dir uv"
       ],
       "status": "stable",
-      "target": ""
+      "target": "",
+      "tmpSize": "8g"
     }
   ],
   "experts": [

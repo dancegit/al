@@ -87,11 +87,21 @@ def test_al_explain_says_what_the_stand_in_may_do_alone(app, sibling) -> None:
                     "it may then only resume a stopped run.")
 
 
-def test_dashboard_kinds_and_settlement_format_equal_the_runtime_s(sibling) -> None:
+def test_dashboard_kinds_and_settlement_format_equal_the_runtime_s(sibling, request) -> None:
     spec = importlib.util.spec_from_file_location("al_dashboard_for_standin", KIT / "dashboard" / "dashboard.py")
     dashboard = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = dashboard
     spec.loader.exec_module(dashboard)
+    # the sibling's adw_modules must not outlive this test: its tmp_path is removed when the test passes
+    # (retention policy "failed"), and a later `from adw_modules import x` would look in a gone directory
+    saved = {n: m for n, m in sys.modules.items() if n == "adw_modules" or n.startswith("adw_modules.")}
+
+    def restore() -> None:
+        for n in [n for n in sys.modules if n == "adw_modules" or n.startswith("adw_modules.")]:
+            del sys.modules[n]
+        sys.modules.update(saved)
+
+    request.addfinalizer(restore)
     for name in [n for n in sys.modules if n == "adw_modules" or n.startswith("adw_modules.")]:
         del sys.modules[name]
     sys.path.insert(0, str(sibling / "adws"))

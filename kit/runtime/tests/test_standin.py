@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -559,6 +560,35 @@ def test_settle_writes_a_settlement_as_the_stand_in(make_layer, tmp_path, spawne
     again = standin.settle(ir.load(layer_dir), state, "superseded", by="ffffffff", note="x\ny " + "z" * 600)
     assert again["by"] == "" and "\n" not in again["note"] and len(again["note"]) == 500
     assert json.loads(path.read_text())["previous"] == record
+
+
+def _worktrees(layer_dir: Path) -> str:
+    app = ir.load(layer_dir).app_root
+    return subprocess.run(["git", "-C", str(app), "worktree", "list", "--porcelain"], capture_output=True, text=True,
+                          check=True, timeout=30).stdout
+
+
+def test_settling_removes_the_worktree_and_keeps_the_record(make_layer, tmp_path, spawned):
+    layer_dir = stopped_run(make_layer, tmp_path, stand_in=declared("auto", may=["settle"]))
+    tree = layer_dir / "trees" / ADW_ID
+    assert tree.is_dir() and ADW_ID in _worktrees(layer_dir)
+    decider(layer_dir, "settle")
+    result = standin.consider(ir.load(layer_dir), item_for())
+    assert (result["status"], result["entry"]["outcome"]) == ("acted", "settled as abandoned")
+    assert not tree.exists() and f"/{ADW_ID}\n" not in _worktrees(layer_dir)
+    run_dir = layer_dir / "agents" / ADW_ID
+    assert (run_dir / "state.json").is_file()
+    record = json.loads((run_dir / "settlement.json").read_text())
+    assert set(record) == {"as", "by", "note", "who", "at", "via"}
+
+
+def test_an_unsettled_run_keeps_its_worktree(make_layer, tmp_path, spawned):
+    layer_dir = stopped_run(make_layer, tmp_path)
+    tree = layer_dir / "trees" / ADW_ID
+    assert tree.is_dir()
+    result = standin.consider(ir.load(layer_dir), item_for())
+    assert result["status"] == "off" and result["action"] == ""
+    assert tree.is_dir() and not (layer_dir / "agents" / ADW_ID / "settlement.json").exists()
 
 
 def test_promote_records_the_stand_in_and_continues(make_layer, app_repo, monkeypatch):

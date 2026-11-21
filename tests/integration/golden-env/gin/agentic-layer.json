@@ -666,7 +666,8 @@
       "services": [],
       "setup": [],
       "status": "stable",
-      "target": ""
+      "target": "",
+      "tmpSize": "8g"
     }
   ],
   "experts": [

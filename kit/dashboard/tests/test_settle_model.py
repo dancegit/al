@@ -72,6 +72,23 @@ def test_write_settlement_is_atomic_and_keeps_previous(scenario):
     assert sorted(p.name for p in path.parent.iterdir()) == ["request.md", "settlement.json", "state.json"]
 
 
+def test_release_worktree_removes_only_that_runs_worktree(scenario):
+    layer, repo = scenario["layer"], scenario["repo"]
+    first, second = sf.OPEN[0], sf.OPEN[1]
+    for run in (first, second):
+        sf.Git(repo)("worktree", "add", "-q", str(layer / "trees" / run), f"al/{run}")
+    d.write_settlement(layer, first, as_="abandoned", who="Ada", via="cli", status="handed-over")
+    ir = json.loads((layer / "agentic-layer.json").read_text())
+    assert d.release_worktree(layer, ir, first, repo) == (f"trees/{first}", "")
+    assert not (layer / "trees" / first).exists() and (layer / "trees" / second).is_dir()
+    listed = sf.Git(repo)("worktree", "list", "--porcelain")
+    assert f"/{first}\n" not in listed + "\n" and second in listed
+    assert (layer / "agents" / first / "state.json").is_file()
+    assert sf.Git(repo)("rev-parse", "--verify", "-q", f"refs/heads/al/{first}")
+    assert d.release_worktree(layer, ir, first, repo) == ("", "")              # nothing left to remove
+    assert d.release_worktree(layer, ir, "../x", repo) == ("", "not a run id")
+
+
 def test_settlement_refused_for_running_and_bad_by(scenario):
     layer, repo = scenario["layer"], scenario["repo"]
     with pytest.raises(d.SettleError) as running:
