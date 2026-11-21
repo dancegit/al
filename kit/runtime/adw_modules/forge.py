@@ -2,7 +2,8 @@
 
 Stdlib only. `get_client(layer)` picks the client from `ir["forge"]["kind"]`.
 
-    github  -> shells out to `gh` (GH_HOST for Enterprise, GH_TOKEN from tokenEnv)
+    github  -> shells out to `gh` (GH_HOST for Enterprise; GH_TOKEN from tokenEnv, looked up through
+               localenv: environment, `local.env`, per-layer config file; `gh auth` after that)
     forgejo -> REST v1 via `http_request` (replace it in tests)
     none    -> no issues; comments go to <layer>/agents/forge-comments.log
 
@@ -35,6 +36,8 @@ import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Iterable, Mapping
+
+from . import localenv
 
 DEFAULT_BOT_MARKER = "[ADW-BOT]"
 CI_POLL_SECONDS = 30  # how often wait_for_ci asks the forge again
@@ -105,6 +108,7 @@ class ForgeClient:
     kind = "base"
     # how ship merges a pull request; a run that delivers into a stage gets the stage's #:entry
     merge_method = "squash"
+    layer: Any = None  # the loaded layer (set by get_client); where the token files are found
 
     def __init__(self, option: Mapping[str, Any], layer_dir: Path | None = None,
                  env: Mapping[str, str] | None = None):
@@ -112,6 +116,36 @@ class ForgeClient:
         self.layer_dir = Path(layer_dir) if layer_dir else None
         self.env = dict(os.environ if env is None else env)
         self.bot_marker = self.option.get("botMarker") or DEFAULT_BOT_MARKER
+        self._file_values: dict[str, str] | None = None
+
+    def token(self, name: str) -> str:
+        """The value of the token variable `name`, or "".
+
+        Looked up like every other private value of a layer: a non-empty value in the process
+        environment, then `<layer>/local.env`, then `$XDG_CONFIG_HOME/al/<layer name>.env`. The value
+        stays in the client (an HTTP header, or `GH_TOKEN` for the client's own `gh`): it is never
+        copied into `os.environ`, never logged and never written to state or events.
+        """
+        if not name:
+            return ""
+        value = self.env.get(name)
+        if value:
+            return value
+        if self._file_values is None:
+            self._file_values = localenv.load(self.layer) if self.layer is not None else {}
+        return self._file_values.get(name, "")
+
+    def token_hint(self, name: str) -> str:
+        """Where to set the token variable `name`: names and paths only, never a value."""
+        layer_dir = getattr(self.layer, "layer_dir", None) or self.layer_dir
+        layer_name = str(getattr(self.layer, "name", "") or "")
+        local = str(Path(layer_dir) / localenv.FILE_NAME) if layer_dir else f"{localenv.FILE_NAME} in the layer directory"
+        try:
+            config = localenv.config_file(layer_name) if layer_name else None
+        except Exception:  # noqa: BLE001 — e.g. no home directory
+            config = None
+        config_text = str(config) if config is not None else f"~/.config/al/{layer_name or '<layer name>'}.env"
+        return f"{name} is not set: set it in the environment, in {local} or in {config_text}"
 
     def mark(self, body: str) -> str:
         """Prefix a comment body with the bot marker (idempotent)."""
@@ -246,9 +280,9 @@ class GitHubForge(ForgeClient):
 
     def _env(self) -> dict:
         env = dict(self.env)
-        token_env = self.option.get("tokenEnv") or ""
-        if token_env and env.get(token_env):
-            env["GH_TOKEN"] = env[token_env]
+        token = self.token(self.option.get("tokenEnv") or "")
+        if token:  # with none, `gh` uses its own `gh auth` login
+            env["GH_TOKEN"] = token
         if self.host != "github.com":
             env["GH_HOST"] = self.host
         return env
@@ -420,7 +454,7 @@ class ForgejoForge(ForgeClient):
 
     def headers(self) -> dict:
         h = {"Accept": "application/json", "Content-Type": "application/json"}
-        token = self.env.get(self.option.get("tokenEnv") or "FORGEJO_TOKEN")
+        token = self.token(self.option.get("tokenEnv") or "FORGEJO_TOKEN")
         if token:
             h["Authorization"] = f"token {token}"
         return h
@@ -431,7 +465,13 @@ class ForgejoForge(ForgeClient):
             url += "?" + urllib.parse.urlencode(query)
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         http = self._http or http_request  # looked up at call time so tests can patch the module
-        _status, data = http(method, url, self.headers(), body)
+        try:
+            _status, data = http(method, url, self.headers(), body)
+        except ForgeError as exc:
+            name = self.option.get("tokenEnv") or "FORGEJO_TOKEN"
+            if self.token(name):
+                raise
+            raise ForgeError(f"{exc}; {self.token_hint(name)}") from exc
         return data
 
     @staticmethod
@@ -619,6 +659,7 @@ def get_client(layer: Any, env: Mapping[str, str] | None = None) -> ForgeClient:
     if cls is None:
         raise ForgeError(f"forge kind {kind!r} is not supported by this runtime")
     client = cls(option, layer_dir=lay.layer_dir, env=os.environ if env is None else env)
+    client.layer = lay  # the token lookup reads the layer's local.env and per-layer config file
     entry = (getattr(lay, "delivery", None) or {}).get("entry")
     if entry in ("merge", "squash", "rebase"):
         client.merge_method = entry  # the run delivers into a stage that takes changes this way
