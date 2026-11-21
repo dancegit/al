@@ -1,0 +1,44 @@
+#lang al
+(agentic-layer #:name "cart" #:description "A tiny cart library"
+  (codebase #:root "../cart" #:languages (python) #:default-branch "main"
+            #:description "cart.py is a shopping cart with integer prices in cents."
+    (cmd lint "python3 tools/lint.py" #:timeout 120
+         #:description "Every file compiles; no long lines.")
+    (cmd test "python3 tools/run_tests.py" #:timeout 300
+         #:description "Every test in tests/ passes.")
+    (paths #:source ("cart.py") #:tests ("tests") #:protected ("tools")))
+  (review agent #:reviewers 2)
+  ; the model is played by the mock agent; the build of `change` by a scripted stand-in (no LLM)
+  ; that pauses 1.6 s between its events, so a viewer can follow its transcript
+  (agent mock)
+  (agent custom #:id replay #:command "python3 @REPLAY@ {cwd} 1.6" #:timeout 300)
+  (trigger manual)
+  (environment worktree)
+  (command classify #:template classify #:output json)
+  (command plan #:template plan-feature #:output path #:validation (lint test))
+  (command resolve-test #:template resolve-test)
+  (command review #:template review #:output json)
+  (command commit #:template commit)
+  (hop implement #:template run-plan #:takes plan)
+  (adw change #:description "Plan, build, check, review, then a branch for a person"
+       #:agent mock #:environment (worktree) #:review agent
+    (steps
+      (run classify #:command classify #:args ("$prompt"))
+      (run plan #:command plan #:args ("$prompt"))
+      (run build #:command implement #:args ("$plan") #:agent replay)
+      (check lint #:cmd lint #:resolve resolve-test #:retries 1)
+      (check test #:cmd test #:resolve resolve-test #:retries 2)
+      (run commit #:command commit)
+      (review)
+      (ship)))
+  (adw tidy #:description "The same steps, with the mock agent building"
+       #:agent mock #:environment (worktree) #:review agent
+    (steps
+      (run classify #:command classify #:args ("$prompt"))
+      (run plan #:command plan #:args ("$prompt"))
+      (run build #:command implement #:args ("$plan"))
+      (check lint #:cmd lint #:resolve resolve-test #:retries 1)
+      (check test #:cmd test #:resolve resolve-test #:retries 2)
+      (run commit #:command commit)
+      (review)
+      (ship))))
