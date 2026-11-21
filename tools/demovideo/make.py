@@ -6,7 +6,7 @@
 """Record the five-minute demo video of al, one scene at a time, and assemble it.
 
   uv run tools/demovideo/make.py scene ID… --work DIR [--own-plan PATH] [--rehearse]
-  uv run tools/demovideo/make.py assemble --work DIR [--out OUT] [--no-voice]
+  uv run tools/demovideo/make.py assemble --work DIR [--out OUT] [--voice {auto,elevenlabs,local,none}]
   uv run tools/demovideo/make.py clean --work DIR
 
 `scene` records the scenes named (ids of tools/demovideo/narration.md) into DIR/clips/ID.mp4 (H.264,
@@ -15,18 +15,23 @@ seconds, the speed, the held seconds, the caption times as rendered, what was bl
 stand-ins were used. --rehearse runs the same steps without video. --own-plan is the plan of the run
 that records the video (scene 04-own-plan shows its Proof plan rows).
 
-`assemble` joins the clips in script order, adds a local espeak-ng voice when there is one (--no-voice:
-never), checks the result and writes OUT/al-demo.mp4 and OUT/narration.md (the script with the times in
-the final video). OUT is .al-proof/demo when the repository has a .al-proof folder (a run's proof
+`assemble` joins the clips in script order, adds a voice that reads each caption, checks the result and
+writes OUT/al-demo.mp4 and OUT/narration.md (the script with the times in the final video). --voice auto
+(the default) uses ElevenLabs when ELEVENLABS_API_KEY is set, else espeak-ng when it is installed, else no
+voice. --voice elevenlabs, --voice local (espeak-ng) and --voice none (or --no-voice) choose one. Voiced
+lines are cached in DIR/voice-cache and fitted to their captions (tools/demovideo/tts.py); the scene
+lengths never change. OUT is .al-proof/demo when the repository has a .al-proof folder (a run's proof
 folder), else media/demo-video; both are ignored by git. `clean` removes DIR.
 
 Every scene runs in a neutral environment of its own (tools/showcase/make.py::neutral_env) on invented
 names. Before a frame is encoded, every terminal transcript and the dashboard's page text at each
 caption is checked with rules.find_private; a private match is blanked with █ and listed, and one that
 is still there stops the scene. A command that exits other than the scene expects, or a page that
-reports an error, records nothing. Nothing is uploaded or sent anywhere: a person reviews the video.
+reports an error, records nothing. Nothing is uploaded or sent anywhere, except each caption's text to
+ElevenLabs when that voice is used (the key goes only in the request header): a person reviews the video.
 
-Needs uv, ffmpeg and ffprobe, Chromium or Chrome, DejaVu Sans Mono and racket; espeak-ng is optional.
+Needs uv, ffmpeg and ffprobe, Chromium or Chrome, DejaVu Sans Mono and racket; espeak-ng is optional;
+ELEVENLABS_API_KEY is optional.
 """
 from __future__ import annotations
 
@@ -49,6 +54,7 @@ for _folder in (str(ROOT / "tools"), str(SHOWCASE), str(HERE)):
 
 import rules  # noqa: E402
 import scenes  # noqa: E402
+import tts  # noqa: E402
 
 NARRATION = HERE / "narration.md"
 VIDEO, TIMED = "al-demo.mp4", "narration.md"
@@ -323,6 +329,43 @@ def speak(text: str, target: Path, seconds: float) -> int:
                      f"{VOICE_RATES[-1]} words a minute, and is on screen for {seconds:.1f} s: shorten it or give it more time")
 
 
+def voice_lines(lines: list[tuple[str, float, float]], build: Path, cache: Path,
+                backend: str) -> tuple[list[tuple[Path, float]], str]:
+    """Each line (caption text, start in the video, seconds on screen) voiced into a WAV of `build`: the
+    (wav, start) list to mix and the description of the voice for `## The voice`."""
+    delays: list[tuple[Path, float]] = []
+    if backend == "local":
+        rates = []
+        for n, (text, start, seconds) in enumerate(lines):
+            wav = build / f"{n:02d}.wav"
+            rates.append(speak(text, wav, seconds))
+            delays.append((wav, start))
+        return delays, (f"One mono audio stream: each caption read by espeak-ng on this machine (a synthetic voice; nothing was sent "
+                        f"anywhere), at {min(rates)} to {max(rates)} words a minute. The captions carry the whole narration without it.")
+    if backend != "elevenlabs":
+        raise tts.TtsError(f"no voice backend {backend!r}")
+    settings = tts.Settings.from_env(os.environ)
+    misfits, fetched, cached, tempos = [], 0, 0, []
+    for n, (text, start, slot) in enumerate(lines):
+        audio, hit = tts.fetch_line(text, cache, settings)        # a failed request stops here
+        cached, fetched = cached + hit, fetched + (not hit)
+        wav = build / f"line-{n:03d}.wav"
+        try:
+            tempos.append(tts.fit_line(audio, wav, slot))
+        except tts.TtsError as error:
+            misfits.append(f"{text!r}: {error}")
+            continue
+        delays.append((wav, start))
+    if misfits:
+        raise tts.TtsError("these captions are too long to say in their time; shorten them or give them more time in "
+                           "tools/demovideo/narration.md: " + "; ".join(misfits))
+    say(f"voice: ElevenLabs {settings.voice_id} ({settings.model}), {fetched} line(s) fetched, {cached} from the cache")
+    faster = [t for t in tempos if t > 1.0]
+    return delays, (f"One mono audio stream: each caption read by the ElevenLabs voice {settings.voice_id} (model {settings.model}). "
+                    f"Only the caption text was sent to the ElevenLabs service. {len(faster)} line(s) were played up to "
+                    f"×{max(tempos, default=1.0):.2f} faster to fit their caption. The captions carry the whole narration without it.")
+
+
 def timed_narration(parsed: rules.Script, records: dict[str, dict], total: float, voice: str) -> str:
     """The committed script with the times of the final video, then what a viewer should know."""
     lines, starts, at = [], {}, 0.0
@@ -386,6 +429,11 @@ def cmd_assemble(a: argparse.Namespace) -> int:
         print(f"make.py assemble: the script changed since {', '.join(stale)} was recorded: record again", file=sys.stderr)
         return 1
     total = parsed.seconds
+    try:
+        backend = "none" if a.no_voice else tts.choose(a.voice, os.environ, bool(shutil.which("espeak-ng")))
+    except tts.TtsError as error:
+        print(f"make.py assemble: {error}", file=sys.stderr)
+        return 2
     out = (a.out or default_out()).resolve()
     out.mkdir(parents=True, exist_ok=True)
     build = work / "assemble"
@@ -399,14 +447,17 @@ def cmd_assemble(a: argparse.Namespace) -> int:
     maps = ["-map", "[v]"]
     audio: list[str] = ["-an"]
     voice = "No voice: the captions carry the whole narration."
-    if shutil.which("espeak-ng") and not a.no_voice:
-        delays, at, rates = [], 0.0, []
+    if backend != "none":
+        lines, at = [], 0.0
         for scene in parsed.scenes:
-            for i, caption in enumerate(records[scene.id]["captions"]):
-                wav = build / f"{scene.id}-{i:02d}.wav"
-                rates.append(speak(caption["text"], wav, caption["end"] - caption["start"]))
-                delays.append((wav, at + caption["start"]))
+            for caption in records[scene.id]["captions"]:
+                lines.append((caption["text"], at + caption["start"], caption["end"] - caption["start"]))
             at += scene.seconds
+        try:
+            delays, voice = voice_lines(lines, build, work / "voice-cache", backend)
+        except tts.TtsError as error:
+            print("make.py assemble: " + tts.scrub(str(error), os.environ.get(tts.KEY_VAR)), file=sys.stderr)
+            return 1
         mix_inputs: list[str] = []
         mix = []
         for n, (wav, start) in enumerate(delays):
@@ -419,8 +470,6 @@ def cmd_assemble(a: argparse.Namespace) -> int:
         inputs += ["-i", str(voice_wav)]
         maps += ["-map", f"{count}:a"]
         audio = ["-c:a", "aac", "-b:a", "96k", "-ac", "1"]
-        voice = (f"One mono audio stream: each caption read by espeak-ng on this machine (a synthetic voice; nothing was sent "
-                 f"anywhere), at {min(rates)} to {max(rates)} words a minute. The captions carry the whole narration without it.")
     target = build / VIDEO
     showcase.ffmpeg(*inputs, "-filter_complex", ";".join(chain), *maps, "-c:v", "libx264", "-preset", "slow", "-crf", "23",
                     "-pix_fmt", "yuv420p", "-r", str(rules.FPS), *audio, "-t", f"{total:.3f}", "-movflags", "+faststart",
@@ -469,7 +518,10 @@ def main(argv: list[str] | None = None) -> int:
     ass = sub.add_parser("assemble", help="join the clips into OUT/al-demo.mp4 and write OUT/narration.md")
     ass.add_argument("--work", type=Path, required=True, metavar="DIR")
     ass.add_argument("--out", type=Path, default=None, metavar="OUT", help=f"default: {PROOF_OUT} in a run, else {MEDIA_OUT}")
-    ass.add_argument("--no-voice", action="store_true")
+    voices = ass.add_mutually_exclusive_group()
+    voices.add_argument("--voice", choices=tts.BACKENDS, default="auto",
+                        help="auto: ElevenLabs when ELEVENLABS_API_KEY is set, else espeak-ng when installed, else none")
+    voices.add_argument("--no-voice", action="store_true", help="the same as --voice none")
     ass.set_defaults(run=cmd_assemble)
     cl = sub.add_parser("clean", help="remove DIR")
     cl.add_argument("--work", type=Path, required=True, metavar="DIR")
