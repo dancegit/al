@@ -257,7 +257,10 @@ set FORGEJO_TOKEN in the environment (or /home/you/code/myapp.al/local.env) befo
 ```
 
 A token is never read: the forge clause names the variable (`FORGEJO_TOKEN`, `GITHUB_TOKEN`) that will
-hold it. A GitLab repository gets `(forge none)` with the reason (GitLab is planned in the language).
+hold it. A run looks that variable up like every other private value: a non-empty value in the
+environment, then the layer's `local.env`, then `~/.config/al/<layer name>.env` (with GitHub, `gh auth`
+after those); the value stays in the forge client and is never passed to agents, checks or containers.
+A GitLab repository gets `(forge none)` with the reason (GitLab is planned in the language).
 `--choice KEY=VALUE` (repeatable) changes one choice: `forge` (none, github, forgejo), `host`, `repo`,
 `input` (tasklist, issue), `trigger` and `environment` (comma-separated lists), `review` (human, agent),
 `delivery` (a preset, or none); an unknown key or value stops it with the list of what is allowed. Each

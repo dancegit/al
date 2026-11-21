@@ -17,6 +17,16 @@
     (cmd test-runtime "(cd kit/runtime && env -u AL_APP_ROOT uv run --with pytest pytest -q)"
          #:description "The runtime unit tests pass, including the shipping gate, the sandbox and attempts to escape the container"
          #:covers ("kit/runtime" "racket" "schemas") #:always #f)
+    ;; The sandbox's escape, isolation and nested-engine suites need a real podman, which the run
+    ;; container does not have and the nested engine cannot host (no freezer, cgroup limits,
+    ;; /dev/net/tun or subuid range): they run on this machine #:in host-engine (run 35ac29a6).
+    (cmd test-podman "(cd kit/runtime && env -u AL_APP_ROOT -u PYTHONPATH uv run --with pytest pytest -q -rs tests/test_sandbox_podman.py tests/test_isolation_podman.py tests/test_nested_engine.py tests/test_nested_engine_podman.py)"
+         #:timeout 3600
+         #:description "The sandbox's escape, isolation and nested-engine tests against this machine's real rootless podman"
+         #:covers ("kit/runtime/adw_modules/envs.py" "kit/runtime/adw_modules/nested_engine.py" "kit/runtime/adw_modules/gitsafe.py"
+                   "kit/runtime/tests/test_sandbox_podman.py" "kit/runtime/tests/test_isolation_podman.py"
+                   "kit/runtime/tests/test_nested_engine.py" "kit/runtime/tests/test_nested_engine_podman.py")
+         #:always #f)
     (cmd test-tools "env -u AL_APP_ROOT uv run --with pytest --with pytest-xdist --with pyyaml --with jsonschema pytest tests/tools -q -n 4"
          #:description "The al command itself works: eject, in-repo layers, al improve, dashboard generation"
          #:timeout 3600
@@ -88,6 +98,9 @@
                #:setup ("pip install --no-cache-dir uv"
                         "HOME=/opt/claude bash -c 'curl -fsSL https://claude.ai/install.sh | bash' && chmod -R a+rX /opt/claude && ln -s /opt/claude/.local/bin/claude /usr/local/bin/claude")
                #:memory "8g" #:cpus "4" #:caches ("uv") #:agent-inside #t #:credentials (claude))
+  ;; This machine, for the podman suites only (cmd test-podman). Not #:pure: the host's rootless
+  ;; podman stays on PATH. Approved by Per for zero-touch runs (2026-11-21, run 35ac29a6).
+  (environment nix-devshell #:id host-engine #:packages ("uv" "git"))
 
   (artefact log)
   (artefact image #:id screenshots #:glob "kit/dashboard/shots/*.png")
@@ -216,6 +229,8 @@
       (check test-docs #:cmd test-docs #:resolve resolve-test #:collect (log) #:when-affected #t)
       (check test-compiler #:cmd test-compiler #:resolve resolve-test #:collect (log) #:when-affected #t)
       (check test-runtime #:cmd test-runtime #:resolve resolve-test #:collect (log) #:when-affected #t)
+      (check test-podman #:cmd test-podman #:in host-engine #:resolve resolve-test #:collect (log) #:when-affected #t
+             #:forbid-skip-reason "podman is not installed")
       (check test-tools #:cmd test-tools #:resolve resolve-test #:collect (log) #:when-affected #t)
       (check test-dashboard #:cmd test-dashboard-proof #:resolve resolve-test #:collect (log screenshots showcase-stills showcase-clips voice-shots voice-clips voice-audio voice-report voice-logs) #:when-affected #t)
       (check test-integration #:cmd test-integration #:resolve resolve-test #:collect (log) #:when-affected #t)

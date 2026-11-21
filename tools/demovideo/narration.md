@@ -78,4 +78,4 @@ caption or the scene's end. A scene's first caption is at `+0.0`.
 ### 06-close | terminal | 13 s
 - [+0.0] Three promotions reached main, each as a pull request.
 - [+5.0] CI runs the fast suites on pushes and pull requests.
-- [+9.0] The code, the guide and the tests: github.com/dancegit/al
+- [+9.0] All of it is at github.com/dancegit/al
