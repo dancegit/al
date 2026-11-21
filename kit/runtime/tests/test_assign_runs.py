@@ -259,6 +259,42 @@ def test_nothing_changed_starts_again(make_layer, app_repo, monkeypatch):
     assert record(layer)["attempts"][0]["run"] == new and record(layer)["attempts"][0]["kind"] == "start-again"
 
 
+def test_stand_in_gives_a_restarted_request_once_over_the_runs_it_replaces(make_layer, app_repo, monkeypatch):
+    layer, run = nothing_changed_run(make_layer, app_repo)
+    spawned = []
+    monkeypatch.setattr(assign, "_spawn", lambda argv, **kw: spawned.append(argv))
+    code, out = assign_main(layer, "give", run, "--by", "decider", "--detach", "--json")
+    assert code == 0, out
+    result = json.loads(out.strip().splitlines()[-1])
+    new = result["run_id"]
+    assert result["kind"] == "start-again" and new != run
+    assert state_of(layer, new)["replaces"] == run
+    [attempt] = record(layer)["attempts"]
+    assert (attempt["by"], attempt["kind"], attempt["run"]) == ("decider", "start-again", new)
+    # the new run stops the same way, without running it: the first run's steps and ship
+    first = state_of(layer, run)
+    path = layer / "agents" / new / "state.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state.update(status="failed", ended=first.get("ended") or "2026-01-01T00:00:00+00:00", pid=0,
+                 steps=first["steps"], ship=first["ship"])
+    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    before = sorted(p.name for p in (layer / "agents").iterdir())
+    code, out = assign_main(layer, "give", new, "--by", "decider", "--detach", "--json")
+    assert code == 3, out
+    refusal = json.loads(out.strip().splitlines()[0])
+    assert refusal["reason"] == "limit" and run in refusal["error"] and new in refusal["error"]
+    assert refusal["error"] == (f"the stand-in gave run {run}, which run {new} replaces, to an agent already; "
+                                "it stays with a person")
+    assert sorted(p.name for p in (layer / "agents").iterdir()) == before, "no further run was started"
+    assert not (layer / "agents" / new / "assign.json").exists() and len(spawned) == 1
+    assert len(record(layer)["attempts"]) == 1
+    # the limit is the stand-in's: a person can still give the run
+    code, out = assign_main(layer, "preview", new, "--json")
+    assert code == 0, out
+    found = json.loads(out.strip().splitlines()[-1])
+    assert found["kind"] != "none" and found["blocked"] == ""
+
+
 def test_person_item_then_continue(make_layer, app_repo):
     layer, run = person_run(make_layer, app_repo)
     code, out = assign_main(layer, "give", run)

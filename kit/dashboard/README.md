@@ -168,7 +168,27 @@ The button is shown disabled, with "run `al gen` to add adws/assign.py" as its t
 generated before `al assign`. In the Needs-you view, **Give all N to agents** (one layer at a time: it
 is disabled while runs of several layers are shown) opens a dialog with every run's plan in the order
 they would start (resumes and restarts first, then one integration at a time; what stays with a person
-last, as "skipped: why") and **Start N**; what started is listed above the table. A run's Status
+last, as "skipped: why") and **Start N**; what started is listed above the table. Beside it is the
+switch **Automatic** (`Automatic: off` / `Automatic: on`, one layer at a time). While it is on, the
+dashboard does for every run of the layer under Needs you what a person would do with **Give to an
+agent**: the stand-in's loop starts the run's plan (resume from the failed check, resume unchanged,
+start the request again, an integration run, the review's blockers or missing proof), without a
+click. It covers the runs that wait already (switching it on asks first and names how many) and every
+run that stops later; one run per look of the loop (5 s), oldest stop first, and each run once: the
+runtime counts the stand-in's one attempt over a run and every run it replaces, so a request that was
+started again and failed again is not started a third time. It never takes a run a person gave to an
+agent or one started with `decider: off`. What only a person may decide (a `REQUIRES HUMAN` blocker,
+a protected path, a spending limit, a pull request that waits, a branch a person changed) stays under
+Needs you, and a line under the switch says why: `f0000012: stays with you: needs-a-person: …`; a run
+that was given reads `f0000013 → resumed in place (check)` or `f0000014 → 5c1d2e3f (start-again)`
+(the lines are kept in memory, the last 30 of this dashboard process; the durable record is the run's
+`assign.json`). Nothing ships without the checks, the review and the unchanged gate. The switch is the
+layer's local setting `agents/settings/assign.json`, never committed; the crumbs say `automatic on`.
+It follows the stand-in loop's flags: nothing is given with `--read-only`, `--no-stand-in`,
+`--no-start` or in the container (the page then says "it does nothing in this dashboard"), and
+`--stand-in-only` carries it out without the page. In a layer whose model stand-in is `suggest` or
+`auto` the rules go first: the stand-in is asked about a run only after the switch tried it and it
+stayed. A run's Status
 block shows `given to an agent: 1 of 2; last: landed` with a link to that run. The original's page
 links to its integration run (`integration` in its Status block, the badge "landed by ID
 (integration)"), and the integration run's page links back (`integrates`). An integration that waits
@@ -256,6 +276,7 @@ chat. Keys: `j`/`k` move through runs, nodes or transcript events, `Enter` opens
 
 Everything comes from files the runtime already writes. The dashboard itself writes
 agents/settings/models.json (the Models panel), agents/settings/testing.json (the Testing panel),
+agents/settings/assign.json (the Automatic switch of Needs you),
 agents/<id>/testing-request.json ("Full before it ships") and, for the actions, its jobs directory; starting
 work is done by the layer's own `adws/dispatch.py --start`, which writes the run's files; the
 actions run `al`, which writes what that command writes. `--read-only` turns all of it off, and
@@ -270,6 +291,7 @@ actions run `al`, which writes what that command writes. `--read-only` turns all
 | `agents/hosts.json` | the Now view's "Hosts" panel, for a layer whose IR has a `placement`: the scheduler's last survey (`at`, per host its runs, limit, CPUs, load, memory, disk, image and logins, or `silent` with the reason; `pending` starts), merged with the declared hosts in their order and the layer's running runs per host (a run counts on its host while `state.json` `remote.phase` is `remote`, else at home). Read-only, polled like the run files; a change is pushed to the page. Missing or without a readable `at` = "no survey yet"; a host the survey does not name = "not surveyed yet"; every value is shown as text |
 | `agents/settings/models.json` | the Now view's "Models" panel: the layer's local model setting (`{"models": {TIER: MODEL_ID}, "version": 1}`, never committed), the same file `al models LAYER --set TIER=ID` writes. With the IR's agent tiers it gives each tier's model and its source (`local setting`, `layer`, `built-in default`). Polled like the usage file; a change is pushed to the page. An unreadable file is shown as an error and not used. Also the one file the dashboard writes (see Safety) |
 | `agents/settings/testing.json` | the Testing panel's level: the layer's local testing setting (`{"version": 1, "level": "light\|standard\|heavy"}`, never committed), the file `al testing LAYER --set LEVEL` writes; read and written by `read_testing_setting` / `write_testing_setting`, mirrors of the runtime's `testing.read_setting` / `write_setting`. An unreadable file is shown as an error and not used |
+| `agents/settings/assign.json` | the Automatic switch of the Needs-you view: the dashboard's own local setting (`{"version": 1, "auto": true}`, never committed, read by no runtime module), written atomically by `POST /api/assign {action: "auto", on: true}` and removed when it is switched off (`read_assign_auto` / `write_assign_auto`). A file of any other shape is shown as an error under the switch and nothing is given |
 | `agents/testing/batches.jsonl`, `misses.jsonl`, `suites.json` | written by the layer's `adw_modules/batch.py` and `testing.py`: one line per batch (`{id, branch, stage, head, since, status: green\|red, depth, checks, delivered, at, culprit, fix_run, source}`), one per miss a batch bisected to a run (`{batch, run, cmd, strategies, tests, files, at}`), and each command's full suite (`{CMD: {seconds, tests, commit, at}}`): the Testing panel's batch state, miss rates and typical minutes, and a culprit's "broke the batch". Polled like the settings; the ledger is part of every run's signature, so a new culprit is marked at once |
 | `state.json` `testing`, `checks[NAME].testing`, `check_results[].depth` | a run's depth (`{requested, depth, source, escalation}`), each check's accounting (`{depth, asked, why, selected, units, strategies, ran, total, seconds, full_seconds}`, shown in the runtime's words: "targeted: ran 14 of 812 tests (changed-tests 3, imports 9, coverage 2): 41 s instead of about 9 min") and the depth of each ledger entry (the Depth column of "What the checks proved"). Runs from before have none of it and read as before |
 | `agents/<id>/testing-request.json` | "Full before it ships" (`{"depth": "full", "by", "at"}`): written by `POST /api/run-testing` or `al testing LAYER --full-before-ship RUN`; the run's gate then runs the full suites |
@@ -368,7 +390,10 @@ the stand-in has no such script: its panel says "run `al gen`" and the three end
   for those inside its scope. The loop is off with `--read-only`, in the podman container and with
   `--no-stand-in` (the panel still shows and switches the mode, and says why the loop is off).
   `--stand-in-only` runs the loop without the page (no HTTP server, until SIGTERM); with `#:systemd #t`
-  on the declaration `al gen` writes `systemd/al-<name>-stand-in.service` for it.
+  on the declaration `al gen` writes `systemd/al-<name>-stand-in.service` for it. The same loop and
+  worker also carry out the **Automatic** switch of the Needs-you view, whatever the stand-in's mode:
+  per look and layer, the oldest run it has not tried is given to an agent with `adws/assign.py give
+  RUN --by decider --detach --json` (also off with `--no-start`), before the stand-in is asked.
 - **What a person did** on the page (settled, undid, started again, retried a job) is noted in the
   same record for a layer that uses the stand-in, so the stand-in never acts on a run a person
   touched since it stopped.
@@ -804,7 +829,8 @@ those runs.
 
 `POST /api/assign` takes `{layer, run, action: start|approve|bulk, confirm, note, override, item, who}`
 and nothing else (`run`, `note`, `override` to start; `run`, `item`, `who` to approve; neither for
-`bulk`; any other key, or a key of another action, is 400), behind the guard of every write (loopback
+`bulk`; any other key, or a key of another action, is 400), or `{layer, action: "auto", on}` (the
+Automatic switch, below), behind the guard of every write (loopback
 Host or token, the token never from the URL, Origin naming the Host, `X-AL-Dashboard: 1`,
 `application/json`, at most 4 KiB, not `--read-only`), and every action is refused with `--no-start` and
 in a container without `--allow-start-in-container` (403), as `POST /api/integrate` is. `confirm` is the
@@ -824,6 +850,22 @@ preview is stale: open it again", and a refused confirmation spends it.
   already or one that is a person's only is 409 `bad-item`.
 - `bulk`: `assign.py all RUN … --by dashboard --json` with the runs of the bulk preview: 202 `{"status":
   "started", "started": N, "results": [{run, kind, status: started|skipped|error, run_id, why, url}]}`.
+- `auto`: the body is exactly `{layer, action: "auto", on: true|false}` (no `confirm`: it starts
+  nothing itself; anything else is 400 `expected {"layer", "action": "auto", "on": true|false}; nothing
+  else`). It writes `agents/settings/assign.json` (`{"version": 1, "auto": true}`, atomically) or
+  removes it, and answers 200 `{"ok": true, "assign_auto": {…}}` with the layer's new view; the layers
+  are published again. Refused: 403 with `--read-only` (the write guard), 404 for an unknown layer, 409
+  "generated before `al assign`: run `al gen NAME`" in a layer without `adws/assign.py`, 409 with the
+  reason when nothing may start (`--no-start`, a container without `--allow-start-in-container`) or
+  when `agents/settings` is not writable. Switching off also forgets which stops this process tried,
+  so a later switch-on looks at every run again (the runtime still gives each run once).
+
+Every layer of the snapshot (and of the `layers` event) carries `assign_auto`: `{available` (the layer
+has `adws/assign.py`), `on`, `writable` (the page may switch it), `why` (why not), `loop` (`on`, or
+`off: --read-only | in a container | --no-stand-in | --no-start`: whether this process gives the
+runs), `error` (a broken setting file: then `on` is false and nothing is given), `log: [{at, run,
+status: started|skipped|error, kind, run_id, why}]}` (what the loop did in this process, newest last, at
+most 30; no absolute path).
 
 ## Its own podman container
 
@@ -996,7 +1038,19 @@ the agent, "I approve this, continue" and the plan that remains, **Give all N to
 plans first, and the left-out count on the Artefacts tab. With `AL_DASHBOARD_SHOTS=DIR` it saves
 `assign-needs-you-1280.png`, `assign-button-1280.png`, `assign-preview-rejected-1280.png`,
 `assign-preview-rejected-390.png`, `assign-preview-person-1280.png`, `assign-approved-1280.png`,
-`assign-bulk-1280.png` and `assign-left-out-1280.png`. `tests/tools/test_al_assign.py` (at the
+`assign-bulk-1280.png` and `assign-left-out-1280.png`. The Automatic switch:
+`tests/test_assign_auto_model.py` checks the setting's one format, its atomic write and removal, the
+`assign_auto` view of a layer (a broken file, `--read-only`, `--no-start`, `--no-stand-in`, the
+container, a layer without the script), which runs the loop takes (every run under Needs you, oldest
+stop first; not a stop it tried, a run the stand-in or a person gave, or one started with `decider:
+off`), that it queues one `give` per look and none where it may not run, and that the model stand-in
+waits for the rules; `tests/test_assign_auto_http.py` the request on a real server (400, 403, 404 and
+409 answers, the write and the published view with `--no-stand-in`) and, end to end with the layer's
+own `adws/assign.py` and the mock agent, a failed check resumed, an unchanged run started again, a
+`person` run that stays with its reason, and that nothing is given twice;
+`tests/test_browser_assign_auto.py` (Chrome) the switch in the Needs-you view, its confirmation and
+Cancel, the report lines, the crumbs and switching it off, and with `AL_DASHBOARD_SHOTS=DIR` saves
+`assign-auto-confirm-1280.png` and `assign-auto-on-1280.png`. `tests/tools/test_al_assign.py` (at the
 repository root) runs `al assign`.
 
 `tests/test_workspace.py` covers the workspace scan (states, sibling layers, al scout's summary, depth,
