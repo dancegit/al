@@ -11,12 +11,19 @@ Two slow tests record a scene and check that the verifier refuses a bad video.
 from __future__ import annotations
 
 import functools
+import http.server
+import importlib.util
+import io
 import json
+import math
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
+import threading
+import wave
 from pathlib import Path
 
 import pytest
@@ -31,6 +38,7 @@ sys.path.insert(0, str(DEMO))
 
 import rules  # noqa: E402
 import scenes  # noqa: E402  (standard library only at import: Pillow and Playwright are loaded by the recorders)
+import tts  # noqa: E402
 
 assert Path(rules.__file__).parent == DEMO, rules.__file__
 NARRATION = DEMO / "narration.md"
@@ -199,6 +207,257 @@ def test_recorder_keeps_videos_out_of_the_tree():
     for script in ("make.py", "verify.py", "scenes.py", "rules.py"):
         text = (DEMO / script).read_text(encoding="utf-8")
         assert not re.search(r"https?://(?!127\.0\.0\.1)", text), f"{script} names no address to send anything to"
+    tts_text = (DEMO / "tts.py").read_text(encoding="utf-8")
+    assert set(re.findall(r"https?://[^\s\"'/]+", tts_text)) == {"https://api.elevenlabs.io"}, "tts.py names only ElevenLabs"
+
+
+
+# ------------------------------------------------------------------------------ the voice (tts.py, against a fake server)
+
+KEY = "sk-test-0123456789abcdef-not-real"
+
+
+def _make():
+    """tools/demovideo/make.py under a name of its own (tools/showcase/make.py is called make.py too)."""
+    name = "demovideo_make"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, DEMO / "make.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+def _tone_wav(lead: float, tone: float, tail: float) -> bytes:
+    """44.1 kHz 16-bit mono: `lead` s of silence, `tone` s of 440 Hz at half scale, `tail` s of silence."""
+    rate = 44100
+    samples = [0] * int(lead * rate)
+    samples += [int(16383 * math.sin(2 * math.pi * 440 * n / rate)) for n in range(int(tone * rate))]
+    samples += [0] * int(tail * rate)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+    return buffer.getvalue()
+
+
+def _files_holding(root: Path, needle: str) -> list[Path]:
+    return [p for p in Path(root).rglob("*") if p.is_file() and needle.encode() in p.read_bytes()]
+
+
+def _wav_info(path: Path) -> tuple[float, int, int]:
+    with wave.open(str(path), "rb") as wav:
+        return wav.getnframes() / float(wav.getframerate()), wav.getframerate(), wav.getnchannels()
+
+
+class _FakeEleven:
+    def __init__(self):
+        self.requests: list[dict] = []
+        self.answer = (200, "audio/mpeg", _tone_wav(0.2, 1.0, 0.2))
+        self.root = ""
+
+
+@pytest.fixture
+def fake_eleven():
+    fake = _FakeEleven()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            fake.requests.append({"method": "POST", "path": self.path, "headers": dict(self.headers.items()), "body": body})
+            status, content_type, answer = fake.answer
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(answer)))
+            self.end_headers()
+            self.wfile.write(answer)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    fake.root = f"http://127.0.0.1:{server.server_address[1]}"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield fake
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _settings(voice: str = tts.DEFAULT_VOICE_ID, key: str = KEY) -> tts.Settings:
+    return tts.Settings(voice_id=voice, model=tts.MODEL, output_format=tts.OUTPUT_FORMAT, key=key)
+
+
+def test_tts_backend_follows_the_environment(monkeypatch):
+    monkeypatch.setenv(tts.KEY_VAR, KEY)
+    assert tts.choose("auto", os.environ, espeak=True) == "elevenlabs"
+    assert tts.choose("auto", {tts.KEY_VAR: KEY}, espeak=False) == "elevenlabs"
+    for blank in ("", "  "):
+        monkeypatch.setenv(tts.KEY_VAR, blank)
+        assert tts.choose("auto", os.environ, espeak=True) == "local"
+        assert tts.choose("auto", os.environ, espeak=False) == "none"
+    monkeypatch.delenv(tts.KEY_VAR)
+    assert tts.choose("auto", os.environ, espeak=False) == "none"
+    with pytest.raises(tts.TtsError, match="ELEVENLABS_API_KEY"):
+        tts.choose("elevenlabs", os.environ, espeak=True)
+    with pytest.raises(tts.TtsError, match="espeak-ng"):
+        tts.choose("local", os.environ, espeak=False)
+    assert tts.choose("local", os.environ, espeak=True) == "local"
+    assert tts.choose("none", {tts.KEY_VAR: KEY}, espeak=True) == "none"
+    monkeypatch.setenv(tts.KEY_VAR, f" {KEY} ")
+    monkeypatch.delenv(tts.VOICE_VAR, raising=False)
+    settings = tts.Settings.from_env(os.environ)
+    assert (settings.voice_id, settings.model, settings.output_format, settings.key) == (
+        "JBFqnCBsd6RMkjVDRZzb", "eleven_multilingual_v2", "mp3_44100_128", KEY)
+    assert KEY not in repr(settings)
+    monkeypatch.setenv(tts.VOICE_VAR, " someVoice42 ")
+    assert tts.Settings.from_env(os.environ).voice_id == "someVoice42"
+
+
+def test_tts_sends_the_key_only_in_the_header(fake_eleven):
+    served = fake_eleven.answer[2]
+    got = tts.request_speech("Hello there.", _settings("voiceA"), api_root=fake_eleven.root)
+    assert got == served
+    assert len(fake_eleven.requests) == 1
+    request = fake_eleven.requests[0]
+    assert request["method"] == "POST"
+    assert request["path"] == "/v1/text-to-speech/voiceA?output_format=mp3_44100_128"
+    headers = {k.lower(): v for k, v in request["headers"].items()}
+    assert headers["xi-api-key"] == KEY
+    assert json.loads(request["body"]) == {"text": "Hello there.", "model_id": "eleven_multilingual_v2"}
+    assert KEY not in request["path"] and KEY.encode() not in request["body"]
+
+
+def test_tts_caches_by_text_voice_and_model(fake_eleven, tmp_path):
+    cache = tmp_path / "voice-cache"
+    first, cached = tts.fetch_line("One line.", cache, _settings(), api_root=fake_eleven.root)
+    assert not cached and first.read_bytes() == fake_eleven.answer[2]
+    again, cached = tts.fetch_line("One line.", cache, _settings(), api_root=fake_eleven.root)
+    assert cached and again == first and len(fake_eleven.requests) == 1
+    tts.fetch_line("One line.", cache, _settings("otherVoice"), api_root=fake_eleven.root)
+    assert len(fake_eleven.requests) == 2
+    tts.fetch_line("Another line.", cache, _settings(), api_root=fake_eleven.root)
+    assert len(fake_eleven.requests) == 3
+    _path, cached = tts.fetch_line("One line.", cache, _settings(key="sk-test-another-key-not-real"), api_root=fake_eleven.root)
+    assert cached and len(fake_eleven.requests) == 3, "the key is not part of the cache name"
+    names = sorted(p.name for p in cache.iterdir())
+    assert len(names) == 3 and all(re.fullmatch(r"[0-9a-f]{64}\.mp3", name) for name in names), names
+    assert _files_holding(tmp_path, KEY) == []
+
+
+def _fake_clips(work: Path) -> None:
+    parsed = rules.parse(NARRATION.read_text(encoding="utf-8"))
+    clips = work / "clips"
+    clips.mkdir(parents=True)
+    for scene in parsed.scenes:
+        offsets = [c.offset for c in scene.captions] + [scene.seconds]
+        captions = [{"offset": c.offset, "start": c.offset, "end": offsets[i + 1], "text": c.text, "moved": 0.0}
+                    for i, c in enumerate(scene.captions)]
+        (clips / f"{scene.id}.mp4").write_bytes(b"")
+        (clips / f"{scene.id}.json").write_text(json.dumps({"scene": scene.id, "seconds": scene.seconds, "speed": 1.0,
+                                                             "real_seconds": scene.seconds, "hold": 0.0, "captions": captions,
+                                                             "blanked": [], "shortened": [], "stand_ins": []}))
+
+
+def test_tts_failure_does_not_leak_the_key(fake_eleven, tmp_path, monkeypatch, capsys):
+    fake_eleven.answer = (401, "application/json", json.dumps({"detail": f"invalid api key {KEY}"}).encode())
+    cache = tmp_path / "voice-cache"
+    with pytest.raises(tts.TtsError) as caught:
+        tts.fetch_line("One line.", cache, _settings(), api_root=fake_eleven.root)
+    assert "401" in str(caught.value) and KEY not in str(caught.value)
+    assert not cache.exists() or list(cache.iterdir()) == []
+    # the whole command: assemble stops before any video is made
+    work, out = tmp_path / "work", tmp_path / "out"
+    _fake_clips(work)
+    monkeypatch.setattr(tts, "API_ROOT", fake_eleven.root)
+    monkeypatch.setenv(tts.KEY_VAR, KEY)
+    capsys.readouterr()
+    code = _make().main(["assemble", "--work", str(work), "--out", str(out), "--voice", "elevenlabs"])
+    printed = capsys.readouterr()
+    assert code == 1, printed
+    assert "401" in printed.out + printed.err and KEY not in printed.out + printed.err
+    assert _files_holding(tmp_path, KEY) == []
+    assert not (out / "al-demo.mp4").exists() and not (out / "narration.md").exists()
+
+
+def _needs_ffmpeg():
+    if not shutil.which("ffmpeg"):
+        pytest.skip("no ffmpeg on PATH")
+
+
+def test_tts_fits_a_voiced_line_to_its_caption(tmp_path, monkeypatch):
+    _needs_ffmpeg()
+    monkeypatch.setenv(tts.KEY_VAR, KEY)
+    argvs: list[list[str]] = []
+    real_run = subprocess.run
+
+    def recording_run(argv, *args, **kwargs):
+        argvs.append([str(a) for a in argv])
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+    audio = tmp_path / "line.mp3"
+    audio.write_bytes(_tone_wav(0.5, 2.0, 0.5))
+    roomy = tmp_path / "roomy.wav"
+    assert tts.fit_line(audio, roomy, slot=3.0) == 1.0
+    seconds, rate, channels = _wav_info(roomy)
+    assert abs(seconds - 2.0) <= 0.15 and (rate, channels) == (44100, 1), seconds
+    tight = tmp_path / "tight.wav"
+    tempo = tts.fit_line(audio, tight, slot=1.8)
+    assert 1.0 < tempo <= 1.35
+    assert _wav_info(tight)[0] <= 1.8
+    with pytest.raises(tts.TtsError, match="×1.35"):
+        tts.fit_line(audio, tmp_path / "short.wav", slot=1.0)
+    assert argvs and all(argv[0] == "ffmpeg" for argv in argvs)
+    assert not [argv for argv in argvs if any(KEY in a for a in argv)]
+
+
+def test_assemble_voices_through_elevenlabs_with_the_fake_server(fake_eleven, tmp_path, monkeypatch, capsys):
+    _needs_ffmpeg()
+    monkeypatch.setattr(tts, "API_ROOT", fake_eleven.root)
+    monkeypatch.setenv(tts.KEY_VAR, KEY)
+    monkeypatch.delenv(tts.VOICE_VAR, raising=False)
+    make = _make()
+    build, cache = tmp_path / "build", tmp_path / "voice-cache"
+    build.mkdir()
+    lines = [("Hello there.", 0.0, 3.0), ("Second line.", 3.0, 3.0)]
+    delays, voice = make.voice_lines(lines, build, cache, "elevenlabs")
+    assert [start for _wav, start in delays] == [0.0, 3.0]
+    assert all(_wav_info(wav)[0] <= 3.0 for wav, _start in delays)
+    assert "ElevenLabs" in voice and "JBFqnCBsd6RMkjVDRZzb" in voice and "eleven_multilingual_v2" in voice and KEY not in voice
+    assert len(fake_eleven.requests) == 2
+    make.voice_lines(lines, build, cache, "elevenlabs")
+    assert len(fake_eleven.requests) == 2, "the second assemble takes every line from the cache"
+    printed = capsys.readouterr()
+    assert KEY not in printed.out + printed.err
+    assert _files_holding(tmp_path, KEY) == []
+
+
+def test_assemble_offers_the_voice_option(monkeypatch, capsys):
+    make = _make()
+    with pytest.raises(SystemExit) as done:
+        make.main(["assemble", "--help"])
+    assert done.value.code == 0
+    shown = capsys.readouterr().out
+    assert "--voice" in shown and "{auto,elevenlabs,local,none}" in shown
+    with pytest.raises(SystemExit) as done:
+        make.main(["assemble", "--work", "/nonexistent", "--voice", "local", "--no-voice"])
+    assert done.value.code == 2
+    capsys.readouterr()
+    monkeypatch.delenv(tts.KEY_VAR, raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: "/usr/bin/espeak-ng" if name == "espeak-ng" else None)
+    assert tts.choose("auto", os.environ, bool(shutil.which("espeak-ng"))) == "local"
+
+
+def test_showcase_readme_documents_the_voice():
+    text = (ROOT / "docs" / "showcase" / "README.md").read_text(encoding="utf-8")
+    for needed in ("ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb", "--voice", "voice-cache"):
+        assert needed in text, needed
+    assert not re.search(r"sk_[A-Za-z0-9]{20,}", text), "no real-looking key in the docs"
 
 
 # ------------------------------------------------------------------------------ the recorded video
