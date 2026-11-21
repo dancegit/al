@@ -2026,6 +2026,7 @@
     };
     showReport(groupState.lines);
     let selectedKey = null;
+    let autoError = "";   // why the last click on the Automatic switch was refused; the switch itself is the layer's, not kept here
 
     function buildFilters() {
       const runs = store.runList();
@@ -2081,8 +2082,19 @@
       const need = all.filter((r) => r.bucket === "needs-you").length;
       const waiting = all.filter((r) => r.bucket === "needs-you" && r.suggestion).length;
       const handled = store.layers.reduce((sum, l) => sum + (((l.standin || {}).counts || {}).today || 0), 0);
+      const autoKey = oneLayer(every);
+      const automatic = autoKey && ((store.layer(autoKey) || {}).assign_auto || {}).on;
       replace(crumbs, h("span", { class: "need-count", text: `${need} need${need === 1 ? "s" : ""} you` }),
-        waiting || handled ? h("span", { class: "standin-count", text: ` · ${waiting} suggestion${waiting === 1 ? "" : "s"} · ${handled} handled by the stand-in today` }) : null);
+        waiting || handled ? h("span", { class: "standin-count", text: ` · ${waiting} suggestion${waiting === 1 ? "" : "s"} · ${handled} handled by the stand-in today` }) : null,
+        automatic ? h("span", { class: "assign-auto-count", text: " · automatic on" }) : null);
+    }
+
+    /** The one layer these rows are about: the selected one, else the only layer that has rows (or the only layer there is); "" for several. */
+    function oneLayer(rows) {
+      if (params.layer) return params.layer;
+      const layers = [...new Set(rows.map((r) => r.layer))];
+      if (layers.length === 1) return layers[0];
+      return !layers.length && store.layers.length === 1 ? store.layers[0].key : "";
     }
 
     function renderStandinBar() {
@@ -2129,11 +2141,54 @@
         h("td", { class: "next" }, toggle, again));
     }
 
-    /** "Give all N to agents": N = the shown needs-you runs whose layer has adws/assign.py; one layer at a time. */
+    /** "Give all N to agents": N = the shown needs-you runs whose layer has adws/assign.py; one layer at a time.
+     * Beside it the layer's Automatic switch (layer.assign_auto of the snapshot), with what the loop did under it. */
     function renderGiveAll(runs, needs) {
       const mine = needs ? runs.filter((r) => r.assign && r.assign.script) : [];
-      if (!mine.length) { replace(giveAll); return; }
       const layers = [...new Set(mine.map((r) => r.layer))];
+      const several = layers.length > 1;
+      const key = several ? "" : layers[0] || oneLayer(runs);
+      const auto = needs ? (several ? layers.map((l) => (store.layer(l) || {}).assign_auto).find((a) => a && a.available)
+        : (store.layer(key) || {}).assign_auto) : null;
+      const parts = [];
+      if (auto && auto.available) {
+        const on = !several && !!auto.on;
+        const waiting = store.runList().filter((r) => r.layer === key && r.bucket === "needs-you").length;
+        const toggle = h("button", { type: "button", class: "btn assign-auto", text: `Automatic: ${on ? "on" : "off"}`, "aria-pressed": on ? "true" : "false",
+          disabled: several || !auto.writable,
+          title: several ? "runs of several layers are shown: choose one layer in the filter first" : !auto.writable ? auto.why || ""
+            : "the stand-in gives every run of this layer under Needs you to an agent, once, as its plan says; what only a person may decide stays here",
+          onclick: async () => {
+            if (!on) {
+              const yes = await confirmDialog(`Give every run of ${key} to an agent automatically?`,
+                `${waiting} run${waiting === 1 ? "" : "s"} wait now. Each is given to an agent once, as its plan says (resume, start again, integrate, address the review); `
+                + "what only a person may decide stays with you. Nothing ships without the checks, the review and the gate. "
+                + "It goes on for every run that stops later, until you switch it off.", "Switch on");
+              if (!yes) return;
+            }
+            toggle.disabled = true;
+            try {
+              await api.post("/api/assign", { layer: key, action: "auto", on: !on });
+              autoError = "";
+            } catch (err) {
+              autoError = `Automatic: ${err.message || err}`;
+            }
+            render();
+          } });
+        parts.push(toggle);
+        if (autoError) parts.push(" ", h("span", { class: "badge warn assign-auto-error", text: autoError }));
+        if (!several) {
+          if (auto.error) parts.push(h("div", { class: "why error", text: auto.error }));
+          if (auto.on && auto.loop !== "on") parts.push(h("div", { class: "faint assign-auto-idle", text: `it does nothing in this dashboard (${auto.loop})` }));
+          const log = auto.log || [];
+          if (log.length) {
+            parts.push(h("div", { class: "assign-auto-log" }, log.map((e) => h("div", { class: e.status === "error" ? "error" : "", dataset: { run: e.run },
+              text: e.status === "started" ? `${e.run} → ${e.run_id && e.run_id !== e.run ? e.run_id : "resumed in place"} (${e.kind})`
+                : e.status === "skipped" ? `${e.run}: stays with you: ${e.why}` : `${e.run}: ${e.why}` }))));
+          }
+        }
+      }
+      if (!mine.length) { replace(giveAll, parts); return; }
       const button = h("button", { type: "button", class: "btn integrate assign-all", text: `Give all ${mine.length} to agents`,
         disabled: layers.length !== 1,
         title: layers.length !== 1 ? "runs of several layers are shown: choose one layer in the filter first"
@@ -2144,7 +2199,7 @@
           showReport([{ ok: true, text: `Give all to agents (${layers[0]}):` }, ...results.map((r) => ({ ok: r.status !== "error",
             text: r.status === "started" ? `${r.run} → ${r.run_id && r.run_id !== r.run ? r.run_id : "resumed in place"} (${r.kind})` : `${r.run}: ${r.status}${r.why ? `: ${r.why}` : ""}` }))]);
         } });
-      replace(giveAll, button, h("span", { class: "faint", text: " each run's plan is shown first" }));
+      replace(giveAll, button, h("span", { class: "faint", text: " each run's plan is shown first" }), parts);
     }
 
     function runRow(run, needs, hosted) {
@@ -2987,7 +3042,8 @@
         else if (bar.kind === "check" || bar.kind === "gate") go(link(["step", bar.step || bar.check], { attempt: bar.ref }));
         else go(link(["step", bar.step]));
       } }));
-      requestAnimationFrame(draw);
+      draw();                         // rows now: a redraw of the page never shows a card with an empty timeline
+      requestAnimationFrame(draw);    // and again once the card is in the page and has its real width
       timelineDraw = draw;
       return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", { text: "Timeline" }),
         h("span", { class: "spacer" }), h("span", { class: "faint", text: "click a bar to open it" })), wrap,

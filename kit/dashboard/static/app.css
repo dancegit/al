@@ -757,6 +757,11 @@ table.needs-you td.next .btn.integrate { display: block; margin-top: 4px; font-f
 .assign-attempts { margin: 0; padding-left: 1.2rem; }
 .assign-limit.reached { color: var(--waiting); }
 .assign-all-bar:not(:empty) { margin: 0 0 8px; }
+.assign-auto { margin-left: 8px; }
+.assign-all-bar > .assign-auto:first-child { margin-left: 0; }
+.assign-auto[aria-pressed="true"] { border-color: var(--accent); background: rgba(110, 168, 254, .18); font-weight: 600; }
+.assign-auto-log { margin-top: 4px; font-size: 12px; font-family: var(--mono); color: var(--text-2); overflow-wrap: anywhere; }
+.assign-auto-log .error { color: var(--failed); }
 .assign-bulk { max-width: min(46rem, 94vw); }
 .assign-bulk-list { max-height: 50vh; overflow: auto; margin: 6px 0; font-size: 12.5px; }
 .assign-bulk-plans { margin: 0; padding-left: 1.6rem; }

@@ -37,8 +37,9 @@ Records:
     (kit/dashboard/dashboard.py read_assign reads the same file; keep the two alike)
 
 Limits: a person gives a run to an agent MAX_CLICKS times (`--override` once more); the stand-in
-MAX_STAND_IN time, never counted as a click. A run that stopped twice for the same reason stays
-with the person.
+MAX_STAND_IN time, never counted as a click, and counted over a run and every run it replaces (a
+request that was started again is a new run; the stand-in does not start it a second time). A run
+that stopped twice for the same reason stays with the person.
 
 Refusals are classified (REASONS) and printed as `assign:<reason>: <words>`.
 
@@ -894,6 +895,26 @@ def _start_again(layer: Any, found: Mapping[str, Any], n: int, *, detach: bool, 
     return result
 
 
+def _stand_in_attempts(layer: Any, run_id: str) -> tuple[int, str]:
+    """The stand-in's attempts over `run_id` and every run it replaces: (how many, the first run
+    of the chain that has one, "" when none). A request that is started again is a new run with
+    its own empty record, so the limit of the stand-in is counted over the whole chain."""
+    count, where, seen, current = 0, "", set(), str(run_id or "")
+    for _ in range(50):
+        if not current or current in seen:
+            break
+        seen.add(current)
+        mine = sum(1 for item in read_record(layer, current)["attempts"] if item.get("by") == "decider")
+        if mine and not where:
+            where = current
+        count += mine
+        state = _state(layer, current)
+        if not isinstance(state, dict) or not state:
+            break
+        current = str(state.get("replaces") or "")
+    return count, where
+
+
 def give(layer_dir: Path, run: str, *, note: str = "", by: str = "cli", who: str = "", override: bool = False,
          detach: bool = True, dry_run: bool = False, model_set: str = "", spawn: Any = None,
          quiet: bool = False) -> dict[str, Any]:
@@ -909,8 +930,12 @@ def give(layer_dir: Path, run: str, *, note: str = "", by: str = "cli", who: str
     found = plan(layer, run, note=note)
     run_id, kind = found["run"], found["kind"]
     if by == "decider":
-        if sum(1 for item in found["attempts"] if item.get("by") == "decider") >= MAX_STAND_IN:
-            raise AssignError("limit", f"the stand-in gave run {run_id} to an agent already; it stays with a person")
+        count, where = _stand_in_attempts(layer, run_id)
+        if count >= MAX_STAND_IN:
+            raise AssignError("limit", f"the stand-in gave run {run_id} to an agent already; it stays with a person"
+                              if where == run_id else
+                              f"the stand-in gave run {where}, which run {run_id} replaces, to an agent already; "
+                              "it stays with a person")
         refused = found["blocked"] not in ("", "limit")
     else:
         refused = bool(found["blocked"]) and not (found["blocked"] == "limit" and override)
