@@ -260,6 +260,48 @@ def test_failing_agent_step_hands_over_too(make_layer, app_repo, monkeypatch) ->
     assert "REQUIRES HUMAN: add `migrations/003_worker_pay_band.sql` (protected path)." in body   # build's report
 
 
+def test_forgejo_token_from_local_env_never_reaches_state_events_or_the_pr(make_layer, app_repo, tmp_path,
+                                                                           monkeypatch) -> None:
+    import os
+    import secrets
+
+    from adw_modules import forge as forge_module
+
+    var = "AL_TEST_FORGE_TOKEN"
+    value = f"tok-{secrets.token_hex(12)}"
+    _with_origin(app_repo)
+    layer = _layer(make_layer, forge={"id": "forgejo", "kind": "forgejo", "status": "stable", "remote": "",
+                                      "host": "https://forge.invalid", "repo": "acme/shop", "tokenEnv": var,
+                                      "botMarker": "[ADW-BOT]"})
+    (layer / "local.env").write_text(f"{var}={value}\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv(var, raising=False)
+    _build_changes(layer)
+    calls: list[dict] = []
+
+    def http(method, url, headers, body):
+        calls.append({"method": method, "url": url, "headers": dict(headers),
+                      "body": None if body is None else body.decode("utf-8")})
+        if method == "POST" and url.endswith("/pulls"):
+            return 201, {"number": 7, "html_url": "https://forge.invalid/acme/shop/pulls/7"}
+        return 200, ([] if method == "GET" else {})
+    monkeypatch.setattr(forge_module, "http_request", http)
+    assert main("demo", layer, ["Record each worker's pay band", "--adw-id", ADW_ID, "--class", "feature"]) == 1
+    state = _state(layer)
+    assert state["ship"]["action"] == "handoff"
+    assert state["ship"]["pr"]["number"] == 7, state["ship"]
+    pr_calls = [c for c in calls if c["method"] == "POST" and c["url"].endswith("/pulls")]
+    assert len(pr_calls) == 1
+    assert pr_calls[0]["headers"]["Authorization"] == f"token {value}"
+    payload = json.loads(pr_calls[0]["body"])
+    assert "[needs human]" in payload["title"] and value not in pr_calls[0]["body"]
+    assert all(value not in (c["body"] or "") for c in calls)
+    assert var not in os.environ and not any(value in v for v in os.environ.values())
+    leaked = [path for root in (layer / "agents", app_repo) for path in root.rglob("*")
+              if path.is_file() and value.encode() in path.read_bytes()]
+    assert leaked == []
+
+
 def test_resume_after_a_handoff_starts_the_ship_record_afresh(make_layer, app_repo, monkeypatch) -> None:
     layer = _layer(make_layer)
     _build_changes(layer)
