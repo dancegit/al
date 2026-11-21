@@ -287,11 +287,19 @@ def test_hardening_flags_on_the_run_container_and_every_sidecar(make_layer, monk
         assert "--cap-drop=ALL" in start and "--security-opt=no-new-privileges" in start
         assert _value(start, "--pids-limit") == "321"
         assert ("--read-only" in start) is read_only
-        assert (["--tmpfs", "/tmp:rw,mode=1777"] == start[start.index("--tmpfs"):start.index("--tmpfs") + 2]) \
+        assert (["--tmpfs", "/tmp:rw,mode=1777,size=8g"] == start[start.index("--tmpfs"):start.index("--tmpfs") + 2]) \
             if read_only else "--tmpfs" not in start
         assert _value(start, "--label").startswith("al.layer=")
     assert "HOME=/tmp/home" in _main_start(fake, layer)                      # HOME is per container, never the host's
     stack.teardown(success=True)
+
+
+def test_tmp_tmpfs_carries_the_size() -> None:
+    """A run container's /tmp tmpfs has a size limit: 8g by default, the declared #:tmp-size otherwise."""
+    flags = envs.hardening_flags({"readOnlyRoot": True})
+    assert flags[flags.index("--tmpfs") + 1] == "/tmp:rw,mode=1777,size=8g"
+    flags = envs.hardening_flags({"readOnlyRoot": True, "tmpSize": "2g"})
+    assert flags[flags.index("--tmpfs") + 1] == "/tmp:rw,mode=1777,size=2g"
 
 
 def test_scope_command_hardening_and_pod(make_layer, monkeypatch) -> None:

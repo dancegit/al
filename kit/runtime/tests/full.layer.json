@@ -1236,6 +1236,7 @@
       "setup": [],
       "status": "stable",
       "target": "",
+      "tmpSize": "8g",
       "toolchain": "dev"
     }
   ],
