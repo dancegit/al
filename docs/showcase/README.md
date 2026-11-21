@@ -48,6 +48,71 @@ when a file breaks a limit. `tests/tools/test_showcase.py` checks the renderer, 
 every `al` command shown is one the tool accepts, and the limits of the committed files; with
 `AL_SHOWCASE_RECORD=1` it also records `07-adopt` end to end.
 
+## The five-minute demo video
+
+One video of 4 min 30 s to 5 min shows al end to end, in six parts: what al is, writing a layer, a real run
+on the dashboard, proof and guardrails, honest limits, and what was shipped. It is recorded by the same
+renderers as the clips above (`tools/showcase/term.py` for terminals, `browser_clips.py` for the dashboard),
+from `tools/demovideo/`: `narration.md` is the script (every caption and every scene length comes from it),
+`scenes.py` records one scene per id of the script, `make.py` is the command, `verify.py` checks the result.
+
+```sh
+uv run tools/demovideo/make.py scene 01-what 02-layer --work /tmp/al-demo    # one clip per scene id; --rehearse runs it without video
+uv run tools/demovideo/make.py assemble --work /tmp/al-demo                  # al-demo.mp4 and the timed narration.md
+ELEVENLABS_API_KEY=… uv run tools/demovideo/make.py assemble --work /tmp/al-demo   # the ElevenLabs voice
+uv run tools/demovideo/verify.py media/demo-video                            # the contact sheet and privacy-ocr.json; exit 1 when a check fails
+```
+
+Scene `04-own-plan` shows the Proof plan rows of the run that records the video: give its plan with
+`--own-plan PATH`. `make.py clean --work DIR` removes the work folder; `scene` and `assemble` stop when it
+holds more than 2.5 GB.
+
+**Where the files go.** Nothing is written into the tree. Clips and other intermediates stay in `--work`.
+`assemble` writes `al-demo.mp4` and `narration.md` (the script with each scene's and each caption's time in
+the final video, then what was sped up, what was blanked and which stand-ins were used) into
+`.al-proof/demo/` when the repository has a `.al-proof` folder (a run's proof folder), else into
+`media/demo-video/`; git ignores both. `verify.py` adds `al-demo-contact-sheet.png` (one frame every 10 s) and
+`privacy-ocr.json` beside them.
+
+**The voice.** `assemble` reads each caption aloud, as one mono audio stream that the `mute:` command in
+`narration.md` drops. `--voice auto` (the default) tries in order: ElevenLabs when `ELEVENLABS_API_KEY` is
+set, else the local `espeak-ng` when it is installed, else no voice. `--voice elevenlabs`, `--voice local`
+and `--voice none` choose one; `--no-voice` is the same as `--voice none`. The ElevenLabs voice is
+`ELEVENLABS_VOICE_ID` (default `JBFqnCBsd6RMkjVDRZzb`) with the model `eleven_multilingual_v2`. Only the
+caption text is sent, to `api.elevenlabs.io`; the key goes only in the request header and is never printed
+or written anywhere. The answers are cached in `WORK/voice-cache/`, keyed by text, voice and model, so
+assembling again does not ask twice. Each voiced line has its leading and trailing silence trimmed and is
+sped up by at most ×1.35 to fit its caption's time on screen; when some still do not fit, `assemble` stops
+and lists every such caption, to be shortened in `narration.md`. The scene lengths never change, so the
+video keeps its 4 min 30 s to 5 min. `tools/demovideo/tts.py` holds all of it (standard library only).
+
+**What it needs.** uv, `ffmpeg` and `ffprobe`, Chrome or Chromium, the DejaVu Sans Mono font and racket (the
+demo layer is compiled by the real `al gen`); `espeak-ng` or an ElevenLabs key is optional: with either, each
+caption is also read aloud (see The voice). The
+verifier's OCR is `rapidocr-onnxruntime` 1.4.4, whose models ship inside the package: no frame leaves the
+machine.
+
+**What is real and what stands in.** The run of part 3 is a real run of a layer written for the demo
+(`tools/demovideo/demo_layer.rkt.in`, for the `cart` library of `kit/dashboard/demo/live_demo.py`), started
+from the dashboard's Start panel. No model is called: classify, plan, commit and the two reviewers are the
+mock agent, and the build is the scripted stand-in `kit/dashboard/demo/replay_agent.py`, which really edits
+the worktree and really runs the tests. The video says so in its captions, and the rejected review of part 4
+is labelled as a test fixture. Parts 4 to 6 show this repository's own files, history and commands.
+
+**The privacy rules** are stricter than the clips' (`tools/demovideo/rules.py`): no e-mail address at all, no
+IPv4 address at all (loopback too), no `/home/…` or `/Users/…` path, not the word `token`, no host name of this
+machine and no name of a repository beside this one (add names with `AL_DEMO_FORBIDDEN_NAMES`, comma-separated).
+Every terminal transcript and the dashboard's page text at each caption is checked before a frame is made;
+paths are shown short (`~/work`, `.`), a match is replaced by `█` and listed in `narration.md`, and a match
+that is still there stops the scene. `verify.py` then reads one frame every 5 s of the finished video with
+OCR and applies the same rules to the pixels, and checks that each of those frames carries the caption band.
+`tests/tools/test_demo_video.py` checks the rules, the script and the demo layer, and runs the verifier on
+a recorded video when one is there (it skips in a clone without one); with `AL_SHOWCASE_RECORD=1` it also
+records one scene and checks that the verifier refuses a video with an address on a frame.
+
+The tooling never uploads, publishes or sends the video anywhere: a person reviews it and decides. Only
+the captions' text goes out, to ElevenLabs, and only when that voice is chosen.
+
 ## The clips
 
 ### 01-start-work
