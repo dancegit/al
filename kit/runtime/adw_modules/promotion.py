@@ -12,7 +12,8 @@ page of every run. Its steps:
     approval  decisions (al decide, the dashboard, PR comments and reviews, agent reviewers);
               refused changes are reverted out of FROM; waits (exit 75) until the approval exists
     version   the new version where the repository keeps it, and the changelog entry
-    merge     FROM enters TO by merge, squash, fast-forward or cherry-pick
+    merge     FROM enters TO by merge, squash, fast-forward or cherry-pick; with #:requires forge-ci the
+              commit TO will point at is pushed and TO moves only after the forge's CI passed on it
     tag       the tag on the promoted commit
     deploy    TO's #:deploy-cmd on the promoted tree
     back-merge  the result merged back into the working stages
@@ -56,7 +57,7 @@ STEPS = ("open", "checks", "pack", "request", "approval", "version", "merge", "t
 REASONS = ("no-stages", "unknown-promotion", "not-open", "already-open", "agents-not-allowed", "tag-exists",
            "stage-missing", "ambiguous-branch", "nothing-to-promote", "checks-failed", "revert-conflict",
            "merge-conflict", "not-fast-forward", "deploy-failed", "back-merge-conflict", "agents-refused",
-           "invalid-decision", "publish-failed")
+           "invalid-decision", "publish-failed", "forge-ci-failed", "forge-ci-timeout", "forge-ci-missing")
 DECISIONS = ("accept", "refuse", "approve")
 THEN = ("revert", "patch")
 KINDS = ("human", "agent", "forge")
@@ -996,7 +997,9 @@ def _forge_kind(layer: Any) -> str:
 
 
 def _client(run: _Run) -> Any:
-    if _forge_kind(run.layer) == "none" or run.dry:
+    """The forge client for pull requests; None without a forge, in a dry run, or when the forge is used
+    without pull requests (#:pull-requests #f)."""
+    if _forge_kind(run.layer) == "none" or run.dry or not delivery.pull_requests(run.layer):
         return None
     from . import forge
 
@@ -1025,10 +1028,35 @@ def _checked_out(run: _Run, branch: str, step: str) -> bool:
     return any(line.strip() == f"branch refs/heads/{branch}" for line in listing.splitlines())
 
 
+def _push(run: _Run, remote: str, refspec: str, step: str) -> subprocess.CompletedProcess[str]:
+    """`git push REMOTE REFSPEC` from the application repository (sandboxed: through gitsafe)."""
+    if run.sandbox is not None:
+        return gitsafe.run_app(run.sandbox, ["push", remote, refspec], step, check=False)
+    return run.app_git(["push", remote, refspec], step)
+
+
 def _publish(run: _Run, branch: str, commit: str, old: str, step: str) -> tuple[str, bool]:
     """Put `commit` on `branch` of the application: pushed to the remote (forge or #:remote), else a
     compare-and-swap update-ref; a branch checked out in a working tree of the application gets
-    refs/heads/al/promote/<branch> and a note instead. Returns (where, staged)."""
+    refs/heads/al/promote/<branch> and a note instead. Returns (where, staged). With a forge used
+    without pull requests (#:pull-requests #f) the branch is then pushed to the forge too (a staged
+    target as well, so the forge has the commit whose CI passed); a refused push is a note."""
+    where, staged = _publish_ref(run, branch, commit, old, step)
+    remote = delivery.push_remote(run.layer)
+    if remote and not run.dry:
+        if run.sandbox is not None:
+            commit = gitsafe.import_objects(run.sandbox, commit, step)
+        pushed = _push(run, remote, f"{commit}:refs/heads/{branch}", step)
+        error = "" if pushed.returncode == 0 else (pushed.stderr or pushed.stdout).strip()[:300]
+        run.p.setdefault("pushes", {})[branch] = {"commit": commit, "ok": pushed.returncode == 0, "error": error}
+        if pushed.returncode != 0:
+            run.say(f"note: push of {branch} to {remote} refused: {error}; push it by hand")
+        run.state.save(run.layer.layer_dir)
+    return where, staged
+
+
+def _publish_ref(run: _Run, branch: str, commit: str, old: str, step: str) -> tuple[str, bool]:
+    """_publish without the push to a forge used without pull requests."""
     from . import ship
 
     shared = getattr(ship, "merge_into", None)  # the shared rule once ship.py offers it (see docs/DESIGN.md)
@@ -1072,10 +1100,55 @@ def _publish(run: _Run, branch: str, commit: str, old: str, step: str) -> tuple[
     return branch, False
 
 
+def _await_forge_ci(run: _Run, commit: str, branch: str, step: str, force: bool = False) -> None:
+    """Push `commit` to `branch` on the forge (unless it is there already), wait for the forge's CI on
+    that exact commit, and stop the promotion (StepFailed promotion:forge-ci-…) unless it passed."""
+    from . import forge
+
+    p = run.p
+    remote = delivery.forge_remote(run.layer)
+    listed = run.git(["ls-remote", remote, f"refs/heads/{branch}"], step).stdout.split()
+    if not listed or listed[0] != commit:
+        pushed_commit = gitsafe.import_objects(run.sandbox, commit, step) if run.sandbox is not None else commit
+        pushed = _push(run, remote, f"{'+' if force else ''}{pushed_commit}:refs/heads/{branch}", step)
+        if pushed.returncode != 0:
+            error = (pushed.stderr or pushed.stdout).strip()[:300]
+            if force:
+                raise StepFailed(step, f"promotion:publish-failed: push of {commit[:12]} to {remote}/{branch} refused: "
+                                       f"{error}; {p['to_branch']} is unchanged")
+            run.say(f"note: push of {commit[:7]} to {remote}/{branch} refused: {error}; waiting for the CI it may "
+                    "already have")
+    minutes = int(run.promo.get("forgeCiTimeout") or 60)
+    result = forge.wait_for_ci(forge.get_client(run.layer), commit, 60 * minutes)
+    p["forge_ci"] = {**result, "branch": branch}
+    run.state.save(run.layer.layer_dir)
+    events.emit("promotion.forge-ci", commit=commit, branch=branch, outcome=result["outcome"], runs=result["runs"])
+    runs = result["runs"]
+    run.say(f"forge CI on {commit[:7]}: {result['outcome']} ({len(runs)} run(s))")
+    build_pack(run)
+    outcome = result["outcome"]
+    if outcome == "passed":
+        return
+    unchanged = f"{p['to_branch']} is unchanged"
+    if outcome in ("failed", "cancelled"):
+        bad = "; ".join(f"{r.get('name')} {r.get('state')} {r.get('url') or ''}".strip()
+                        for r in runs if r.get("state") != "success")
+        raise StepFailed(step, f"promotion:forge-ci-failed: the forge's CI on {commit[:12]} did not pass: {bad}; "
+                               f"{unchanged}")
+    if outcome == "timeout":
+        pending = ", ".join(str(r.get("name")) for r in runs if r.get("state") == "pending") or "none"
+        raise StepFailed(step, f"promotion:forge-ci-timeout: the forge's CI on {commit[:12]} did not finish within "
+                               f"{minutes} minute(s) (waited {result['waited_s'] // 60} min); still pending: {pending}; "
+                               f"{unchanged}")
+    error = f" (last error: {result['error']})" if result.get("error") else ""
+    raise StepFailed(step, f"promotion:forge-ci-missing: no check run or status was reported for {commit[:12]} within "
+                           f"{minutes} minute(s){error}; does the forge's CI run on pushes to {branch}? {unchanged}")
+
+
 def _publish_from(run: _Run, commit: str, step: str) -> None:
     """Bring the promotion's own commits (reverts, the version) onto the FROM branch. When FROM moved
     since the pin, its head is merged with them first; the promoted commit stays what was pinned."""
-    if not run.from_stage.agents_may_merge and _forge_kind(run.layer) == "none":
+    if not run.from_stage.agents_may_merge and not delivery.pull_requests(run.layer):
         note = f"{run.p['from_branch']} only changes by people: the promotion's own commits go with the merge only"
         if note not in run.p.setdefault("notes", []):
             run.p["notes"].append(note)
@@ -1243,8 +1316,16 @@ def _summary_md(run: _Run, included: list[Change], excluded: list[Change], hande
              f"{_since(run.layer, promo)}: {_plural(len(included) + len(excluded), 'change')} delivered, "
              f"{len(excluded)} excluded, {len(handed)} handed to a person.", "",
              f"Stage head: `{str(p.get('promoted') or p.get('pinned'))[:12]}`. Checks: "
-             + (", ".join(f"{name}={_check_code(data)}" for name, data in checks.items()) or "none") + ".", "",
-             "## Changes", ""]
+             + (", ".join(f"{name}={_check_code(data)}" for name, data in checks.items()) or "none") + ".", ""]
+    if "forge-ci" in (promo.get("requires") or []):
+        ci = p.get("forge_ci")
+        if ci:
+            lines += [f"Forge CI: {ci.get('outcome')} on `{str(ci.get('commit') or '')[:12]}` — "
+                      + (", ".join(f"{r.get('name')}={r.get('state')}" for r in ci.get("runs") or []) or "nothing reported")
+                      + ".", ""]
+        else:
+            lines += [f"Forge CI: awaited on the commit that enters {p['to_branch']}, before it merges.", ""]
+    lines += ["## Changes", ""]
     for change in included:
         lines.append(f"- `{change.id}` ({change.klass}): {change.title}")
     if not included:
@@ -1337,6 +1418,18 @@ def _pack_html(run: _Run, included: list[Change], excluded: list[Change], handed
     sections["checks"] = (f"<h2>Checks on the stage head</h2><table><tr><th>check</th>"
                           + ("<th>depth</th>" if deep else "") + "<th>exit</th><th>log</th></tr>"
                           f"{check_rows or f'<tr><td colspan={4 if deep else 3}>none declared</td></tr>'}</table>")
+    ci = p.get("forge_ci")
+    if ci:
+        ci_rows = "".join(f"<tr><td>{_h(r.get('name'))}</td><td class=\"{'ok' if r.get('state') == 'success' else 'bad'}\">"
+                          f"{_h(r.get('state'))}</td><td>"
+                          + (f"<a href=\"{_h(r.get('url'))}\">{_h(r.get('url'))}</a>" if r.get("url") else "—")
+                          + "</td></tr>" for r in ci.get("runs") or [])
+        sections["checks"] += (f"<h2>Forge CI on <code>{_h(str(ci.get('commit') or '')[:12])}</code>: "
+                               f"{_h(ci.get('outcome'))}</h2><table><tr><th>check</th><th>result</th><th>link</th></tr>"
+                               f"{ci_rows or '<tr><td colspan=3>nothing reported</td></tr>'}</table>")
+    elif "forge-ci" in (promo.get("requires") or []):
+        sections["checks"] += (f"<p>Forge CI: awaited on the commit that enters <code>{_h(p['to_branch'])}</code>, "
+                               "before it merges.</p>")
     sections["notes"] = (f"<h2>Release notes</h2><pre>{clean(notes)}</pre><h2>Changelog entry</h2>"
                          f"<pre>{clean(entry or 'no changelog detected')}</pre>")
     rows = [f"<li><code>{_h(c.id)}</code> {_h(c.title)} — refused by {_h(c.by)}"
@@ -1859,14 +1952,16 @@ def _merge(run: _Run) -> None:
         events.emit("promotion.merged", method=method, result="", to_branch=p["to_branch"], staged=False, nothing=True)
         return
     promoted = str(p["promoted"])
+    ci = "forge-ci" in (promo.get("requires") or [])
     if run.dry:
-        run.say(f"would merge {p['from_branch']} ({promoted[:7]}) into {p['to_branch']} by {method}")
+        run.say(f"would merge {p['from_branch']} ({promoted[:7]}) into {p['to_branch']} by {method}"
+                + (" after the forge's CI passed on that commit" if ci else ""))
         return
     to_head = run.branch_head(str(p["to_branch"]), step)
     client = _client(run)
     title = f"Promote {p['from_branch']} into {p['to_branch']} [promotion {run.pid}]"
     staged = False
-    if client is not None and p.get("pr") and method in ("merge", "squash"):
+    if client is not None and p.get("pr") and method in ("merge", "squash") and not ci:
         # the pull request's head is FROM: it must carry the reverts and the version commit
         listed = run.git(["ls-remote", delivery._remote(run.layer), f"refs/heads/{p['from_branch']}"], step).stdout.split()
         if not listed or listed[0] != promoted:
@@ -1900,7 +1995,13 @@ def _merge(run: _Run) -> None:
                         continue
                     _resolve_merge(run, step, "merge", f"cherry-pick {sha[:12]} onto {p['to_branch']}")
         result = run.head(step)
+        if ci and method == "fast-forward":
+            _await_forge_ci(run, result, str(p["from_branch"]), step)
+        elif ci:
+            _await_forge_ci(run, result, f"al/ci/{p['to_branch']}", step, force=True)
         _where, staged = _publish(run, str(p["to_branch"]), result, to_head, step)
+        if ci and method != "fast-forward":  # the scratch branch has done its job; best effort
+            _push(run, delivery.forge_remote(run.layer), f":refs/heads/al/ci/{p['to_branch']}", step)
     p["result"] = result
     p["staged"] = staged
     run.state.save(run.layer.layer_dir)

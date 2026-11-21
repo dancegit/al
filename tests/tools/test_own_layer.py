@@ -39,6 +39,7 @@ def test_committed_own_layer_equals_its_definition() -> None:
     compiled = al("compile", LAYER).stdout
     assert compiled == (LAYER / "agentic-layer.json").read_text(), \
         "agentic/agentic-layer.json is stale; regenerate it: tools/al gen agentic"
-    # check reads this repository's own git status: in a run, its objects are in the sandbox store
+    # `al check` reads git status of this repository itself: inside a run its objects are in the
+    # run's own store (SANDBOX_GIT); outside a run SANDBOX_GIT is empty.
     cp = al("check", LAYER, ok=False, env=SANDBOX_GIT)
     assert cp.returncode == 0 and cp.stdout.strip().endswith("check: ok"), cp.stdout

@@ -703,12 +703,10 @@ def _execute_step(layer: Any, state: Any, adw: dict[str, Any], step: dict[str, A
     elif kind == "ship":
         if env_stack.read_only:
             raise StepFailed(str(step["name"]), "ship refused in read-only host environment")
-        from . import ship
+        from . import delivery, ship
 
-        ship.ship(layer, state, adw, step, env_stack)
+        ship.ship(delivery.ship_layer(layer), state, adw, step, env_stack)  # #:pull-requests #f: ship sees no forge
         if getattr(layer, "delivery", None):  # the run delivers into a stage (see delivery.py)
-            from . import delivery
-
             delivery.after_ship(layer, state)
         affected.publish(layer, state)  # what each check proved, next to the pull request text
         from . import batch
