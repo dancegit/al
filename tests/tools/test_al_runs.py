@@ -107,6 +107,27 @@ def test_al_settle_writes_record_and_list_moves_it(scenario):
     assert f"settled {sf.OPEN[1]} as landed ({tip[:9]})" in cp.stdout
 
 
+def test_al_settle_removes_the_worktree_and_says_so(scenario):
+    layer, repo = scenario["layer"], scenario["repo"]
+    first, second = sf.OPEN[0], sf.OPEN[1]
+    for run in (first, second):
+        git(repo, "worktree", "add", "-q", str(layer / "trees" / run), f"al/{run}")
+    cp = al("settle", layer, first, "--as", "abandoned", "--who", "Ada")
+    assert cp.stdout.splitlines() == [f"settled {first} as abandoned by Ada: agents/{first}/settlement.json",
+                                      f"removed worktree trees/{first} (agents/{first} is kept)"]
+    assert not (layer / "trees" / first).exists()
+    assert f"/{first}\n" not in git(repo, "worktree", "list", "--porcelain") + "\n"
+    assert (layer / "agents" / first / "state.json").is_file()
+    git(repo, "rev-parse", "--verify", "-q", f"refs/heads/al/{first}")
+    assert (layer / "trees" / second).is_dir()                           # not settled: kept
+
+
+def test_al_settle_without_a_worktree_prints_one_line(scenario):
+    run = sf.OPEN[2]
+    cp = al("settle", scenario["layer"], run, "--as", "abandoned", "--who", "Ada")
+    assert cp.stdout.splitlines() == [f"settled {run} as abandoned by Ada: agents/{run}/settlement.json"]
+
+
 def test_al_settle_refuses_running_unknown_by_and_bad_as(scenario):
     running = al("settle", scenario["layer"], sf.RESTARTS[0], "--as", "abandoned", ok=False)
     assert running.returncode == 3 and "running" in running.stderr

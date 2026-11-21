@@ -27,6 +27,23 @@ def pytest_configure(config: pytest.Config) -> None:
         config.option.reportchars = (config.option.reportchars or "") + "s"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _al_labelled_podman():
+    """Every image and container this session's tests make is labelled al.test (a podman shim first on
+    PATH, kit/runtime/adw_modules/diskuse.py) and removed when the session ends; leftovers older than six
+    hours go when it starts. Nothing happens without that file or without podman."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[2] / "kit" / "runtime" / "adw_modules" / "diskuse.py"
+    if not path.is_file():
+        yield ""
+        return
+    spec = importlib.util.spec_from_file_location("al_diskuse", path)
+    diskuse = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(diskuse)
+    with diskuse.labelled_session() as session:
+        yield session
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--update-golden", action="store_true", default=False,
                      help="rewrite tests/integration/golden/ from the freshly generated layers")

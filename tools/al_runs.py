@@ -8,8 +8,9 @@ whether a handed-over run's work is on its target branch (git, never a fetch), a
 every run in a bucket. --forge also asks the layer's forge whether a run's pull request is merged,
 through the layer's own runtime (adw_modules/forge.py); without it no network is used.
 
-`al settle` writes agents/<id>/settlement.json (nothing else of the run): exit 0 written, 2 bad use,
-3 refused (the run is running, or --by names neither a run nor a commit), 4 no such run.
+`al settle` writes agents/<id>/settlement.json and removes the run's worktree (trees/<id>; the branch,
+agents/<id> and artefacts/<id> stay): exit 0 written, 2 bad use, 3 refused (the run is running, or --by
+names neither a run nor a commit), 4 no such run. A worktree that cannot be removed is said, not an error.
 
 `al runs LAYER prune --landed --older-than DAYS [--dry-run]` removes what finished runs leave behind,
 for runs in the landed or settled bucket that ended more than DAYS ago: the worktree, the podman
@@ -209,6 +210,14 @@ def settle(layer_dir: Path, run: str, as_: str, by: str = "", note: str = "", wh
         return {"running": 3, "by": 3, "missing": 4}.get(exc.kind, 2)
     print(f"settled {run} as {record['as']}" + (f" ({record['by']})" if record["by"] else "")
           + f" by {record['who']}: agents/{run}/{d.SETTLEMENT_FILE}")
+    try:
+        removed, why = d.release_worktree(layer.path, layer.ir, run, repo)
+    except OSError as exc:
+        removed, why = "", str(exc)
+    if removed:
+        print(f"removed worktree {removed} (agents/{run} is kept)")
+    elif why:
+        print(f"kept worktree {worktree_dir(layer)}/{run}: {why}")
     return 0
 
 

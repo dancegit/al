@@ -134,6 +134,7 @@ CREDENTIALS = {"claude": (".claude/.credentials.json", ["ANTHROPIC_API_KEY", "CL
                "codex": (".codex/auth.json", ["OPENAI_API_KEY"])}
 CONTAINER_HOME = "/tmp/home"
 DEFAULT_PIDS_LIMIT = 2048
+DEFAULT_TMP_SIZE = "8g"
 READY_POLL_SECONDS = 1.0
 
 
@@ -153,7 +154,7 @@ def hardening_flags(option: dict[str, Any]) -> list[str]:
     flags = ["--cap-drop=ALL", "--security-opt=no-new-privileges",
              "--pids-limit", str(int(option.get("pidsLimit") or DEFAULT_PIDS_LIMIT))]
     if option.get("readOnlyRoot"):
-        flags += ["--read-only", "--tmpfs", "/tmp:rw,mode=1777"]
+        flags += ["--read-only", "--tmpfs", f"/tmp:rw,mode=1777,size={option.get('tmpSize') or DEFAULT_TMP_SIZE}"]
     return flags
 
 
