@@ -6624,7 +6624,8 @@ class Model:
         key = f"{layer.key}/{run_id}"
         with self.lock:
             summary = self.summaries.get(key)
-        summary = summary or RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary()
+        if not summary or summary.get("status") in ("running", "unknown"):   # the watcher's read may be behind the files
+            summary = RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary()
         held = run_holder(layer.path, run_id)
         if held:
             return None, 409, f"run {run_id} is still held by its process {held.get('pid')}: it is left to that process"
@@ -6846,12 +6847,16 @@ class Model:
                     any_running = True
                 if fresh["status"] not in {"running", "unknown"}:
                     sig = files.signature(deep=False)
-                self.signatures[key] = sig
-                if fresh != summary:
-                    with self.lock:
-                        self.summaries[key] = fresh
-                        if fresh.get("fanout_children") != (summary or {}).get("fanout_children"):
-                            self._parents_dirty = True
+                with self.lock:
+                    # read again meanwhile (_reread, refresh_run, settle, after writing a record): that read is newer
+                    newer = self.summaries.get(key) is not summary
+                    if not newer:
+                        self.signatures[key] = sig
+                        if fresh != summary:
+                            self.summaries[key] = fresh
+                            if fresh.get("fanout_children") != (summary or {}).get("fanout_children"):
+                                self._parents_dirty = True
+                if not newer and fresh != summary:
                     self.hub.publish("run", self._decorated(fresh))
                     changed_layer = True
             for key in [k for k in list(self.summaries) if k.startswith(layer.key + "/") and k not in seen]:

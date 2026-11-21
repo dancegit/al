@@ -14,6 +14,12 @@ The current cycle is state of the layer, in agents/cycle.json, changed by `al cy
 status|start|close` (which imports this module). A layer without stages has no target: nothing
 here runs and the run is exactly what it was before.
 
+A github or forgejo forge declared with `#:pull-requests #f` is used for CI and pushing only:
+ship and handoff get a forge-less view of the layer (`ship_layer`), so runs merge into the stage
+locally and write PR.md as without a forge, and `after_ship` then pushes the stage branch to
+`origin` (`push_remote`), where the forge's CI runs on it. Local branches are the truth; a refused
+push is recorded and never fails a delivered run.
+
 Standard library only.
 """
 from __future__ import annotations
@@ -189,11 +195,40 @@ def _branch_exists(app: Path, branch: str) -> bool:
     return _git(app, ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"]).returncode == 0
 
 
+def pull_requests(layer: Any) -> bool:
+    """Whether changes enter through pull requests on the forge (a github or forgejo forge whose
+    #:pull-requests is not #f)."""
+    forge = layer.ir.get("forge") or {}
+    return forge.get("kind") in ("github", "forgejo") and forge.get("pullRequests", True) is not False
+
+
+def forge_remote(layer: Any) -> str:
+    """The git remote of a github or forgejo forge ("origin"), else ""."""
+    return "origin" if (layer.ir.get("forge") or {}).get("kind") in ("github", "forgejo") else ""
+
+
+def push_remote(layer: Any) -> str:
+    """The remote a branch is pushed to after it moved locally: the forge's, when the forge is used
+    without pull requests (#:pull-requests #f); else ""."""
+    return forge_remote(layer) if forge_remote(layer) and not pull_requests(layer) else ""
+
+
 def _remote(layer: Any) -> str:
     forge = layer.ir.get("forge") or {}
     if forge.get("kind") in ("github", "forgejo"):
-        return "origin"
+        return "origin" if pull_requests(layer) else ""  # without pull requests local branches are the truth
     return str(forge.get("remote") or "")
+
+
+def ship_layer(layer: Any) -> Any:
+    """The layer ship and handoff see. With #:pull-requests #f a copy whose forge is `none`: ship and
+    handoff see no forge, so they merge locally and write PR.md; after_ship pushes the branch. Otherwise
+    the layer itself. The original layer and its IR are not changed."""
+    if not push_remote(layer):
+        return layer
+    forge = layer.ir.get("forge") or {}
+    none = {"id": str(forge.get("id") or "none"), "kind": "none", "status": "stable", "remote": ""}
+    return dataclasses.replace(layer, ir={**layer.ir, "forge": none})
 
 
 # ---------------------------------------------------------------- the run's target
@@ -303,7 +338,7 @@ def entry_supported(layer: Any, target: Target | Mapping[str, Any]) -> bool:
     merge, squash, rebase (the pull request's merge method). Without one: merge, plus whatever
     ship.ENTRY_METHODS lists once ship supports more."""
     entry = target.stage.entry if isinstance(target, Target) else str(target.get("entry") or "merge")
-    if _forge_kind(layer) != "none":
+    if pull_requests(layer):
         return entry in FORGE_METHODS
     if entry == "merge":
         return True
@@ -549,6 +584,24 @@ def _delivered_head(layer: Any, branch: str) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def _push_stage(layer: Any, state: Any, remote: str) -> None:
+    """Push the stage branch the run was delivered into (#:pull-requests #f). Never fails the run:
+    the work is delivered locally, and the next delivery or the promotion pushes again."""
+    branch = str(state.delivery.get("branch") or "")
+    try:
+        result = _git(Path(layer.app_root), ["push", remote, f"refs/heads/{branch}:refs/heads/{branch}"])
+        ok, error = result.returncode == 0, ("" if result.returncode == 0 else (result.stderr or result.stdout).strip())
+    except LayerError as exc:
+        ok, error = False, str(exc)
+    pushed = {"remote": remote, "branch": branch, "commit": str(state.delivery.get("head") or ""), "ok": ok,
+              "error": error[:300]}
+    state.delivery["pushed"] = pushed
+    events.emit("delivery.pushed", **pushed)
+    if not ok:
+        print(f"[adw {state.adw_id}] delivery: push of {branch} to {remote} refused: {error[:300]}; "
+              "the run is delivered locally, the next delivery or promotion pushes it again")
+
+
 def after_ship(layer: Any, state: Any) -> None:
     state.delivery["delivered"] = bool(state.ship.get("shipped"))
     state.delivery["target"] = str(state.ship.get("target") or "")
@@ -557,6 +610,9 @@ def after_ship(layer: Any, state: Any) -> None:
             state.delivery["head"] = _delivered_head(layer, str(state.delivery.get("branch") or ""))
         except LayerError as exc:
             print(f"[adw {state.adw_id}] delivery: head of {state.delivery.get('branch')} unknown: {exc}")
+        remote = push_remote(layer)
+        if remote and not getattr(state, "dry_run", False):
+            _push_stage(layer, state, remote)
     state.save(layer.layer_dir)
     events.emit("delivery.result", stage=state.delivery.get("stage"), branch=state.delivery.get("branch"),
                 delivered=state.delivery["delivered"], target=state.delivery["target"])

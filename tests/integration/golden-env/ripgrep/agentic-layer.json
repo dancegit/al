@@ -802,6 +802,7 @@
     "host": "https://forgejo.example.org",
     "id": "forgejo",
     "kind": "forgejo",
+    "pullRequests": true,
     "repo": "<REPO>",
     "status": "stable",
     "tokenEnv": "FORGEJO_TOKEN"

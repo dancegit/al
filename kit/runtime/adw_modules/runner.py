@@ -607,7 +607,7 @@ def _hand_off(layer: Any, state: state_module.ADWState, adw: dict[str, Any], sta
     from . import ship  # imported only when a run fails
 
     try:
-        ship.handoff(layer, state, adw, stack, failure)
+        ship.handoff(delivery.ship_layer(layer), state, adw, stack, failure)
         affected.publish(layer, state)  # what each check proved, next to the handoff's text
     except Exception as exc:  # ship.handoff never raises by contract; this keeps the failure intact if it does
         state.ship["handoff_error"] = f"{type(exc).__name__}: {exc}"[:2000]

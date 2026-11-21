@@ -1001,6 +1001,40 @@
   (check-rejects (promo-layer '(promotion sprint -> main #:back-merge (sprint)))
                  #rx"#:back-merge names stage sprint, which is FROM or TO"))
 
+(test-case "promotion: forge-ci needs a forge"
+  (define no-forge-rx
+    #rx"\\(promotion sprint -> main\\): #:requires forge-ci waits for the forge's CI, but no \\(forge github\\|forgejo …\\) is declared")
+  (check-rejects (promo-layer '(promotion sprint -> main #:requires (checks forge-ci))) no-forge-rx)
+  (check-rejects (promo-layer '(forge none) '(promotion sprint -> main #:requires (checks forge-ci))) no-forge-rx)
+  (define ir (compile-layer-datum (promo-layer '(forge github #:repo "acme/webshop")
+                                               '(promotion sprint -> main #:requires (checks forge-ci)))))
+  (check-equal? (hash-ref (promotion-from ir "sprint") 'requires) '("checks" "forge-ci"))
+  (check-equal? (hash-ref (promotion-from ir "sprint") 'forgeCiTimeout) 60)
+  (define fj (compile-layer-datum (promo-layer '(forge forgejo #:host "https://forge.example.org" #:repo "acme/webshop")
+                                               '(promotion sprint -> main #:requires (checks forge-ci) #:forge-ci-timeout 90))))
+  (check-equal? (hash-ref (promotion-from fj "sprint") 'forgeCiTimeout) 90)
+  (define default (compile-layer-datum (promo-layer)))
+  (check-equal? (hash-ref (promotion-from default "sprint") 'forgeCiTimeout) 60)
+  (check-equal? (hash-ref (promotion-from default "sprint") 'requires) '("checks" "acceptance")))
+
+(test-case "promotion: forge-ci-timeout bounds"
+  (define (with-timeout n)
+    (promo-layer '(forge github #:repo "acme/webshop")
+                 `(promotion sprint -> main #:requires (checks forge-ci) #:forge-ci-timeout ,n)))
+  (check-rejects (with-timeout 0) #rx"#:forge-ci-timeout must be 1–1440 minutes \\(got 0\\)")
+  (check-rejects (with-timeout 1441) #rx"#:forge-ci-timeout must be 1–1440 minutes \\(got 1441\\)")
+  (check-not-exn (lambda () (compile-layer-datum (with-timeout 1))))
+  (check-not-exn (lambda () (compile-layer-datum (with-timeout 1440)))))
+
+(test-case "forge: pull-requests"
+  (define (forge-of clause) (hash-ref (compile-layer-datum (layer plan simple-adw clause)) 'forge))
+  (check-equal? (hash-ref (forge-of '(forge github #:repo "acme/webshop")) 'pullRequests) #t)
+  (check-equal? (hash-ref (forge-of '(forge github #:repo "acme/webshop" #:pull-requests #f)) 'pullRequests) #f)
+  (check-equal? (hash-ref (forge-of '(forge forgejo #:host "https://forge.example.org" #:repo "acme/webshop")) 'pullRequests) #t)
+  (check-equal? (hash-ref (forge-of '(forge forgejo #:host "https://forge.example.org" #:repo "acme/webshop" #:pull-requests #f))
+                          'pullRequests)
+                #f))
+
 (test-case "stage: frozen periods"
   (define ir (compile-layer-datum (layer plan simple-adw '(delivery sprint)
                                          '(stage sprint #:branch "sprint/{cycle}" #:from main #:frozen ("2026-12-21..2027-01-03")))))

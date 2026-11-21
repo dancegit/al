@@ -1354,10 +1354,14 @@
     }
   ],
   "forge": {
-    "id": "none",
-    "kind": "none",
-    "remote": "",
-    "status": "stable"
+    "botMarker": "[ADW-BOT]",
+    "host": "github.com",
+    "id": "github",
+    "kind": "github",
+    "pullRequests": false,
+    "repo": "dancegit/al",
+    "status": "stable",
+    "tokenEnv": "GITHUB_TOKEN"
   },
   "hops": [
     {
@@ -1408,9 +1412,10 @@
       "approval": "human",
       "approvers": 1,
       "backMerge": [],
+      "forgeCiTimeout": 60,
       "from": "integration",
       "hotfix": false,
-      "method": "merge",
+      "method": "fast-forward",
       "origin": "declared",
       "present": [
         "summary",
@@ -1423,7 +1428,8 @@
       ],
       "requires": [
         "checks",
-        "acceptance"
+        "acceptance",
+        "forge-ci"
       ],
       "tag": "",
       "to": "main",

@@ -9,6 +9,14 @@ Stdlib only. `get_client(layer)` picks the client from `ir["forge"]["kind"]`.
 Every comment the layer posts starts with the forge's `botMarker`, so triggers
 can recognise (and ignore) the layer's own comments.
 
+`client.commit_checks(sha)` reads the forge's CI on one commit (GitHub check runs and
+commit statuses through `gh api`, Forgejo's combined status), normalised to
+[{"name", "state": success | pending | failure | cancelled, "url"}]; `none` has no CI.
+`wait_for_ci(client, sha, timeout_s)` polls it until everything succeeded (twice in a
+row with the same names), something failed or was cancelled, or the time ran out
+(`timeout` when something was reported, `missing` when nothing was). A promotion with
+#:requires forge-ci uses it (see promotion.py).
+
 `as_layer(x)` normalises what callers pass as "layer": an object with
 `.ir/.layer_dir/.app_root` (what `ir.load` returns), or a layer directory path.
 """
@@ -29,6 +37,10 @@ from types import SimpleNamespace
 from typing import Any, Callable, Iterable, Mapping
 
 DEFAULT_BOT_MARKER = "[ADW-BOT]"
+CI_POLL_SECONDS = 30  # how often wait_for_ci asks the forge again
+# seams, looked up at call time so tests can replace them
+sleep = time.sleep
+monotonic = time.monotonic
 
 
 class ForgeError(RuntimeError):
@@ -157,6 +169,11 @@ class ForgeClient:
 
     def edit_comment(self, comment_id: Any, body: str) -> None:
         raise ForgeError(f"forge {self.kind} cannot edit comments")
+
+    def commit_checks(self, sha: str) -> list[dict]:
+        """Every check run and commit status the forge reports for commit `sha`:
+        [{"name", "state": success | pending | failure | cancelled, "url"}]."""
+        raise ForgeError(f"forge {self.kind} has no CI status")
 
 
 def multipart_file(field: str, filename: str, data: bytes) -> tuple[bytes, str]:
@@ -321,6 +338,48 @@ class GitHubForge(ForgeClient):
         return {"state": state if state in ("open", "merged", "closed") else "unknown", "commit": commit,
                 "at": str(data.get("mergedAt") or "")}
 
+    def _api(self, path: str) -> Any:
+        """`gh api PATH` (no --repo: the path names the repository); parsed JSON."""
+        argv = ["gh", "api", path]
+        run = self._run or subprocess.run
+        try:
+            proc = run(argv, capture_output=True, text=True, env=self._env(), check=False)
+        except FileNotFoundError as exc:
+            raise ForgeError("the `gh` CLI is not installed or not on PATH") from exc
+        if proc.returncode != 0:
+            raise ForgeError(f"gh api {path} failed ({proc.returncode}): {(proc.stderr or '').strip()[:500]}")
+        try:
+            return json.loads(proc.stdout or "null")
+        except ValueError as exc:
+            raise ForgeError(f"gh api {path} returned no JSON: {(proc.stdout or '')[:200]}") from exc
+
+    def commit_checks(self, sha):
+        runs = self._api(f"repos/{self.repo}/commits/{sha}/check-runs?per_page=100")
+        status = self._api(f"repos/{self.repo}/commits/{sha}/status")
+        checks: list[dict] = []
+        for item in (runs.get("check_runs") if isinstance(runs, dict) else None) or []:
+            if not isinstance(item, dict):
+                continue
+            conclusion = str(item.get("conclusion") or "").lower()
+            if str(item.get("status") or "").lower() != "completed":
+                state = "pending"
+            elif conclusion in ("success", "neutral", "skipped"):
+                state = "success"
+            elif conclusion == "cancelled":
+                state = "cancelled"
+            else:
+                state = "failure"
+            checks.append({"name": str(item.get("name") or ""), "state": state,
+                           "url": str(item.get("html_url") or item.get("details_url") or "")})
+        for item in (status.get("statuses") if isinstance(status, dict) else None) or []:
+            if not isinstance(item, dict):
+                continue
+            raw = str(item.get("state") or "").lower()
+            state = {"pending": "pending", "success": "success"}.get(raw, "failure")
+            checks.append({"name": str(item.get("context") or ""), "state": state,
+                           "url": str(item.get("target_url") or "")})
+        return checks
+
     def branch_protection(self, branch):
         argv = ["gh", "api", f"repos/{self.repo}/branches/{urllib.parse.quote(branch, safe='')}/protection"]
         run = self._run or subprocess.run
@@ -459,6 +518,18 @@ class ForgejoForge(ForgeClient):
             state = state if state in ("open", "closed") else "unknown"
         return {"state": state, "commit": str(data.get("merge_commit_sha") or ""), "at": str(data.get("merged_at") or "")}
 
+    def commit_checks(self, sha):
+        data = self.request("GET", f"/commits/{sha}/status")
+        checks: list[dict] = []
+        for item in (data.get("statuses") if isinstance(data, dict) else None) or []:
+            if not isinstance(item, dict):
+                continue
+            raw = str(item.get("status") or item.get("state") or "").lower()
+            state = {"pending": "pending", "success": "success"}.get(raw, "failure")
+            checks.append({"name": str(item.get("context") or ""), "state": state,
+                           "url": str(item.get("target_url") or "")})
+        return checks
+
     def branch_protection(self, branch):
         try:
             data = self.request("GET", f"/branch_protections/{urllib.parse.quote(branch, safe='')}")
@@ -490,6 +561,48 @@ class ForgejoForge(ForgeClient):
         if not link:
             raise ForgeError(f"attachment upload for #{n} returned no browser_download_url: {str(data)[:200]}")
         return str(link)
+
+
+# --------------------------------------------------------------------------- CI
+
+
+def wait_for_ci(client: ForgeClient, sha: str, timeout_s: float, poll_s: float | None = None) -> dict:
+    """Poll the forge's CI on commit `sha` until it decides, or `timeout_s` seconds passed.
+
+    failed: a run failed (at once); cancelled: a run was cancelled (at once); passed: runs were
+    reported, all succeeded, and the same names were reported by the poll before; timeout: runs
+    were reported but not all finished in time; missing: nothing was reported in time. A
+    ForgeError counts as no answer; the last one is kept in `error`.
+    """
+    start = monotonic()
+    deadline = start + max(0.0, float(timeout_s))
+    runs: list[dict] = []
+    error = ""
+    previous: set[str] | None = None
+    reported = False
+    outcome = ""
+    while True:
+        try:
+            runs = list(client.commit_checks(sha))
+        except ForgeError as exc:
+            error = str(exc)[:500]
+            runs = []
+        states = {run.get("state") for run in runs}
+        names = {str(run.get("name") or "") for run in runs}
+        reported = reported or bool(runs)
+        if "failure" in states:
+            outcome = "failed"
+        elif "cancelled" in states:
+            outcome = "cancelled"
+        elif runs and states == {"success"} and names == previous:
+            outcome = "passed"
+        elif monotonic() >= deadline:
+            outcome = "timeout" if reported else "missing"
+        if outcome:
+            break
+        previous = names if runs and states == {"success"} else None
+        sleep(max(0.0, min(float(poll_s or CI_POLL_SECONDS), deadline - monotonic())))
+    return {"commit": sha, "outcome": outcome, "runs": runs, "waited_s": int(monotonic() - start), "error": error}
 
 
 # --------------------------------------------------------------------------- factory
