@@ -5,7 +5,7 @@
 # ///
 """ADW `zte` — Zero-touch: plan, build and test inside a container; two reviewer agents and every suite must pass; then merge without a person
 
-Steps: classify → plan-chore → plan-bug → plan-feature → build → test-docs → test-compiler → test-runtime → test-tools → test-dashboard → test-integration → document → commit → review → ship
+Steps: classify → plan-chore → plan-bug → plan-feature → build → test-docs → test-compiler → test-runtime → test-podman → test-tools → test-dashboard → test-integration → document → commit → review → ship
 PITER: input=['cli', 'tasklist'] trigger=['manual', 'cron'] environment=['worktree', 'sandbox'] review=zero-touch
 Generated from agentic.rkt — edit that file and run `al gen`, not this one.
 """
