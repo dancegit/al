@@ -14,7 +14,9 @@ start_layer.build_layer, so its own adws/dispatch.py can start runs again), whos
   a0000002           an older failure at build that nothing replaces           → needs you
 
 So: needs you 6, running 5, landed 8, settled 7, done 1, all 27. build_group_scenario() is the same
-five failures without their replacements (one failure group). Git runs with a fixed author,
+five failures without their replacements (one failure group). build_two_groups_scenario() has two
+failure groups of two runs each and nothing else: f0000001-f0000002 failed at preflight, f0000003-f0000004
+at build, the second of each the newer. Git runs with a fixed author,
 committer and dates, so the commits are the same on every build. Every name is invented.
 """
 from __future__ import annotations
@@ -34,6 +36,8 @@ INTEGRATED = ["b0000009", "b000000a"]
 INTEGRATION = "c0000001"
 FAILED = ["d0000001", "d0000002", "d0000003", "d0000004", "d0000005"]
 RESTARTS = ["e0000001", "e0000002", "e0000003", "e0000004", "e0000005"]
+GROUP_A = ["f0000001", "f0000002"]
+GROUP_B = ["f0000003", "f0000004"]
 WAITING = "a0000001"
 OLD_FAILURE = "a0000002"
 PR_RUN = "b000000e"
@@ -222,4 +226,29 @@ def build_group_scenario(root: Path) -> dict:
     layer = _layer(root, repo)
     base = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=1)
     _failures(layer, base, replaced=False)
+    return {"root": root, "repo": repo, "layer": layer, "tips": tips, "base": base}
+
+
+def build_two_groups_scenario(root: Path) -> dict:
+    """root/orchard and root/orchard.al with two failure groups of two runs each: GROUP_A at preflight,
+    GROUP_B at build; in each the runs end two minutes apart and the second is the newer."""
+    root.mkdir(parents=True, exist_ok=True)
+    repo = root / "orchard"
+    tips = build_repo(repo, merge=False)
+    layer = _layer(root, repo)
+    base = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=1)
+    for index, run_id in enumerate(GROUP_A):
+        start = base + timedelta(hours=2, minutes=2 * index)
+        end = start + timedelta(seconds=40)
+        write_run(layer, run_id, prompt=f"Add the pruning calendar, part {index + 1}", status="failed",
+                  started=_iso(start), ended=_iso(end), branch=f"al/{run_id}",
+                  steps=[_step("preflight", "failed", start, end, preflight_error(run_id, index + 1), kind="setup")])
+    for index, run_id in enumerate(GROUP_B):
+        start = base + timedelta(hours=3, minutes=2 * index)
+        end = start + timedelta(minutes=1)
+        write_run(layer, run_id, prompt=f"Draw the orchard map, part {index + 1}", status="failed",
+                  started=_iso(start), ended=_iso(end), branch=f"al/{run_id}",
+                  steps=[_step("plan", "passed", start, start + timedelta(seconds=20)),
+                         _step("build", "failed", start + timedelta(seconds=20), end,
+                               "build: the map renderer needs a page size")])
     return {"root": root, "repo": repo, "layer": layer, "tips": tips, "base": base}

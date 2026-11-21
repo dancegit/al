@@ -166,8 +166,9 @@ a run that stopped twice for the same reason says that it stays with you. Nothin
 rejected review: every plan ends in the checks, the review and the unchanged gate, or with a person.
 The button is shown disabled, with "run `al gen` to add adws/assign.py" as its title, in a layer
 generated before `al assign`. In the Needs-you view, **Give all N to agents** (one layer at a time: it
-is disabled while runs of several layers are shown) opens a dialog with every run's plan in the order
-they would start (resumes and restarts first, then one integration at a time; what stays with a person
+is disabled while runs of several layers are shown; N counts the shown rows, a failure group as one
+item handed over as its newest run, its other runs left under Needs you) opens a dialog with the plan
+of each of those items, and only those, in the order they would start (resumes and restarts first, then one integration at a time; what stays with a person
 last, as "skipped: why") and **Start N**; what started is listed above the table. A run's Status
 block shows `given to an agent: 1 of 2; last: landed` with a link to that run. The original's page
 links to its integration run (`integration` in its Status block, the badge "landed by ID
@@ -800,11 +801,13 @@ unknown layer or run 404.
 `GET /api/assign/bulk?layer=K` runs `adws/assign.py all RUN … --preview --json` with the layer's runs
 under Needs you and answers `{layer, plans: [{run, title, kind, summary, skip, why}], startable, start}`
 in the order a bulk start gives them, `skip` saying why a run is left out, and one `nonce` for exactly
-those runs.
+those runs. `runs=ID,ID` is optional and limits the preview to those runs (the rows the page shows, at
+most 200; echoed as `runs`): empty or malformed is 400, an id that is not a stopped run of the layer
+under Needs you is 409 naming it, and the `nonce` covers exactly that list.
 
-`POST /api/assign` takes `{layer, run, action: start|approve|bulk, confirm, note, override, item, who}`
-and nothing else (`run`, `note`, `override` to start; `run`, `item`, `who` to approve; neither for
-`bulk`; any other key, or a key of another action, is 400), behind the guard of every write (loopback
+`POST /api/assign` takes `{layer, run, action: start|approve|bulk, confirm, note, override, item, who,
+runs}` and nothing else (`run`, `note`, `override` to start; `run`, `item`, `who` to approve; only
+`runs` for `bulk`; any other key, or a key of another action, is 400), behind the guard of every write (loopback
 Host or token, the token never from the URL, Origin naming the Host, `X-AL-Dashboard: 1`,
 `application/json`, at most 4 KiB, not `--read-only`), and every action is refused with `--no-start` and
 in a container without `--allow-start-in-container` (403), as `POST /api/integrate` is. `confirm` is the
@@ -824,6 +827,8 @@ preview is stale: open it again", and a refused confirmation spends it.
   already or one that is a person's only is 409 `bad-item`.
 - `bulk`: `assign.py all RUN … --by dashboard --json` with the runs of the bulk preview: 202 `{"status":
   "started", "started": N, "results": [{run, kind, status: started|skipped|error, run_id, why, url}]}`.
+  `runs`, optional, is a list of run ids (400 otherwise) and must equal the list the preview was asked
+  for; a different one is 409 "the preview is stale" and spends the nonce.
 
 ## Its own podman container
 

@@ -304,6 +304,43 @@ def test_bulk_preview_lists_the_order_and_bulk_starts(layer, running):
     assert run_of(after, af.NOTHING)["replaced_by"] == again
 
 
+def test_bulk_takes_exactly_the_given_runs(layer, running):
+    """runs= limits the bulk preview to the rows the page shows, the nonce covers exactly that list, and a
+    bulk start with a different runs is refused (spending the nonce); malformed, unknown and no longer
+    Needs-you ids are refused."""
+    snapshot_when(running, lambda data: counts(data).get("needs-you") == 9)
+    asked = f"/api/assign/bulk?layer=pantry&runs={af.FAILED_CHECK},{af.PERSON}"
+    found = running.json(asked)
+    assert [plan["run"] for plan in found["plans"]] == [af.FAILED_CHECK, af.PERSON]
+    assert found["startable"] == 1 and sorted(found["runs"]) == sorted([af.FAILED_CHECK, af.PERSON])   # oldest first
+    status, _headers, body = running.get("/api/assign/bulk?layer=pantry&runs=deadbeef")
+    assert status == 409 and "deadbeef" in json.loads(body)["error"]
+    assert running.get("/api/assign/bulk?layer=pantry&runs=xyz")[0] == 400
+    assert running.get("/api/assign/bulk?layer=pantry&runs=")[0] == 400
+    status, answer = post(running, {"layer": "pantry", "run": fx.CLEAN, "as": "abandoned", "by": "", "note": "",
+                                    "who": "Ada Example"}, "/api/settle")
+    assert status == 200, answer
+    snapshot_when(running, lambda data: run_of(data, fx.CLEAN).get("bucket") == "settled")
+    status, _headers, body = running.get(f"/api/assign/bulk?layer=pantry&runs={fx.CLEAN}")
+    assert status == 409 and fx.CLEAN in json.loads(body)["error"], body
+    bulk = {"layer": "pantry", "action": "bulk"}
+    status, answer = post(running, {**bulk, "confirm": found["nonce"], "runs": [af.FAILED_CHECK, af.NOTHING]},
+                          "/api/assign")
+    assert status == 409 and answer["error"] == STALE
+    status, answer = post(running, {**bulk, "confirm": found["nonce"], "runs": [af.FAILED_CHECK, af.PERSON]},
+                          "/api/assign")
+    assert status == 409, "the refused confirmation spent the nonce"
+    assert records(layer) == []
+    fresh = running.json(asked)
+    assert post(running, {**bulk, "confirm": fresh["nonce"], "runs": "x"}, "/api/assign")[0] == 400
+    status, answer = post(running, {**bulk, "confirm": fresh["nonce"], "runs": [af.FAILED_CHECK, af.PERSON]},
+                          "/api/assign")
+    assert status == 202, answer
+    assert [(r["run"], r["status"]) for r in answer["results"]] == [(af.FAILED_CHECK, "started"), (af.PERSON, "skipped")]
+    assert records(layer) == [af.FAILED_CHECK]
+    wait_ended(layer, [af.FAILED_CHECK])
+
+
 def test_unknown_keys_and_long_note_are_400(layer, running):
     nonce = preview(running)["nonce"]
     item = preview(running, af.PERSON)["decisions"][0]["id"]

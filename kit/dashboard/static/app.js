@@ -2129,17 +2129,33 @@
         h("td", { class: "next" }, toggle, again));
     }
 
-    /** "Give all N to agents": N = the shown needs-you runs whose layer has adws/assign.py; one layer at a time. */
+    /** "Give all N to agents": N = the shown needs-you rows that can be given to an agent (their layer has
+     * adws/assign.py), walked as render() walks them: a failure group counts as one item, its newest shown
+     * run, and its other runs stay under Needs you. The same items are what the dialog lists and starts;
+     * one layer at a time. */
     function renderGiveAll(runs, needs) {
-      const mine = needs ? runs.filter((r) => r.assign && r.assign.script) : [];
-      if (!mine.length) { replace(giveAll); return; }
-      const layers = [...new Set(mine.map((r) => r.layer))];
-      const button = h("button", { type: "button", class: "btn integrate assign-all", text: `Give all ${mine.length} to agents`,
+      const items = [];
+      const seen = new Set();
+      for (const r of needs ? runs : []) {
+        if (!(r.assign && r.assign.script)) continue;
+        if (r.group && r.group.count > 1) {
+          if (seen.has(r.group.id)) continue;
+          seen.add(r.group.id);
+          const members = runs.filter((m) => m.group && m.group.id === r.group.id && m.assign && m.assign.script);
+          const newest = members.reduce((a, b) => ((b.started || 0) > (a.started || 0) ? b : a));
+          items.push({ run: newest, group: r.group, members });
+        } else {
+          items.push({ run: r, group: null, members: [r] });
+        }
+      }
+      if (!items.length) { replace(giveAll); return; }
+      const layers = [...new Set(items.map((i) => i.run.layer))];
+      const button = h("button", { type: "button", class: "btn integrate assign-all", text: `Give all ${items.length} to agents`,
         disabled: layers.length !== 1,
         title: layers.length !== 1 ? "runs of several layers are shown: choose one layer in the filter first"
           : "see what an agent would do for each run, in the order they start; nothing starts until you confirm",
         onclick: async () => {
-          const results = await assignAllDialog(layers[0]);
+          const results = await assignAllDialog(layers[0], items);
           if (!results) return;
           showReport([{ ok: true, text: `Give all to agents (${layers[0]}):` }, ...results.map((r) => ({ ok: r.status !== "error",
             text: r.status === "started" ? `${r.run} → ${r.run_id && r.run_id !== r.run ? r.run_id : "resumed in place"} (${r.kind})` : `${r.run}: ${r.status}${r.why ? `: ${r.why}` : ""}` }))]);
@@ -2647,10 +2663,11 @@
     return card;
   }
 
-  /** "Give all N to agents" of the Needs-you view: the plans of one layer's runs in the order they would
-   * start (GET /api/assign/bulk), then Start N (POST /api/assign {action: "bulk"} with that preview's
-   * nonce). Resolves with the answer's results, or null when the person cancelled. */
-  function assignAllDialog(layerKey) {
+  /** "Give all N to agents" of the Needs-you view: the plans of the shown items of one layer in the order
+   * they would start (GET /api/assign/bulk?runs=, each item's run; a failure group's item is its newest
+   * run), then Start N (POST /api/assign {action: "bulk"} with that preview's nonce and the same runs).
+   * Resolves with the answer's results, or null when the person cancelled. */
+  function assignAllDialog(layerKey, items) {
     return new Promise((resolve) => {
       const overlay = document.getElementById("overlay");
       let done = false;
@@ -2679,19 +2696,29 @@
       watch = new MutationObserver(() => { if (overlay.hidden) finish(null); });
       watch.observe(overlay, { attributes: true, attributeFilter: ["hidden"] });
       cancel.focus();
-      api(`/api/assign/bulk?layer=${enc(layerKey)}`).then((p) => {
+      const ids = items.map((i) => i.run.id);
+      const groupOf = new Map(items.filter((i) => i.group).map((i) => [i.run.id, i]));
+      const groupLine = (run) => {
+        const item = groupOf.get(run);
+        if (!item) return null;
+        const others = item.members.filter((m) => m.id !== run).map((m) => m.id).join(" ");
+        return h("div", { class: "assign-group dim",
+          text: `newest of ${item.members.length} runs failing at ${item.group.step} the same way; the others (${others}) stay under Needs you` });
+      };
+      api(`/api/assign/bulk?layer=${enc(layerKey)}&runs=${ids.map(enc).join(",")}`).then((p) => {
         if (done) return;
         replace(list, h("ol", { class: "assign-bulk-plans" }, (p.plans || []).map((plan) => h("li", { class: plan.skip ? "skipped" : "", dataset: { run: plan.run } },
           h("span", { class: "mono", text: plan.run }), " ", h("span", { class: "dim", text: plan.title || "" }),
-          h("div", { class: plan.skip ? "skip dim" : "summary", text: plan.skip ? `skipped: ${plan.skip}` : plan.summary || plan.kind }))))
-          , !(p.plans || []).length ? h("div", { class: "dim", text: "no run of this layer needs you" }) : null);
+          h("div", { class: plan.skip ? "skip dim" : "summary", text: plan.skip ? `skipped: ${plan.skip}` : plan.summary || plan.kind }),
+          groupLine(plan.run))))
+          , !(p.plans || []).length ? h("div", { class: "dim", text: "none of the shown runs can be given" }) : null);
         go.textContent = `Start ${p.startable || 0}`;
         go.disabled = !(p.start && p.start.enabled && p.nonce && p.startable);
         if (p.start && !p.start.enabled) replace(note, h("span", { class: "faint", text: p.start.why }));
         go.onclick = async () => {
           go.disabled = true;
           try {
-            const answer = await api.post("/api/assign", { layer: layerKey, action: "bulk", confirm: p.nonce });
+            const answer = await api.post("/api/assign", { layer: layerKey, action: "bulk", confirm: p.nonce, runs: ids });
             finish(answer.results || []);
           } catch (error) {
             replace(note, h("span", { class: "badge warn", text: error.message }));
