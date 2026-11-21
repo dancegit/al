@@ -447,6 +447,9 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         delivers = delivers_into(adw, ir)
         if delivers:
             text += f" {delivers}"
+        request = delivery_request_module().describe(ir, adw)
+        if request:
+            text += f" {request}"
         bullets = [f"Work from {listing([pi[i]['kind'] for i in adw['input']], 'or')}; started by {listing([tr[i]['kind'] for i in adw['trigger']], 'or')}; "
                    f"runs in {listing([en[i]['kind'] for i in adw['environment']])}; agent `{adw['agent']}`"]
         bullets += [f"{n}. {describe_step(s, ir)}" for n, s in enumerate(steps, 1)]
@@ -1051,6 +1054,23 @@ def registry_module():
         _REGISTRY = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(_REGISTRY)
     return _REGISTRY
+
+
+def delivery_request_module():
+    """kit/runtime/adw_modules/delivery_request.py, loaded by path once (cached in sys.modules): its
+    `describe` says what a workflow's delivery request will be, the same module the runtime uses."""
+    import sys
+
+    module = sys.modules.get("al_kit_delivery_request")
+    if module is None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "al_kit_delivery_request", ROOT / "kit" / "runtime" / "adw_modules" / "delivery_request.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["al_kit_delivery_request"] = module
+        spec.loader.exec_module(module)
+    return module
 
 
 def kit_sentence(ir: dict) -> str:

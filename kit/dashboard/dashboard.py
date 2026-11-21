@@ -152,6 +152,7 @@ MAX_APPROVALS = 20
 APPROVE_KEYS = {"layer", "run", "what"}
 COMMAND_PREFIX = "command:"       # a single-command run's ADW name (launch.single_command_adw)
 LAUNCHER = "adws/dispatch.py"
+REQUESTS_DIR = "agents/requests"  # delivery_request.py: <from>-<to>.json (+ .md without a forge), one per stage pair
 # The stand-in (kit/runtime/adw_modules/standin.py), always asked through the layer's own script:
 STANDIN_SCRIPT = "adws/standin.py"
 STANDIN_EVERY = 5.0               # seconds between looks at the Needs you list for the stand-in
@@ -2825,6 +2826,43 @@ def decided(change_id: str, decisions: list[dict[str, Any]]) -> dict[str, str] |
     return None
 
 
+REQUEST_KEYS = ("kind", "source", "target", "from", "to", "medium", "number", "url", "path", "state", "action",
+                "updated_at", "skipped", "none", "note", "error", "title", "promotion")
+
+
+def _request_record(record: Any, short: Callable[[str], str]) -> dict[str, Any] | None:
+    if not isinstance(record, dict) or not record:
+        return None
+    out = {k: (short(v) if isinstance(v, str) else v) for k, v in record.items() if k in REQUEST_KEYS}
+    raw = str(record.get("path") or "")
+    if raw and (Path(raw).is_absolute() or ".." in Path(raw).parts):
+        out["path"] = ""   # only a layer-relative path is shown (and served)
+    if out.get("url") and not str(out["url"]).startswith(("https://", "http://")):
+        out["url"] = ""
+    return out
+
+
+def delivery_request_view(state: dict[str, Any], short: Callable[[str], str]) -> dict[str, Any] | None:
+    """The run's delivery request (state.delivery_request, delivery_request.py): what the hands-off cycle
+    opened, updated or adopted, or why it made none. None for a run that has none."""
+    return _request_record(state.get("delivery_request"), short)
+
+
+def stage_requests(layer: Layer) -> list[dict[str, Any]]:
+    """agents/requests/*.json: the delivery request of each stage pair, as recorded at the last cycle."""
+    directory = layer.path / REQUESTS_DIR
+    out = []
+    for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
+        record = _request_record(read_json(path), lambda text: clip(text, 2000))
+        if record and record.get("from") and record.get("to"):
+            out.append({**record, "key": path.stem})
+    return out
+
+
+def request_for(requests: list[dict[str, Any]], from_: Any, to: Any) -> dict[str, Any] | None:
+    return next((dict(r) for r in requests if r.get("from") == from_ and r.get("to") == to), None)
+
+
 def promotion_view(layer: Layer, run_id: str, state: dict[str, Any], short: Callable[[str], str]) -> dict[str, Any] | None:
     """The promotion card of a promotion run: its changes with their criteria and proof, the decisions
     recorded so far, the approval status, the pack and what the run did."""
@@ -2859,7 +2897,8 @@ def promotion_view(layer: Layer, run_id: str, state: dict[str, Any], short: Call
                  "pack": str(p.get("pack") or ""),
                  "records": {name: f"promotions/{run_id}/{name}" for name in ("sign-off.md", "approval.md", "promotion.json")
                              if (layer.path / "promotions" / run_id / name).is_file()},
-                 "can_decide": is_open and (layer.path / PROMOTE_SCRIPT).is_file()})
+                 "can_decide": is_open and (layer.path / PROMOTE_SCRIPT).is_file(),
+                 "request": request_for(stage_requests(layer), p.get("from"), p.get("to"))})
     return view
 
 
@@ -5244,6 +5283,7 @@ class RunModel:
             "proof": proof_view(state, short),
             "proof_plan": proof_plan_view(state, short),
             "promotion": promotion_view(self.layer, self.id, state, short),
+            "delivery_request": delivery_request_view(state, short),
             "testing": self._testing_detail(state, summary, short),
         }
 
@@ -6270,8 +6310,11 @@ class Model:
     def settings_sig(layer: Layer) -> tuple:
         """What the layer-level panels read besides the IR: the local model and testing settings, the batch
         ledger, the misses and the suite timings. A change republishes the layers."""
-        return tuple(stat_sig(layer.path / name) for name in (SETTINGS_FILE, TESTING_FILE, BATCHES_FILE, MISSES_FILE,
-                                                                SUITES_FILE))
+        requests = layer.path / REQUESTS_DIR
+        return (tuple(stat_sig(layer.path / name) for name in (SETTINGS_FILE, TESTING_FILE, BATCHES_FILE, MISSES_FILE,
+                                                                 SUITES_FILE))
+                + (stat_sig(requests),)
+                + tuple(stat_sig(path) for path in (sorted(requests.glob("*.json")) if requests.is_dir() else [])))
 
     def needs_you(self, layer_key: str) -> int:
         """How many runs of the layer are in the needs-you bucket (what the Runs link counts)."""
@@ -6292,6 +6335,26 @@ class Model:
         with self.lock:
             self.pr_answers[key] = (now, answer)
         return answer
+
+    def _request_state(self, layer: Layer, record: dict[str, Any] | None) -> dict[str, Any] | None:
+        """A delivery request with its state refreshed from the forge (pr_state_via_layer), kept
+        PR_STATE_SECONDS per (layer, number); a file request, or a layer without a forge, as recorded."""
+        if not record or not isinstance(record.get("number"), int) or not record["number"]:
+            return record
+        forge = layer.ir.get("forge") if isinstance(layer.ir.get("forge"), dict) else {}
+        if str(forge.get("kind") or "none") == "none" or self.in_container or not (layer.path / LAUNCHER).is_file():
+            return record
+        key, now = ("request", layer.key, record["number"]), time.time()
+        with self.lock:
+            cached = self.pr_answers.get(key)
+        if cached and now - cached[0] < PR_STATE_SECONDS:
+            answer = cached[1]
+        else:
+            answer = pr_state_via_layer(layer, int(record["number"]))
+            with self.lock:
+                self.pr_answers[key] = (now, answer)
+        state = str((answer or {}).get("state") or "")
+        return {**record, "state": state, "state_from": "forge"} if state in ("open", "merged", "closed") else record
 
     def refresh_attention(self, layer: Layer) -> None:
         """Recompute the buckets of one layer's runs (landed checks bounded per call) and publish the
@@ -6965,14 +7028,23 @@ class Model:
             self.refresh_run(layer, run_id)
         cached = self.detail_cache.get(key)
         if cached and cached[0] == sig and cached[1]["summary"]["status"] != "running":
-            return {**cached[1], "summary": self._decorated(cached[1]["summary"]),
-                    "standin": self.run_standin(layer, cached[1]["summary"])}
+            return self._with_request_states(layer, {**cached[1], "summary": self._decorated(cached[1]["summary"]),
+                                                     "standin": self.run_standin(layer, cached[1]["summary"])})
         detail = RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).detail()
         if len(self.detail_cache) > 64:
             self.detail_cache.clear()
         self.detail_cache[key] = (sig, detail)
         # decorated on every read: the bucket and landing change without the run's files changing
-        return {**detail, "summary": self._decorated(detail["summary"]), "standin": self.run_standin(layer, detail["summary"])}
+        return self._with_request_states(layer, {**detail, "summary": self._decorated(detail["summary"]),
+                                                 "standin": self.run_standin(layer, detail["summary"])})
+
+    def _with_request_states(self, layer: Layer, detail: dict[str, Any]) -> dict[str, Any]:
+        """The run detail with its delivery request's (and its promotion's request's) forge state now."""
+        out = {**detail, "delivery_request": self._request_state(layer, detail.get("delivery_request"))}
+        if isinstance(detail.get("promotion"), dict):
+            out["promotion"] = {**detail["promotion"],
+                                "request": self._request_state(layer, detail["promotion"].get("request"))}
+        return out
 
     def run_standin(self, layer: Layer, summary: dict[str, Any]) -> dict[str, Any]:
         """The stand-in's mode for one run: its own --decider, else the layer's mode now."""
@@ -7061,10 +7133,12 @@ class Model:
                               "used_by": entry.get("used_by") or [], "why": (entry.get("start") or {}).get("why", "")})
         explain = layer.explain_file()
         opened = open_promotions(layer)
+        requests = stage_requests(layer)
         promotions = [{"from": p.get("from"), "to": p.get("to"), "approval": p.get("approval"),
                        "approvers": p.get("approvers"), "method": p.get("method"), "tag": p.get("tag", ""),
                        "hotfix": bool(p.get("hotfix")), "origin": p.get("origin", ""),
-                       "open": next((o for o in opened if o.get("from") == p.get("from") and o.get("to") == p.get("to")), None)}
+                       "open": next((o for o in opened if o.get("from") == p.get("from") and o.get("to") == p.get("to")), None),
+                       "request": self._request_state(layer, request_for(requests, p.get("from"), p.get("to")))}
                       for p in layer.ir.get("promotions") or [] if isinstance(p, dict)]
         return {"layer": next((l for l in self.layer_list() if l["key"] == layer_key), {}), "adws": adws,
                 "kit": kit, "commands": commands, "suite": suite, "problems": list(reg.get("problems") or []),

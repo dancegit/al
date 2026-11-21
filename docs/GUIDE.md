@@ -2193,6 +2193,54 @@ runtime again) refuses `#:approval agent` or `auto` into a stage where agents ma
   other than its `#:environment-name`; `#:back-merge` naming FROM or TO.
 - A `#:frozen` period that is not `"YYYY-MM-DD..YYYY-MM-DD"` with real dates, the first not after the second.
 
+### The delivery request
+
+Every hands-off cycle ends with one delivery request: what is waiting to go one stage further. A
+hands-off cycle is a run of a workflow that ships without a person (zte and every other auto review
+that merges or deploys), an integration run, a verify batch and a promotion run.
+
+The source and the target come from the declarations, never from a fixed branch name:
+
+- A hands-off run that did not merge (the gate said `pr`, a fallback, a handoff) already left its own
+  request: the pull request or `PR.md` of its branch into its stage. That request is adopted: recorded and
+  shown, not rewritten.
+- A run or an integration run that merged into stage S, or a batch on S, requests S's branch into the
+  branch of S's next stage.
+- A promotion that moved its TO stage requests TO into TO's next stage. A promotion that waits for its
+  approval keeps its own request.
+- When S is the final stage, or the layer has no stages, there is no request. When the source is not ahead
+  of the target, no new request is made. A dry run makes none and says so.
+
+With `(forge github …)` or `(forge forgejo …)` and pull requests on, the request is a pull request on the
+forge. Otherwise, and with `#:pull-requests #f`, the same title and body go to
+`agents/requests/FROM-TO.md`. Either way `agents/requests/FROM-TO.json` records it.
+
+The request carries the marker `<!-- al:delivery-request FROM->TO -->`. The next cycle finds it by head and
+base and updates it in place, so a stage pair has one request that always shows the current state. An
+open pull request without the marker is a person's: it is recorded and left alone. Merged and closed
+requests are never touched; a new one is opened only when none is open and the source is ahead. al never
+merges a request and never pushes a branch for one: a source branch that is not on the forge gets the
+file. A forge that fails does not fail the run: the error is recorded and the file is written.
+
+The body says who opened it and how it moves on (`al promote LAYER FROM TO` and the declared approval),
+then:
+
+- **Runs and commits**: each run in it, with its delivered commit.
+- **What changed**: files and lines per area.
+- **Checks**: what each run's checks proved (tests passed, or not run and why), and the latest batch on
+  the source. A failure that is also red in the last batch of the target is named as a baseline failure.
+- **Unblocks**: runs waiting on either stage, and an open promotion waiting for approval.
+- **Not included**: refused changes, runs handed over to a person, and runs still open.
+
+The promotion step `request` writes the same request, so `al promote` adopts what the cycles opened
+instead of opening a second one.
+
+The run summary prints it on a `request:` line, for example
+`request:   written to agents/requests/sprint-main.md (no forge)` or
+`request:   PR #3 sprint/2026-s47 → main (updated) https://…`. `al explain` says for each workflow what
+its request will be. On the dashboard the run page shows the request's link or path and its state, and
+the layer page's promotions show the request of each stage pair.
+
 ### How al itself delivers
 
 Runs of al's own layer (`agentic/agentic.rkt`) land on the branch `integration`, which is cut from `main`.
@@ -2228,6 +2276,9 @@ al promote agentic integration main             # merges into main
 ```
 
 The promotion button on the dashboard does the same.
+
+Because the layer declares `#:pull-requests #f`, its delivery request is the file
+`agents/requests/integration-main.md`, updated after every run that lands on `integration`.
 
 A fast-forward needs `main` to be contained in `integration`. It is, as long as `main` changes only by
 promotions; a commit made on `main` directly stops the next promotion with `not-fast-forward`. The matching

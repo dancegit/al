@@ -2245,6 +2245,25 @@
   // =========================================================================== views: Run detail
   const promotionForm = new Map();   // run key -> {by, comment, picked}: kept while the card is rebuilt
 
+  /** One line for a delivery request (delivery_request.py): the pull request's link, or the file's path
+   * (served from the layer), with its state as a badge and what the last cycle did; or why there is none. */
+  function requestLine(req, layerKey) {
+    if (!req) return null;
+    if (req.skipped) return h("span", { class: "request-line faint", "data-role": "delivery-request", text: `skipped: ${req.skipped}` });
+    if (req.none) return h("span", { class: "request-line faint", "data-role": "delivery-request", text: `none: ${req.none}` });
+    const url = /^https?:\/\//.test(req.url || "") ? req.url : "";
+    const where = url ? h("a", { href: url, target: "_blank", rel: "noopener", text: req.number ? `#${req.number} ${url}` : url })
+      : req.path ? h("a", { href: `/files/${enc(layerKey)}/${String(req.path).split("/").map(enc).join("/")}`, target: "_blank", rel: "noopener" },
+        h("code", { text: req.path }))
+        : h("span", { class: "faint", text: req.action === "nothing-to-deliver" ? `${req.source} is not ahead of ${req.target}` : "" });
+    const state = ["open", "merged", "closed"].includes(req.state) ? req.state : "";
+    return h("span", { class: "request-line", "data-role": "delivery-request" },
+      req.source && req.target ? h("span", { class: "mono", text: `${req.source} → ${req.target} ` }) : null, where,
+      state ? h("span", { class: `badge req-${state}`, text: state }) : null,
+      req.action ? h("span", { class: "badge", text: req.action }) : null,
+      req.error ? h("span", { class: "badge bad", title: req.error, text: "error" }) : null);
+  }
+
   /** The promotion card of a promotion run: the changes with their acceptance criteria and the proof of
    * each, the decisions so far, the pack, and Accept / Refuse (revert | patch) / Approve all / Continue,
    * which POST /api/promotion (the layer's own adws/promote.py records the decision or resumes the run). */
@@ -2323,6 +2342,7 @@
         h("span", { class: "spacer" }), p.pack ? fileLink(p.pack, "open the presentation pack") : null,
         ...Object.entries(p.records || {}).map(([name, rel]) => fileLink(rel, name))),
       stopped,
+      p.request ? h("div", { class: "promotion-request" }, h("span", { class: "dim", text: "delivery request " }), requestLine(p.request, layerKey)) : null,
       (p.notes || []).length ? h("ul", { class: "issues" }, p.notes.map((n) => h("li", { text: n }))) : null,
       h("div", { class: "promotion-changes" }, rows),
       p.can_decide ? actions : null,
@@ -3164,7 +3184,12 @@
             ["diff", gate.diff_lines !== undefined ? `${gate.diff_lines} lines in ${(gate.changed_files || []).length} files` : ""],
             ["changed", gate.changed_files && gate.changed_files.length ? h("span", { class: "mono", text: gate.changed_files.join("  ") }) : ""],
             ["proof", ship.proof ? `${ship.proof.attached || 0} file(s) attached${ship.proof.reason ? ` (${ship.proof.reason})` : ""}` : ""],
-            ["note", ship.note]])));
+            ["note", ship.note],
+            ["delivery request", requestLine(detail.delivery_request, layerKey)]])));
+      } else if (detail.delivery_request) {
+        // a promotion or batch run has no ship step, but its cycle may still request the next delivery
+        blocks.push(h("div", { class: "outcome-block" }, h("div", { class: "card-head" }, h("h3", { text: "Delivery request" })),
+          kv([["delivery request", requestLine(detail.delivery_request, layerKey)]])));
       }
       if ((detail.proof || []).length) {
         // what each check proved: ran (passed / failed), not affected (why) or reused; text only
@@ -4084,6 +4109,7 @@
               h("b", { text: `${p.from} → ${p.to}` }), h("span", { class: "badge", text: `${p.approval}${p.approval !== "auto" ? ` × ${p.approvers}` : ""} · ${p.method}` }),
               p.hotfix ? h("span", { class: "badge warn", text: "hotfix" }) : null, p.tag ? h("span", { class: "badge", text: `tag ${p.tag}` }) : null,
               p.open ? h("a", { class: "badge waiting", href: `#/run/${enc(key)}/${enc(p.open.id)}`, text: `open: ${p.open.id}` }) : null,
+              p.request ? requestLine(p.request, key) : null,
               h("span", { class: "spacer" }),
               h("button", { type: "button", class: "toggle", disabled: !enabled, title: enabled ? "" : why, text: p.open ? `Continue ${p.from} → ${p.to}` : `Promote ${p.from} → ${p.to}`, onclick: () => start(false) }),
               h("button", { type: "button", class: "toggle", disabled: !enabled, title: enabled ? "build the pack and say what would happen; changes nothing" : why, text: "Dry run", onclick: () => start(true) }),
