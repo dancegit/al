@@ -46,6 +46,7 @@ Languages: python, racket, javascript, shell. Entry document: `README.md`. Defau
 - `test-dashboard` — `(cd kit/dashboard && uv run --with pytest pytest -q tests)`
 - `test-integration` — `env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/integration -q`
 - `test-docs` — `if [ -f tests/tools/test_readme.py ]; then env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_readme.py tests/tools/test_generated_references.py -q; else echo 'this branch started before the README check existed: nothing to run'; fi`
+- `test-podman` — `(cd kit/runtime && env -u AL_APP_ROOT -u PYTHONPATH uv run --with pytest pytest -q -rs tests/test_sandbox_podman.py tests/test_isolation_podman.py tests/test_nested_engine.py tests/test_nested_engine_podman.py)`
 - `test-dashboard` — `(cd kit/dashboard && rm -rf shots && AL_DASHBOARD_SHOTS=shots uv run --with pytest --with playwright pytest -q tests)`
 - Right after you, the runtime checks every row without an agent; a row it cannot prove here stops the run with the declaration or question, so write needs truthfully.
 - Never plan a change under a protected path. If the fix cannot avoid one, plan everything else and add a line starting `REQUIRES HUMAN` under What is left out naming the path and the reason.
