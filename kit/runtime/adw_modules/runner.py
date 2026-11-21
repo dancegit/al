@@ -563,7 +563,7 @@ def _speak(layer: Any, line: str) -> None:
     if not voice.get("speakSummaries") or not script.is_file():
         return
     try:
-        subprocess.Popen([sys.executable, str(script), line], cwd=layer.layer_dir, stdin=subprocess.DEVNULL,
+        subprocess.Popen([sys.executable, str(script), "--no-fetch", line], cwd=layer.layer_dir, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError as exc:
         print(f"[adw] warning: spoken summary failed: {exc}", file=sys.stderr)
