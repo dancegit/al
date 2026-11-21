@@ -1696,6 +1696,19 @@ al: check test fails: 2 tests skipped because "no podman", forbidden by #:forbid
 With a rule set, output al cannot read fails the check too, with a line that says what to add
 (`pytest -rs`, `go test -v`, or `#:collect` a JUnit report): a gate never passes on tests it could not count.
 
+**al's own gate.** al's `zte` runs the sandbox, isolation and nested-engine suites of the runtime as
+the check `test-podman`, `#:in` a nix-devshell option on the host, with
+`#:forbid-skip-reason "podman is not installed"`, and its zero-touch review names `test-podman` in
+`#:require-checks`. They do not run in a nested engine because they need what the nested engine
+leaves out by design (`docs/DESIGN.md`, "An engine for the sandbox"): the cgroup freezer for
+`podman pause`, cgroup limits for memory, CPU and processes, a user-mode network with `/dev/net/tun`
+for published ports, and a subuid range, whose setuid `newuidmap` needs `no-new-privileges` off.
+`test-runtime` still runs in the run's container and still lists their skips. On disk, the git test
+image and the engine image are each built once per session from a local `python:3.12-slim` with one
+`apt-get install git`, and nothing is pulled. The label shim removes everything the session built,
+and leftovers older than six hours go when the next session starts, so nothing accumulates on the
+host.
+
 ### Run only the checks a change needs
 
 A workflow runs every check it lists for every change: in its check steps, again in each review

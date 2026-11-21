@@ -20,13 +20,11 @@
     ;; The sandbox's escape, isolation and nested-engine suites need a real podman, which the run
     ;; container does not have and the nested engine cannot host (no freezer, cgroup limits,
     ;; /dev/net/tun or subuid range): they run on this machine #:in host-engine (run 35ac29a6).
+;; The zero-touch gate requires the check, so a change to the runtime cannot ship on podman skips.
     (cmd test-podman "(cd kit/runtime && env -u AL_APP_ROOT -u PYTHONPATH uv run --with pytest pytest -q -rs tests/test_sandbox_podman.py tests/test_isolation_podman.py tests/test_nested_engine.py tests/test_nested_engine_podman.py)"
          #:timeout 3600
          #:description "The sandbox's escape, isolation and nested-engine tests against this machine's real rootless podman"
-         #:covers ("kit/runtime/adw_modules/envs.py" "kit/runtime/adw_modules/nested_engine.py" "kit/runtime/adw_modules/gitsafe.py"
-                   "kit/runtime/tests/test_sandbox_podman.py" "kit/runtime/tests/test_isolation_podman.py"
-                   "kit/runtime/tests/test_nested_engine.py" "kit/runtime/tests/test_nested_engine_podman.py")
-         #:always #f)
+         #:covers ("kit/runtime" "racket" "schemas") #:always #f)
     (cmd test-tools "env -u AL_APP_ROOT uv run --with pytest --with pytest-xdist --with pyyaml --with jsonschema pytest tests/tools -q -n 4"
          #:description "The al command itself works: eject, in-repo layers, al improve, dashboard generation"
          #:timeout 3600
@@ -121,7 +119,7 @@
   ;; Zero-touch: two reviewer agents and every suite must pass, then the change is merged without a person.
   ;; A change under a protected path, or a very large one, still goes to a person.
   (review auto #:id zero-touch #:artefacts (log screenshots run-shots showcase-stills showcase-clips voice-shots voice-clips voice-audio voice-report voice-logs) #:reviewers 2 #:max-retries 2 #:ship merge
-          #:require-checks (test-docs test-compiler test-runtime test-tools test-dashboard-proof test-integration) #:require affected
+          #:require-checks (test-docs test-compiler test-runtime test-podman test-tools test-dashboard-proof test-integration) #:require affected
           #:allowed-classes (chore bug feature) #:max-diff-lines 4000)
   (dashboard local #:port 8770)   ; 8765 is often taken by other tools
   ;; Every run lands on integration; main changes only by a promotion a person approves.
