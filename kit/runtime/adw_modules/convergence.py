@@ -213,7 +213,9 @@ def manifest_entries(layer: Any, state: Any) -> list[dict[str, Any]]:
     given = [dict(item) for item in state.approvals]
     path = folder / "approvals.md"
     path.write_text("# Approvals for this run\n\n" + ("\n".join(
-        f"- `{item.get('what')}` by {item.get('who')} at {item.get('at')} ({item.get('via')})" for item in given)
+        f"- `{item.get('what')}` by {item.get('who')} at {item.get('at')} ({item.get('via')})"
+        + ("; accepted at the gate for this run" if item.get("gate") is True else "")
+        + (f"; note: {' '.join(str(item.get('note')).split())}" if item.get("note") else "") for item in given)
         or "None: a change that needs a person's decision is one blocker of kind needs-person.") + "\n",
         encoding="utf-8")
     entries.append({"id": "approvals", "type": "approvals", "step": "evidence", "path": _relative(layer, path),

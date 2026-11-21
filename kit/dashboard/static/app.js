@@ -1999,7 +1999,7 @@
   const groupState = { open: new Set(), lines: [] };   // failure groups: expanded, and the last "Start all again" answers
 
   function RunsView(main, crumbs, route) {
-    const params = { view: "needs-you", layer: "", adw: "", status: "", klass: "", from: "", to: "", q: "", sort: "time", dir: "desc", sug: "", ...route.params };
+    const params = { view: "needs-you", layer: "", adw: "", status: "", klass: "", from: "", to: "", q: "", sort: "time", dir: "desc", sug: "", appr: "", ...route.params };
     if (!RUN_VIEWS.some(([v]) => v === params.view)) params.view = "needs-you";
     const selects = {};
     const select = (name, label, values) => {
@@ -2018,8 +2018,9 @@
     const report = h("div", { class: "start-report", role: "status" });   // what "Start all again" did, kept while rows change
     const standinBar = h("div", { class: "standin-bar" });                // "Ask the stand-in for all N", for a selected layer
     const giveAll = h("div", { class: "assign-all-bar" });                // "Give all N to agents", in the Needs-you view
+    const approveAll = h("div", { class: "assign-all-bar approve-all-bar" });   // "Approve & resume all N", in the Needs-you view
     const table = h("table");
-    main.append(chips, filters, totals, standinBar, giveAll, report, h("div", { class: "table-wrap" }, table));
+    main.append(chips, filters, totals, standinBar, approveAll, giveAll, report, h("div", { class: "table-wrap" }, table));
     const showReport = (lines) => {
       groupState.lines = lines;
       replace(report, lines.map((line) => h("div", { class: line.ok ? "ok" : "error", text: line.text })));
@@ -2037,7 +2038,8 @@
 
     const bucketOf = (r) => r.bucket || (r.status === "running" || r.status === "unknown" ? "running" : "done");
     const inView = (r) => (params.view === "all" || bucketOf(r) === params.view)
-      && !(params.view === "needs-you" && params.sug === "1" && !r.suggestion);
+      && !(params.view === "needs-you" && params.sug === "1" && !r.suggestion)
+      && !(params.view === "needs-you" && params.appr === "1" && !approvalOf(r));
 
     function filtered(all) {
       const q = params.q.toLowerCase();
@@ -2076,6 +2078,13 @@
         chips.appendChild(h("button", { type: "button", class: `chip sug${params.sug === "1" ? " active" : ""}`, dataset: { view: "suggestion" },
           title: "runs the stand-in has a proposal for", "aria-pressed": params.sug === "1" ? "true" : "false",
           onclick: () => { params.sug = params.sug === "1" ? "" : "1"; update(); } }, "with a suggestion ", h("span", { class: "num", text: `(${suggested})` })));
+      }
+      const approvable = every.filter((r) => approvalOf(r)).length;
+      if (params.view === "needs-you" && (approvable || params.appr === "1")) {
+        chips.appendChild(h("button", { type: "button", class: `chip appr${params.appr === "1" ? " active" : ""}`, dataset: { view: "approval" },
+          title: "runs that only wait for your approval: approve and they go on from where they stopped",
+          "aria-pressed": params.appr === "1" ? "true" : "false",
+          onclick: () => { params.appr = params.appr === "1" ? "" : "1"; update(); } }, "waiting for approval ", h("span", { class: "num", text: `(${approvable})` })));
       }
       const all = store.runList();
       const need = all.filter((r) => r.bucket === "needs-you").length;
@@ -2147,6 +2156,44 @@
       replace(giveAll, button, h("span", { class: "faint", text: " each run's plan is shown first" }));
     }
 
+    /** "Approve & resume all N": N = the shown needs-you runs that only wait for an approval; one layer at a time. */
+    function renderApproveAll(runs, needs) {
+      const mine = needs ? runs.filter((r) => approvalOf(r)) : [];
+      if (!mine.length) { replace(approveAll); return; }
+      const layers = [...new Set(mine.map((r) => r.layer))];
+      const button = h("button", { type: "button", class: "btn approve-resume-all", text: `Approve & resume all ${mine.length}`,
+        disabled: layers.length !== 1,
+        title: layers.length !== 1 ? "runs of several layers are shown: choose one layer in the filter first"
+          : "see what you approve for each run; nothing is recorded until you confirm",
+        onclick: async () => {
+          const answer = await approveResumeDialog(layers[0], mine.map((r) => ({ run: r.id, title: r.title || r.problem || "", approval: approvalOf(r) })));
+          if (!answer) return;
+          const results = answer.results || [{ run: mine[0].id, status: answer.status, message: answer.message, run_id: answer.run_id }];
+          showReport([{ ok: true, text: `Approve & resume (${layers[0]}):` }, ...results.map((r) => ({ ok: r.status === "resumed",
+            text: r.status === "resumed" ? `${r.run} → ${r.message || "resumed"}` : `${r.run}: refused${r.reason ? ` (${r.reason})` : ""}: ${r.message || ""}` }))]);
+        } });
+      replace(approveAll, button, h("span", { class: "faint", text: " what you approve is listed first" }));
+    }
+
+    /** The row's Approve & resume: the button, what it approves, and what the last one answered. */
+    function approveCell(run) {
+      const approval = approvalOf(run);
+      const result = h("span", { class: "approve-result" }, approveResultNodes(approveResults.get(run.key)));
+      if (!approval) return approveResults.has(run.key) ? h("div", { class: "approve-cell" }, result) : null;
+      const button = h("button", { type: "button", class: "btn primary approve-resume", text: "Approve & resume",
+        title: "approve what this run waits for; it goes on from where it stopped, and nothing ships without the checks, the review and the gate",
+        onclick: async (event) => {
+          event.stopPropagation();
+          const answer = await approveResumeDialog(run.layer, [{ run: run.id, title: run.title || run.problem || "", approval }]);
+          if (!answer) return;
+          approveResults.set(run.key, { text: answer.message || "resumed", url: answer.url || "", at: Date.now() });
+          showReport([{ ok: true, text: `${run.id}: ${answer.message || "resumed"}` }]);
+          render();
+        } });
+      return h("div", { class: "approve-cell" }, button,
+        h("span", { class: "approve-items", title: (approval.items || []).map((item) => item.text).join("\n"), text: itemsLine(approval) }), result);
+    }
+
     function runRow(run, needs, hosted) {
       const open = () => go(`#/run/${enc(run.layer)}/${enc(run.id)}`);
       const base = [h("td", {}, pill(run.status)), h("td", { class: "num", text: fmt.time(run.started) }), h("td", { text: run.layer }), h("td", { text: run.adw }),
@@ -2157,7 +2204,7 @@
           ...base, h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }),
           h("td", { class: "reason" }, limitBadge(run) || budgetBadge(run), run.reason || "",
             run.suggestion ? h("div", { class: "proposal", text: proposalText(run) }) : null),
-          h("td", { class: "next mono" }, run.next || "", run.assign && run.assign.script
+          h("td", { class: "next mono" }, run.next || "", approveCell(run), run.assign && run.assign.script
             ? h("button", { type: "button", class: "btn integrate assign-open", text: "Give to an agent",
               title: "an agent takes this run from where it stopped; you see the plan first, and nothing ships without the checks, the review and the gate",
               onclick: (event) => { event.stopPropagation(); go(routeHash(["run", run.layer, run.id], { assign: "1" })); } }) : null));
@@ -2190,6 +2237,7 @@
       const hosted = runs.some((r) => r.host);   // a host column only when a layer places its runs
       const body = h("tbody");
       const needs = params.view === "needs-you";
+      renderApproveAll(runs, needs);
       renderGiveAll(runs, needs);
       const columns = (needs ? 8 : 12) + (hosted ? 1 : 0);
       const shown = new Set();
@@ -2647,6 +2695,87 @@
     return card;
   }
 
+  // ---- Approve & resume: a run under Needs you that waits only for a person's approval (its summary's
+  // `approval`, read from agents/<id>/approvable.json). One dialog and one endpoint for the row button,
+  // "Approve & resume all N", the run page's banner and the proof-plan box's Approve button.
+  const approveResults = new Map();   // run key -> {text, url, at}: what the last approve & resume answered
+  const approvalOf = (run) => (run && run.bucket === "needs-you" && run.approval ? run.approval : null);
+  function itemsLine(approval) {
+    const text = ((approval && approval.items) || []).map((item) => item.text || item.id).join("; ");
+    return text.length > 140 ? `${text.slice(0, 139)}…` : text;
+  }
+  /** The answer of an approve & resume, as nodes (text only, and a link to the run that continues). */
+  function approveResultNodes(result) {
+    if (!result) return [];
+    return [result.text || "", result.url ? " " : null, result.url ? h("a", { href: result.url, text: "open the run", onclick: (e) => e.stopPropagation() }) : null];
+  }
+
+  /** The confirmation of Approve & resume for one run or several of one layer (`entries`: [{run, title,
+   * approval}]): every item in full, where each run resumes and what happens after, the person's name
+   * (remembered) and an optional note. Confirm posts /api/approve-resume and resolves with the answer
+   * (one run: {status, message, run_id, url}; several: {resumed, results}); null when cancelled. */
+  function approveResumeDialog(layerKey, entries) {
+    return new Promise((resolve) => {
+      const overlay = document.getElementById("overlay");
+      let done = false;
+      let watch = null;
+      const finish = (answer) => {
+        if (done) return;
+        done = true;
+        if (watch) watch.disconnect();
+        overlay.hidden = true;
+        clear(overlay);
+        overlay.onclick = null;
+        resolve(answer);
+      };
+      const single = entries.length === 1;
+      const who = h("input", { type: "text", class: "approve-who", placeholder: "your name", maxlength: 80, "aria-label": "your name",
+        value: localStorage.getItem("al.approve.who") || localStorage.getItem("al.settle.who") || "" });
+      const noteText = h("input", { type: "text", class: "approve-note-text", placeholder: "a note, kept with the approval (optional)",
+        maxlength: 500, "aria-label": "a note (optional)" });
+      const note = h("div", { class: "assign-note", role: "status" });
+      const cancel = h("button", { class: "btn confirm-cancel", type: "button", text: "Cancel", onclick: () => finish(null) });
+      const go = h("button", { class: "btn primary approve-resume-go", type: "button", text: "Approve & resume", disabled: !who.value.trim() });
+      who.oninput = () => { go.disabled = !who.value.trim(); };
+      go.onclick = async () => {
+        const name = who.value.trim();
+        if (!name) return;
+        go.disabled = true;
+        localStorage.setItem("al.approve.who", name);
+        const one = (entry) => ({ run: entry.run, items: entry.approval.items.map((item) => item.id), token: entry.approval.token });
+        const body = single ? { layer: layerKey, ...one(entries[0]), who: name, note: noteText.value.trim() }
+          : { layer: layerKey, runs: entries.map(one), who: name, note: noteText.value.trim() };
+        try {
+          finish(await api.post("/api/approve-resume", body));
+        } catch (error) {
+          if (!single && error.data && Array.isArray(error.data.results)) { finish(error.data); return; }
+          replace(note, h("span", { class: "badge warn", text: error.message }));
+          go.disabled = false;
+        }
+      };
+      const title = single ? `Approve & resume run ${entries[0].run}` : `Approve & resume ${entries.length} runs of ${layerKey}`;
+      const list = h("ol", { class: "approve-resume-list" }, entries.map((entry) => h("li", { dataset: { run: entry.run } },
+        h("span", { class: "mono", text: entry.run }), " ", h("span", { class: "dim", text: entry.title || "" }),
+        h("ul", { class: "approve-resume-items" }, (entry.approval.items || []).map((item) => h("li", { dataset: { item: item.id } },
+          h("span", { text: item.text || item.id }),
+          (item.paths || []).length ? h("div", { class: "mono dim approve-paths", text: item.paths.join("\n") }) : null))),
+        h("div", { class: "dim approve-after" }, entry.approval.from_step ? `resumes from ${entry.approval.from_step}` : "",
+          entry.approval.from_step && entry.approval.after ? " · " : "", entry.approval.after ? `after: ${entry.approval.after}` : ""))));
+      replace(overlay, h("div", { class: "panel start-confirm approve-resume-dialog", role: "dialog", "aria-modal": "true", "aria-label": title,
+        dataset: { role: "approve-resume-dialog" }, onclick: (e) => e.stopPropagation() },
+        h("h3", { text: title }),
+        h("p", { class: "confirm-message", text: "You approve exactly what is listed; it is recorded with your name, the time and your note, and the run goes on from where it stopped. Nothing ships without the checks, the review and the gate." }),
+        h("div", { class: "approve-resume-scroll" }, list),
+        h("div", { class: "approve-resume-fields" }, who, noteText), note,
+        h("div", { class: "confirm-buttons" }, cancel, go)));
+      overlay.hidden = false;
+      overlay.onclick = () => finish(null);
+      watch = new MutationObserver(() => { if (overlay.hidden) finish(null); });
+      watch.observe(overlay, { attributes: true, attributeFilter: ["hidden"] });
+      (who.value.trim() ? go : who).focus();
+    });
+  }
+
   /** "Give all N to agents" of the Needs-you view: the plans of one layer's runs in the order they would
    * start (GET /api/assign/bulk), then Start N (POST /api/assign {action: "bulk"} with that preview's
    * nonce). Resolves with the answer's results, or null when the person cancelled. */
@@ -2947,6 +3076,32 @@
           (broke.failing || []).length ? h("div", {}, "Failing: ", h("span", { class: "mono", text: broke.failing.join(", ") })) : null,
           h("div", {}, broke.fix_run ? ["Fix run: ", run(broke.fix_run)] : "No fix run was opened (the layer's #:on-batch-failure has no open-fix).")));
       }
+      const approval = approvalOf(sm);
+      const approved = approveResults.get(sm.key);
+      if (approval || (approved && Date.now() - approved.at < 120000)) {
+        // first on the page: the run waits only for this person's approval (or was just approved here)
+        const result = h("div", { class: "approve-result", role: "status" }, approveResultNodes(approved));
+        const banner = h("div", { class: `card approve-banner${approval ? "" : " done"}`, role: "status", dataset: { role: "approve-banner" } });
+        if (approval) {
+          const button = h("button", { type: "button", class: "btn primary approve-resume", text: "Approve & resume", onclick: async () => {
+            const answer = await approveResumeDialog(layerKey, [{ run: sm.id, title: sm.title || "", approval }]);
+            if (!answer) return;
+            approveResults.set(sm.key, { text: answer.message || "resumed", url: answer.run_id && answer.run_id !== sm.id ? answer.url : "", at: Date.now() });
+            replace(result, approveResultNodes(approveResults.get(sm.key)));
+            button.disabled = true;
+            load();
+          } });
+          banner.append(h("div", { class: "card-head" }, h("h3", { text: "This run waits for your approval" }),
+            h("span", { class: "badge", text: approval.kind || "approval" })),
+            h("ul", { class: "approve-resume-items" }, (approval.items || []).map((item) => h("li", { dataset: { item: item.id }, text: item.text || item.id }))),
+            h("div", { class: "dim approve-after" }, approval.from_step ? `resumes from ${approval.from_step}` : "",
+              approval.from_step && approval.after ? " · " : "", approval.after ? `after: ${approval.after}` : ""),
+            h("div", { class: "approve-row" }, button, " ", result));
+        } else {
+          banner.append(h("div", { class: "card-head" }, h("h3", { text: "Approved" })), result);
+        }
+        body.insertBefore(banner, body.firstChild);
+      }
       if (state.params.assign === "1") assignOpen.add(sm.key);
       const canAssign = sm.bucket === "needs-you" && !sm.settled && sm.assign && sm.assign.script;
       if (!canAssign) assignOpen.delete(sm.key);
@@ -3047,7 +3202,17 @@
           const result = h("span", { class: "dim approve-result" });
           const button = h("button", { type: "button", class: "approve-go", text: `Approve ${stop.approvals.join(", ")}`,
             onclick: async () => {
-              button.disabled = true;
+              const approval = approvalOf(detail.summary);
+              if (approval) {   // the same confirmation and endpoint as the banner: who approves, and a note
+                const answer = await approveResumeDialog(layerKey, [{ run: runId, title: detail.summary.title || "", approval }]);
+                if (!answer) return;
+                button.disabled = true;
+                result.textContent = answer.message || "resumed";
+                approveResults.set(detail.summary.key, { text: answer.message || "resumed", url: "", at: Date.now() });
+                load();
+                return;
+              }
+              button.disabled = true;   // a layer generated before approve & resume: the approvals alone
               try {
                 const answer = await api.post("/api/approve", { layer: layerKey, run: runId, what: stop.approvals });
                 result.textContent = answer.message || "resumed";
@@ -4868,6 +5033,8 @@
     const fileUrl = (name) => `/api/job/file?id=${enc(id)}&name=${enc(name)}`;
     const head = h("div", { class: "job-head" });
     const outcome = h("div", { class: "job-outcome-slot" });
+    // the row is made once and only its chips are redrawn: a reader that holds the row keeps a node on the page
+    const stepRow = h("div", { class: "job-steprow", "data-role": "steps" });
     const steps = h("div", { class: "card job-steps" });
     const activityHead = h("div", { class: "card-head" });
     const activityBody = h("div", { class: "activity-slot" });
@@ -4915,8 +5082,8 @@
         job.reason ? h("div", { class: `why${job.outcome ? " brief" : ""}`, text: job.reason }) : null)));
       replace(outcome, outcomeCard(job));
       const sel = selected(job);
-      replace(steps, h("div", { class: "card-head" }, h("h3", { text: "Steps" }), h("span", { class: "dim", text: "run in order; the first that fails stops the job" })),
-        h("div", { class: "job-steprow", "data-role": "steps" }, job.steps.map((step) => stepChip(step, step.name === sel))));
+      replace(stepRow, job.steps.map((step) => stepChip(step, step.name === sel)));
+      if (!stepRow.isConnected) replace(steps, h("div", { class: "card-head" }, h("h3", { text: "Steps" }), h("span", { class: "dim", text: "run in order; the first that fails stops the job" })), stepRow);
       renderActivity(job, sel);
       const report = job.report || { decisions: [], left_out: [] };
       // a layer inside the repository changes the repository on purpose: say what to do with it, not a warning
