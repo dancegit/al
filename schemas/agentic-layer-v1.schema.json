@@ -2069,6 +2069,10 @@
             "kind": {
               "const": "github"
             },
+            "pullRequests": {
+              "description": "#t: runs and promotions bring changes in through pull requests on the forge; #f: they merge locally as without a forge (PR.md, approval.md, al decide) and then push the branch they moved to the forge, whose CI runs on it.",
+              "type": "boolean"
+            },
             "repo": {
               "description": "owner/name.",
               "type": "string"
@@ -2086,6 +2090,7 @@
             "host",
             "id",
             "kind",
+            "pullRequests",
             "repo",
             "status",
             "tokenEnv"
@@ -2110,6 +2115,10 @@
             "kind": {
               "const": "forgejo"
             },
+            "pullRequests": {
+              "description": "#t: runs and promotions bring changes in through pull requests on the forge; #f: they merge locally as without a forge (PR.md, approval.md, al decide) and then push the branch they moved to the forge, whose CI runs on it.",
+              "type": "boolean"
+            },
             "repo": {
               "description": "owner/name.",
               "type": "string"
@@ -2127,6 +2136,7 @@
             "host",
             "id",
             "kind",
+            "pullRequests",
             "repo",
             "status",
             "tokenEnv"
@@ -2693,6 +2703,10 @@
             },
             "type": "array"
           },
+          "forgeCiTimeout": {
+            "description": "Minutes a promotion with forge-ci waits for the forge's CI on the commit (1–1440); none reported or still running then stops it.",
+            "type": "integer"
+          },
           "from": {
             "description": "The stage whose branch is promoted.",
             "type": "string"
@@ -2732,11 +2746,12 @@
             "type": "array"
           },
           "requires": {
-            "description": "checks: the #:checks of FROM and TO pass on the stage head; acceptance: every change is accepted or refused (or the whole promotion approved) before it merges.",
+            "description": "checks: the #:checks of FROM and TO pass on the stage head; acceptance: every change is accepted or refused (or the whole promotion approved) before it merges; forge-ci: the commit TO will point at is pushed to the forge and every check run and commit status the forge reports for it must succeed before TO moves (needs a forge).",
             "items": {
               "enum": [
                 "checks",
-                "acceptance"
+                "acceptance",
+                "forge-ci"
               ],
               "type": "string"
             },
@@ -2788,6 +2803,7 @@
           "approval",
           "approvers",
           "backMerge",
+          "forgeCiTimeout",
           "from",
           "hotfix",
           "method",

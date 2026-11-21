@@ -140,7 +140,9 @@ patch plan → implement → re-check → re-review loop up to `#:max-retries`.
 
 Shipping never touches the application's working tree: with a forge it is PR + merge through the
 API; with a bare remote it is a push from the worktree; purely locally the result is placed on
-`al/ship/<default-branch>` for a one-line fast-forward.
+`al/ship/<default-branch>` for a one-line fast-forward. A github or forgejo forge declared with
+`#:pull-requests #f` is not used for pull requests: ship sees no forge (`delivery.ship_layer`), so it
+merges locally, and `delivery.after_ship` then pushes the stage branch to the forge, whose CI runs on it.
 
 **Where a check runs.** `(check NAME #:cmd C #:in ENV)` runs C in the run's worktree inside
 environment option ENV instead of the workflow's own stack (the default): a podman option gets a
@@ -1246,11 +1248,13 @@ to its check, a re-check and the reviewers to the review step).
 | `notify.failed` | as `notify.sent`, plus `reason` (one of a fixed list, e.g. `variable AL_NOTIFY_TO is not set`, `timed out after 10 s`, `login refused (SMTP 535)`, `exit 3`) |
 | `fanout.candidate` | `step`, `id`, `index`, `status` (running / passed / failed / stopped), and when finished `exit`, `seconds`, `reason` |
 | `delivery.frozen` | `stage`, `branch`, `reason` (the period or the open promotion, and how to resume) |
+| `delivery.pushed` | `remote`, `branch`, `commit`, `ok`, `error` (a delivery with `#:pull-requests #f` pushed its stage branch) |
 | `promotion.opened` | `id`, `from`, `to`, `from_branch`, `to_branch`, `pinned`, `changes` (ids), `dry_run` |
 | `promotion.decision` | `by`, `kind` (human / agent / forge), `scope`, `decision`, `then`, `comment`, `source`; also appended by `al decide` while the run waits |
 | `promotion.excluded` | `change`, `by`, `comment`, `then`, `revert` (the revert commit), `patch_run` |
 | `promotion.waiting` / `promotion.approved` | `why`, `needed`, `have`, `undecided` / `approved_by`, `refused` |
 | `promotion.merged` | `method`, `result`, `to_branch`, `staged` |
+| `promotion.forge-ci` | `commit`, `branch`, `outcome` (passed / failed / cancelled / timeout / missing), `runs` (name, state, url) |
 | `promotion.tagged` / `promotion.deployed` | `tag`, `commit` / `environment`, `exit` |
 | `promotion.back-merge` | `stage`, `branch`, `conflict`, `resolved`, `published` |
 | `promotion.closed` | `id`, `result`, `tag`, `changes` (id → status) |

@@ -693,6 +693,7 @@
     "host": "github.com",
     "id": "github",
     "kind": "github",
+    "pullRequests": true,
     "repo": "<REPO>",
     "status": "stable",
     "tokenEnv": "GITHUB_TOKEN"

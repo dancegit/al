@@ -1,8 +1,10 @@
 """How al's own layer (agentic/agentic.rkt) delivers: every run lands on the stage `integration`, cut
 from `main`; `main` is the final stage, which agents may not merge into and which changes only by a
 promotion a person approves. The full suites are the checks of `main`, so the promotion runs them on the
-integration head, and the testing rhythm runs them per batch. The committed agentic/agentic-layer.json is
-the compiled definition, and CI runs on main, integration and pull requests into main, with the tools
+integration head, and the testing rhythm runs them per batch. GitHub hosts the repository without pull
+requests (`#:pull-requests #f`): runs merge into integration here and push it, and the promotion
+fast-forwards main only after GitHub's CI passed on that exact integration commit (forge CI is the last
+gate). The committed agentic/agentic-layer.json is the compiled definition, and CI runs on main, integration and pull requests into main, with the tools
 suite on Python 3.12 and the newest. Run with:
 
     env -u AL_APP_ROOT uv run --with pytest --with pyyaml --with jsonschema pytest tests/tools/test_own_delivery.py -q
@@ -58,7 +60,7 @@ def test_promotion_integration_to_main_needs_a_person_and_the_full_suites(own_ir
     assert promotion["to"] == "main"
     assert promotion["approval"] == "human"
     assert promotion["approvers"] == 1
-    assert promotion["method"] == "merge"
+    assert promotion["method"] == "fast-forward"
     assert "checks" in promotion["requires"]
     assert promotion["version"] is None
     assert promotion["tag"] == ""
@@ -68,6 +70,17 @@ def test_promotion_integration_to_main_needs_a_person_and_the_full_suites(own_ir
     assert set(integration["checks"]) | set(main["checks"]) == FULL_SUITES
     # A stage's checks are added to every run delivering into it: integration has none of its own.
     assert integration["checks"] == []
+
+
+def test_own_layer_declares_its_forge_and_waits_for_its_ci(own_ir):
+    forge = own_ir["forge"]
+    assert forge["kind"] == "github"
+    assert forge["repo"] == "dancegit/al"
+    assert forge["pullRequests"] is False
+    promotion = own_ir["promotions"][0]
+    assert {"checks", "acceptance", "forge-ci"} <= set(promotion["requires"])
+    assert promotion["method"] == "fast-forward"
+    assert promotion["forgeCiTimeout"] == 60
 
 
 def test_batches_prove_the_full_suites_on_integration(own_ir):
@@ -81,7 +94,7 @@ def test_batches_prove_the_full_suites_on_integration(own_ir):
 
 def test_committed_layer_is_generated_from_the_definition(own_ir):
     committed = json.loads((ROOT / "agentic" / "agentic-layer.json").read_text())
-    for key in ("stages", "promotions", "testing"):
+    for key in ("stages", "promotions", "testing", "forge"):
         assert committed.get(key) == own_ir[key], key
     assert ({a["name"]: a.get("deliverTo") for a in committed["adws"]}
             == {a["name"]: a.get("deliverTo") for a in own_ir["adws"]})

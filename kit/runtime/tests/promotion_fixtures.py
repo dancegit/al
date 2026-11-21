@@ -262,3 +262,71 @@ class FakeForgejoPulls:
     def approve(self, number: int, user: str) -> None:
         self.reviews.setdefault(number, []).append({"user": {"login": user}, "state": "APPROVED",
                                                     "submitted_at": "2026-11-16T10:00:00Z"})
+
+
+class FakeForgeCI:
+    """An `http_request` replacement for ForgejoForge used for CI only (#:pull-requests #f): answers the
+    combined status of a commit and says no branch is protected; any other call (a pull request above
+    all) fails the test.
+
+    `results` maps a commit sha to its poll answers, each a list of (context, status, target_url); the
+    last answer repeats. A sha it does not know gets `rule(sha)` when a rule is given, else no status.
+    `queried` holds the shas asked for; with `remote`, `ci_refs` holds what refs/heads/al/ci/main of
+    that bare repository was at each query."""
+
+    def __init__(self, results: dict[str, list] | None = None, rule: Any = None, remote: Path | None = None) -> None:
+        self.results: dict[str, list] = dict(results or {})
+        self.rule = rule
+        self.remote = Path(remote) if remote else None
+        self.queried: list[str] = []
+        self.ci_refs: list[str] = []
+        self.calls: list[tuple[str, str]] = []
+        self._polls: dict[str, int] = {}
+
+    def _answer(self, sha: str) -> list:
+        polls = self.results.get(sha)
+        if polls is None and self.rule is not None:
+            polls = self.rule(sha)
+        if not polls:
+            return []
+        index = self._polls.get(sha, 0)
+        self._polls[sha] = index + 1
+        return list(polls[min(index, len(polls) - 1)])
+
+    def __call__(self, method: str, url: str, headers: Any, body: bytes | None, timeout: float = 30.0):
+        path = url.split("/api/v1/repos/", 1)[1].split("/", 2)[2] if "/api/v1/repos/" in url else url
+        path = "/" + path.split("?", 1)[0]
+        self.calls.append((method, path))
+        parts = path.strip("/").split("/")
+        if method == "GET" and len(parts) == 3 and parts[0] == "commits" and parts[2] == "status":
+            sha = parts[1]
+            self.queried.append(sha)
+            if self.remote is not None:
+                self.ci_refs.append(git(self.remote, "rev-parse", "--verify", "--quiet", "refs/heads/al/ci/main",
+                                        check=False))
+            statuses = [{"context": c, "status": s, "target_url": u} for c, s, u in self._answer(sha)]
+            states = {item["status"] for item in statuses}
+            state = ("failure" if states - {"success", "pending"} else "pending" if "pending" in states
+                     else "success" if statuses else "pending")
+            return 200, {"state": state, "sha": sha, "statuses": statuses}
+        if method == "GET" and parts[:1] == ["branch_protections"]:
+            from adw_modules import forge
+
+            raise forge.ForgeError(f"GET {url} -> HTTP 404: not found")
+        raise AssertionError(f"unexpected forge call {method} {path}")
+
+
+def forgejo_forge(pull_requests: bool = False) -> dict[str, Any]:
+    """The IR forge object of a Forgejo forge (#:pull-requests as given)."""
+    return {"id": "forgejo", "kind": "forgejo", "status": "stable", "host": "https://forge.example.org",
+            "repo": "acme/webshop", "tokenEnv": "FORGEJO_TOKEN", "botMarker": "[ADW-BOT]",
+            "pullRequests": pull_requests}
+
+
+def with_origin(app: Path, tmp_path: Path) -> Path:
+    """A bare clone of the app as its `origin`, with main and the sprint pushed."""
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "clone", "-q", "--bare", str(app), str(remote))
+    git(app, "remote", "add", "origin", str(remote))
+    git(app, "push", "-q", "origin", "main", SPRINT)
+    return remote
