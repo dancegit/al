@@ -637,7 +637,6 @@
     const timeData = new Float32Array(1024);
     const freqData = new Uint8Array(512);
     const bands = [0, 0, 0, 0, 0];
-    let levelAt = 0;
 
     function measure() {
       const analyser = st.speaking ? st.playAnalyser : (st.holding || st.listening) && st.mic ? st.micAnalyser : null;
@@ -657,11 +656,7 @@
       } else {
         for (let b = 0; b < 5; b += 1) bands[b] *= 0.8;
       }
-      // decay by the clock, not by the frame: a slow frame rate must not hold the level up through a pause
-      const now = performance.now();
-      const frames = levelAt ? Math.max(1, (now - levelAt) / (1000 / 60)) : 1;
-      levelAt = now;
-      st.level = target >= st.level ? target : Math.max(target, st.level * Math.pow(0.7, frames));
+      st.level = target >= st.level ? target : Math.max(target, st.level * 0.7);
       if (st.level < 0.005) st.level = 0;
     }
 
