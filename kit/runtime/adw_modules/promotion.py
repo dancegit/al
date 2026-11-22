@@ -100,6 +100,7 @@ class Change:
     criteria: list[str] = field(default_factory=list)
     checks: dict[str, int] = field(default_factory=dict)
     check_outcomes: dict[str, dict[str, str]] = field(default_factory=dict)   # checks not run: {outcome, why, from}
+    passed: dict[str, int] = field(default_factory=dict)        # check → tests it passed (when its log said)
     verdict: dict[str, Any] = field(default_factory=dict)       # {success, summary}
     risks: list[str] = field(default_factory=list)
     artefacts: list[dict[str, Any]] = field(default_factory=list)
@@ -384,6 +385,8 @@ def _change_from_state(layer: Any, data: Mapping[str, Any]) -> Change:
                   klass=str(data.get("klass") or "chore"), plan=plan,
                   criteria=criteria(layer, plan, str(data.get("prompt") or "")),
                   checks={name: int(c.get("exit", 1)) for name, c in records.items()}, check_outcomes=outcomes,
+                  passed={name: int(c["skips"]["passed"]) for name, c in records.items()
+                          if isinstance(c.get("skips"), dict) and c["skips"].get("passed")},
                   verdict={"success": bool(verdict.get("success")), "summary": str(verdict.get("summary") or ""),
                            "mode": str(verdict.get("mode") or "")} if verdict else {},
                   risks=risks, artefacts=media, base=base, head=head, files=files, ended=str(data.get("ended") or ""),
@@ -1308,6 +1311,20 @@ def _check_code(data: Any) -> str:
     return str(data)
 
 
+def _change_lines(included: Iterable[Change], with_head: bool = False) -> list[str]:
+    """One bullet per change (`- \`id\` (klass): title`), or `- none`; with its delivered head on request."""
+    lines = [f"- `{c.id}` ({c.klass}): {c.title}" + (f" — `{c.head[:7]}`" if with_head and c.head else "")
+             for c in included]
+    return lines or ["- none"]
+
+
+def _not_included_lines(excluded: Iterable[Change], handed: Iterable[Change]) -> list[str]:
+    """The refused changes (with who and why) and the runs handed over to a person."""
+    lines = [f"- `{c.id}`: {c.title} — refused by {c.by}" + (f": \"{c.comment}\"" if c.comment else "")
+             + f" ({c.excluded})" for c in excluded]
+    return lines + [f"- `{c.id}`: {c.title} — handed over to a person" for c in handed]
+
+
 def _summary_md(run: _Run, included: list[Change], excluded: list[Change], handed: list[Change],
                 checks: Mapping[str, Any]) -> str:
     p, promo = run.p, run.promo
@@ -1325,16 +1342,9 @@ def _summary_md(run: _Run, included: list[Change], excluded: list[Change], hande
                       + ".", ""]
         else:
             lines += [f"Forge CI: awaited on the commit that enters {p['to_branch']}, before it merges.", ""]
-    lines += ["## Changes", ""]
-    for change in included:
-        lines.append(f"- `{change.id}` ({change.klass}): {change.title}")
-    if not included:
-        lines.append("- none")
+    lines += ["## Changes", "", *_change_lines(included)]
     if excluded or handed:
-        lines += ["", "## Not included", ""]
-        lines += [f"- `{c.id}`: {c.title} — refused by {c.by}" + (f": \"{c.comment}\"" if c.comment else "")
-                  + f" ({c.excluded})" for c in excluded]
-        lines += [f"- `{c.id}`: {c.title} — handed over to a person" for c in handed]
+        lines += ["", "## Not included", "", *_not_included_lines(excluded, handed)]
     lines += ["", "Decide: `al decide LAYER "
               f"{promo['from']} {promo['to']} accept|refuse|approve [CHANGE …] --by NAME [--comment TEXT]`, "
               "or comment `/accept ID`, `/refuse ID [revert|patch] why`, `/approve` on the pull request."]
@@ -1506,7 +1516,13 @@ def build_pack(run: _Run, checks: Mapping[str, Any] | None = None) -> Path:
     run.p["planned_version"] = {k: v for k, v in planned.items() if k != "entry"}
     notes = _release_notes(accepted)
     entry = planned.get("entry") or ""
-    (pack / "summary.md").write_text(_summary_md(run, included, excluded, handed, checks), encoding="utf-8")
+    from . import delivery_request
+
+    # the summary is the body of the promotion's request: it carries the request's marker, so a hands-off
+    # cycle after it updates the same request (delivery_request.open_or_update)
+    summary = delivery_request.mark(_summary_md(run, included, excluded, handed, checks),
+                                    f"{run.promo['from']}-{run.promo['to']}")
+    (pack / "summary.md").write_text(summary, encoding="utf-8")
     (pack / "release-notes.md").write_text(notes, encoding="utf-8")
     (pack / "changelog-entry.md").write_text(entry or "no changelog detected\n", encoding="utf-8")
     acceptance = [f"# Acceptance: {run.p['from_branch']} into {run.p['to_branch']}", ""]
@@ -1533,6 +1549,147 @@ def build_pack(run: _Run, checks: Mapping[str, Any] | None = None) -> Path:
     run.p["summary_md"] = (pack / "summary.md").relative_to(layer.layer_dir).as_posix()
     state.save(layer.layer_dir)
     return pack / "index.html"
+
+
+# ---------------------------------------------------------------- the delivery request's body
+
+def _areas(app: Path, base_ref: str, head_ref: str) -> list[str]:
+    """`- \`area\`: N files, +added −removed` per first path component (a file at the top is its own
+    area) of `git diff --numstat base...head`, most lines changed first; `- none` for an empty diff."""
+    out = _app_git(Path(app), ["diff", "--numstat", f"{base_ref}...{head_ref}"])
+    areas: dict[str, list[int]] = {}
+    for line in out.stdout.splitlines() if out.returncode == 0 else []:
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        added, removed, name = parts
+        if " => " in name:  # a rename: count it where it went
+            name = re.sub(r"\{[^{}]* => ([^{}]*)\}", r"\1", name).split(" => ")[-1].replace("//", "/")
+        area = name.split("/", 1)[0]
+        item = areas.setdefault(area, [0, 0, 0])
+        item[0] += 1
+        item[1] += int(added) if added.isdigit() else 0
+        item[2] += int(removed) if removed.isdigit() else 0
+    ranked = sorted(areas.items(), key=lambda kv: (-(kv[1][1] + kv[1][2]), kv[0]))
+    return [f"- `{area}`: {_plural(n, 'file')}, +{a} −{r}" for area, (n, a, r) in ranked] or ["- none"]
+
+
+def _title(text: str, limit: int = 72) -> str:
+    if len(text) <= limit:
+        return text
+    cut = text[:limit - 1].rsplit(" ", 1)[0].rstrip(" :,")
+    return cut + "…"
+
+
+def _batch_words(line: Mapping[str, Any], baseline: Mapping[str, Any] | None, to_branch: str) -> str:
+    checks = line.get("checks") or {}
+    shown = ", ".join(f"{cmd}={(data or {}).get('exit')}" for cmd, data in checks.items()) or "no checks"
+    words = f"Batch `{line.get('id')}` on `{str(line.get('head') or '')[:12]}`: {line.get('status')} ({shown})"
+    red = [cmd for cmd, data in checks.items() if (data or {}).get("exit")]
+    also = [cmd for cmd in red if _red_in(baseline, cmd)]
+    if also:
+        words += (f"; {', '.join(also)} failing — baseline: also failing on {to_branch} in batch "
+                  f"`{(baseline or {}).get('id')}`")
+    return words
+
+
+def _red_in(line: Mapping[str, Any] | None, cmd: str) -> bool:
+    if not line or line.get("status") != "red":
+        return False
+    checks = line.get("checks") or {}
+    names = (cmd, cmd[len("batch-"):] if cmd.startswith("batch-") else f"batch-{cmd}")
+    return any((checks.get(name) or {}).get("exit") for name in names if isinstance(checks.get(name), dict))
+
+
+def request_summary(layer: Any, from_stage: str, to_stage: str, from_branch: str, to_branch: str,
+                    by_run: str = "") -> tuple[str, str]:
+    """(title, body) of the delivery request FROM → TO a hands-off cycle opens or updates (see
+    delivery_request.py): the runs and commits in it, what changed by area, what the checks proved
+    (failures that are red on TO too named as baseline), what it unblocks and what it leaves out."""
+    from . import batch
+
+    app = Path(layer.app_root)
+    included, handed = changes(layer, from_branch, to_branch)
+    # a stage fed by a promotion (dev → qa): the changes that promotion carried in are in it too
+    known = {c.id for c in included}
+    for data in _load_states(layer):
+        p = data.get("promotion") or {}
+        if p.get("to_branch") != from_branch or not p.get("result") or p.get("staged"):
+            continue
+        for item in p.get("changes") or []:
+            change = _as_change(item)
+            if change.id in known or change.excluded or change.status == "refused":
+                continue
+            if change.head and _is_ancestor(app, change.head, f"refs/heads/{to_branch}"):
+                continue
+            known.add(change.id)
+            included.append(change)
+    refused: list[Change] = []
+    current = open_promotion(layer, from_stage, to_stage)
+    if current:
+        decided = effective(decisions(layer, str(current["id"])))
+        for change in included:
+            status = change_status(change, decided)
+            if status["status"] == "refused":
+                change.by, change.comment, change.status = status["by"], status.get("comment", ""), "refused"
+                refused.append(change)
+        included = [c for c in included if c not in refused]
+    title = _title(f"Promote {from_branch} into {to_branch}: {_plural(len(included), 'change')}")
+    try:
+        promo = promotion_for(layer, from_stage, to_stage)
+    except PromotionError:
+        promo = None
+    who = f"al, after run `{by_run}`" if by_run else "al"
+    if promo is not None:
+        how = (f"It moves on with `al promote LAYER {from_stage} {to_stage}`, which needs "
+               f"{_approval_words(promo)}" + (f" ({promo['approval']})" if promo.get("approval") == "auto" else "")
+               + ".")
+    else:
+        how = "No promotion is declared for it: a person merges it."
+    lines = [f"Opened by {who}: what stage {from_stage} (`{from_branch}`) delivers next into stage {to_stage} "
+             f"(`{to_branch}`). al updates it after every hands-off cycle and never merges it. {how}", "",
+             "## Runs and commits", "", *_change_lines(included, with_head=True), "",
+             "## What changed", "", *_areas(app, f"refs/heads/{to_branch}", f"refs/heads/{from_branch}")]
+    stat = _app_git(app, ["diff", "--shortstat", f"refs/heads/{to_branch}...refs/heads/{from_branch}"])
+    if stat.returncode == 0 and stat.stdout.strip():
+        lines.append(f"- in all: {stat.stdout.strip()}")
+    to_batch = batch.last(layer, to_branch)
+    lines += ["", "## Checks", ""]
+    for change in included:
+        words = []
+        for name, code in change.checks.items():
+            if name in change.check_outcomes:
+                o = change.check_outcomes[name]
+                words.append(f"`{name}` not run, {o['outcome'].replace('-', ' ')}" + (f": {o['why']}" if o["why"] else ""))
+            elif code == 0:
+                words.append(f"`{name}` passed" + (f" ({change.passed[name]} tests)" if change.passed.get(name) else ""))
+            elif _red_in(to_batch, name):
+                words.append(f"`{name}` failing — baseline: also failing on {to_branch} in batch "
+                             f"`{(to_batch or {}).get('id')}`")
+            else:
+                words.append(f"`{name}` failed")
+        lines.append(f"- `{change.id}`: " + ("; ".join(words) or "no checks recorded"))
+    from_batch = batch.last(layer, from_branch)
+    lines.append(f"- {_batch_words(from_batch, to_batch, to_branch)}" if from_batch else "- no batch recorded")
+    unblocks = []
+    for data in _load_states(layer):
+        if data.get("status") == "waiting" and (data.get("delivery") or {}).get("stage") in (from_stage, to_stage) \
+                and not data.get("promotion"):
+            unblocks.append(f"- `{data['adw_id']}`: {first_line(str(data.get('prompt') or ''))}")
+    if current:
+        with contextlib.suppress(Exception):
+            if _promotion_state(layer, str(current["id"])).get("status") == "waiting" and promo is not None:
+                unblocks.append(f"- promotion `{current['id']}` waits for {_approval_words(promo)}")
+    lines += ["", "## Unblocks", "", *(unblocks or ["- nothing waits on it"])]
+    open_runs = [f"- `{data['adw_id']}`: {first_line(str(data.get('prompt') or ''))} — still open"
+                 for data in _load_states(layer)
+                 if data.get("status") in ("running", "waiting") and not data.get("promotion")
+                 and (data.get("delivery") or {}).get("branch") == from_branch
+                 and not (data.get("delivery") or {}).get("delivered") and str(data.get("adw_id")) != by_run]
+    left = [*_not_included_lines(refused, handed), *open_runs]
+    lines += ["", "## Not included", "", *(left or ["- nothing"])]
+    worktrees = [c.worktree for c in included + refused + handed]
+    return title, _clean(layer, "\n".join(lines) + "\n", worktrees)
 
 
 # ---------------------------------------------------------------- the steps
@@ -1685,12 +1842,25 @@ def _request(run: _Run) -> None:
             if pushed.returncode != 0:
                 raise StepFailed("request", f"promotion:publish-failed: push of {p['from_branch']} refused: "
                                             f"{(pushed.stderr or pushed.stdout).strip()[:300]}")
-        pr = client.create_pr(p["from_branch"], p["to_branch"], f"Promote {p['from_branch']} into {p['to_branch']}",
-                              summary)
-        if not isinstance(pr, dict) or not isinstance(pr.get("number"), int):
-            raise StepFailed("request", f"forge create_pr returned an unexpected value: {pr!r}")
+        from . import delivery_request
+
+        key = f"{run.promo['from']}-{run.promo['to']}"
+        found = delivery_request.open_or_update(layer, client, p["from_branch"], p["to_branch"],
+                                                f"Promote {p['from_branch']} into {p['to_branch']}", summary, key)
+        action = found.pop("action", "")
+        pr = {k: v for k, v in found.items() if k in ("number", "url")}
+        if not isinstance(pr.get("number"), int) or not pr["number"]:
+            raise StepFailed("request", f"forge create_pr returned an unexpected value: {found!r}")
         p["pr"] = pr
         run.state.save(layer.layer_dir)
+        with contextlib.suppress(Exception):
+            delivery_request.write_record(layer, key, {
+                "kind": "promotion", "from": run.promo["from"], "to": run.promo["to"], "source": p["from_branch"],
+                "target": p["to_branch"], "medium": "forge", **pr, "state": "open", "action": action,
+                "promotion": run.pid, "title": f"Promote {p['from_branch']} into {p['to_branch']}"})
+        if action != "opened":  # al's request of an earlier cycle, or a person's: proof was posted, or is theirs
+            run.say(f"pull request: #{pr['number']} {pr.get('url', '')} ({action})".rstrip())
+            return
         ship.post_proof(layer, run.state, client, pr)
         if getattr(client, "can_attach", False) and p.get("pack"):
             with contextlib.suppress(Exception):
