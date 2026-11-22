@@ -1043,9 +1043,9 @@ every Needs-you row and on every such page (disabled with its reason in a layer 
 `al assign`), the plan of a rejected review at 1280 and 390 pixels and its start with a sentence for
 the agent, "I approve this, continue" and the plan that remains, **Give all N to agents** with the
 plans first, and the left-out count on the Artefacts tab. With `AL_DASHBOARD_SHOTS=DIR` it saves
-`assign-needs-you-1280.png`, `assign-button-1280.png`, `assign-preview-rejected-1280.png`,
-`assign-preview-rejected-390.png`, `assign-preview-person-1280.png`, `assign-approved-1280.png`,
-`assign-bulk-1280.png` and `assign-left-out-1280.png`. The Automatic switch:
+`work-assign-needs-you-1280.png`, `work-assign-button-1280.png`, `work-assign-preview-rejected-1280.png`,
+`work-assign-preview-rejected-390.png`, `work-assign-preview-person-1280.png`, `work-assign-approved-1280.png`,
+`work-assign-bulk-1280.png` and `work-assign-left-out-1280.png`. The Automatic switch:
 `tests/test_assign_auto_model.py` checks the setting's one format, its atomic write and removal, the
 `assign_auto` view of a layer (a broken file, `--read-only`, `--no-start`, `--no-stand-in`, the
 container, a layer without the script), which runs the loop takes (every run under Needs you, oldest
@@ -1057,7 +1057,7 @@ own `adws/assign.py` and the mock agent, a failed check resumed, an unchanged ru
 `person` run that stays with its reason, and that nothing is given twice;
 `tests/test_browser_assign_auto.py` (Chrome) the switch in the Needs-you view, its confirmation and
 Cancel, the report lines, the crumbs and switching it off, and with `AL_DASHBOARD_SHOTS=DIR` saves
-`assign-auto-confirm-1280.png` and `assign-auto-on-1280.png`. `tests/tools/test_al_assign.py` (at the
+`work-assign-auto-confirm-1280.png` and `work-assign-auto-on-1280.png`. `tests/tools/test_al_assign.py` (at the
 repository root) runs `al assign`.
 
 `tests/test_workspace.py` covers the workspace scan (states, sibling layers, al scout's summary, depth,

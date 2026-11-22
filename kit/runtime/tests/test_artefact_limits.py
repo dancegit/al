@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-from adw_modules import artefacts
+from adw_modules import artefacts, evidence
 from adw_modules.ir import load
 
 RUN = "1234abcd"
@@ -58,7 +58,22 @@ def test_files_of_the_change_come_first(make_layer, app_repo: Path, tmp_path: Pa
     assert names[3:] == [f"{index:02d}-old.png" for index in range(9)]
     out = capsys.readouterr().out
     assert (f"[adw {RUN}] artefact shots: 12 of 14 files handed over, 2 left out (limit 12); "
-            "files of this change first") in out
+            "files the proof plan names and of this change first") in out
+
+
+def test_files_a_proof_row_writes_come_first(make_layer, app_repo: Path, tmp_path: Path) -> None:
+    layer = load(make_layer({"artefacts": [SHOTS]}))
+    worktree = _worktree(app_repo, tmp_path, old=14)                         # none changed by the run
+    state = _state(worktree)
+    writes = [{"glob": "shots/1[23]-old.png", "count": 2}]
+    state.proof_plan = {"rows": [{"id": "C1", "writes": writes}]}
+    collected = artefacts.collect(layer, state, ["shots"], "review")
+    names = _names(collected)
+    assert names[:2] == ["12-old.png", "13-old.png"], names
+    assert names[2:] == [f"{index:02d}-old.png" for index in range(10)]
+    assert len(names) == 12
+    # the evidence pack finds the row's files: no `files-missing`
+    assert evidence._files(state, {"writes": writes})[1] == []
 
 
 def test_manifest_says_how_many_were_left_out(make_layer, app_repo: Path, tmp_path: Path) -> None:
