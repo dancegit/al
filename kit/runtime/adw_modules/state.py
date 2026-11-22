@@ -127,6 +127,10 @@ class ADWState:
     # last_seen, restart_of, storage, status}; empty, and then left out of state.json, for every run
     # that stays on the machine that holds the layer
     remote: dict[str, Any] = field(default_factory=dict)
+    # the delivery request after a hands-off cycle (delivery_request.py): {kind: run | promotion, source,
+    # target, from, to, medium: forge | file, number, url, path, state, action, title, updated_at, skipped,
+    # none, note, error}; empty, and then left out of state.json, for a run that has none
+    delivery_request: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[0-9a-fA-F]{8}", self.adw_id):
@@ -180,6 +184,8 @@ class ADWState:
                 data.pop("approvals", None)  # only a run somebody approved something for has one
             if not data.get("remote"):
                 data.pop("remote", None)  # only a run placed on another host has one
+            if not data.get("delivery_request"):
+                data.pop("delivery_request", None)  # only a hands-off cycle with something to deliver has one
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False) as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")

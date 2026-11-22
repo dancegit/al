@@ -7,7 +7,7 @@ adws/assign.py runs with the mock agent).
     uv run --with pytest --with playwright pytest kit/dashboard/tests/test_browser_assign_auto.py
 
 Skipped without Playwright or Chrome (nothing is downloaded). With AL_DASHBOARD_SHOTS=<directory> the
-test saves assign-auto-confirm-1280.png and assign-auto-on-1280.png there."""
+test saves work-assign-auto-confirm-1280.png and work-assign-auto-on-1280.png there."""
 from __future__ import annotations
 
 import shutil
@@ -76,7 +76,7 @@ def test_automatic_switch_gives_the_runs_and_says_what_stays(scenario, tab):
     assert "what only a person may decide stays with you" in words and "until you switch it off" in words
     assert page.inner_text(".start-confirm button.confirm-go").strip() == "Switch on"
     no_personal_paths(page)
-    shot(page, "assign-auto-confirm-1280.png")
+    shot(page, "work-assign-auto-confirm-1280.png")
     page.click(".start-confirm button.confirm-cancel")
     until(page, "document.getElementById('overlay').hidden")
     switch_is(page, "off")
@@ -93,7 +93,7 @@ def test_automatic_switch_gives_the_runs_and_says_what_stays(scenario, tab):
     assert lines[1] == f"{af.FAILED_CHECK} → resumed in place (check)", lines
     until(page, "document.querySelector('#crumbs .assign-auto-count')?.innerText.includes('automatic on')")
     no_personal_paths(page)
-    shot(page, "assign-auto-on-1280.png")
+    shot(page, "work-assign-auto-on-1280.png")
     attempts = af.record_of(layer, af.FAILED_CHECK)["attempts"]
     assert [(a["by"], a["kind"], a["run"]) for a in attempts] == [("decider", "check", af.FAILED_CHECK)]
     assert not (layer / "agents" / af.PERSON / "assign.json").exists()
