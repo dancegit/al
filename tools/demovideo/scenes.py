@@ -1,14 +1,20 @@
 """The scenes of the five-minute demo video: one recorder function per scene id of narration.md.
 
-Nothing here draws a frame of its own design except the title cards: terminal scenes are real commands
-run with tools/showcase/terminal_clips.run_shown and rendered by tools/showcase/term.py, browser scenes
-are the dashboard in the host's Chromium, recorded by tools/showcase/browser_clips.Recorder. A scene
-function takes a `Ctx` and returns its parts in order; make.py fits each part to its length, lays the
-captions of narration.md over it and writes the clip.
+Nothing here draws a frame of its own design except the cards: terminal scenes are real commands run
+with tools/showcase/terminal_clips.run_shown and rendered by tools/showcase/term.py, browser scenes are
+the dashboard in the host's Chromium, recorded by tools/showcase/browser_clips.Recorder. A scene function
+takes a `Ctx` and returns its parts in order; make.py fits each part to its length, lays the captions of
+narration.md over it and writes the clip.
 
   demo_site    the demo application `cart` and its layer, written beside each other in a work folder
-  COMMANDS     every `al …` command a terminal scene shows ({run} and {port} are filled at run time)
+  rota_site    a copy of the Rota app (tests/rotademo/app); install_rota_layer puts its real definition beside it
+  COMMANDS     every `al …` command a terminal scene shows ({run} is filled at run time)
   SCENES       scene id → recorder function
+
+What guides the eye: cards build line by line (card_frames), pictures of the recorded Rota runs
+(PICTURES, committed under docs/demo/rotademo) are shown on cards with their source (picture_frames,
+gif_frames), a terminal scene can dim every row but the ones the voice talks about (highlight_frame), and
+the dashboard is shown at page zoom ZOOM with an outline on the element the voice talks about (Browser.spot).
 
 Captured text is changed in two ways only, and both are listed in the clip's JSON file: paths of this
 machine are shown short (`~/work`, `.`, `agentic`), and a private match is blanked with █ (rules.blank).
@@ -20,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -44,15 +51,29 @@ PROMPT_B = "Note in the lint tool what it also checks"
 APPROVAL = "edit:tools/lint.py"
 STEPS_A = ("classify", "plan", "prove", "build", "lint", "test", "commit", "evidence", "review", "ship")
 REPOSITORY = "github.com/dancegit/al"
+WHO = "Ada Example"                             # the fictional person who approves in the dashboard (05-protected)
 
-# every `al …` command a terminal scene shows, as typed (tests/tools/test_demo_video.py runs each with --help)
+# Rota, the shift-scheduling app for hospital wards, and its real layer definition
+ROTA = ROOT / "tests" / "rotademo"
+PICTURES = {name: ROOT / "docs" / "demo" / "rotademo" / file for name, file in (
+    ("board", "before.png"), ("rest", "a-rest-rule.gif"), ("merged", "a-pr-merged.png"), ("handoff", "b-pr-why-human-top.png"))}
+# the forge of the Rota layer: a reserved example domain that nothing is sent to (al gen and al check
+# only compile; the definition needs a base URL, built here so this file holds no address)
+FORGE_BASE = "https" + ":" + "//forge.example.org"
+# run in ROTA: lines 10, 12, 14, 18, 19, 42 and 43 of layer.rkt.in (never line 21, the forge line)
+ROTA_EXCERPT = "grep -nE '\\((cmd|review auto) |#:protected|\"req|#:req' layer.rkt.in | cut -c1-96"
+# the caption of 02-layer → the substrings of the excerpt's rows that stay bright under it
+HIGHLIGHTS: dict[int, tuple[str, ...]] = {1: ("(cmd ",), 2: ("#:protected", "requirements.txt"),
+                                          3: ("(review auto", "#:require-checks")}
+
+# every `al …` command a scene shows, as typed (tests/tools/test_demo_video.py runs each with --help)
 COMMANDS: dict[str, tuple[str, ...]] = {
-    "gen": ("al", "gen", "cart.al"),
-    "check": ("al", "check", "cart.al"),
-    "dashboard": ("al", "dashboard", "cart.al", "--port", "{port}"),
-    "approve": ("al", "approve", "cart.al", "{run}", APPROVAL, "--who", "Ada Example"),
+    "init": ("al", "init", "rota"),
+    "gen": ("al", "gen", "rota.al"),
+    "check": ("al", "check", "rota.al"),
+    "run": ("al", "run", "rota.al", "/feature", "Enforce 11 hours of rest between shifts"),
 }
-SAMPLES = {"run": "0123abcd", "port": "18765"}
+SAMPLES: dict[str, str] = {}
 
 PLAN = """# Feature: a percentage discount
 
@@ -112,7 +133,6 @@ class Ctx:
     work: Path                                  # --work DIR
     home_work: Path                             # this scene's neutral ~/work
     values: dict[str, list[str]]                # rules.machine_values of the real machine
-    own_plan: Path | None = None
     rehearse: bool = False
     blanked: list[dict] = field(default_factory=list)
     stand_ins: list[str] = field(default_factory=list)
@@ -149,16 +169,6 @@ class Ctx:
 
 
 # ------------------------------------------------------------------------------------------ the demo application
-
-def excerpts(text: str) -> tuple[tuple[int, int], tuple[int, int]]:
-    """The two line ranges of the layer definition that scene 02-layer shows: the codebase with its
-    checks, the protected path and the review rule; then the workflow `change`."""
-    lines = text.splitlines()
-    review = next(i for i, line in enumerate(lines, 1) if line.strip().startswith("(review agent"))
-    start = next(i for i, line in enumerate(lines, 1) if line.strip().startswith("(adw change"))
-    end = next(i for i, line in enumerate(lines, 1) if i > start and "(ship)" in line)
-    return (1, review), (start, end)
-
 
 def _git(repo: Path, *args: str) -> None:
     cp = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=120)
@@ -244,6 +254,53 @@ def new_run(layer: Path, before: set[str]) -> str:
 
 def runs_of(layer: Path) -> set[str]:
     return {p.name for p in (layer / "agents").iterdir()} if (layer / "agents").is_dir() else set()
+
+
+def rota_site(work: Path) -> dict:
+    """A copy of the Rota app (tests/rotademo/app) at work/rota, committed once by a neutral identity; a
+    folder already there is used as it is. The layer work/rota.al is not made here: `al init` makes it on screen."""
+    app = work / "rota"
+    if not app.is_dir():
+        shutil.copytree(ROTA / "app", app, ignore=shutil.ignore_patterns("__pycache__", "e2e-results", "*.db", ".pytest_cache"))
+        _git(app, "init", "-q", "-b", "main")
+        _git(app, "add", "-A")
+        _git(app, "-c", "user.name=Showcase", "-c", "user.email=showcase@example.org", "commit", "-qm", "rota")
+    return {"work": work, "app": app, "layer": work / "rota.al"}
+
+
+def install_rota_layer(work: Path) -> Path:
+    """Hidden setup after `al init rota`: the real Rota definition as work/rota.al/agentic.rkt (its
+    placeholders filled with neutral values) and the folder `planted` its planter agent names. The
+    LLM.txt and scout.json that `al init` wrote stay."""
+    layer = work / "rota.al"
+    text = (ROTA / "layer.rkt.in").read_text(encoding="utf-8")
+    for key, value in (("@FORGE_HOST@", FORGE_BASE), ("@REPO@", "adw/rota"), ("@APP_DIR@", "rota")):
+        text = text.replace(key, value)
+    layer.mkdir(parents=True, exist_ok=True)
+    (layer / "agentic.rkt").write_text(text, encoding="utf-8")
+    if (layer / "planted").exists():
+        shutil.rmtree(layer / "planted")
+    shutil.copytree(ROTA / "planted", layer / "planted", ignore=shutil.ignore_patterns("__pycache__"))
+    return layer
+
+
+_EXAMPLE_ROW = re.compile(r"^\| \[([^\]]+)\]\(https:/{2}github\.com/[^)]+\) \| ([^|]+?) \|")
+
+
+def example_rows() -> list[tuple[str, str]]:
+    """(name, language) of each row of the table under "## The example repositories" in docs/EXAMPLES.md."""
+    text = (ROOT / "docs" / "EXAMPLES.md").read_text(encoding="utf-8")
+    at = text.find("## The example repositories")
+    rows: list[tuple[str, str]] = []
+    if at >= 0:
+        for line in text[at:].splitlines()[1:]:
+            if line.startswith("## "):
+                break
+            if m := _EXAMPLE_ROW.match(line):
+                rows.append((m.group(1), m.group(2).strip()))
+    if len(rows) < 5:
+        raise SceneStopped(f"docs/EXAMPLES.md: the table of the example repositories has {len(rows)} rows, not 5")
+    return rows
 
 
 # ------------------------------------------------------------------------------------------ text shown in a terminal
@@ -341,53 +398,172 @@ def terminal_part(ctx: Ctx, title: str, steps: list) -> Part:
     return part
 
 
+def shown_lines(transcript) -> list[tuple[str, str]]:
+    """The lines term.render_frames shows after the last step's output: each command, then its output."""
+    import term
+    lines: list[tuple[str, str]] = []
+    for step in transcript.steps:
+        lines.append(("cmd", step.command))
+        lines += [("out", line) for line in term.output_lines(step.output)]
+    return lines
+
+
+def highlight_frame(ctx: Ctx, title: str, steps: list, keep):
+    """The terminal as it is after `steps` (term.Step), every visible row whose text does not satisfy
+    `keep` dimmed: the rows the voice talks about stand out. None when rehearsing."""
+    if ctx.rehearse:
+        return None
+    from PIL import Image, ImageDraw
+    import term
+    lines = shown_lines(term.Transcript(list(steps), title))
+    visible = lines[-term.ROWS:]
+    if not any(keep(text) for _kind, text in visible):
+        raise SceneStopped(f"{ctx.scene.id}: {title}: no line to highlight")
+    base = term._draw(title, lines, False, "").convert("RGBA")
+    veil = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(veil)
+    bg = tuple(int(term.BG[i:i + 2], 16) for i in (1, 3, 5))
+    for row, (_kind, text) in enumerate(visible):
+        if not keep(text):
+            y = term.TITLE_H + 10 + row * term.LINE_H
+            d.rectangle([0, y, term.W, y + term.LINE_H - 1], fill=(*bg, 170))
+    return Image.alpha_composite(base, veil).convert("RGB")
+
+
 # ------------------------------------------------------------------------------------------ cards
 
-def card_image(lines: list[str], small: list[str] | None = None):
+FADE_FRAMES, LINE_FRAMES = 6, 5
+
+
+def card_image(lines: list[str], small: list[str] | None = None, shown: int | None = None):
     """A title card in the showcase's colours: a bold first line with the blue rule under it, then
-    centred lines; `small` lines (real text of a file, with its source) are set in the terminal's font."""
+    centred lines; `small` lines (real text of a file, with its source) are set in the terminal's font.
+    The layout is that of every line; only the first `shown` of them (the head is one; None: all) are drawn."""
     from PIL import Image, ImageDraw
     import term
     img = Image.new("RGB", (term.W, term.H), term.BG)
     d = ImageDraw.Draw(img)
-    head, body = term.font(term.CARD_SIZE + 6, True), term.font(term.CARD_SIZE - 6)
+    head, body = term.font(term.CARD_SIZE + 12, True), term.font(term.CARD_SIZE)
     mono = term.font(term.FONT_SIZE - 2)
     for face, text in [(head, lines[0])] + [(body, line) for line in lines[1:]] + [(mono, line) for line in small or []]:
         if face.getlength(text) > term.CARD_WIDTH:
             raise ValueError(f"card line does not fit {term.CARD_WIDTH} px: {text!r}")
-    height = 70 + 44 * len(lines[1:]) + (30 + 28 * len(small) if small else 0)
-    y = (term.H - term.STRIP_H - height) // 2 + 20
-    d.text((term.W // 2, y), lines[0], font=head, fill="#ffffff", anchor="mm")
-    d.line([term.W // 2 - 60, y + 36, term.W // 2 + 60, y + 36], fill=term.BLUE, width=3)
-    y += 86
+    every = len(lines) + len(small or [])
+    shown = every if shown is None else shown
+    height = 80 + 52 * len(lines[1:]) + (30 + 28 * len(small) if small else 0)
+    y = (term.H - term.STRIP_H - height) // 2 + 24
+    n = 0
+    if n < shown:
+        d.text((term.W // 2, y), lines[0], font=head, fill="#ffffff", anchor="mm")
+        d.line([term.W // 2 - 60, y + 40, term.W // 2 + 60, y + 40], fill=term.BLUE, width=3)
+    n += 1
+    y += 96
     for line in lines[1:]:
-        d.text((term.W // 2, y), line, font=body, fill=term.FG, anchor="mm")
-        y += 44
+        if n < shown:
+            d.text((term.W // 2, y), line, font=body, fill=term.FG, anchor="mm")
+        n += 1
+        y += 52
     if small:
         y += 20
         left = (term.W - max(mono.getlength(line) for line in small)) // 2
         for line in small:
-            d.text((left, y), line, font=mono, fill=term.DIM if line.startswith("#") else term.FG, anchor="lm")
+            if n < shown:
+                d.text((left, y), line, font=mono, fill=term.DIM if line.startswith("#") else term.FG, anchor="lm")
+            n += 1
             y += 28
     return img
 
 
+def _fade_in(target) -> list:
+    """FADE_FRAMES frames from the empty background to `target`."""
+    from PIL import Image
+    import term
+    empty = Image.new("RGB", target.size, term.BG)
+    return [Image.blend(empty, target, (k + 1) / FADE_FRAMES) for k in range(FADE_FRAMES)]
+
+
+def card_frames(lines: list[str], small: list[str] | None = None) -> list:
+    """A card that builds: its first line fades in, then each further line is added and held LINE_FRAMES
+    frames; the last frame is the whole card."""
+    every = len(lines) + len(small or [])
+    frames = _fade_in(card_image(lines, small, shown=1))
+    for shown in range(2, every + 1):
+        frames += [card_image(lines, small, shown=shown)] * LINE_FRAMES
+    if every == 1:
+        frames.append(card_image(lines, small))
+    return frames
+
+
 def card_part(ctx: Ctx, cards: list[tuple[int, list[str], list[str] | None]]) -> Part:
-    """A part of title cards: (caption index, lines, small lines) each; a card stays until the next."""
+    """A part of title cards: (caption index, lines, small lines) each; a card builds, then stays until the next."""
     for _cue, lines, small in cards:
         ctx.check("\n".join(lines + (small or [])), "a card")
         ctx.say("card: " + " / ".join(lines + (small or []))[:150])
     part = Part("frames", cards[0][0])
     for cue, lines, small in cards:
-        part.segments.append(Segment(cue, [] if ctx.rehearse else [card_image(lines, small)]))
+        part.segments.append(Segment(cue, [] if ctx.rehearse else card_frames(lines, small)))
     return part
+
+
+def _picture_on_card(picture, title: str, source: str):
+    """`picture` (an RGB image) scaled to fit under a bold title with the blue rule, in a 1 px border, with
+    its source small and dim at the bottom."""
+    from PIL import Image, ImageDraw
+    import term
+    head, small = term.font(term.CARD_SIZE + 12, True), term.font(term.FONT_SIZE - 2)
+    for face, text in ((head, title), (small, source)):
+        if face.getlength(text) > term.CARD_WIDTH:
+            raise ValueError(f"picture text does not fit {term.CARD_WIDTH} px: {text!r}")
+    img = Image.new("RGB", (term.W, term.H), term.BG)
+    d = ImageDraw.Draw(img)
+    d.text((term.W // 2, 70), title, font=head, fill="#ffffff", anchor="mm")
+    d.line([term.W // 2 - 60, 110, term.W // 2 + 60, 110], fill=term.BLUE, width=3)
+    room_w, room_h = 1180, term.H - term.STRIP_H - 170
+    scale = min(room_w / picture.width, room_h / picture.height)
+    size = (max(1, round(picture.width * scale)), max(1, round(picture.height * scale)))
+    left, top = (term.W - size[0]) // 2, 125 + (room_h - size[1]) // 2
+    img.paste(picture.resize(size, Image.LANCZOS), (left, top))
+    d.rectangle([left - 1, top - 1, left + size[0], top + size[1]], outline=term.BAR, width=1)
+    d.text((term.W // 2, term.H - term.STRIP_H - 30), source, font=small, fill=term.DIM, anchor="mm")
+    return img
+
+
+def picture_image(path: Path, title: str, source: str, crop: tuple[int, int, int, int] | None = None):
+    """One frame: the picture at `path` (cut to `crop`, a box, when given) under its title, with its source."""
+    from PIL import Image
+    with Image.open(path) as opened:
+        picture = opened.convert("RGB")
+    if crop is not None:
+        picture = picture.crop(crop)
+    return _picture_on_card(picture, title, source)
+
+
+def picture_frames(path: Path, title: str, source: str, crop: tuple[int, int, int, int] | None = None) -> list:
+    """The picture fading in, then held."""
+    image = picture_image(path, title, source, crop)
+    return _fade_in(image) + [image]
+
+
+def gif_frames(path: Path, title: str, source: str, max_frames: int) -> list:
+    """Each frame of the GIF at `path` laid out like picture_image, repeated for its own duration at
+    rules.FPS; the first fades in, and the whole is cut to `max_frames`."""
+    from PIL import Image, ImageSequence
+    frames: list = []
+    with Image.open(path) as gif:
+        for k, frame in enumerate(ImageSequence.Iterator(gif)):
+            image = _picture_on_card(frame.convert("RGB"), title, source)
+            repeat = max(1, round(frame.info.get("duration", gif.info.get("duration", 100)) / 1000 * rules.FPS))
+            frames += (_fade_in(image) if k == 0 else []) + [image] * repeat
+            if len(frames) >= max_frames:
+                break
+    return frames[:max(1, max_frames)]
 
 
 # ------------------------------------------------------------------------------------------ the dashboard in a browser
 
 # Installed in the page (context.add_init_script and page.evaluate; the page's CSP refuses injected
 # <script> and <style> tags, not these): every text node has this machine's paths shown short and each
-# private match replaced by █, now and whenever the page changes.
+# private match replaced by █, now and whenever the page changes; a short label that held one is hidden.
 BLANKER = """(cfg) => {
   if (window.__alDemo) return window.__alDemo.blanked;
   const patterns = cfg.patterns.map((source) => new RegExp(source, 'gi'));
@@ -402,7 +578,11 @@ BLANKER = """(cfg) => {
     for (const re of patterns) {
       text = text.replace(re, (m) => { state.blanked[m] = (state.blanked[m] || 0) + 1; return '█'.repeat(m.length); });
     }
-    if (text !== before) node.nodeValue = text;
+    if (text !== before) {
+      node.nodeValue = text;
+      // a short label that held a match (the dashboard's "tokens" headings) is hidden, so no █ is in view
+      if (before.trim().length <= 24 && text.includes('█') && node.parentNode && node.parentNode.style) node.parentNode.style.visibility = 'hidden';
+    }
   };
   const walk = (root) => {
     if (!root) return;
@@ -421,6 +601,39 @@ BLANKER = """(cfg) => {
   }).observe(document, { subtree: true, childList: true, characterData: true });
   window.__alDemo = state;
   return state.blanked;
+}"""
+
+
+# The page zoom of every browser scene, set through the CSSOM (not an injected style tag), now and on load.
+ZOOM = 1.25
+ZOOMER = ("(z) => { const set = () => { if (document.documentElement) document.documentElement.style.zoom = String(z); }; "
+          "set(); document.addEventListener('DOMContentLoaded', set); }")
+
+# An outline on the element the voice talks about: window.__alSpotSet(selector, text, last) picks the first
+# (or the last) element of `selector` whose text holds `text`, outlines it and keeps doing so every 300 ms,
+# so a live re-render of the page does not lose it.
+SPOTTER = """() => {
+  if (window.__alSpotSet) return;
+  let args = null;
+  const clear = (e) => {
+    e.style.outline = ''; e.style.outlineOffset = ''; e.style.borderRadius = '';
+    e.removeAttribute('data-al-spot');
+  };
+  const apply = () => {
+    if (!args) return false;
+    const [selector, text, last] = args;
+    let found = [...document.querySelectorAll(selector)];
+    if (text) found = found.filter((e) => (e.textContent || '').includes(text));
+    const el = found.length ? (last ? found[found.length - 1] : found[0]) : null;
+    for (const old of document.querySelectorAll('[data-al-spot]')) if (old !== el) clear(old);
+    if (el && !el.hasAttribute('data-al-spot')) {
+      el.style.outline = '3px solid #58a6ff'; el.style.outlineOffset = '4px'; el.style.borderRadius = '6px';
+      el.setAttribute('data-al-spot', '1');
+    }
+    return !!el;
+  };
+  window.__alSpotSet = (selector, text, last) => { args = [selector, text || null, !!last]; return apply(); };
+  setInterval(apply, 300);
 }"""
 
 
@@ -447,13 +660,22 @@ class Browser:
         self.part = Part("video", first)
         self.started: float | None = None
         self.shots = 0
+        self.spotted: tuple | None = None
 
     def __enter__(self) -> "Browser":
         self.recorder.__enter__()
         self.config = json.dumps(_blanker_config(self.ctx, self.paths))
         self.recorder.context.add_init_script(f"({BLANKER})({self.config})")
+        self.recorder.context.add_init_script(f"({ZOOMER})({ZOOM})")
+        self.recorder.context.add_init_script(f"({SPOTTER})()")
         self.page = self.recorder.page
         return self
+
+    def spot(self, selector: str, text: str | None = None, last: bool = False) -> bool:
+        """Outline the element the voice talks about; False when the page has no such element (yet)."""
+        self.spotted = (selector, text, last)
+        self.page.evaluate(f"({SPOTTER})()")
+        return bool(self.page.evaluate("([s, t, l]) => window.__alSpotSet(s, t, l)", [selector, text, last]))
 
     def _blanks(self) -> None:
         found = self.page.evaluate(f"({BLANKER})({self.config})")
@@ -476,6 +698,8 @@ class Browser:
         self._blanks()
         text = self.page.inner_text("body")
         self.ctx.check(text, f"the page at caption {caption}")
+        if self.spotted and not self.page.evaluate("() => !!document.querySelector('[data-al-spot]')"):
+            self.ctx.say(f"cue {caption}: no element to outline for {self.spotted}")
         self.recorder.cue(str(caption))
         if self.started is None:
             self.started = time.monotonic()
@@ -521,18 +745,19 @@ def _node(step: str) -> str:
     return f".g-node[data-step='{step}']"
 
 
-def _to_top(page, selector: str) -> None:
+# scrollIntoView, not offsets computed from getBoundingClientRect: the page is zoomed (ZOOM)
+def _to_top(page, selector: str, above: int = 12) -> None:
     """Scroll so that the element starts just under the top of the window."""
     page.wait_for_selector(selector)
-    page.evaluate("(s) => { const e = document.querySelector(s); window.scrollTo(0, e.getBoundingClientRect().top + window.scrollY - 12); }",
-                  selector)
+    page.evaluate("([s, above]) => { document.querySelector(s).scrollIntoView({block: 'start'}); window.scrollBy(0, -above); }",
+                  [selector, above])
 
 
 def _to_text(page, text: str, above: int = 16) -> None:
-    """Scroll so that the first element with exactly this text is `above` pixels under the top of the window."""
+    """Scroll so that the first element with exactly this text is about `above` pixels under the top of the window."""
     target = page.get_by_text(text, exact=True).first
     target.wait_for()
-    target.evaluate("(e, above) => window.scrollTo(0, e.getBoundingClientRect().top + window.scrollY - above)", above)
+    target.evaluate("(e, above) => { e.scrollIntoView({block: 'start'}); window.scrollBy(0, -above); }", above)
 
 
 def _open_step(b: Browser, step: str) -> None:
@@ -542,47 +767,71 @@ def _open_step(b: Browser, step: str) -> None:
 
 # ------------------------------------------------------------------------------------------ part 1
 
-def scene_01_what(ctx: Ctx) -> list[Part]:
-    return [card_part(ctx, [
-        (0, ["al", "an agentic layer for any codebase"], None),
-        (1, ["agentic.rkt", "one definition of how agents work on this codebase:",
-             "its commands, its checks, protected paths, workflows, review"], None),
-        (2, ["al gen", "the compiler checks the definition,",
-             "the generator writes prompts, workflows, rules and a dashboard"], None),
-        (3, ["definition  →  layer  →  runs  →  proof", "what the next five minutes show, in this order"], None),
-    ])]
+def _frames_part(ctx: Ctx, shown: list[tuple[int, list[str], object]]) -> Part:
+    """A frames part of cards and pictures: (caption index, the texts it shows, a function giving its
+    frames) each. Every text is checked and said first; the frames are made only when not rehearsing."""
+    for _cue, texts, _make in shown:
+        ctx.check("\n".join(texts), "a card")
+        ctx.say("card: " + " / ".join(texts)[:150])
+    return Part("frames", shown[0][0], [Segment(cue, [] if ctx.rehearse else make()) for cue, _texts, make in shown])
+
+
+def scene_01_problem(ctx: Ctx) -> list[Part]:
+    board = ("Rota · a ward manager's shifts board", "# docs/demo/rotademo/before.png · synthetic data")
+    stakes = ["Where mistakes are expensive", "an expired registration must not work", "staff need rest between shifts",
+              "two organisations, data kept apart"]
+    needs = ["An agent needs to know", "how do I run the tests?", "what must I never touch?", "how do I prove my change works?"]
+    return [_frames_part(ctx, [(0, list(board), lambda: picture_frames(PICTURES["board"], *board)),
+                               (1, stakes, lambda: card_frames(stakes)),
+                               (2, needs, lambda: card_frames(needs))])]
 
 
 # ------------------------------------------------------------------------------------------ part 2
 
 def scene_02_layer(ctx: Ctx) -> list[Part]:
-    site = demo_site(ctx.home_work)
-    (a, b), (c, d) = excerpts((site["layer"] / "agentic.rkt").read_text())
-    steps = [(0, shell(ctx, ["sed", "-n", f"{a},{b}p", "cart.al/agentic.rkt"], site["work"])),
-             (2, shell(ctx, ["sed", "-n", f"{c},{d}p", "cart.al/agentic.rkt"], site["work"])),
-             (3, shell(ctx, COMMANDS["gen"], site["work"])),
-             (4, shell(ctx, COMMANDS["check"], site["work"]))]
-    if "generated" not in steps[2][1].output or "check: ok" not in steps[3][1].output:
-        raise SceneStopped(f"02-layer: al gen or al check did not print what the captions say:\n"
-                           f"{steps[2][1].output}\n{steps[3][1].output}")
-    ctx.stand_in("The demo application `cart` and its layer are written for the demo (tools/demovideo/demo_layer.rkt.in).")
-    return [terminal_part(ctx, "al — a layer for the cart library", steps)]
+    import term
+    step = shell(ctx, ROTA_EXCERPT, ROTA)
+    rows = step.output.splitlines()
+    missing = [s for keep in HIGHLIGHTS.values() for s in keep if s not in step.output]
+    if len(rows) != 7 or missing:
+        raise SceneStopped(f"02-layer: the excerpt of tests/rotademo/layer.rkt.in is not the 7 lines the captions talk about "
+                           f"(missing {missing}):\n{step.output}")
+    title = "al — the real layer of Rota (tests/rotademo/layer.rkt.in)"
+    if len(title) > term.COLS:
+        title = "al — the real layer of Rota"
+    part = terminal_part(ctx, title, [(0, step)])
+    for cue in (1, 2, 3):
+        still = highlight_frame(ctx, title, [step], keep=lambda t, k=HIGHLIGHTS[cue]: any(s in t for s in k))
+        part.segments.append(Segment(cue) if still is None else Segment(cue, [still]))
+    generates = card_part(ctx, [(4, ["One definition generates", "prompts for each kind of job", "workflows and their checks",
+                                     "the rules and the gate", "a live dashboard"], None)])
+    return [part, generates]
 
 
 # ------------------------------------------------------------------------------------------ part 3
 
-def scene_03_start(ctx: Ctx) -> list[Part]:
-    import terminal_clips
-    site = demo_site(ctx.home_work, generated=True)
-    argv = fill(COMMANDS["dashboard"], {"port": str(terminal_clips.free_port())})
-    step = shell(ctx, argv, site["work"], interrupt_after=5, expect=130, rows=5)
-    if "al dashboard on" not in step.output or "watching: cart" not in step.output:
-        raise SceneStopped(f"03-start: the dashboard did not print its first lines:\n{step.output}")
-    ctx.stand_in("03-start: the dashboard of the browser scenes is the same server started inside the recorder, on another port.")
-    return [terminal_part(ctx, "al — the dashboard", [(0, step)])]
+def scene_03_use(ctx: Ctx) -> list[Part]:
+    site = rota_site(ctx.home_work)
+    if site["layer"].exists():                  # a layer left by an earlier recording: `al init` makes it again on screen
+        shutil.rmtree(site["layer"])
+    steps = [(0, shell(ctx, COMMANDS["init"], site["work"]))]
+    install_rota_layer(site["work"])
+    steps += [(1, shell(ctx, ["ls", "rota.al"], site["work"])),
+              (2, shell(ctx, COMMANDS["gen"], site["work"])),
+              (3, shell(ctx, COMMANDS["check"], site["work"]))]
+    gen, check = steps[2][1].output, steps[3][1].output
+    if "generated " not in gen or not check.strip().endswith("check: ok"):
+        raise SceneStopped(f"03-use: al gen or al check did not print what the captions say:\n{gen}\n{check}")
+    ctx.stand_in("03-use: agentic.rkt is the committed Rota definition (tests/rotademo/layer.rkt.in); in use an LLM writes it "
+                 "with al author, or al adopt takes over an existing agent setup.")
+    start = " ".join(COMMANDS["run"][:4]) + ' "Enforce 11 hours of rest …"'
+    return [terminal_part(ctx, "al — from a repository to its layer", steps),
+            card_part(ctx, [(4, ["Start a run", "from the command line, or the dashboard's Start panel"], [start])])]
 
 
-def scene_03_run(ctx: Ctx) -> list[Part]:
+# ------------------------------------------------------------------------------------------ part 4
+
+def scene_04_run(ctx: Ctx) -> list[Part]:
     import browser_clips
     site = demo_site(ctx.home_work, generated=True)
     layer = site["layer"]
@@ -592,7 +841,11 @@ def scene_03_run(ctx: Ctx) -> list[Part]:
             page = b.page
             browser_clips.open_(page, "/layers")
             page.wait_for_selector(".start-panel .start-prompt")
+            _to_top(page, ".start-panel", above=60)
+            b.spot(".start-panel")
             b.cue(0)
+            b.ready(1, 0.3)
+            b.spot(".start-prompt")
             b.cue(1)
             before = runs_of(layer)
             page.select_option(".start-target", "workflow:change")
@@ -604,12 +857,15 @@ def scene_03_run(ctx: Ctx) -> list[Part]:
             run = page.evaluate("location.hash").rsplit("/", 1)[1]
             run_route = f"/run/cart/{run}"
             page.wait_for_selector(_node("build"), timeout=60000)
+            _to_top(page, ".graph-wrap", above=40)
+            b.spot(_node("build"))
             b.cue(2)
             wait_for("the build step", lambda: step_status(layer, run, "build") != "", 120, page)
             b.ready(3, 0.6)
             _open_step(b, "build")
             wait_for("the first tool call of the build", lambda: page.locator(".ev.k-tool").count() > 0
                      or step_status(layer, run, "build") == "passed", 120, page)
+            b.spot(".ev.k-tool", last=True)          # SPOTTER moves the outline to each new tool call
             b.cue(3)
             wait_for("the end of the build", lambda: step_status(layer, run, "build") not in ("", "running"), 300, page)
             b.pause(1.0)
@@ -618,52 +874,58 @@ def scene_03_run(ctx: Ctx) -> list[Part]:
             wait_for("the test check", lambda: step_status(layer, run, "test") != "", 120, page)
             _open_step(b, "test")
             wait_for("the log of the test check", lambda: page.locator(".log span").count() > 0, 60, page)
+            b.spot(".log")
             b.cue(4)
             wait_for("the end of the run", lambda: run_state(layer, run).get("status") not in (None, "", "running")
                      and run_state(layer, run).get("ended"), 300, page)
             state = run_state(layer, run)
             steps = [(s.get("name"), s.get("status")) for s in state.get("steps", [])]
             if state.get("status") != "passed" or sorted(steps) != sorted((name, "passed") for name in STEPS_A):
-                raise SceneStopped(f"03-run: the run ended {state.get('status')} with steps {steps}; nothing is recorded")
+                raise SceneStopped(f"04-run: the run ended {state.get('status')} with steps {steps}; nothing is recorded")
             if new_run(layer, before) != run:
-                raise SceneStopped("03-run: the page is not on the run it started")
+                raise SceneStopped("04-run: the page is not on the run it started")
             b.ready(5)
-            browser_clips.open_(page, run_route)
-            page.wait_for_selector("[data-role='proof-plan']", timeout=20000)
-            _to_text(page, "What the checks proved")
-            b.cue(5)
-            b.ready(6)
             browser_clips.open_(page, run_route)
             page.wait_for_selector(_node("review"))
             page.click(_node("review"))
             page.wait_for_selector(".step-panel .step-rounds")
-            page.locator(".step-panel .step-rounds").scroll_into_view_if_needed()
-            b.cue(6)
-            b.ready(7)
+            _to_top(page, ".step-panel .step-rounds", above=120)
+            b.spot(".step-panel .step-rounds")
+            b.cue(5)
+            b.ready(6)
             browser_clips.open_(page, run_route)
             page.wait_for_selector(_node("ship") + ".st-passed")
             _to_text(page, "Outcome")
             if "a human merges" not in page.inner_text("body") or "PR.md" not in page.inner_text("body"):
-                raise SceneStopped("03-run: the run page does not say that a person merges")
+                raise SceneStopped("04-run: the run page does not say that a person merges")
+            b.spot(".outcome-block", "Gate and ship")
+            b.cue(6)
+            b.ready(7, 0.4)
+            _to_top(page, ".graph-wrap", above=40)
+            b.spot(_node("ship") + ".st-passed")
             b.cue(7)
-            b.ready(8, 0.4)
-            page.evaluate("window.scrollTo(0, 0)")
-            b.cue(8)
-            b.pause(6)
-            _to_text(page, "Timeline")
             b.finish()
         (ctx.work / "run-a.json").write_text(json.dumps({"work": str(site["work"]), "layer": str(layer), "run": run}))
-        ctx.stand_in("03-run: classify, plan, commit and both reviewers are the mock agent; the build is the scripted "
+        ctx.stand_in("04-run: classify, plan, commit and both reviewers are the mock agent; the build is the scripted "
                      "stand-in kit/dashboard/demo/replay_agent.py, which really edits the worktree and runs the tests. No model is called.")
         return [b.part]
     finally:
         browser_clips._stop(running)
 
 
-# ------------------------------------------------------------------------------------------ part 4
+def scene_04_rota(ctx: Ctx) -> list[Part]:
+    rest = ("Rota, a real model: the 11-hour rest rule", "# docs/demo/rotademo/a-rest-rule.gif · the run's own proof video")
+    merged = ("Both reviewers approved; the gate merged", "# docs/demo/rotademo/a-pr-merged.png")
+    frames = int((ctx.offset(1) - ctx.offset(0)) * rules.FPS) - 2
+    ctx.stand_in("04-rota: pictures of a recorded Rota run with Claude Opus 5.5 (docs/EXAMPLES.md); no run happened here.")
+    return [_frames_part(ctx, [(0, list(rest), lambda: gif_frames(PICTURES["rest"], *rest, max_frames=frames)),
+                               (1, list(merged), lambda: picture_frames(PICTURES["merged"], *merged, crop=(0, 0, 862, 470)))])]
+
+
+# ------------------------------------------------------------------------------------------ part 5
 
 def _run_a(ctx: Ctx) -> dict:
-    """The run of scene 03-run when its work folder is still there; else one made here, hidden, the same way."""
+    """The run of scene 04-run when its work folder is still there; else one made here, hidden, the same way."""
     record = ctx.work / "run-a.json"
     if record.is_file():
         found = json.loads(record.read_text())
@@ -675,7 +937,7 @@ def _run_a(ctx: Ctx) -> dict:
     return {"work": str(site["work"]), "layer": str(site["layer"]), "run": new_run(site["layer"], before)}
 
 
-def scene_04_proof(ctx: Ctx) -> list[Part]:
+def scene_05_proof(ctx: Ctx) -> list[Part]:
     import browser_clips
     found = _run_a(ctx)
     running = _serve(Path(found["layer"]))
@@ -689,36 +951,30 @@ def scene_04_proof(ctx: Ctx) -> list[Part]:
             rows = card.locator("tr[data-criterion]")
             states = [rows.nth(i).get_attribute("data-state") for i in range(rows.count())]
             if states != ["proven", "proven"]:
-                raise SceneStopped(f"04-proof: the proof table shows {states}, not two proven claims")
+                raise SceneStopped(f"05-proof: the proof table shows {states}, not two proven claims")
+            b.spot("[data-role='proof-plan']")
             b.cue(0)
             b.ready(1, 0.3)
             rows.nth(0).hover()
+            b.spot("[data-role='proof-plan'] tr[data-criterion]")
             b.cue(1)
             rows.nth(1).hover()
+            b.spot("[data-role='proof-plan'] tr[data-criterion]", last=True)
             b.finish()
-        ctx.stand_in("04-proof: the run of 03-run (mock agent and scripted stand-in).")
+        ctx.stand_in("05-proof: the run of 04-run (mock agent and scripted stand-in).")
         return [b.part]
     finally:
         browser_clips._stop(running)
 
 
-def scene_04_own_plan(ctx: Ctx) -> list[Part]:
-    if ctx.own_plan is None or not ctx.own_plan.is_file():
-        raise SceneStopped("04-own-plan shows the Proof plan of the run that records the video: pass --own-plan PATH "
-                           "(the plan's file in the layer's specs folder)")
-    plan = ctx.own_plan.resolve()
-    if plan.parent.name != "specs":
-        raise SceneStopped(f"04-own-plan: {plan.name} is not in a layer's specs folder")
-    layer = plan.parent.parent
-    where = f"{layer.name}/specs"
-    steps = [(0, shell(ctx, f"cd {where}", layer.parent)),
-             (None, shell(ctx, f"grep '^| C' {plan.name} | cut -d'|' -f2,3 | cut -c1-58", plan.parent))]
-    if len(steps[1][1].output.splitlines()) < 2:
-        raise SceneStopped(f"04-own-plan: {plan.name} has no Proof plan rows")
-    return [terminal_part(ctx, "al — the plan of the run that recorded this video", steps)]
+def _waits_for_approval(layer: Path, run: str) -> bool:
+    try:
+        return json.loads((layer / "agents" / run / "approvable.json").read_text()).get("waiting") is True
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
-def scene_04_protected(ctx: Ctx) -> list[Part]:
+def scene_05_protected(ctx: Ctx) -> list[Part]:
     import browser_clips
     site = demo_site(ctx.home_work, generated=True)
     layer = site["layer"]
@@ -726,43 +982,71 @@ def scene_04_protected(ctx: Ctx) -> list[Part]:
     hidden([AL, "run", layer, "/tidy", PROMPT_B], site["work"], expect=1)
     run = new_run(layer, before)
     if "evidence:needs-person" not in json.dumps(run_state(layer, run)):
-        raise SceneStopped(f"04-protected: run {run} did not stop at evidence:needs-person")
-    route = f"/run/cart/{run}"
+        raise SceneStopped(f"05-protected: run {run} did not stop at evidence:needs-person")
+    route, row = f"/run/cart/{run}", f"tbody tr[data-key='cart/{run}']"
     running = _serve(layer)
     try:
-        with Browser(ctx, running.base, 0, 2) as first:
+        # the dashboard's own loop asks the layer what the run waits for, every APPROVABLE_EVERY (5 s)
+        wait_for("the dashboard to offer Approve & resume", lambda: _waits_for_approval(layer, run), 90)
+        with Browser(ctx, running.base, 0, 3) as first:
             page = first.page
             browser_clips.open_(page, route)
             page.wait_for_selector("[data-role='proof-plan'] .proof-stop")
             _to_text(page, "Proof plan", above=70)
             if APPROVAL not in page.locator("[data-role='proof-plan'] .proof-stop").inner_text():
-                raise SceneStopped("04-protected: the run page does not ask for " + APPROVAL)
+                raise SceneStopped("05-protected: the run page does not ask for " + APPROVAL)
+            first.spot("[data-role='proof-plan'] .proof-stop")
             first.cue(0)
             first.ready(1)
             browser_clips.open_(page, "/runs")
-            page.wait_for_selector(f"tbody tr[data-key='cart/{run}']")
+            page.wait_for_selector(f"{row} button.approve-resume", timeout=30000)
+            first.spot(row)
             first.cue(1)
+            first.ready(2)
+            page.click(f"{row} button.approve-resume")
+            page.wait_for_selector("[data-role='approve-resume-dialog']")
+            browser_clips._type(page, "[data-role='approve-resume-dialog'] input[aria-label='your name']", WHO)
+            first.spot("[data-role='approve-resume-dialog']")
+            first.cue(2)
+            first.pause(3.0)
+            page.click("[data-role='approve-resume-dialog'] button.approve-resume-go")
+            try:
+                page.wait_for_selector("[data-role='approve-resume-dialog']", state="detached", timeout=30000)
+                page.wait_for_function("() => (document.querySelector('.start-report') || {}).textContent"
+                                       "?.includes('resuming from step evidence')", timeout=30000)
+            except Exception as error:      # playwright's TimeoutError
+                raise SceneStopped(f"05-protected: Approve & resume did not report `resuming from step evidence`: {error}") from None
+            first.spot(".start-report")
             first.finish()
-        approve = shell(ctx, fill(COMMANDS["approve"], {"run": run}), site["work"])
-        if "resuming from step evidence" not in approve.output:
-            raise SceneStopped(f"04-protected: al approve printed:\n{approve.output}")
-        terminal = terminal_part(ctx, "al — a person approves one edit", [(2, approve)])
         wait_for(f"run {run} to pass after the approval", lambda: run_state(layer, run).get("status") == "passed", 120)
+        approvals = run_state(layer, run).get("approvals") or []
+        if not any(a.get("who") == WHO and a.get("via") == "dashboard" for a in approvals):
+            raise SceneStopped(f"05-protected: run {run} records no approval by {WHO} from the dashboard: {approvals}")
         with Browser(ctx, running.base, 3, len(ctx.scene.captions)) as last:
             page = last.page
             browser_clips.open_(page, route)
             page.wait_for_selector(_node("ship") + ".st-passed", timeout=20000)
+            last.spot(_node("ship"))
             last.cue(3)
             last.pause(3.0)
             _to_text(page, "Proof plan", above=70)
             last.finish()
-        ctx.stand_in("04-protected: a second run of the demo layer; the mock agent's build edits tools/lint.py, a protected path.")
-        return [first.part, terminal, last.part]
+        ctx.stand_in(f"05-protected: a second run of the demo layer; the mock agent's build edits tools/lint.py, a protected path. "
+                     f"The approval is given in the dashboard (Approve & resume) by the fictional {WHO}.")
+        return [first.part, last.part]
     finally:
         browser_clips._stop(running)
 
 
-def scene_04_review_no(ctx: Ctx) -> list[Part]:
+def scene_05_handoff(ctx: Ctx) -> list[Part]:
+    top = ("Rota: a schema change, handed to a person", "# docs/demo/rotademo/b-pr-why-human-top.png · a real run")
+    ask = ("What the agent asks a person to add", "# docs/demo/rotademo/b-pr-why-human-top.png")
+    ctx.stand_in("05-handoff: pictures of a recorded Rota run with Claude Opus 5.5 (docs/EXAMPLES.md); no run happened here.")
+    return [_frames_part(ctx, [(0, list(top), lambda: picture_frames(PICTURES["handoff"], *top, crop=(0, 0, 872, 700))),
+                               (1, list(ask), lambda: picture_frames(PICTURES["handoff"], *ask, crop=(0, 700, 872, 1047)))])]
+
+
+def scene_05_review_no(ctx: Ctx) -> list[Part]:
     import browser_clips
     import fixture_imports as fx
     fx.dash_fixtures().build(ctx.home_work)
@@ -780,103 +1064,54 @@ def scene_04_review_no(ctx: Ctx) -> list[Part]:
             page.wait_for_selector(".step-panel .step-rounds")
             page.locator(".step-panel .step-rounds").scroll_into_view_if_needed()
             if page.locator(".step-panel .step-rounds").inner_text().count("not approved") < 3:
-                raise SceneStopped("04-review-no: the review step does not show three refused rounds")
+                raise SceneStopped("05-review-no: the review step does not show three refused rounds")
+            b.spot(".step-panel .step-rounds")
             b.ready(1)
-            browser_clips.open_(page, "/runs")
-            page.wait_for_selector("tbody tr[data-key='demo-shop/a1000101']")
-            browser_clips.until(page, "[...document.querySelectorAll('.stat')].some((s) => s.querySelector('.label')?.textContent.trim() === "
-                                      "'handed over' && s.querySelector('.value')?.textContent.trim() === '2')")
+            page.evaluate("window.scrollTo(0, 0)")
+            if page.locator(".badge.handed-over").count() == 0:
+                raise SceneStopped("05-review-no: the run page does not say the run was handed to a person")
+            b.spot(".badge.handed-over")
             b.cue(1)
             b.finish()
-        ctx.stand_in("04-review-no: the fixture run a1000101 of kit/dashboard/tests (fixtures.py, test_review_rejected_model.py), "
+        ctx.stand_in("05-review-no: the fixture run a1000101 of kit/dashboard/tests (fixtures.py, test_review_rejected_model.py), "
                      "as in docs/showcase/04-review-says-no; no review ran here.")
         return [b.part]
     finally:
         browser_clips._stop(running)
 
 
-# ------------------------------------------------------------------------------------------ part 5
+# ------------------------------------------------------------------------------------------ part 6
 
-def _first_that_prints(ctx: Ctx, commands: list, rows: int = 6):
-    """The step of the first command that prints a line without a private value; None when none does."""
-    import privacy
-    import terminal_clips
-    for command in commands:
-        try:
-            step = shell(ctx, command, ROOT, rows=rows)
-        except (terminal_clips.UnexpectedExit, privacy.PrivateText, SceneStopped) as error:
-            ctx.say(f"not shown ({type(error).__name__}): {command if isinstance(command, str) else ' '.join(command)}")
-            continue
-        if step.output.strip():
-            return step
-    return None
-
-
-def scene_05_limits(ctx: Ctx) -> list[Part]:
-    cases = [
-        (0, [['grep', '-n', '-m3', 'skipped-only', 'kit/runtime/adw_modules/evidence.py'],
-             'grep -n -m2 "skipped-only" docs/GUIDE.md docs/ARTEFACTS.md | cut -c1-100']),
-        (1, ['grep -m1 "5 of 10 runs" agentic/LLM.txt | fold -s -w 100 | head -4']),
-        (None, ['grep -n -m1 "never weaken" agentic/agentic.rkt | cut -c1-100']),
-        (2, [["git", "log", "--oneline", "-1", "221390e"], 'git log --oneline -i --grep="of CI" -1']),
-        (3, [["git", "log", "--oneline", "-1", "8c6ff53"]]),
-        # `al doctor agentic` prints these lines for this machine, with a temporary folder named after
-        # its user: the guide's copy of them is shown instead
-        (None, ['grep -h -m3 "^disk:" docs/GUIDE.md | cut -c1-100']),
-    ]
-    steps, missing = [], []
-    for cue, commands in cases:
-        step = _first_that_prints(ctx, commands)
-        if step is None:
-            missing.append(commands[0] if isinstance(commands[0], str) else " ".join(commands[0]))
-            continue
-        steps.append((cue, step))
-    shown = [cue for cue, _step in steps if cue is not None]
-    if shown != [0, 1, 2, 3]:
-        raise SceneStopped(f"05-limits: no record in this checkout for {missing}; name the case on the 05-not-yet card "
-                           "as \"not shown: no record in this checkout\" and take its caption out of narration.md")
-    return [terminal_part(ctx, "al — limits, from this repository's own files", steps)]
-
-
-def scene_05_not_yet(ctx: Ctx) -> list[Part]:
-    def lines_of(command: str) -> list[str]:
-        step = shell(ctx, command, ROOT, rows=4)
-        found = [line[:96] for line in step.output.splitlines() if line.strip()]
-        if not found:
-            raise SceneStopped(f"05-not-yet: `{command}` printed nothing; the caption that quotes it must go")
-        return found
-    kpis = lines_of("sed -n '/^Generated by/p;/^| passed/p;/^| handed over/p' docs/KPIS.md | cut -c1-96")
-    readme = lines_of("grep -m1 'Not yet shown' README.md | cut -c1-96")
+def scene_06_fit(ctx: Ctx) -> list[Part]:
+    examples = [f"{name:<10}{language}" for name, language in example_rows()]
+    readme = next((line for line in (ROOT / "README.md").read_text(encoding="utf-8").splitlines() if "Not yet shown" in line), None)
+    if readme is None:
+        raise SceneStopped("06-fit: README.md has no line holding \"Not yet shown\"; the caption that quotes it must go")
+    readme = readme.strip().lstrip(">").strip().rstrip("\\").strip().replace("*", "")[:96]
     return [card_part(ctx, [
-        (0, ["Counted, not claimed", "the real runs of al's own layer"], ["# docs/KPIS.md"] + kpis),
-        (1, ["Not yet shown", "from the README's own status"], ["# README.md"] + readme),
-        (2, ["This demo run", "mock agent + a scripted stand-in for the build", "no model was called"], None),
+        (0, ["The examples", "five public codebases, five languages"], ["# docs/EXAMPLES.md"] + examples),
+        (1, ["Where it fits", "a repository with real tests and commands", "work that must be proven, not claimed",
+             "a person who decides what ships"], None),
+        (2, ["Not yet shown", "from the README's own status"], ["# README.md", readme]),
     ])]
 
 
-# ------------------------------------------------------------------------------------------ part 6
+# ------------------------------------------------------------------------------------------ part 7
 
-def scene_06_close(ctx: Ctx) -> list[Part]:
-    ref = next((r for r in ("main", "origin/main") if subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "--verify", "-q", r], capture_output=True).returncode == 0), "HEAD")
-    log = shell(ctx, ["git", "log", "--oneline", "--first-parent", "--merges", "-3", ref], ROOT)
-    if len(log.output.splitlines()) != 3 or "pull request" not in log.output:
-        raise SceneStopped(f"06-close: `git log` does not show three merged pull requests:\n{log.output}")
-    ci = shell(ctx, ["sed", "-n", "1,8p", ".github/workflows/ci.yml"], ROOT)
-    return [terminal_part(ctx, "al — what is on main", [(0, log), (1, ci)]),
-            card_part(ctx, [(2, [REPOSITORY, "the code, the guide, the tests, the recorded runs"], None)])]
+def scene_07_close(ctx: Ctx) -> list[Part]:
+    return [card_part(ctx, [(0, [REPOSITORY, "the code, the guide, the examples, the tests"], None)])]
 
 
 SCENES = {
-    "01-what": scene_01_what,
+    "01-problem": scene_01_problem,
     "02-layer": scene_02_layer,
-    "03-start": scene_03_start,
-    "03-run": scene_03_run,
-    "04-proof": scene_04_proof,
-    "04-own-plan": scene_04_own_plan,
-    "04-protected": scene_04_protected,
-    "04-review-no": scene_04_review_no,
-    "05-limits": scene_05_limits,
-    "05-not-yet": scene_05_not_yet,
-    "06-close": scene_06_close,
+    "03-use": scene_03_use,
+    "04-run": scene_04_run,
+    "04-rota": scene_04_rota,
+    "05-proof": scene_05_proof,
+    "05-protected": scene_05_protected,
+    "05-handoff": scene_05_handoff,
+    "05-review-no": scene_05_review_no,
+    "06-fit": scene_06_fit,
+    "07-close": scene_07_close,
 }

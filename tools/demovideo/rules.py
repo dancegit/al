@@ -8,12 +8,19 @@ space or a word boundary beside the match, because OCR joins neighbouring words.
 
 The narration script (narration.md):
 
-    ## N. Title                          a part, N = 1…6 with the titles of TITLES
+    ## N. Title                          a part, N = 1…7 with the titles of TITLES
     ### scene-id | kind | SECONDS s      a scene; kind is card, terminal or browser
     - [+S.S] text                        a caption, S.S seconds into its scene, until the next one
+      > spoken line                      what the voice says while that caption is shown (indented;
+                                         several such lines under one caption are joined by a space)
+
+Every caption has a spoken line. The caption stays a short label (MAX_CAPTION_CHARS) that a muted viewer
+can follow; the spoken line is checked by the same privacy rules and may hold at most
+MAX_WORDS_PER_SECOND (2.6) words a second of its caption's time on screen.
 
 The timed copy that `make.py assemble` writes beside the video has the same form with times in the
-final video added: `### scene-id | kind | SECONDS s | m:ss.s–m:ss.s` and `- [+S.S | m:ss.s–m:ss.s] text`.
+final video added: `### scene-id | kind | SECONDS s | m:ss.s–m:ss.s` and `- [+S.S | m:ss.s–m:ss.s] text`;
+its spoken lines are copied as they are.
 """
 from __future__ import annotations
 
@@ -33,7 +40,8 @@ OCR_EVERY = 5
 STRIP_H = 64
 MAX_CAPTION_CHARS = 64
 MIN_CAPTION_SECONDS = 2.5
-TITLES = ("What al is", "Writing a layer", "A real run", "Proof and guardrails", "Honest limits", "What shipped")
+MAX_WORDS_PER_SECOND = 2.6
+TITLES = ("The problem", "What al is", "How to use it", "A run, end to end", "Guardrails and proof", "Where it fits", "Try it")
 KINDS = ("card", "terminal", "browser")
 BLOCK = "█"
 
@@ -162,6 +170,7 @@ class Caption:
     text: str
     start: float | None = None          # seconds into the final video (the timed copy only)
     end: float | None = None
+    say: str = ""                       # what the voice says while the caption is shown
 
 
 @dataclass
@@ -205,6 +214,7 @@ _TIME = r"\d+:\d\d(?:\.\d)?"
 _PART = re.compile(r"^## (\d+)\. (.+?)\s*$")
 _SCENE = re.compile(rf"^### (\S+) \| (\w+) \| (\d+(?:\.\d+)?) s(?: \| ({_TIME})–({_TIME}))?\s*$")
 _CAPTION = re.compile(rf"^- \[\+(\d+(?:\.\d+)?)(?: \| ({_TIME})–({_TIME}))?\] (.+?)\s*$")
+_SAY = re.compile(r"^\s+> (.+?)\s*$")
 
 
 def clock(seconds: float) -> str:
@@ -224,8 +234,15 @@ def parse(text: str) -> Script:
     """The script in `text`. A line of a known kind in the wrong place is noted in `problems`."""
     script = Script()
     scene: Scene | None = None
+    caption: Caption | None = None
     for number, line in enumerate(text.splitlines(), 1):
-        if line.startswith("## "):
+        if line[:1].isspace() and line.strip().startswith("> "):
+            m = _SAY.match(line)
+            if not m or caption is None:
+                script.problems.append(f"line {number}: a spoken line without a caption: {line!r}")
+                continue
+            caption.say = f"{caption.say} {m.group(1)}" if caption.say else m.group(1)
+        elif line.startswith("## "):
             m = _PART.match(line)
             if not m:
                 if script.parts:                  # the timed copy ends with plain `## ` sections
@@ -233,21 +250,24 @@ def parse(text: str) -> Script:
                 script.problems.append(f"line {number}: not a part heading: {line!r}")
                 continue
             script.parts.append(Part(int(m.group(1)), m.group(2)))
-            scene = None
+            scene, caption = None, None
         elif line.startswith("### "):
             m = _SCENE.match(line)
             if not m or not script.parts:
                 script.problems.append(f"line {number}: not a scene heading: {line!r}")
-                scene = None
+                scene, caption = None, None
                 continue
             scene = Scene(m.group(1), m.group(2), float(m.group(3)), start=unclock(m.group(4)), end=unclock(m.group(5)))
+            caption = None
             script.parts[-1].scenes.append(scene)
         elif line.startswith("- [") and script.parts:
             m = _CAPTION.match(line)
             if not m or scene is None:
                 script.problems.append(f"line {number}: not a caption of a scene: {line!r}")
+                caption = None
                 continue
-            scene.captions.append(Caption(float(m.group(1)), m.group(4), unclock(m.group(2)), unclock(m.group(3))))
+            caption = Caption(float(m.group(1)), m.group(4), unclock(m.group(2)), unclock(m.group(3)))
+            scene.captions.append(caption)
     return script
 
 
@@ -255,7 +275,7 @@ def validate(script: Script) -> list[str]:
     """What is wrong with the script; empty when nothing is."""
     problems = list(script.problems)
     if [(p.number, p.title) for p in script.parts] != list(enumerate(TITLES, 1)):
-        problems.append("the parts are not 1…6 in order with the titles " + ", ".join(TITLES))
+        problems.append(f"the parts are not 1…{len(TITLES)} in order with the titles " + ", ".join(TITLES))
     total = script.seconds
     if not MIN_SECONDS <= total <= MAX_SECONDS:
         problems.append(f"the scenes add up to {total:g} s, outside {MIN_SECONDS}–{MAX_SECONDS} s")
@@ -278,11 +298,18 @@ def validate(script: Script) -> list[str]:
                 elif until - caption.offset < MIN_CAPTION_SECONDS - 1e-9:
                     problems.append(f"{scene.id}: the caption at +{caption.offset:g} is on screen for {until - caption.offset:g} s, "
                                     f"under {MIN_CAPTION_SECONDS} s")
+                elif caption.say and len(caption.say.split()) / (until - caption.offset) > MAX_WORDS_PER_SECOND:
+                    problems.append(f"{scene.id}: the spoken line at +{caption.offset:g} has {len(caption.say.split())} words "
+                                    f"for {until - caption.offset:g} s, over {MAX_WORDS_PER_SECOND} words a second")
                 if len(caption.text) > MAX_CAPTION_CHARS:
                     problems.append(f"{scene.id}: the caption at +{caption.offset:g} has {len(caption.text)} characters, "
                                     f"over {MAX_CAPTION_CHARS}")
                 for hit in find_private(caption.text):
                     problems.append(f"{scene.id}: the caption at +{caption.offset:g} holds a private match ({hit.kind}): {hit.match}")
+                if not caption.say.strip():
+                    problems.append(f"{scene.id}: the caption at +{caption.offset:g} has no spoken line")
+                for hit in find_private(caption.say):
+                    problems.append(f"{scene.id}: the spoken line at +{caption.offset:g} holds a private match ({hit.kind}): {hit.match}")
     return problems
 
 

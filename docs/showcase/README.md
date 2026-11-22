@@ -50,21 +50,40 @@ every `al` command shown is one the tool accepts, and the limits of the committe
 
 ## The five-minute demo video
 
-One video of 4 min 30 s to 5 min shows al end to end, in six parts: what al is, writing a layer, a real run
-on the dashboard, proof and guardrails, honest limits, and what was shipped. It is recorded by the same
+One video of 4 min 45 s to 5 min shows what al is, what it does and how to use it, in seven parts:
+
+1. the problem, on Rota, the shift-scheduling app for hospital wards;
+2. what al is, the real Rota layer;
+3. how to use it (`al init`, `al adopt`, `al gen`, `al check`, then `al run` or the Start panel);
+4. a run end to end on the dashboard;
+5. guardrails and proof (the proof table, a protected path cleared with Approve & resume in the
+   dashboard, a handover to a person, reviewers that say no);
+6. where it fits and what it does not show yet;
+7. where to find it.
+
+It is recorded by the same
 renderers as the clips above (`tools/showcase/term.py` for terminals, `browser_clips.py` for the dashboard),
 from `tools/demovideo/`: `narration.md` is the script (every caption and every scene length comes from it),
 `scenes.py` records one scene per id of the script, `make.py` is the command, `verify.py` checks the result.
 
+`narration.md` holds each caption and, under it, the spoken line: the indented `  > ` lines are what the
+voice says while that caption is shown. The caption stays a short label for a viewer with the sound off;
+the spoken line may hold at most 2.6 words a second of its caption's time and is scanned by the same
+privacy rules as the captions. Pictures of the recorded Rota runs (`docs/demo/rotademo`) are shown on
+cards with their source under them. The dashboard is shown at page zoom 1.25 with an outline on what
+the voice talks about, terminal scenes dim every line but the ones it talks about, cards build line by
+line, the captions are lower thirds in a sans face with the part's chapter tag, and each part fades in
+and out over 0.35 s under the caption band.
+
 ```sh
-uv run tools/demovideo/make.py scene 01-what 02-layer --work /tmp/al-demo    # one clip per scene id; --rehearse runs it without video
+uv run tools/demovideo/make.py scene 01-problem 02-layer --work /tmp/al-demo # one clip per scene id; --rehearse runs it without video
 uv run tools/demovideo/make.py assemble --work /tmp/al-demo                  # al-demo.mp4 and the timed narration.md
 ELEVENLABS_API_KEY=… uv run tools/demovideo/make.py assemble --work /tmp/al-demo   # the ElevenLabs voice
+uv run tools/demovideo/make.py assemble --work /tmp/al-demo --voice kokoro   # the Kokoro voice of this machine
 uv run tools/demovideo/verify.py media/demo-video                            # the contact sheet and privacy-ocr.json; exit 1 when a check fails
 ```
 
-Scene `04-own-plan` shows the Proof plan rows of the run that records the video: give its plan with
-`--own-plan PATH`. `make.py clean --work DIR` removes the work folder; `scene` and `assemble` stop when it
+`make.py clean --work DIR` removes the work folder; `scene` and `assemble` stop when it
 holds more than 2.5 GB.
 
 **Where the files go.** Nothing is written into the tree. Clips and other intermediates stay in `--work`.
@@ -74,30 +93,47 @@ the final video, then what was sped up, what was blanked and which stand-ins wer
 `media/demo-video/`; git ignores both. `verify.py` adds `al-demo-contact-sheet.png` (one frame every 10 s) and
 `privacy-ocr.json` beside them.
 
-**The voice.** `assemble` reads each caption aloud, as one mono audio stream that the `mute:` command in
-`narration.md` drops. `--voice auto` (the default) tries in order: ElevenLabs when `ELEVENLABS_API_KEY` is
-set, else the local `espeak-ng` when it is installed, else no voice. `--voice elevenlabs`, `--voice local`
-and `--voice none` choose one; `--no-voice` is the same as `--voice none`. The ElevenLabs voice is
-`ELEVENLABS_VOICE_ID` (default `JBFqnCBsd6RMkjVDRZzb`) with the model `eleven_multilingual_v2`. Only the
-caption text is sent, to `api.elevenlabs.io`; the key goes only in the request header and is never printed
-or written anywhere. The answers are cached in `WORK/voice-cache/`, keyed by text, voice and model, so
-assembling again does not ask twice. Each voiced line has its leading and trailing silence trimmed and is
-sped up by at most ×1.35 to fit its caption's time on screen; when some still do not fit, `assemble` stops
-and lists every such caption, to be shortened in `narration.md`. The scene lengths never change, so the
-video keeps its 4 min 30 s to 5 min. `tools/demovideo/tts.py` holds all of it (standard library only).
+**The voice.** `assemble` says each caption's spoken line, as one mono audio stream that the `mute:` command
+in `narration.md` drops. `--voice auto` (the default) tries in order: ElevenLabs when `ELEVENLABS_API_KEY` is
+set, else Kokoro when its model files are already cached, else the local `espeak-ng` when it is installed,
+else no voice. `--voice elevenlabs`, `--voice kokoro`, `--voice local` and `--voice none` choose one;
+`--no-voice` is the same as `--voice none`.
 
-**What it needs.** uv, `ffmpeg` and `ffprobe`, Chrome or Chromium, the DejaVu Sans Mono font and racket (the
-demo layer is compiled by the real `al gen`); `espeak-ng` or an ElevenLabs key is optional: with either, each
-caption is also read aloud (see The voice). The
+- `--voice kokoro` runs `kit/runtime/voice/say.py` on this machine, by its command line only (`--voice
+  --speed --out --no-play`, through `uv run`): voice `af_heart` (or `AL_DEMO_KOKORO_VOICE`), speed 1.0, each
+  line played at most ×1.12 faster to fit. Nothing is sent anywhere. Kokoro's model files are downloaded
+  once by say.py into the user's cache, outside the repository (`AL_KOKORO_CACHE`, else
+  `$XDG_CACHE_HOME/al/kokoro`, else `~/.cache/al/kokoro`); `auto` picks Kokoro only when they are already
+  there, so neither `auto` nor any test ever downloads them.
+- The ElevenLabs voice is `ELEVENLABS_VOICE_ID` (default `JBFqnCBsd6RMkjVDRZzb`) with the model
+  `eleven_multilingual_v2`. Only the spoken lines (not the captions) are sent, to `api.elevenlabs.io`; the
+  key goes only in the request header and is never printed or written anywhere. Each line is played at
+  most ×1.35 faster to fit.
+
+Both cache their lines in `WORK/voice-cache/`, keyed by text and voice, so assembling again does not make a
+line twice. Each voiced line has its leading and trailing silence trimmed and starts 0.3 s after its
+caption; when some do not fit their caption's time, `assemble` stops and lists every such line, to be
+shortened in `narration.md`. The mix is loudness-normalised to about -16 LUFS and encoded AAC 128k, and
+the closing card names the synthetic voice. The scene lengths never change, so the video keeps its
+4 min 30 s to 5 min. `tools/demovideo/tts.py` holds all of it (standard library only).
+
+**What it needs.** uv, `ffmpeg` and `ffprobe`, Chrome or Chromium, the DejaVu Sans and DejaVu Sans Mono fonts
+and racket (the demo layer and the Rota layer are compiled by the real `al gen`); Pillow (pulled in by
+`make.py`) draws the cards and reads the committed pictures under `docs/demo/rotademo`; `espeak-ng`, Kokoro (say.py) or an ElevenLabs
+key is optional: with any of them, each spoken line is also read aloud (see The voice). The
 verifier's OCR is `rapidocr-onnxruntime` 1.4.4, whose models ship inside the package: no frame leaves the
 machine.
 
-**What is real and what stands in.** The run of part 3 is a real run of a layer written for the demo
+**What is real and what stands in.** The run of part 4 is a real run of a layer written for the demo
 (`tools/demovideo/demo_layer.rkt.in`, for the `cart` library of `kit/dashboard/demo/live_demo.py`), started
 from the dashboard's Start panel. No model is called: classify, plan, commit and the two reviewers are the
 mock agent, and the build is the scripted stand-in `kit/dashboard/demo/replay_agent.py`, which really edits
-the worktree and really runs the tests. The video says so in its captions, and the rejected review of part 4
-is labelled as a test fixture. Parts 4 to 6 show this repository's own files, history and commands.
+the worktree and really runs the tests. The video says so in its captions. Parts 2 and 3 show the real Rota definition
+from `tests/rotademo/layer.rkt.in`, compiled by the real `al init`, `al gen` and `al check` in the work
+folder; `agentic.rkt` is copied in, where in use an LLM writes it with `al author`. The Rota pictures of
+parts 1, 4 and 5 are from the recorded runs with a real model in `docs/EXAMPLES.md`, and only their captions
+say "with a real model". The approval of part 5 is given in the dashboard (Approve & resume) by the
+fictional name Ada Example, and the rejected review of part 5 is labelled as a test fixture.
 
 **The privacy rules** are stricter than the clips' (`tools/demovideo/rules.py`): no e-mail address at all, no
 IPv4 address at all (loopback too), no `/home/…` or `/Users/…` path, not the word `token`, no host name of this
@@ -111,7 +147,77 @@ a recorded video when one is there (it skips in a clone without one); with `AL_S
 records one scene and checks that the verifier refuses a video with an address on a frame.
 
 The tooling never uploads, publishes or sends the video anywhere: a person reviews it and decides. Only
-the captions' text goes out, to ElevenLabs, and only when that voice is chosen.
+the spoken lines go out, to ElevenLabs, and only when that voice is chosen.
+
+### The second story: flask on a local Forgejo
+
+A second video tells the same seven parts on a codebase people know: **flask**, one of the pinned public
+examples, in every scene, with a real forge as its remote. It is chosen with `--story testbed` on
+`make.py scene`, `make.py assemble` and `verify.py`; `rota` stays the default, so every command above
+works as before.
+
+1. the problem, on Flask: locked dependencies, strict tests, the session code;
+2. what al is: the real authored layer `tests/authored/flask/agentic.rkt`, its checks, its protected
+   paths (with `src/flask/sessions.py`) and its review gate;
+3. how to use it: `al init`, `al adopt` (flask has no agent rules, and it says so), `al gen`, `al check` on
+   a copy of flask;
+4. a run end to end from the dashboard's Start panel, then the pull request it opened, on the Forgejo page;
+5. guardrails and proof: the proof table, a second run that edits `src/flask/sessions.py` and waits for
+   Approve & resume, a third whose reviewers refuse;
+6. where it fits; 7. where to find it.
+
+Its files, all in `tools/demovideo/`: `narration-testbed.md` (the script), `scenes_testbed.py` (one
+recorder per scene id; every helper that draws, records or checks is imported from `scenes.py`),
+`flask_layer.rkt.in` (the layer of the runs in parts 4 and 5), `flask_replay.py` (the scripted stand-in
+for the build), `forgejo.py` (the local Forgejo) and `stories.py` (story name → narration, scene module,
+clips folder and output names).
+
+**The flask copy.** Each scene works on the commit pinned for `flask` in `tests/integration/testbeds.toml`,
+taken from `testbeds/flask` when the integration suite has fetched it, else fetched once. Only its tree is
+used: it is archived into a fresh repository and committed once by the neutral identity `Showcase`, at a
+fixed date, so no upstream author, e-mail or path is in the copy and every scene's copy has the same
+commit.
+
+**What is real and what stands in.** The change is small and real: `get_debug_flag()` in
+`src/flask/helpers.py` treats `FLASK_DEBUG=off` as off (today that value turns debug mode on), with a new
+test in `tests/test_helpers.py`. Flask's own pytest really runs on it, with flask's locked dependencies,
+and the pull request is a real one on the Forgejo instance: the ship step pushes the branch and opens it,
+and nothing is merged. The model stands in: classify, plan, commit and both reviewers are the mock agent
+and the build is `flask_replay.py`, which really edits the worktree and really runs the tests; the
+captions say so. The runs use `flask_layer.rkt.in` (flask's protected paths, one test module), not the
+authored definition of parts 2 and 3. The protected `src/flask/sessions.py` stops the second run until a
+person approves; a third scripted run is refused by its two reviewers and handed to a person.
+
+```sh
+uv run tools/demovideo/make.py forgejo up --work /tmp/al-demo-flask     # codeberg.org/forgejo/forgejo:11 on localhost:3910
+uv run tools/demovideo/make.py scene 01-problem 02-layer --story testbed --work /tmp/al-demo-flask
+uv run tools/demovideo/make.py assemble --story testbed --work /tmp/al-demo-flask --voice kokoro
+uv run tools/demovideo/verify.py media/demo-video --story testbed
+uv run tools/demovideo/make.py forgejo down --work /tmp/al-demo-flask   # removes the container and its data
+```
+
+`make.py forgejo up` starts a throwaway Forgejo in rootless podman, published only on `localhost` (port
+3910, or `--port N`), with a throwaway admin `demo` and an empty repository `demo/flask`, and records it in
+the work folder; `make.py forgejo down` removes the container with its data. The access value the instance
+generates is never printed: it lives in `forgejo.env` in the work folder and in the demo layer's
+`local.env` (both mode 0600), where the layer's forge client reads it, and it dies with the container.
+`make.py clean` refuses while an instance is recorded. Without a reachable instance the scenes that need
+one (`04-run`, `04-pr`, `05-proof` without a recorded run, `05-protected`, `05-review-no`) stop with a
+message that says so: the story never fakes its pull request. The video shows `localhost`, never an
+address.
+
+`assemble` writes `al-demo-testbed.mp4` and `narration-testbed.md`, and `verify.py --story testbed` adds
+`al-demo-testbed-contact-sheet.png` and `privacy-ocr-testbed.json`, beside the files of the rota story; the
+clips are in `clips-testbed` of the work folder, so both stories can share one work folder and one output
+folder. The tests use a stubbed Forgejo and a small stand-in for the flask tree, so they need neither
+podman nor network. The recording needs podman, network (the image, flask's dependencies) and the tools
+the rota story needs.
+
+When the second run stops at the protected path, al hands it over on the forge as a pull request marked
+`[needs human]`; the pull request that delivers the change is opened only after the approval. The tests
+show this against the stubbed Forgejo, which accepts both. It has not been tried against a real instance,
+which may refuse a second pull request for a branch whose first is still open: rehearse `05-protected`
+(`--rehearse`) before recording it.
 
 ## The clips
 

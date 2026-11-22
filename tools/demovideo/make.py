@@ -5,33 +5,48 @@
 # ///
 """Record the five-minute demo video of al, one scene at a time, and assemble it.
 
-  uv run tools/demovideo/make.py scene ID… --work DIR [--own-plan PATH] [--rehearse]
-  uv run tools/demovideo/make.py assemble --work DIR [--out OUT] [--voice {auto,elevenlabs,local,none}]
+  uv run tools/demovideo/make.py scene ID… --work DIR [--story {rota,testbed}] [--rehearse]
+  uv run tools/demovideo/make.py assemble --work DIR [--story {rota,testbed}] [--out OUT] [--voice {auto,elevenlabs,kokoro,local,none}]
+  uv run tools/demovideo/make.py forgejo {up,down} --work DIR [--port N]
   uv run tools/demovideo/make.py clean --work DIR
+
+There are two stories (tools/demovideo/stories.py). `rota`, the default, is the hospital rota app and the
+`cart` demo library: narration.md, scenes.py, DIR/clips, OUT/al-demo.mp4. `testbed` (--story testbed) is
+the same seven parts on the pinned public codebase flask, delivered to a local Forgejo:
+narration-testbed.md, scenes_testbed.py, DIR/clips-testbed, OUT/al-demo-testbed.mp4 and
+OUT/narration-testbed.md. What follows describes `rota`; `testbed` differs only in those names. `forgejo up`
+starts the throwaway Forgejo of the testbed story in rootless podman on the loopback interface (port 3910,
+or --port) with an empty repository demo/flask, and records it in DIR; `forgejo down` removes the container
+and its data (tools/demovideo/forgejo.py). Without a reachable instance the testbed scenes that need one
+stop: the story never fakes its pull request. `clean` refuses while an instance is recorded in DIR.
 
 `scene` records the scenes named (ids of tools/demovideo/narration.md) into DIR/clips/ID.mp4 (H.264,
 1280×720, 15 fps, no audio, exactly the scene's seconds) with DIR/clips/ID.json beside it: the real
 seconds, the speed, the held seconds, the caption times as rendered, what was blanked and which
-stand-ins were used. --rehearse runs the same steps without video. --own-plan is the plan of the run
-that records the video (scene 04-own-plan shows its Proof plan rows).
+stand-ins were used. --rehearse runs the same steps without video.
 
-`assemble` joins the clips in script order, adds a voice that reads each caption, checks the result and
-writes OUT/al-demo.mp4 and OUT/narration.md (the script with the times in the final video). --voice auto
-(the default) uses ElevenLabs when ELEVENLABS_API_KEY is set, else espeak-ng when it is installed, else no
-voice. --voice elevenlabs, --voice local (espeak-ng) and --voice none (or --no-voice) choose one. Voiced
-lines are cached in DIR/voice-cache and fitted to their captions (tools/demovideo/tts.py); the scene
-lengths never change. OUT is .al-proof/demo when the repository has a .al-proof folder (a run's proof
+`assemble` joins the clips in script order, adds a voice that says each caption's spoken line (the
+`  > ` lines of narration.md), checks the result and writes OUT/al-demo.mp4 and OUT/narration.md (the
+script with the times in the final video). --voice auto (the default) uses ElevenLabs when
+ELEVENLABS_API_KEY is set, else Kokoro when its model files are already cached, else espeak-ng when it is
+installed, else no voice. --voice elevenlabs, --voice kokoro, --voice local (espeak-ng) and --voice none
+(or --no-voice) choose one. Kokoro runs on this machine through kit/runtime/voice/say.py, which downloads
+its model once into the user's cache outside the repository (never when `auto` chose it). Each line starts
+VOICE_LEAD (0.3 s) after its caption; voiced lines are cached in DIR/voice-cache and fitted to their
+captions (tools/demovideo/tts.py); the mix is loudness-normalised to about -16 LUFS, AAC 128k, and the
+closing card names the synthetic voice. The scene lengths never change. OUT is .al-proof/demo when the repository has a .al-proof folder (a run's proof
 folder), else media/demo-video; both are ignored by git. `clean` removes DIR.
 
 Every scene runs in a neutral environment of its own (tools/showcase/make.py::neutral_env) on invented
 names. Before a frame is encoded, every terminal transcript and the dashboard's page text at each
 caption is checked with rules.find_private; a private match is blanked with █ and listed, and one that
 is still there stops the scene. A command that exits other than the scene expects, or a page that
-reports an error, records nothing. Nothing is uploaded or sent anywhere, except each caption's text to
-ElevenLabs when that voice is used (the key goes only in the request header): a person reviews the video.
+reports an error, records nothing. Nothing is uploaded or sent anywhere, except each spoken line (not the
+captions) to ElevenLabs when that voice is used (the key goes only in the request header): a person
+reviews the video.
 
-Needs uv, ffmpeg and ffprobe, Chromium or Chrome, DejaVu Sans Mono and racket; espeak-ng is optional;
-ELEVENLABS_API_KEY is optional.
+Needs uv, ffmpeg and ffprobe, Chromium or Chrome, DejaVu Sans and DejaVu Sans Mono, and racket; espeak-ng,
+Kokoro (say.py) and ELEVENLABS_API_KEY are optional.
 """
 from __future__ import annotations
 
@@ -43,6 +58,7 @@ import shutil
 import subprocess
 import sys
 import wave
+from functools import lru_cache
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -52,8 +68,10 @@ for _folder in (str(ROOT / "tools"), str(SHOWCASE), str(HERE)):
     if _folder not in sys.path:
         sys.path.insert(0, _folder)
 
+import forgejo  # noqa: E402
 import rules  # noqa: E402
 import scenes  # noqa: E402
+import stories  # noqa: E402
 import tts  # noqa: E402
 
 NARRATION = HERE / "narration.md"
@@ -65,6 +83,11 @@ LEAD = 0.2                       # seconds of a browser recording kept before it
 BADGE_FROM = 1.05                # a part played faster than this gets the badge
 VOICE_RATES = (165, 190, 215)    # espeak-ng words a minute: the next one when a caption is too short for the last
 MUTE = f"ffmpeg -i {VIDEO} -c:v copy -an al-demo-silent.mp4"
+VOICE_LEAD = 0.3                 # seconds between a caption's start and its spoken line
+AUDIO = ["-c:a", "aac", "-b:a", "128k", "-ac", "1"]
+LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"
+FADE = 0.35                      # seconds of fade at a part's first and last frame
+CAPTION_BG = (13, 17, 23, 215)
 
 
 def say(text: str) -> None:
@@ -99,11 +122,12 @@ def too_big(work: Path) -> str:
     return ""
 
 
-def script() -> rules.Script:
-    parsed = rules.parse(NARRATION.read_text(encoding="utf-8"))
+def script(story: str = stories.DEFAULT) -> rules.Script:
+    narration = stories.get(story).narration
+    parsed = rules.parse(narration.read_text(encoding="utf-8"))
     problems = rules.validate(parsed)
     if problems:
-        raise SystemExit("make.py: tools/demovideo/narration.md: " + "; ".join(problems))
+        raise SystemExit(f"make.py: tools/demovideo/{narration.name}: " + "; ".join(problems))
     return parsed
 
 
@@ -182,6 +206,56 @@ def badge_png(speed: float, path: Path) -> Path:
     return path
 
 
+@lru_cache(maxsize=None)
+def sans(size: int, bold: bool = True):
+    """DejaVu Sans (bold), or the terminal's mono face when fontconfig finds no such file."""
+    from PIL import ImageFont
+    import term
+    try:
+        found = subprocess.run(["fc-match", "-f", "%{file}", "DejaVu Sans:bold" if bold else "DejaVu Sans"],
+                               capture_output=True, text=True, timeout=20).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        found = ""
+    if found and Path(found).is_file():
+        return ImageFont.truetype(found, size)
+    return term.font(size, bold)
+
+
+def chapter_of(parsed: rules.Script, scene_id: str) -> str:
+    part = next(p for p in parsed.parts if any(s.id == scene_id for s in p.scenes))
+    return f"{part.number} · {part.title}"
+
+
+def caption_png(text: str, chapter: str):
+    """The lower third: an RGBA 1280×64 band with the blue bar at its left (as term.caption_strip, so that
+    verify.py's band check holds), the chapter tag and the caption in white. ValueError when it does not fit."""
+    from PIL import Image, ImageDraw
+    import term
+    img = Image.new("RGBA", (W, rules.STRIP_H), CAPTION_BG)
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, 6, rules.STRIP_H], fill=term.BLUE)
+    tag, face = sans(16, False), sans(26, True)
+    x = 22
+    if chapter:
+        d.text((x, rules.STRIP_H // 2), chapter, font=tag, fill=term.DIM, anchor="lm")
+        x += int(tag.getlength(chapter)) + 24
+    if "\n" in text or x + face.getlength(text) > 1240:
+        raise ValueError(f"caption does not fit one line of 1240 px after its chapter tag: {text!r}")
+    d.text((x, rules.STRIP_H // 2), text, font=face, fill="#ffffff", anchor="lm")
+    return img
+
+
+def fade_filter(parsed: rules.Script, scene_id: str, seconds: float) -> str:
+    """A fade in at the first scene of a part and a fade out at its last; the captions are laid over it."""
+    part = next(p for p in parsed.parts if any(s.id == scene_id for s in p.scenes))
+    out = ""
+    if part.scenes[0].id == scene_id:
+        out += f",fade=t=in:st=0:d={FADE:g}"
+    if part.scenes[-1].id == scene_id:
+        out += f",fade=t=out:st={seconds - FADE:.3f}:d={FADE:g}"
+    return out
+
+
 def caption_times(scene: rules.Scene, fitted: dict[int, float]) -> list[dict]:
     """Where each caption is in the clip: the first at 0, each later one at the later of its script
     offset and the fitted time of its cue; each stays until the next, the last until the scene ends."""
@@ -199,16 +273,18 @@ def caption_times(scene: rules.Scene, fitted: dict[int, float]) -> list[dict]:
     return out
 
 
-def record_scene(scene: rules.Scene, work: Path, values: dict, own_plan: Path | None, rehearse: bool) -> int:
+def record_scene(scene: rules.Scene, parsed: rules.Script, work: Path, values: dict, rehearse: bool,
+                 story: str = stories.DEFAULT) -> int:
     showcase = _showcase()
+    chosen = stories.get(story)
     env_root = work / f"env-{scene.id}"
     shutil.rmtree(env_root, ignore_errors=True)
     env_root.mkdir(parents=True)
     showcase.neutral_env(env_root)
     scratch = env_root / "scratch"
     scratch.mkdir()
-    ctx = scenes.Ctx(scene, work, env_root / "home" / "work", values, own_plan, rehearse)
-    parts = scenes.SCENES[scene.id](ctx)
+    ctx = scenes.Ctx(scene, work, env_root / "home" / "work", values, rehearse=rehearse)
+    parts = stories.scenes_of(chosen).SCENES[scene.id](ctx)
     firsts = [part.first for part in parts]
     if firsts != sorted(firsts) or firsts[0] != 0:
         raise scenes.SceneStopped(f"{scene.id}: the parts do not start with captions in script order: {firsts}")
@@ -216,10 +292,14 @@ def record_scene(scene: rules.Scene, work: Path, values: dict, own_plan: Path | 
                                           else [caption for _at, caption in part.cues])]
     if cued != sorted(set(cued)) or (cued and cued[-1] >= len(scene.captions)):
         raise scenes.SceneStopped(f"{scene.id}: the cues {cued} are not in the order of the script's captions")
+    chapter = chapter_of(parsed, scene.id)
+    try:
+        bands = [caption_png(caption.text, chapter) for caption in scene.captions]
+    except ValueError as error:
+        raise scenes.SceneStopped(f"{scene.id}: {error}") from None
     if rehearse:
         say(f"    rehearsed: {len(parts)} part(s), cues {cued}; blanked {ctx.blanked or 'nothing'}")
         return 0
-    import term
     encoded, fitted, files = [], {}, []
     for n, part in enumerate(parts):
         begin = ctx.offset(part.first)
@@ -233,18 +313,19 @@ def record_scene(scene: rules.Scene, work: Path, values: dict, own_plan: Path | 
     for i, caption in enumerate(captions):
         if abs(caption["moved"]) > 1.0:
             say(f"    MOVED: caption {i} is at +{caption['start']:g}, the script says +{caption['offset']:g}: "
-                f"edit tools/demovideo/narration.md to what was recorded")
+                f"edit tools/demovideo/{chosen.narration.name} to what was recorded")
         if caption["end"] - caption["start"] < rules.MIN_CAPTION_SECONDS:
             raise scenes.SceneStopped(f"{scene.id}: caption {i} would be on screen for {caption['end'] - caption['start']:.1f} s; "
-                                      f"give it more time in tools/demovideo/narration.md")
+                                      f"give it more time in tools/demovideo/{chosen.narration.name}")
     inputs: list[str] = []
     for path in files:
         inputs += ["-i", str(path)]
-    chain = ["".join(f"[{i}:v]" for i in range(len(files))) + f"concat=n={len(files)}:v=1:a=0,fps={rules.FPS},setsar=1[v0]"]
+    chain = ["".join(f"[{i}:v]" for i in range(len(files))) + f"concat=n={len(files)}:v=1:a=0,fps={rules.FPS},setsar=1"
+             f"{fade_filter(parsed, scene.id, scene.seconds)}[v0]"]
     label, index = "v0", len(files)
     for i, caption in enumerate(captions):
         strip = scratch / f"caption-{i:02d}.png"
-        term.caption_strip(caption["text"]).save(strip)
+        bands[i].save(strip)
         inputs += ["-i", str(strip)]
         until = caption["end"] if i + 1 < len(captions) else scene.seconds + 5
         chain.append(f"[{label}][{index}:v]overlay=0:H-h:enable='gte(t,{caption['start']:.3f})*lt(t,{until:.3f})'[v{index}]")
@@ -254,7 +335,7 @@ def record_scene(scene: rules.Scene, work: Path, values: dict, own_plan: Path | 
         inputs += ["-i", str(badge_png(fastest, scratch / "badge.png"))]
         chain.append(f"[{label}][{index}:v]overlay=W-w-16:44[v{index}]")
         label = f"v{index}"
-    clips = work / "clips"
+    clips = work / chosen.clips
     clips.mkdir(parents=True, exist_ok=True)
     clip = clips / f"{scene.id}.mp4"
     showcase.ffmpeg(*inputs, "-filter_complex", ";".join(chain), "-map", f"[{label}]", "-t", f"{scene.seconds:.3f}",
@@ -274,22 +355,22 @@ def record_scene(scene: rules.Scene, work: Path, values: dict, own_plan: Path | 
 
 
 def cmd_scene(a: argparse.Namespace) -> int:
+    parsed = script(a.story)
+    recorders = stories.scenes_of(a.story).SCENES
+    unknown = [name for name in a.ids if name not in recorders or name not in [s.id for s in parsed.scenes]]
+    if unknown:
+        print(f"make.py: no scene {unknown} in story {a.story}; scenes: {', '.join(s.id for s in parsed.scenes)}", file=sys.stderr)
+        return 2
     for tool in ("ffmpeg", "ffprobe"):
         if not shutil.which(tool):
             print(f"make.py: {tool} is not on PATH; install ffmpeg (it brings ffprobe)", file=sys.stderr)
             return 2
-    parsed = script()
-    unknown = [name for name in a.ids if name not in scenes.SCENES or name not in [s.id for s in parsed.scenes]]
-    if unknown:
-        print(f"make.py: no scene {unknown}; scenes: {', '.join(s.id for s in parsed.scenes)}", file=sys.stderr)
-        return 2
     work = a.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
     stop = too_big(work)
     if stop:
         print(stop, file=sys.stderr)
         return 1
-    own_plan = a.own_plan.resolve() if a.own_plan else None
     import privacy
     forbidden = privacy.forbidden_values(Path.home())          # before HOME changes
     values = rules.machine_values(ROOT)
@@ -302,7 +383,7 @@ def cmd_scene(a: argparse.Namespace) -> int:
         scene = parsed.scene(name)
         say(f"{scene.id} ({scene.kind}, {scene.seconds:g} s){' — rehearsal' if a.rehearse else ''}")
         try:
-            record_scene(scene, work, values, own_plan, a.rehearse)
+            record_scene(scene, parsed, work, values, a.rehearse, a.story)
         except (scenes.SceneStopped, privacy.PrivateText, terminal_clips.UnexpectedExit) as error:
             print(f"make.py: {scene.id} is not recorded: {error}", file=sys.stderr)
             return 1
@@ -331,49 +412,95 @@ def speak(text: str, target: Path, seconds: float) -> int:
 
 def voice_lines(lines: list[tuple[str, float, float]], build: Path, cache: Path,
                 backend: str) -> tuple[list[tuple[Path, float]], str]:
-    """Each line (caption text, start in the video, seconds on screen) voiced into a WAV of `build`: the
-    (wav, start) list to mix and the description of the voice for `## The voice`."""
+    """Each line (spoken text, its caption's start in the video, seconds on screen) voiced into a WAV of
+    `build`, fitted to its seconds less VOICE_LEAD and placed VOICE_LEAD after its caption: the (wav, start)
+    list to mix and the description of the voice for `## The voice`."""
     delays: list[tuple[Path, float]] = []
     if backend == "local":
         rates = []
         for n, (text, start, seconds) in enumerate(lines):
             wav = build / f"{n:02d}.wav"
-            rates.append(speak(text, wav, seconds))
-            delays.append((wav, start))
-        return delays, (f"One mono audio stream: each caption read by espeak-ng on this machine (a synthetic voice; nothing was sent "
-                        f"anywhere), at {min(rates)} to {max(rates)} words a minute. The captions carry the whole narration without it.")
-    if backend != "elevenlabs":
+            rates.append(speak(text, wav, seconds - VOICE_LEAD))
+            delays.append((wav, start + VOICE_LEAD))
+        return delays, (f"One mono audio stream: each caption's spoken line read by espeak-ng on this machine (a synthetic voice; "
+                        f"nothing was sent anywhere), at {min(rates)} to {max(rates)} words a minute. The captions carry the "
+                        f"narration without it.")
+    if backend not in ("elevenlabs", "kokoro"):
         raise tts.TtsError(f"no voice backend {backend!r}")
-    settings = tts.Settings.from_env(os.environ)
-    misfits, fetched, cached, tempos = [], 0, 0, []
-    for n, (text, start, slot) in enumerate(lines):
-        audio, hit = tts.fetch_line(text, cache, settings)        # a failed request stops here
-        cached, fetched = cached + hit, fetched + (not hit)
+    kokoro = backend == "kokoro"
+    settings = tts.KokoroSettings.from_env(os.environ) if kokoro else tts.Settings.from_env(os.environ)
+    limit = tts.KOKORO_MAX_TEMPO if kokoro else tts.MAX_TEMPO
+    misfits, made, cached, tempos = [], 0, 0, []
+    for n, (text, start, seconds) in enumerate(lines):
+        if kokoro:
+            audio, hit = tts.kokoro_line(text, cache, settings)      # a failed line stops here
+        else:
+            audio, hit = tts.fetch_line(text, cache, settings)       # a failed request stops here
+        cached, made = cached + hit, made + (not hit)
         wav = build / f"line-{n:03d}.wav"
         try:
-            tempos.append(tts.fit_line(audio, wav, slot))
+            tempos.append(tts.fit_line(audio, wav, seconds - VOICE_LEAD, max_tempo=limit))
         except tts.TtsError as error:
             misfits.append(f"{text!r}: {error}")
             continue
-        delays.append((wav, start))
+        delays.append((wav, start + VOICE_LEAD))
     if misfits:
-        raise tts.TtsError("these captions are too long to say in their time; shorten them or give them more time in "
+        raise tts.TtsError("these spoken lines are too long to say in their caption's time; shorten them in "
                            "tools/demovideo/narration.md: " + "; ".join(misfits))
-    say(f"voice: ElevenLabs {settings.voice_id} ({settings.model}), {fetched} line(s) fetched, {cached} from the cache")
     faster = [t for t in tempos if t > 1.0]
-    return delays, (f"One mono audio stream: each caption read by the ElevenLabs voice {settings.voice_id} (model {settings.model}). "
-                    f"Only the caption text was sent to the ElevenLabs service. {len(faster)} line(s) were played up to "
-                    f"×{max(tempos, default=1.0):.2f} faster to fit their caption. The captions carry the whole narration without it.")
+    fitted = (f"{len(faster)} line(s) were played up to ×{max(tempos, default=1.0):.2f} faster to fit their caption. "
+              f"The captions carry the narration without it.")
+    if kokoro:
+        say(f"voice: Kokoro {settings.voice}, {made} line(s) made, {cached} from the cache")
+        return delays, (f"One mono audio stream: each caption's spoken line read by the Kokoro voice {settings.voice} on this "
+                        f"machine (a synthetic voice; nothing was sent anywhere), through kit/runtime/voice/say.py. " + fitted)
+    say(f"voice: ElevenLabs {settings.voice_id} ({settings.model}), {made} line(s) fetched, {cached} from the cache")
+    return delays, (f"One mono audio stream: each caption's spoken line read by the ElevenLabs voice {settings.voice_id} "
+                    f"(model {settings.model}, a synthetic voice). Only the spoken lines were sent to the ElevenLabs service. " + fitted)
 
 
-def timed_narration(parsed: rules.Script, records: dict[str, dict], total: float, voice: str) -> str:
-    """The committed script with the times of the final video, then what a viewer should know."""
+def voice_note(backend: str, detail: str) -> str:
+    """The line on the closing card that names the synthetic voice; empty without a voice."""
+    if backend == "kokoro":
+        return f"The voice is synthetic: Kokoro ({detail})"
+    if backend == "elevenlabs":
+        return f"The voice is synthetic: ElevenLabs (voice {detail})"
+    if backend == "local":
+        return "The voice is synthetic: espeak-ng"
+    return ""
+
+
+def voice_note_png(text: str, path: Path) -> Path:
+    from PIL import Image, ImageDraw
+    import term
+    face = sans(20, False)
+    width = int(face.getlength(text)) + 32
+    img = Image.new("RGBA", (width, 40), (13, 17, 23, 0))
+    d = ImageDraw.Draw(img)
+    d.text((width // 2, 20), text, font=face, fill=term.DIM, anchor="mm")
+    img.save(path)
+    return path
+
+
+def mix_filter(delays: list[tuple[Path, float]], total: float) -> list[str]:
+    """The voice lines, each at its start, mixed into one stream of `total` seconds, loudness-normalised."""
+    mix = [f"[{n}:a]aresample=44100,adelay={int(round(start * 1000))}:all=1[a{n}]" for n, (_wav, start) in enumerate(delays)]
+    mix.append("".join(f"[a{n}]" for n in range(len(delays)))
+               + f"amix=inputs={len(delays)}:normalize=0:dropout_transition=0,apad=whole_dur={total:.3f},"
+               + f"{LOUDNORM},aresample=44100[a]")
+    return mix
+
+
+def timed_narration(parsed: rules.Script, records: dict[str, dict], total: float, voice: str,
+                    narration: Path = NARRATION, video: str = VIDEO) -> str:
+    """The committed script with the times of the final video (its spoken `  > ` lines copied as they are),
+    then what a viewer should know."""
     lines, starts, at = [], {}, 0.0
     for scene in parsed.scenes:
         starts[scene.id] = at
         at += scene.seconds
     current, nth = None, 0
-    for line in NARRATION.read_text(encoding="utf-8").splitlines():
+    for line in narration.read_text(encoding="utf-8").splitlines():
         if line.startswith("### "):
             current, nth = parsed.scene(line[4:].split(" | ")[0]), 0
             begin = starts[current.id]
@@ -405,7 +532,8 @@ def timed_narration(parsed: rules.Script, records: dict[str, dict], total: float
     lines += [f"- {s}" for s in short]
     lines += ["", "## Stand-ins and fixtures", ""]
     lines += [f"- {s}" for r in records.values() for s in r["stand_ins"]] or ["- none"]
-    lines += ["", "## The voice", "", voice, "", f"mute: {MUTE}", ""]
+    mute = MUTE if video == VIDEO else f"ffmpeg -i {video} -c:v copy -an {Path(video).stem}-silent.mp4"
+    lines += ["", "## The voice", "", voice, "", f"mute: {mute}", ""]
     return "\n".join(lines)
 
 
@@ -416,11 +544,14 @@ def cmd_assemble(a: argparse.Namespace) -> int:
     if stop:
         print(stop, file=sys.stderr)
         return 1
-    parsed = script()
-    clips = work / "clips"
+    story = stories.get(a.story)
+    parsed = script(story.name)
+    clips = work / story.clips
     missing = [s.id for s in parsed.scenes if not (clips / f"{s.id}.mp4").is_file() or not (clips / f"{s.id}.json").is_file()]
     if missing:
-        print(f"make.py assemble: no clip for {', '.join(missing)}: record with `make.py scene ID --work {a.work}`", file=sys.stderr)
+        chosen = "" if story.name == stories.DEFAULT else f" --story {story.name}"
+        print(f"make.py assemble: no clip for {', '.join(missing)}: record with `make.py scene ID{chosen} --work {a.work}`",
+              file=sys.stderr)
         return 1
     records = {s.id: json.loads((clips / f"{s.id}.json").read_text()) for s in parsed.scenes}
     stale = [s.id for s in parsed.scenes if records[s.id]["seconds"] != s.seconds
@@ -430,7 +561,8 @@ def cmd_assemble(a: argparse.Namespace) -> int:
         return 1
     total = parsed.seconds
     try:
-        backend = "none" if a.no_voice else tts.choose(a.voice, os.environ, bool(shutil.which("espeak-ng")))
+        backend = "none" if a.no_voice else tts.choose(a.voice, os.environ, bool(shutil.which("espeak-ng")),
+                                                         tts.kokoro_ready(os.environ))
     except tts.TtsError as error:
         print(f"make.py assemble: {error}", file=sys.stderr)
         return 2
@@ -443,34 +575,43 @@ def cmd_assemble(a: argparse.Namespace) -> int:
     for scene in parsed.scenes:
         inputs += ["-i", str(clips / f"{scene.id}.mp4")]
     count = len(parsed.scenes)
-    chain = ["".join(f"[{i}:v]" for i in range(count)) + f"concat=n={count}:v=1:a=0,fps={rules.FPS},format=yuv420p[v]"]
+    joined = "".join(f"[{i}:v]" for i in range(count)) + f"concat=n={count}:v=1:a=0,fps={rules.FPS}"
+    chain = [joined + ",format=yuv420p[v]"]
     maps = ["-map", "[v]"]
     audio: list[str] = ["-an"]
     voice = "No voice: the captions carry the whole narration."
     if backend != "none":
-        lines, at = [], 0.0
+        lines, at, note_at = [], 0.0, 0.0
         for scene in parsed.scenes:
-            for caption in records[scene.id]["captions"]:
-                lines.append((caption["text"], at + caption["start"], caption["end"] - caption["start"]))
+            for i, caption in enumerate(records[scene.id]["captions"]):
+                spoken = parsed.scene(scene.id).captions[i].say or caption["text"]
+                lines.append((spoken, at + caption["start"], caption["end"] - caption["start"]))
+            note_at = at + records[scene.id]["captions"][-1]["start"]
             at += scene.seconds
         try:
             delays, voice = voice_lines(lines, build, work / "voice-cache", backend)
         except tts.TtsError as error:
-            print("make.py assemble: " + tts.scrub(str(error), os.environ.get(tts.KEY_VAR)), file=sys.stderr)
+            print("make.py assemble: " + tts.scrub(str(error), os.environ.get(tts.KEY_VAR)).replace(
+                "tools/demovideo/narration.md", f"tools/demovideo/{story.narration.name}"), file=sys.stderr)
             return 1
         mix_inputs: list[str] = []
-        mix = []
-        for n, (wav, start) in enumerate(delays):
+        for wav, _start in delays:
             mix_inputs += ["-i", str(wav)]
-            mix.append(f"[{n}:a]aresample=44100,adelay={int(round(start * 1000))}:all=1[a{n}]")
-        mix.append("".join(f"[a{n}]" for n in range(len(delays)))
-                   + f"amix=inputs={len(delays)}:normalize=0:dropout_transition=0,apad=whole_dur={total:.3f}[a]")
         voice_wav = build / "voice.wav"
-        showcase.ffmpeg(*mix_inputs, "-filter_complex", ";".join(mix), "-map", "[a]", "-t", f"{total:.3f}", "-ac", "1", str(voice_wav))
+        showcase.ffmpeg(*mix_inputs, "-filter_complex", ";".join(mix_filter(delays, total)), "-map", "[a]", "-t", f"{total:.3f}",
+                        "-ac", "1", str(voice_wav))
         inputs += ["-i", str(voice_wav)]
         maps += ["-map", f"{count}:a"]
-        audio = ["-c:a", "aac", "-b:a", "96k", "-ac", "1"]
-    target = build / VIDEO
+        audio = AUDIO
+        detail = (tts.KokoroSettings.from_env(os.environ).voice if backend == "kokoro"
+                  else tts.Settings.from_env(os.environ).voice_id if backend == "elevenlabs" else "")
+        note = voice_note(backend, detail)
+        if note:
+            index = len([x for x in inputs if x == "-i"])
+            inputs += ["-i", str(voice_note_png(note, build / "voice-note.png"))]
+            chain = [f"{joined}[vj]",
+                     f"[vj][{index}:v]overlay=(W-w)/2:H-{rules.STRIP_H}-h-20:enable='gte(t,{note_at:.3f})',format=yuv420p[v]"]
+    target = build / story.video
     showcase.ffmpeg(*inputs, "-filter_complex", ";".join(chain), *maps, "-c:v", "libx264", "-preset", "slow", "-crf", "23",
                     "-pix_fmt", "yuv420p", "-r", str(rules.FPS), *audio, "-t", f"{total:.3f}", "-movflags", "+faststart",
                     "-map_metadata", "-1", str(target))
@@ -482,17 +623,17 @@ def cmd_assemble(a: argparse.Namespace) -> int:
         print(f"make.py assemble: the result is not H.264 {W}×{H} yuv420p of {rules.MIN_SECONDS}–{rules.MAX_SECONDS} s: {info}",
               file=sys.stderr)
         return 1
-    timed = build / TIMED
-    timed.write_text(timed_narration(parsed, records, seconds, voice), encoding="utf-8")
+    timed = build / story.timed
+    timed.write_text(timed_narration(parsed, records, seconds, voice, story.narration, story.video), encoding="utf-8")
     problems = rules.validate(rules.parse(timed.read_text(encoding="utf-8")))
     if problems:
         print("make.py assemble: the timed script does not hold: " + "; ".join(problems), file=sys.stderr)
         return 1
-    for made, name in ((target, VIDEO), (timed, TIMED)):       # the work folder may be on another disk: copy, then rename
+    for made, name in ((target, story.video), (timed, story.timed)):       # the work folder may be on another disk: copy, then rename
         landing = out / f".{name}.part"
         shutil.copyfile(made, landing)
         os.replace(landing, out / name)
-    say(f"{out / VIDEO}: {seconds:.1f} s, {(out / VIDEO).stat().st_size / 1e6:.1f} MB; {out / TIMED}")
+    say(f"{out / story.video}: {seconds:.1f} s, {(out / story.video).stat().st_size / 1e6:.1f} MB; {out / story.timed}")
     return 0
 
 
@@ -501,9 +642,18 @@ def cmd_clean(a: argparse.Namespace) -> int:
     if work == ROOT or ROOT.is_relative_to(work):
         print(f"make.py clean: {work} holds this repository; nothing is removed", file=sys.stderr)
         return 2
+    if (work / forgejo.STATE).exists():
+        print(f"make.py clean: a Forgejo instance is recorded in {a.work}; run make.py forgejo down --work {a.work} first",
+              file=sys.stderr)
+        return 2
     shutil.rmtree(work, ignore_errors=True)
     say(f"removed {work}")
     return 0
+
+
+def cmd_forgejo(a: argparse.Namespace) -> int:
+    work = a.work.resolve()
+    return forgejo.up(work, a.port) if a.action == "up" else forgejo.down(work)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -512,17 +662,27 @@ def main(argv: list[str] | None = None) -> int:
     sc = sub.add_parser("scene", help="record scenes into DIR/clips")
     sc.add_argument("ids", nargs="+", metavar="ID")
     sc.add_argument("--work", type=Path, required=True, metavar="DIR")
-    sc.add_argument("--own-plan", type=Path, default=None, metavar="PATH")
     sc.add_argument("--rehearse", action="store_true", help="run the same steps without video")
+    sc.add_argument("--story", choices=tuple(stories.STORIES), default=stories.DEFAULT,
+                    help="rota (the default): narration.md; testbed: flask on a local Forgejo, narration-testbed.md")
     sc.set_defaults(run=cmd_scene)
     ass = sub.add_parser("assemble", help="join the clips into OUT/al-demo.mp4 and write OUT/narration.md")
     ass.add_argument("--work", type=Path, required=True, metavar="DIR")
     ass.add_argument("--out", type=Path, default=None, metavar="OUT", help=f"default: {PROOF_OUT} in a run, else {MEDIA_OUT}")
     voices = ass.add_mutually_exclusive_group()
     voices.add_argument("--voice", choices=tts.BACKENDS, default="auto",
-                        help="auto: ElevenLabs when ELEVENLABS_API_KEY is set, else espeak-ng when installed, else none")
+                        help="auto: ElevenLabs when ELEVENLABS_API_KEY is set, else Kokoro when its model files are cached, "
+                             "else espeak-ng when installed, else none")
     voices.add_argument("--no-voice", action="store_true", help="the same as --voice none")
+    ass.add_argument("--story", choices=tuple(stories.STORIES), default=stories.DEFAULT,
+                     help="rota (the default) writes al-demo.mp4; testbed writes al-demo-testbed.mp4")
     ass.set_defaults(run=cmd_assemble)
+    fj = sub.add_parser("forgejo", help="start (up) or remove (down) the throwaway local Forgejo of the testbed story")
+    fj.add_argument("action", choices=("up", "down"))
+    fj.add_argument("--work", type=Path, required=True, metavar="DIR")
+    fj.add_argument("--port", type=int, default=forgejo.DEFAULT_PORT, metavar="N",
+                    help=f"the loopback port it is published on (default {forgejo.DEFAULT_PORT})")
+    fj.set_defaults(run=cmd_forgejo)
     cl = sub.add_parser("clean", help="remove DIR")
     cl.add_argument("--work", type=Path, required=True, metavar="DIR")
     cl.set_defaults(run=cmd_clean)
