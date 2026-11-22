@@ -165,7 +165,19 @@ such button. After two starts by a person the card says so and offers "give it o
 a run that stopped twice for the same reason says that it stays with you. Nothing here ships a
 rejected review: every plan ends in the checks, the review and the unchanged gate, or with a person.
 The button is shown disabled, with "run `al gen` to add adws/assign.py" as its title, in a layer
-generated before `al assign`. In the Needs-you view, **Give all N to agents** (one layer at a time: it
+generated before `al assign`. A run under Needs you that waits only for a person's approval (its
+summary's `approval`: a plan's `approval:` need, protected paths the evidence step found, a stand-in
+proposal, a "needs a person" item whose plan can start once approved, an integration's approve step)
+has **Approve & resume** in its row (`button.approve-resume`), with what it approves beside it. The
+chip **waiting for approval (N)** (`.chip.appr`) keeps only these runs, and **Approve & resume all N**
+(`button.approve-resume-all`, one layer at a time) takes every shown one. The run's page starts with a
+banner (`[data-role='approve-banner']`, "This run waits for your approval") that lists the items, the
+step the run resumes from and what happens after, with the same button. The button opens a
+confirmation (`[data-role='approve-resume-dialog']`) that lists every item in full with its paths; it
+needs your name (kept in the browser as `al.approve.who`) and takes an optional one-line note, then
+sends `POST /api/approve-resume` (below). What it answered is shown in the row or the banner and
+above the table. Nothing is offered for a stop only the layer author or the operator clears, nor for
+a failing check, a limit or a promotion. In the Needs-you view, **Give all N to agents** (one layer at a time: it
 is disabled while runs of several layers are shown) opens a dialog with every run's plan in the order
 they would start (resumes and restarts first, then one integration at a time; what stays with a person
 last, as "skipped: why") and **Start N**; what started is listed above the table. Beside it is the
@@ -214,8 +226,9 @@ check pass the run carried forward as not affected, the Evidence cell shows
 at `prove` or `evidence`, a stop line says why and names the party who can clear it (layer author,
 approver, person), with the fix (the exact declaration a layer author adds, or the question for an
 approver). Only for a failed run stopped for an **approver** is there an **Approve** button
-("Approve vocabulary"): it sends `POST /api/approve` (below), and the run resumes from the step that
-stopped. Below the table come the review rounds, each with what it resolved, what is still open and
+("Approve vocabulary"): it opens the Approve & resume confirmation (below) when the run has an
+`approval`, and in a layer generated before that it sends `POST /api/approve` (below); the run resumes
+from the step that stopped. Below the table come the review rounds, each with what it resolved, what is still open and
 what is new, why the rounds ended, and the debt filed to the task list. The Start work panel has an
 **approve** field for workflows (comma-separated: `vocabulary, edit:PATH, dependency:NAME`), sent as
 `approvals` with the start request: pre-approvals for that run, like `al run --approve`. On the
@@ -315,6 +328,7 @@ actions run `al`, which writes what that command writes. `--read-only` turns all
 | `state.json` `integration`, `definition.integration` | an integration run: the run it integrates (`integrates` in its summary), its conflicted files and report; its graph is drawn from `definition` (workflow `integrate`, steps of kind `integrate`: prepare, resolve, approve) |
 | `adws/integrate.py`, `templates/integrate.json` | the integration of a handed-over run: the script's presence and the settings (`enabled`, `approval`) decide whether a row's next action names `al integrate` (`integrate` in a run's summary); `integrate.py preview RUN --json` is run for `GET /api/integrate/preview`, `run RUN --detach --json --by dashboard` and `approve RUN --who NAME --detach --json` for the writes (see Safety) |
 | `adws/assign.py` | "Give to an agent": its presence enables the button (`assign.script` in a run's summary); `assign.py preview RUN --json` is run for the plan, `give RUN --detach --by dashboard [--note TEXT] [--override] --json`, `approve RUN ITEM --who NAME --via dashboard --json`, and `all RUN … --preview --json` / `all RUN … --by dashboard --json` (the runs under Needs you) for the writes (see Safety) |
+| `agents/<id>/approvable.json` | what a stopped run waits for a person's approval of (`{version, run, basis, waiting, kind: proof\|protected-paths\|gate\|proposal\|decision\|integration, items: [{id, kind, text, what, paths, decisions}], from_step, after, why, token, at}`), written by the layer's runtime (`adw_modules/approvable.py`) through `adws/dispatch.py --approvable`, never by the dashboard; part of a run's signature. `read_approvable` gives a row its `approval` (`{kind, items: [{id, kind, text, paths}], from_step, after, token}`, texts shortened and cut) only when the record says `waiting`, has items and a token, and its `basis` equals `approval_basis` of the run's files now (status, end, the counts of approvals and attempts, the decision's and the integration's status: the same string as the runtime's `approvable.basis`). Every 5 seconds the dashboard asks the launcher, once per run and basis and at most 20 runs per layer and look, about the Needs-you runs without a fitting record; never with `--read-only`, `--no-start`, or in a container without `--allow-start-in-container` |
 | `agents/<id>/assign.json` | how often a run was given to an agent and what a person approved (`{version, attempts: [{n, at, by: cli\|dashboard\|decider, who, kind, note, run, reason, outcome: started\|landed\|passed\|stopped, after, why}], approvals: [{id, kind, text, path, by, at, via}]}`), written by the layer's runtime (`adw_modules/assign.py`), never by the dashboard; part of a run's signature. `read_assign` mirrors the runtime's reading: `clicks` (attempts by `cli` or `dashboard`), `left` (of 2), `same_reason` (the last two stopped attempts ended for the same reason). An attempt the file still calls `started` is shown with what `integration.json` or the run's status already says |
 | `artefacts/<id>/manifest.json` entries of type `left-out` | `left_out` of the run detail: per artefact id, how many matching files were not handed over (`left_out` of `matched`), shown on the Artefacts tab |
 | `state.json` `replaces`, `branch`, `ship.commit`, `ship.pr`, `delivery.branch` | what landing and settlement need: the run a run starts again (a run whose `replaces` names another makes that one "replaced by"), the run's branch and shipped commit, its pull request, and its target branch (`delivery.branch` with stages, else `codebase.defaultBranch`, else `main`) |
@@ -485,8 +499,8 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
 ## Safety
 
 - **Writes, guarded** (and the stand-in's three, below). Only GET and HEAD, plus `POST /api/models`, `POST /api/start`,
-  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, `POST /api/promotion`, `POST /api/integrate` and `POST /api/assign`, which start runs through the layer's own scripts, and the three Testing writes `POST /api/testing`, `POST /api/batch` and `POST /api/run-testing`), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
-  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle`, `/api/integrate`, `/api/assign`, `/api/testing`, `/api/batch` or `/api/run-testing` is
+  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, `POST /api/promotion`, `POST /api/integrate`, `POST /api/assign`, `POST /api/approve` and `POST /api/approve-resume`, which start or resume runs through the layer's own scripts, and the three Testing writes `POST /api/testing`, `POST /api/batch` and `POST /api/run-testing`), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
+  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle`, `/api/integrate`, `/api/assign`, `/api/approve`, `/api/approve-resume`, `/api/testing`, `/api/batch` or `/api/run-testing` is
   405 too). No endpoint changes a run's records (a settlement and a testing request are files of their own), and only an approved voice proposal can resume, answer or stop a run. All four writes pass one guard
   (`Handler._write_guard`): the token as for every request, but from the `Authorization` header or
   the cookie only (a token in the query string is refused); a loopback `Host` when there is no
@@ -754,6 +768,33 @@ shell) then records the approvals (who: `dashboard`) and resumes the run from th
 202 `{"status": "resumed", "message", "url": "#/run/K/RUN"}`. A run that is not stopped for an
 approver is 409 `{"error", "reason", "refused": true}`; a launcher that failed is 502 with the tail of
 its stderr. `al approve` does the same from the command line.
+
+### `POST /api/approve-resume`
+
+Approve & resume of a run that waits only for a person's approval. One run: `{layer, run, items: [ID,
+…], token, who, note}`; several of one layer: `{layer, runs: [{run, items, token}, …], who, note}` (1
+to 50 runs, each once); nothing else. `items` and `token` are the ids and the token of the run's
+`approval` as the page showed it; `who` is 1 to 80 printable characters; `note` is optional, at most
+500 printable characters on one line. It passes the guard of every write and is refused with
+`--no-start` and in a container without `--allow-start-in-container` (403); a malformed body is 400,
+an unknown layer or run 404, a GET 405.
+
+The dashboard first compares with what it shows now: the run must be under Needs you with an
+`approval` whose token is the one sent, else 409 `{"error", "reason": "stale"}`; an item that is not
+one of the shown ids is 409 with reason `bad-item`. Then the layer's own `adws/dispatch.py
+--approve-resume RUN --item … --token T --who W [--note N] --json` (argv list, no shell, without the
+dashboard's token) derives what the run waits for again, records every approval where its runtime
+reads it (with who, when, `via: dashboard` and the note) and resumes the run with the mechanism that
+stop has: 202 `{"status": "resumed", "message", "run_id", "url": "#/run/K/RUN_ID"}`, where `run_id` is
+the run to watch (another run when the approval started an integration). A refusal of the runtime is
+409 `{"error", "reason", "refused": true}`: `running` (a live process holds the run; nothing is
+recorded), `not-waiting` (nothing is offered any more, with why), `stale` (what it derives is not what
+was shown), `bad-item`. A launcher that failed is 502 with the tail of its stderr.
+
+Several runs are taken in the order given, each on its own: 202 `{"status": "done", "resumed": N,
+"results": [{run, status: resumed | refused, message, reason, run_id, url}]}` when at least one
+resumed, else 409 with the same body. `al approve LAYER RUN --all` does the same for one run from
+the command line.
 
 ### `GET /api/integrate/preview`, `POST /api/integrate`, `GET /api/settle/evidence`
 
@@ -1059,6 +1100,18 @@ own `adws/assign.py` and the mock agent, a failed check resumed, an unchanged ru
 Cancel, the report lines, the crumbs and switching it off, and with `AL_DASHBOARD_SHOTS=DIR` saves
 `work-assign-auto-confirm-1280.png` and `work-assign-auto-on-1280.png`. `tests/tools/test_al_assign.py` (at the
 repository root) runs `al assign`.
+
+`tests/approvable_fixtures.py` adds four stopped runs to the demo-shop fixture, with the
+`approvable.json` records the runtime would write (a proof stop, an evidence stop with two protected
+paths, a record with another basis, a `needs-declaration` stop without a record).
+`tests/test_approvable_model.py` checks the row's `approval`, that a record about another state of the
+run is ignored, the count behind the chip and hostile text kept as data;
+`tests/test_approve_resume_http.py` the endpoint on a real layer: the row gets its approval from the
+layer's launcher, an approval recorded with who and note that resumes the run, the refusals (a stale
+token, an unknown item, a run whose process is alive), several runs at once, malformed bodies and the
+guard; `tests/test_browser_approve_resume.py` (Chrome) the chip, the row button with its confirmation
+and the run page's banner. With `AL_DASHBOARD_SHOTS=DIR` it saves `run-approve-row.png`,
+`run-approve-confirm.png` and `run-approve-banner.png`.
 
 `tests/test_workspace.py` covers the workspace scan (states, sibling layers, al scout's summary, depth,
 symlinks out of the folder, the file and time bounds, git without fsmonitor or hooks, the cache and the

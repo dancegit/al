@@ -715,6 +715,7 @@ def write_record(layer: Any, state: Any) -> Path:
         lines += ["", "## Instructions for the next round", "", clean(d.get("instructions"))]
     if d.get("answers"):
         lines += ["", "## Answers", ""] + [f"- {a.get('at', '')} {a.get('kind')} via {a.get('via')}"
+                                           + (f" by {clean(a.get('who'))}" if a.get("who") else "")
                                            + (f": {clean(a.get('text'))}" if a.get("text") else "")
                                            for a in d["answers"]]
     if d.get("mode") == "suggest":
@@ -844,10 +845,11 @@ def _recipients(layer: Any) -> set[str]:
 
 
 def answer(layer: Any, adw_id: str, kind: str, text: str, via: str, code: str | None = None,
-           sender: str | None = None) -> dict[str, str]:
+           sender: str | None = None, who: str = "") -> dict[str, str]:
     """Apply a person's answer to a suggestion, from any channel (cli, dashboard, mail, webhook).
     {status, message} (+ reason when refused); a refusal changes nothing. A suggestion that is not a
-    resume (restart, answer, integrate, land, settle, promote) is performed by standin.apply."""
+    resume (restart, answer, integrate, land, settle, promote) is performed by standin.apply. `who`
+    names the person who answered (approve & resume gives it); it is kept with the answer."""
     from . import standin
 
     if isinstance(layer, (str, Path)):
@@ -885,7 +887,9 @@ def answer(layer: Any, adw_id: str, kind: str, text: str, via: str, code: str | 
     beyond = standin.KIND_OF.get(action) not in (None, "resume")   # not a resume: standin.apply performs it
     if beyond and kind == "alter" and action in ("land", "promote"):
         return _refused("bad-answer", f"alter does not apply to {action}; answer go or reject")
-    decision.setdefault("answers", []).append({"kind": kind, "text": text, "via": via, "at": state_module.now()})
+    who = " ".join(str(who or "").split())[:80]
+    decision.setdefault("answers", []).append({"kind": kind, "text": text, "via": via, "at": state_module.now(),
+                                               **({"who": who} if who else {})})
     state.decision = decision
     stop = standin.fingerprint(state)   # the stop the answer is about, before a resume resets its steps
 
