@@ -157,6 +157,15 @@ START_KEY = re.compile(r"^[A-Za-z0-9_-]{8,64}$")     # mirror of launch.KEY_RE
 APPROVAL_TOKEN = re.compile(r"[a-z][a-z0-9-]*(:[^\s]{1,200})?")
 MAX_APPROVALS = 20
 APPROVE_KEYS = {"layer", "run", "what"}
+# Approve & resume (kit/runtime/adw_modules/approvable.py): what a stopped run waits for a person's approval of
+APPROVABLE_FILE = "approvable.json"        # agents/<run>/approvable.json, written by the layer's launcher
+APPROVABLE_EVERY = 5.0                     # seconds between looks at the Needs you list for runs to ask about
+APPROVABLE_BATCH = 20                      # runs asked about in one launcher call
+APPROVABLE_ITEMS = 50                      # items (and paths per item) shown for one run
+APPROVABLE_TEXT = 300                      # characters of one text
+MAX_BULK_APPROVE = 50
+APPROVE_RESUME_KEYS = {"layer", "run", "runs", "items", "token", "who", "note"}
+APPROVE_ITEM = re.compile(r"[A-Za-z0-9][^\s]{0,219}")
 COMMAND_PREFIX = "command:"       # a single-command run's ADW name (launch.single_command_adw)
 LAUNCHER = "adws/dispatch.py"
 # The stand-in (kit/runtime/adw_modules/standin.py), always asked through the layer's own script:
@@ -2785,6 +2794,55 @@ def read_assign(layer_dir: Path, run_id: str) -> dict[str, Any] | None:
             "approvals": len(approvals), "same_reason": same}
 
 
+def approval_basis(layer_dir: Path, run_id: str, state: Any) -> str:
+    """What a derivation of approvable.json rests on, as one string. The same string as `basis` of
+    kit/runtime/adw_modules/approvable.py, built from the same files; keep the two alike. A record
+    with another basis is about an earlier state of the run and is ignored."""
+    folder = Path(layer_dir) / "agents" / run_id
+    state = state if isinstance(state, dict) else {}
+    given = read_json(folder / ASSIGN_FILE)
+    given = given if isinstance(given, dict) else {}
+    integration = read_json(folder / INTEGRATION_FILE)
+    integration = integration if isinstance(integration, dict) else {}
+    decision = state.get("decision") if isinstance(state.get("decision"), dict) else {}
+
+    def count(value: Any) -> str:
+        return str(len(value)) if isinstance(value, list) else "0"
+
+    return "|".join([str(state.get("status") or ""), str(state.get("ended") or ""), count(state.get("approvals")),
+                     count(given.get("approvals")), count(given.get("attempts")), str(decision.get("status") or ""),
+                     str(integration.get("status") or "")])
+
+
+def read_approvable(layer_dir: Path, run_id: str, state: Any, short: Any = None) -> dict[str, Any] | None:
+    """agents/<run>/approvable.json (written by the layer's runtime through `adws/dispatch.py
+    --approvable`): what the run waits for a person's approval of → {kind, items: [{id, kind, text,
+    paths}], from_step, after, token}. None when there is no record, it does not wait, or it was
+    derived from another state of the run (approval_basis). Every text is shortened and cut."""
+    data = read_json(Path(layer_dir) / "agents" / run_id / APPROVABLE_FILE)
+    if not isinstance(data, dict) or data.get("waiting") is not True:
+        return None
+    items, token = data.get("items"), data.get("token")
+    if not isinstance(items, list) or not items or not isinstance(token, str) or not token or len(token) > 64:
+        return None
+    if data.get("basis") != approval_basis(layer_dir, run_id, state):
+        return None
+    short = short or (lambda text: text)
+
+    def text_of(value: Any, limit: int = APPROVABLE_TEXT) -> str:
+        return clip(short(" ".join(str(value or "").split())), limit)
+
+    shown = []
+    for item in items[:APPROVABLE_ITEMS]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not APPROVE_ITEM.fullmatch(item["id"]):
+            return None
+        paths = item.get("paths") if isinstance(item.get("paths"), list) else []
+        shown.append({"id": item["id"], "kind": text_of(item.get("kind"), 40), "text": text_of(item.get("text")),
+                      "paths": [text_of(path) for path in paths[:APPROVABLE_ITEMS] if isinstance(path, str)]})
+    return {"kind": text_of(data.get("kind"), 40), "items": shown, "from_step": text_of(data.get("from_step"), 80),
+            "after": text_of(data.get("after")), "token": token}
+
+
 def assign_seen(given: dict[str, Any] | None, summary: dict[str, Any]) -> dict[str, Any]:
     """read_assign() for the page. The runtime settles an attempt's outcome the next time it computes
     the plan, and nobody asks for the plan of a run that landed; so the last attempt still recorded as
@@ -3051,6 +3109,50 @@ def approve_via_layer(layer: Layer, run_id: str, what: list[str],
     except ValueError:
         result = {}
     return done.returncode, result if isinstance(result, dict) else {}, done.stderr.decode("utf-8", "replace")[-2000:]
+
+
+def _launcher_json(layer: Layer, args: list[str], timeout: float) -> tuple[int, dict[str, Any], str]:
+    """Run the layer's `adws/dispatch.py ARGS` without the dashboard's token in its environment →
+    (exit code, the JSON object of its last output line, stderr tail)."""
+    try:
+        python = layer_python()
+    except OSError as exc:
+        return -1, {}, f"cannot run the layer's launcher: {exc}"
+    env = {k: v for k, v in os.environ.items() if k != "AL_DASHBOARD_TOKEN"}
+    try:
+        done = subprocess.run([*python, str(layer.path / LAUNCHER), *args], capture_output=True, cwd=str(layer.path),
+                              env=env, timeout=timeout, check=False, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return -1, {}, f"the layer's launcher took longer than {int(timeout)} s"
+    except OSError as exc:
+        return -1, {}, f"cannot run the layer's launcher: {exc}"
+    lines = [line for line in done.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    try:
+        result = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        result = {}
+    return done.returncode, result if isinstance(result, dict) else {}, done.stderr.decode("utf-8", "replace")[-2000:]
+
+
+def approvable_via_layer(layer: Layer, run_ids: list[str],
+                         timeout: float = START_TIMEOUT) -> tuple[int, dict[str, Any], str]:
+    """`adws/dispatch.py --approvable ID… --json` of the layer (its runtime version): derives what each
+    run waits for a person's approval of and writes agents/<id>/approvable.json. → (exit code, its
+    JSON result {"runs": {ID: record}}, stderr tail)."""
+    return _launcher_json(layer, ["--approvable", *run_ids, "--json"], timeout)
+
+
+def approve_resume_via_layer(layer: Layer, run_id: str, items: list[str], token: str, who: str, note: str,
+                             timeout: float = START_TIMEOUT) -> tuple[int, dict[str, Any], str]:
+    """`adws/dispatch.py --approve-resume ID --item … --token T --who W [--note N] --json` of the layer:
+    records the approvals where its runtime reads them and resumes the run. → (exit code, its JSON
+    result {status: resumed | refused, reason, message, run_id}, stderr tail)."""
+    argv = ["--approve-resume", run_id, "--token", token, "--who", who, "--json"]
+    for item in items:
+        argv += ["--item", item]
+    if note:
+        argv += ["--note", note]
+    return _launcher_json(layer, argv, timeout)
 
 
 # ============================================================================ proof plans and review rounds
@@ -3980,6 +4082,7 @@ class RunFiles:
                             stat_sig(self.dir / EVENTS_FILE), stat_sig(self.dir / SETTLEMENT_FILE),
                             stat_sig(self.dir / INTEGRATION_FILE), stat_sig(self.dir / DECISIONS_FILE),
                             stat_sig(self.dir / TESTING_REQUEST), stat_sig(self.dir / ASSIGN_FILE),
+                            stat_sig(self.dir / APPROVABLE_FILE),
                             stat_sig(self.layer.path / BATCHES_FILE)]   # a batch may name this run its culprit
         if deep:
             items.append(stat_sig(self.dir / "PR.md"))
@@ -4929,6 +5032,8 @@ class RunModel:
         # "Give to an agent": whether the layer has the script, and what agents/<id>/assign.json records
         summary["assign"] = {"script": (self.layer.path / ASSIGN_SCRIPT).is_file(),
                              **assign_seen(read_assign(self.layer.path, self.id), summary)}
+        # Approve & resume: what the run waits for a person's approval of (agents/<id>/approvable.json)
+        summary["approval"] = read_approvable(self.layer.path, self.id, state, self._short(state))
         return summary
 
     def _standin(self, state: dict[str, Any], agents: list[dict[str, Any]]) -> dict[str, Any]:
@@ -5636,6 +5741,10 @@ class Model:
         self.standin_pending: set[str] = set()               # "layer/run" or "layer/job:ID" waiting for the worker
         self.standin_done: dict[str, str] = {}               # item key → the stop this process handed over already
         self.standin_tick = 0.0
+        # approve & resume: when the Needs you list was last looked at, and what the layers' launchers were asked
+        self.approvable_tick = 0.0
+        self.approvable_asked: dict[str, str] = {}           # run key → the basis it was asked about
+        self.approvable_seen: dict[str, tuple[Any, str]] = {}   # run key → (signature, basis) last computed
         self.standin_thread: threading.Thread | None = None
         # the Automatic switch of Needs you, carried out by the same loop and worker
         self.assign_auto_done: dict[str, str] = {}           # run key → the stop this process tried already
@@ -6067,6 +6176,7 @@ class Model:
                             "adws": [a.get("name") for a in layer.ir.get("adws") or [] if isinstance(a, dict)],
                             "runs": len(runs), "running": sum(1 for r in runs if r["status"] == "running"),
                             "needs_you": self.needs_you(layer.key),
+                            "waiting_approval": self.waiting_approval(layer.key),
                             "explain": layer.explain_file(), "limits": layer.limits(),
                             "budget": self.layer_budget(layer, runs),
                             "usage": self.layer_usage(layer, time.time()),
@@ -6277,6 +6387,106 @@ class Model:
             for item in self.standin_items(layer, view):
                 if self.standin_enqueue(layer, "consider", item):
                     break
+
+    def may_run_scripts(self, layer: Layer) -> bool:
+        """May this dashboard run the layer's launcher for a run? (the rules of assign_status)"""
+        return not (self.read_only or self.no_start or (self.in_container and not self.allow_start)) \
+            and (layer.path / LAUNCHER).is_file()
+
+    def tick_approvable(self, now: float) -> None:
+        """Ask each layer's launcher, once per run and basis, what the Needs you runs without a fitting
+        approvable.json wait for (at most APPROVABLE_BATCH runs per layer and look). The launcher writes
+        the record; the runs are read again. A launcher that fails is not asked again for that basis."""
+        if now - self.approvable_tick < APPROVABLE_EVERY:
+            return
+        self.approvable_tick = now
+        with self.lock:
+            layers = list(self.layers.values())
+        for layer in layers:
+            if not self.may_run_scripts(layer):
+                continue
+            with self.lock:
+                rows = [(key, s["id"], self.signatures.get(key)) for key, s in self.summaries.items()
+                        if s["layer"] == layer.key and not s.get("approval")
+                        and (self.attention.get(key) or {}).get("bucket") == "needs-you"]
+            ask: list[tuple[str, str, str]] = []
+            for key, run_id, signature in sorted(rows):
+                seen = self.approvable_seen.get(key)
+                if seen is None or seen[0] != signature or signature is None:
+                    state = read_json(layer.path / "agents" / run_id / "state.json")
+                    seen = (signature, approval_basis(layer.path, run_id, state))
+                    self.approvable_seen[key] = seen
+                if self.approvable_asked.get(key) != seen[1]:
+                    ask.append((key, run_id, seen[1]))
+                if len(ask) >= APPROVABLE_BATCH:
+                    break
+            if not ask:
+                continue
+            for key, _run_id, basis in ask:
+                self.approvable_asked[key] = basis
+            before = self.waiting_approval(layer.key)
+            approvable_via_layer(layer, [run_id for _key, run_id, _basis in ask])
+            # read the asked runs again; their buckets do not follow from this record, so no attention pass
+            # (the signature is taken before the read, as in tick(), and a run another thread read again
+            # meanwhile — a start of its integration, say — is left alone: this read may be the older one)
+            listed = {key: signature for key, _run_id, signature in rows}
+            for key, run_id, _basis in ask:
+                signature = RunFiles(layer, run_id).signature(deep=False)
+                try:
+                    fresh = RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary(
+                        self._extras(layer, run_id))
+                except Exception:  # noqa: BLE001 — the watcher's next tick reads it
+                    continue
+                with self.lock:
+                    if self.signatures.get(key) != listed.get(key):
+                        continue
+                    self.summaries[key] = fresh
+                    self.signatures[key] = signature
+                self.hub.publish("run", self._decorated(fresh))
+            if self.waiting_approval(layer.key) != before:
+                self.hub.publish("layers", self.layer_list())
+
+    def waiting_approval(self, layer_key: str) -> int:
+        """How many runs of the layer under Needs you wait only for a person's approval (the chip's count)."""
+        with self.lock:
+            return sum(1 for key, item in self.attention.items()
+                       if key.startswith(layer_key + "/") and item.get("bucket") == "needs-you"
+                       and (self.summaries.get(key) or {}).get("approval"))
+
+    def approve_resume(self, layer_key: Any, run_id: Any, items: list[str], token: str, who: str,
+                       note: str) -> tuple[int, dict[str, Any]]:
+        """Approve & resume of one run: what the page showed must be the run's current approval (its
+        token), then the layer's own launcher records the approvals and resumes the run."""
+        layer, code, why = self._run_of(layer_key, run_id)
+        if layer is None:
+            return code, {"error": why}
+        key = f"{layer.key}/{run_id}"
+        self._reread(layer, [run_id])                    # the record or the run may have changed since the page drew it
+        with self.lock:
+            summary = self.summaries.get(key) or {}
+            bucket = (self.attention.get(key) or {}).get("bucket")
+        approval = summary.get("approval") if bucket == "needs-you" else None
+        if not approval or approval.get("token") != token:
+            return 409, {"error": "what was shown is stale: open it again", "reason": "stale"}
+        shown = [item["id"] for item in approval["items"]]
+        unknown = [item for item in items if item not in shown]
+        if unknown:
+            return 409, {"error": f"run {run_id} has no item {clip(unknown[0], 80)!r} to approve", "reason": "bad-item"}
+        exit_code, result, stderr = approve_resume_via_layer(layer, run_id, items, token, who, note)
+        status = result.get("status")
+        if status == "resumed":
+            new_id = str(result.get("run_id") or run_id)
+            new_id = new_id if RUN_ID.match(new_id) else run_id
+            self._reread(layer, dict.fromkeys([run_id, new_id]))
+            self.hub.publish("layers", self.layer_list())
+            return 202, {"status": "resumed", "message": clip(layer.shortener()(str(result.get("message") or "")), 600),
+                         "run_id": new_id, "url": f"#/run/{layer.key}/{new_id}"}
+        if status == "refused":
+            self._reread(layer, [run_id])
+            return 409, {"error": clip(layer.shortener()(str(result.get("message") or "refused")), 600),
+                         "reason": str(result.get("reason") or ""), "refused": True}
+        tail = "\n".join(stderr.strip().splitlines()[-12:])
+        return 502, {"error": script_error("launcher", exit_code, stderr), "stderr": tail}
 
     def standin_worker(self) -> None:
         """One piece of stand-in work at a time, for every layer, until the dashboard stops."""
@@ -6802,7 +7012,7 @@ class Model:
         key = f"{layer.key}/{run_id}"
         with self.lock:
             summary = self.summaries.get(key)
-        if not summary or summary.get("status") in ("running", "unknown"):   # the watcher's read may be behind the files
+        if not summary or summary.get("status") in ("running", "unknown"):   # seen before its state.json was written, or the watcher's read is behind the files: read it now
             summary = RunModel(layer, run_id, self.aggs, can_see_pids=not self.in_container).summary()
         held = run_holder(layer.path, run_id)
         if held:
@@ -7056,6 +7266,7 @@ class Model:
                     self.slots[layer.key] = slots
                     self.hub.publish("slots", {"layer": layer.key, **slots})
         self.tick_standin(now)
+        self.tick_approvable(now)
         if self.probe.enabled and (any_running or self.hub.count()) and now - self.probe.last > (3 if any_running else 15):
             if self.probe.poll(want_stats=True):   # stats are only fetched for containers that are running
                 self.hub.publish("containers", self.containers())
@@ -10192,6 +10403,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._run_testing()
             if path == "/api/approve":
                 return self._approve()
+            if path == "/api/approve-resume":
+                return self._approve_resume()
         except (BrokenPipeError, ConnectionResetError):
             return None
         self._refuse()
@@ -10903,6 +11116,81 @@ class Handler(BaseHTTPRequestHandler):
         tail = "\n".join(stderr.strip().splitlines()[-12:])
         return self._json({"error": script_error("launcher", code, stderr), "stderr": tail}, 502)
 
+    def _approve_resume(self) -> None:
+        """POST /api/approve-resume {layer, run, items: [ID, …], token, who, note} for one run, or {layer,
+        runs: [{run, items, token}, …], who, note} for several, and nothing else: Approve & resume of a
+        run that waits only for a person's approval. `items` and `token` are what the page showed (the
+        run's `approval`); checked here against the current one, then done by the layer's own
+        `adws/dispatch.py --approve-resume`, which derives again, records every approval with who, when
+        and the note, and resumes the run. One run: 202 resumed, 409 refused (stale, bad-item, running,
+        not-waiting, …). Several: each on its own, in the order given; 202 when at least one resumed,
+        else 409, with one result per run."""
+        body = self._write_guard(4 * MAX_WRITE_BODY + MAX_BULK_APPROVE * 4096)
+        if body is None:
+            return None
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        usage = ('expected {"layer", "run", "items": [id, …], "token", "who", "note"} for one run, or {"layer", '
+                 '"runs": [{"run", "items", "token"}, …], "who", "note"} for several, and nothing else')
+
+        def entry_ok(entry: Any) -> bool:
+            items, token = entry.get("items"), entry.get("token")
+            return (isinstance(entry.get("run"), str) and bool(RUN_ID.match(entry["run"]))
+                    and isinstance(items, list) and 1 <= len(items) <= APPROVABLE_ITEMS
+                    and all(isinstance(item, str) and APPROVE_ITEM.fullmatch(item) for item in items)
+                    and isinstance(token, str) and 1 <= len(token) <= 64)
+
+        if not isinstance(data, dict) or not set(data) <= APPROVE_RESUME_KEYS or not isinstance(data.get("layer"), str):
+            return self._error(400, usage)
+        single, several = "run" in data, "runs" in data
+        if single == several or (several and ("items" in data or "token" in data)):
+            return self._error(400, usage)
+        if single:
+            entries = [{"run": data.get("run"), "items": data.get("items"), "token": data.get("token")}]
+        else:
+            entries = data["runs"]
+            if not isinstance(entries, list) or not 1 <= len(entries) <= MAX_BULK_APPROVE or not all(
+                    isinstance(entry, dict) and set(entry) <= {"run", "items", "token"} for entry in entries):
+                return self._error(400, f"runs: 1 to {MAX_BULK_APPROVE} objects {{run, items, token}}")
+        if not all(entry_ok(entry) for entry in entries):
+            return self._error(400, "run is a run id; items: 1 to 50 item ids as the run's approval lists them; "
+                                    "token: the approval's token")
+        if len({entry["run"] for entry in entries}) != len(entries):
+            return self._error(400, "runs: each run once")
+        who, note = data.get("who"), data.get("note", "")
+        if not isinstance(who, str) or not who.strip() or len(who) > INTEGRATE_WHO_CHARS or not who.isprintable():
+            return self._error(400, f"who names who approves: 1–{INTEGRATE_WHO_CHARS} printable characters on one line")
+        if not isinstance(note, str) or len(note) > ASSIGN_NOTE_CHARS or (note and not note.isprintable()):
+            return self._error(400, f"note is one line kept with the approval: at most {ASSIGN_NOTE_CHARS} printable "
+                                    "characters")
+        if self.server.no_start:
+            return self._error(403, "the dashboard was started with --no-start")
+        if self.server.model.in_container and not self.server.allow_start:
+            return self._error(403, "the dashboard runs in a container and cannot start runs "
+                                    "(--allow-start-in-container only for an image built for it)")
+        model_ = self.server.model
+        with model_.lock:
+            layer = model_.layers.get(data["layer"])
+        if layer is None:
+            return self._error(404, "unknown layer")
+        who, note = " ".join(who.split()), " ".join(note.split())
+        if single:
+            entry = entries[0]
+            code, answer = model_.approve_resume(layer.key, entry["run"], list(entry["items"]), entry["token"], who, note)
+            return self._json(answer, code)
+        results = []
+        for entry in entries:
+            code, answer = model_.approve_resume(layer.key, entry["run"], list(entry["items"]), entry["token"], who, note)
+            resumed = code == 202
+            results.append({"run": entry["run"], "status": "resumed" if resumed else "refused",
+                            "message": str(answer.get("message") or answer.get("error") or ""),
+                            "reason": "" if resumed else str(answer.get("reason") or ("error" if code != 409 else "")),
+                            "run_id": str(answer.get("run_id") or ""), "url": str(answer.get("url") or "")})
+        count = sum(1 for result in results if result["status"] == "resumed")
+        return self._json({"status": "done", "resumed": count, "results": results}, 202 if count else 409)
+
     def _integrate_preview(self, query: dict[str, list[str]]) -> None:
         """GET /api/integrate/preview?layer=K&run=ID: what the integration would do (read-only)."""
         code, answer = self.server.model.integrate_preview(self._q(query, "layer"), self._q(query, "run"))
@@ -11477,7 +11765,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._startable(query)
             if path in ("/api/start", "/api/models", "/api/promotion", "/api/settle", "/api/integrate", "/api/assign",
                         "/api/decider", "/api/decision", "/api/standin", "/api/voice/approve", "/api/testing", "/api/batch",
-                        "/api/run-testing", "/api/approve") or path in VOICE_POST:
+                        "/api/run-testing", "/api/approve", "/api/approve-resume") or path in VOICE_POST:
                 return self._error(405, "POST only")
             if path == "/api/assign/preview":
                 return self._assign_preview(query)
