@@ -1119,9 +1119,9 @@ def fake_forgejo():
     fake = _FakeForgejo()
 
     class Handler(http.server.BaseHTTPRequestHandler):
-        def _answer(self, data) -> None:
+        def _answer(self, data, status: int = 200) -> None:
             raw = json.dumps(data).encode()
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
@@ -1140,6 +1140,11 @@ def fake_forgejo():
             elif method == "POST" and path == "/api/v1/user/repos":
                 self._answer({"name": (body or {}).get("name")})
             elif method == "POST" and path == PULLS:
+                head, base = (body or {}).get("head"), (body or {}).get("base")
+                if any(p["state"] == "open" and p["head"]["ref"] == head and p["base"]["ref"] == base for p in fake.pulls):
+                    # what Forgejo answers to a second open pull request for the same head and base
+                    self._answer({"message": "pull request already exists for these targets"}, 409)
+                    return
                 number = len(fake.pulls) + 1
                 pull = {"number": number, "html_url": f"{fake.url}/demo/flask/pulls/{number}", "state": "open",
                         "title": (body or {}).get("title", ""), "body": (body or {}).get("body", ""),
@@ -1150,6 +1155,14 @@ def fake_forgejo():
                 self._answer(fake.pulls)
             elif method == "GET":
                 self._answer([])
+            elif method == "PATCH" and (edited := re.fullmatch(re.escape(PULLS) + r"/(\d+)", path)):
+                pull = next((p for p in fake.pulls if p["number"] == int(edited.group(1))), None)
+                if pull is None:
+                    self._answer({"message": "not found"}, 404)
+                    return
+                if (body or {}).get("state") in ("closed", "open"):
+                    pull["state"] = body["state"]
+                self._answer(pull, 201)             # what Forgejo answers to an edited pull request
             else:
                 self._answer({"id": 1, "browser_download_url": f"{fake.url}/attachments/1"})
 
@@ -1483,7 +1496,7 @@ def test_testbed_run_opens_a_pull_request_on_a_fake_forgejo(tmp_path, fake_forge
 
 
 def test_testbed_protected_run_waits_for_approve_and_resume(tmp_path, fake_forgejo):
-    site, _forge = _testbed_layer(tmp_path, fake_forgejo)
+    site, forge = _testbed_layer(tmp_path, fake_forgejo)
     layer = site["layer"]
     stopped, run = _al_run(site, "/tidy", scenes_testbed.PROMPT_B)
     assert stopped.returncode == 1, stopped.stdout[-3000:] + stopped.stderr[-3000:]
@@ -1492,6 +1505,19 @@ def test_testbed_protected_run_waits_for_approve_and_resume(tmp_path, fake_forge
     waiting = [r[3]["title"] for r in fake_forgejo.posts(PULLS)]
     assert len(waiting) == 1 and waiting[0].startswith("WIP: [needs human]"), waiting
     assert scenes.run_state(layer, run)["ship"]["action"] == "handoff"
+    branch = scenes.run_state(layer, run)["branch"]
+    assert [p["state"] for p in fake_forgejo.pulls] == ["open"]
+    # the edge: the request the ship step of the resumed run would send is refused while the handoff one is open
+    status, _data = forgejo._http("POST", fake_forgejo.url + PULLS,
+                                  {"Authorization": f"token {FORGE['token']}", "Content-Type": "application/json"},
+                                  json.dumps({"head": branch, "base": "main", "title": "a second one", "body": ""}).encode())
+    assert status == 409 and len(fake_forgejo.pulls) == 1, "refused as Forgejo refuses it, and nothing stored"
+    assert scenes_testbed.close_handoff(forge, layer, run) == [1]
+    assert fake_forgejo.pulls[0]["state"] == "closed"
+    closing = [r for r in fake_forgejo.requests if r[0] == "PATCH" and r[1].split("?")[0] == PULLS + "/1"]
+    assert len(closing) == 1 and closing[0][3] == {"state": "closed"}, closing
+    assert closing[0][2]["authorization"] == f"token {FORGE['token']}"
+    assert scenes_testbed.close_handoff(forge, layer, run) == [], "nothing open is left"
     approved = subprocess.run([str(AL), "approve", str(layer), run, "--all", "--who", scenes.WHO], cwd=site["work"],
                               capture_output=True, text=True, env=_plain_env(), timeout=300)
     assert approved.returncode == 0 and "resuming from step evidence" in approved.stdout, approved.stdout + approved.stderr
@@ -1502,10 +1528,15 @@ def test_testbed_protected_run_waits_for_approve_and_resume(tmp_path, fake_forge
     assert state.get("status") == "passed", state.get("status")
     approvals = json.dumps(state.get("approvals"))
     assert scenes_testbed.APPROVAL in approvals and scenes.WHO in approvals, approvals
-    posted = fake_forgejo.posts(PULLS)
-    assert [r[3]["head"] for r in posted] == [state["branch"]] * 2, "only after the approval: the delivery pull request"
-    assert "needs human" not in posted[1][3]["title"] and state["ship"]["action"] == "pr"
-    assert scenes_testbed.pull_request_url(layer, run) == fake_forgejo.pulls[1]["html_url"]
+    assert _files_holding(layer / "agents", FORGE["token"]) == []
+    open_ = [p for p in fake_forgejo.pulls if p["state"] == "open" and p["head"]["ref"] == state["branch"]]
+    assert len(open_) == 1 and "needs human" not in open_[0]["title"], "exactly one open pull for the branch: the delivery one"
+    assert [p["state"] for p in fake_forgejo.pulls] == ["closed", "open"]
+    assert "needs human" in fake_forgejo.pulls[0]["title"], "the handoff one is closed"
+    assert state["ship"]["action"] == "pr"
+    assert scenes_testbed.pull_request_url(layer, run) == open_[0]["html_url"]
+    # the handoff, the refused probe, the delivery
+    assert [r[3]["head"] for r in fake_forgejo.posts(PULLS)] == [state["branch"]] * 3
     assert not [r for r in fake_forgejo.requests if r[1].split("?")[0].endswith("/merge")]
 
 

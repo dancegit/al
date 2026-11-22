@@ -221,10 +221,12 @@ podman nor network. The recording needs podman, network (the image, flask's depe
 the rota story needs.
 
 When the second run stops at the protected path, al hands it over on the forge as a pull request marked
-`[needs human]`; the pull request that delivers the change is opened only after the approval. The tests
-show this against the stubbed Forgejo, which accepts both. It has not been tried against a real instance,
-which may refuse a second pull request for a branch whose first is still open: rehearse `05-protected`
-(`--rehearse`) before recording it.
+`[needs human]`. Forgejo refuses a second open pull request for the same branch and base (HTTP 409), and
+the resumed run opens the delivery pull request with a new request, so the recorder closes the
+`[needs human]` one through the Forgejo API before Approve & resume is clicked (`close_handoff` in
+`tools/demovideo/scenes_testbed.py`; listed among the stand-ins). The tests show this against a stubbed
+Forgejo that refuses the duplicate as the real one does. The stub is not the real instance: rehearse
+`05-protected` (`--rehearse`) before recording it.
 
 ## The clips
 

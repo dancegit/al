@@ -11,6 +11,8 @@ the run's ship step pushes a branch and opens a real pull request there, and 04-
                       one test module, the mock agent and the scripted stand-in flask_replay.py
   require_forge       the instance `make.py forgejo up` recorded for the work folder, or SceneStopped:
                       the story never fakes its pull request
+  close_handoff       closes the stopped run's `[needs human]` pull request through the Forgejo API, before
+                      the approval: Forgejo refuses a second open pull request for the same head and base
   SCENES              scene id → recorder function
 
 Every helper that draws, records or checks is scenes.py's own, imported here and never copied. This
@@ -247,6 +249,35 @@ def pull_request_url(layer: Path, run: str) -> str:
     if not url:
         raise SceneStopped(f"run {run} records no pull request")
     return str(url)
+
+
+def close_handoff(forge: dict, layer: Path, run: str) -> list[int]:
+    """Close the open `[needs human]` pull request(s) of the stopped run `run` on the forge, and
+    return their numbers. Forgejo refuses a second open pull request for the same head and base
+    (HTTP 409), and the ship step of the resumed run opens the delivery one with a plain POST."""
+    branch = str(run_state(layer, run).get("branch") or "")
+    if not branch:
+        raise SceneStopped(f"run {run} records no branch")
+    base = f"{forge['url'].rstrip('/')}/api/v1/repos/{forge['owner']}/{forge['repo']}/pulls"
+    headers = {"Authorization": f"token {forge['token']}", "Content-Type": "application/json", "Accept": "application/json"}
+    status, data = forgejo._http("GET", base + "?state=open&limit=50", headers, None)
+    try:
+        listed = json.loads(data) if status == 200 else None
+    except ValueError:
+        listed = None
+    if not isinstance(listed, list):
+        raise SceneStopped(f"the forge did not list its pull requests (HTTP {status})")
+    closed = []
+    for pull in listed:
+        if not (isinstance(pull, dict) and pull.get("state") == "open" and (pull.get("head") or {}).get("ref") == branch
+                and "[needs human]" in str(pull.get("title") or "")):
+            continue
+        number = pull.get("number")
+        status, _data = forgejo._http("PATCH", f"{base}/{number}", headers, json.dumps({"state": "closed"}).encode("utf-8"))
+        if status not in (200, 201):
+            raise SceneStopped(f"the forge did not close pull request {number} (HTTP {status})")
+        closed.append(number)
+    return closed
 
 
 def _guard(ctx: Ctx, forge: dict) -> None:
@@ -508,6 +539,8 @@ def scene_05_protected(ctx: Ctx) -> list[Part]:
     run = new_run(layer, before)
     if "evidence:needs-person" not in json.dumps(run_state(layer, run)):
         raise SceneStopped(f"05-protected: run {run} did not stop at evidence:needs-person")
+    if not close_handoff(forge, layer, run):      # hidden: Forgejo refuses a second open pull request per branch
+        raise SceneStopped(f"05-protected: run {run} has no open [needs human] pull request to close")
     route, row = f"/run/flask/{run}", f"tbody tr[data-key='flask/{run}']"
     running = _serve(layer)
     try:
@@ -559,6 +592,9 @@ def scene_05_protected(ctx: Ctx) -> list[Part]:
             last.finish()
         ctx.stand_in(f"05-protected: a second run of the demo layer; the mock agent's build edits src/flask/sessions.py, a "
                      f"protected path. The approval is given in the dashboard (Approve & resume) by the fictional {WHO}.")
+        ctx.stand_in("05-protected: before the approval the recorder closes the run's [needs human] pull request through the "
+                     "Forgejo API, unseen: Forgejo refuses a second open pull request for a branch, and the resumed run "
+                     "opens the delivery one.")
         return [first.part, last.part]
     finally:
         browser_clips._stop(running)
