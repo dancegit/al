@@ -1,8 +1,14 @@
-"""The ElevenLabs voice of the demo video's narration: which backend reads the captions, the request to the
-service, the cache of what it answered and fitting each voiced line into its caption's time on screen.
+"""The voices of the demo video's narration: which backend reads each caption's spoken line, the request to
+the ElevenLabs service, the Kokoro voice of this machine, the cache of what they made and fitting each voiced
+line into its caption's time on screen.
+
+Three backends speak: `elevenlabs` (the service; ELEVENLABS_API_KEY), `kokoro` (kit/runtime/voice/say.py,
+run on this machine by its command line only) and `local` (espeak-ng); `auto` picks the first of them
+that can run, in that order, and Kokoro only when its model files are already in the user's cache: say.py
+downloads them once into that cache (outside the repository) when it is chosen by name, never by `auto`.
 
 Standard library only. This is the only file of tools/demovideo that names an outside address, and only
-the caption text is sent there. The key (ELEVENLABS_API_KEY) goes only in the request's `xi-api-key`
+the spoken lines are sent there. The key (ELEVENLABS_API_KEY) goes only in the request's `xi-api-key`
 header: it is never printed, never part of an error message (scrub), never in a file name or a file of the
 cache, and never in the argv of a command.
 """
@@ -27,8 +33,16 @@ MODEL = "eleven_multilingual_v2"
 OUTPUT_FORMAT = "mp3_44100_128"
 KEY_VAR = "ELEVENLABS_API_KEY"
 VOICE_VAR = "ELEVENLABS_VOICE_ID"
-BACKENDS = ("auto", "elevenlabs", "local", "none")
+BACKENDS = ("auto", "elevenlabs", "kokoro", "local", "none")
 MAX_TEMPO = 1.35                 # a voiced line is played at most this much faster to fit its caption
+ROOT = Path(__file__).resolve().parents[2]
+SAY = ROOT / "kit" / "runtime" / "voice" / "say.py"
+KOKORO_RUN: tuple[str, ...] = ("uv", "run", "--quiet")     # what runs SAY (uv brings kokoro-onnx from its inline metadata)
+KOKORO_VOICE_VAR = "AL_DEMO_KOKORO_VOICE"
+KOKORO_DEFAULT_VOICE = "af_heart"
+KOKORO_SPEED = 1.0
+KOKORO_MAX_TEMPO = 1.12          # a Kokoro line is played at most this much faster
+KOKORO_TIMEOUT = 600             # seconds for one line (the first one may download the model on the host)
 TIMEOUT = 60                     # seconds for one answer of the service
 SILENCE = ("silenceremove=start_periods=1:start_threshold=-50dB,areverse,"
            "silenceremove=start_periods=1:start_threshold=-50dB,areverse")
@@ -44,13 +58,48 @@ def scrub(text: str, key: str | None) -> str:
     return text.replace(key, _SCRUBBED) if key else text
 
 
-def choose(requested: str, env: Mapping[str, str], espeak: bool) -> str:
-    """The backend that reads the captions: elevenlabs, local (espeak-ng) or none."""
+def kokoro_caches(env: Mapping[str, str]) -> list[Path]:
+    """Where say.py keeps Kokoro's model files: AL_KOKORO_CACHE when set; else $XDG_CACHE_HOME/al/kokoro
+    (when it is an absolute path) and ~/.cache/al/kokoro."""
+    explicit = env.get("AL_KOKORO_CACHE", "").strip()
+    if explicit:
+        return [Path(explicit).expanduser()]
+    out = []
+    xdg = env.get("XDG_CACHE_HOME", "").strip()
+    if xdg and os.path.isabs(xdg):
+        out.append(Path(xdg) / "al" / "kokoro")
+    home = Path(env["HOME"]) if env.get("HOME") else Path.home()
+    out.append(home / ".cache" / "al" / "kokoro")
+    return out
+
+
+def kokoro_runnable(env: Mapping[str, str]) -> bool:
+    """say.py is there and its runner (uv) is on PATH."""
+    return SAY.is_file() and bool(shutil.which(KOKORO_RUN[0]))
+
+
+def _non_empty(folder: Path, pattern: str) -> bool:
+    try:
+        return any(p.is_file() and p.stat().st_size > 0 for p in folder.glob(pattern))
+    except OSError:
+        return False
+
+
+def kokoro_ready(env: Mapping[str, str]) -> bool:
+    """Kokoro can run without downloading anything: say.py is runnable and a cache holds a model and its voices."""
+    return kokoro_runnable(env) and any(_non_empty(c, "*.onnx") and _non_empty(c, "voices*.bin") for c in kokoro_caches(env))
+
+
+def choose(requested: str, env: Mapping[str, str], espeak: bool, kokoro: bool = False) -> str:
+    """The backend that reads the spoken lines: elevenlabs, kokoro, local (espeak-ng) or none. `kokoro` is
+    kokoro_ready: auto takes Kokoro only when its model files are already cached."""
     has_key = bool(env.get(KEY_VAR, "").strip())
     if requested == "auto":
-        return "elevenlabs" if has_key else "local" if espeak else "none"
+        return "elevenlabs" if has_key else "kokoro" if kokoro else "local" if espeak else "none"
     if requested == "elevenlabs" and not has_key:
         raise TtsError(f"--voice elevenlabs needs {KEY_VAR} in the environment")
+    if requested == "kokoro" and not kokoro_runnable(env):
+        raise TtsError("--voice kokoro needs uv on PATH and kit/runtime/voice/say.py")
     if requested == "local" and not espeak:
         raise TtsError("--voice local needs espeak-ng on PATH")
     if requested not in BACKENDS:
@@ -75,6 +124,43 @@ def cache_name(text: str, settings: Settings) -> str:
     """The cache file of a line: the text, voice, model and format hashed; the key is not part of it."""
     digest = hashlib.sha256(json.dumps([text, settings.voice_id, settings.model, settings.output_format]).encode()).hexdigest()
     return digest + ".mp3"
+
+
+@dataclass(frozen=True)
+class KokoroSettings:
+    voice: str
+    speed: float
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> "KokoroSettings":
+        return cls(voice=env.get(KOKORO_VOICE_VAR, "").strip() or KOKORO_DEFAULT_VOICE, speed=KOKORO_SPEED)
+
+
+def kokoro_cache_name(text: str, settings: KokoroSettings) -> str:
+    """The cache file of a Kokoro line: the text, voice and speed hashed."""
+    return hashlib.sha256(json.dumps(["kokoro", text, settings.voice, settings.speed]).encode()).hexdigest() + ".wav"
+
+
+def kokoro_line(text: str, cache: Path, settings: KokoroSettings, env: Mapping[str, str] | None = None) -> tuple[Path, bool]:
+    """The WAV of a line from the cache, or made by say.py into the cache; True when it was cached."""
+    name = kokoro_cache_name(text, settings)
+    path = cache / name
+    if path.is_file() and path.stat().st_size > 0:
+        return path, True
+    cache.mkdir(parents=True, exist_ok=True)
+    part = cache / (name[:-4] + ".part.wav")           # say.py picks the format from the suffix
+    argv = [*KOKORO_RUN, str(SAY), "--voice", settings.voice, "--speed", f"{settings.speed:g}", "--out", str(part), "--no-play"]
+    run_env = {k: v for k, v in (env if env is not None else os.environ).items() if k != "AL_APP_ROOT"}
+    try:
+        cp = subprocess.run(argv, input=text, capture_output=True, text=True, timeout=KOKORO_TIMEOUT, env=run_env)
+    except (OSError, subprocess.SubprocessError) as error:
+        part.unlink(missing_ok=True)
+        raise TtsError(f"Kokoro (say.py) could not run: {error}") from None
+    if cp.returncode != 0 or not part.is_file() or part.stat().st_size == 0:
+        part.unlink(missing_ok=True)
+        raise TtsError(f"Kokoro (say.py) exited {cp.returncode} for voice {settings.voice}: {cp.stderr[-300:]}")
+    os.replace(part, path)
+    return path, False
 
 
 def request_speech(text: str, settings: Settings, api_root: str | None = None, opener=urllib.request.urlopen) -> bytes:
@@ -126,15 +212,15 @@ def _ffmpeg(audio: Path, target: Path, filters: str) -> None:
         raise TtsError(f"ffmpeg could not convert {audio.name}: {cp.stderr[:300]}")
 
 
-def fit_line(audio: Path, target: Path, slot: float) -> float:
+def fit_line(audio: Path, target: Path, slot: float, max_tempo: float = MAX_TEMPO) -> float:
     """`audio` as 44.1 kHz mono WAV in `target`, its silence trimmed and, when it is longer than `slot`,
-    played faster (at most MAX_TEMPO). Returns the tempo used."""
+    played faster (at most `max_tempo`). Returns the tempo used."""
     _ffmpeg(audio, target, SILENCE)
     seconds = _seconds(target)
     if seconds <= slot:
         return 1.0
     tempo = seconds / slot * 1.01
-    if tempo > MAX_TEMPO:
-        raise TtsError(f"{seconds:.1f} s of speech for {slot:.1f} s on screen (over ×{MAX_TEMPO} faster)")
+    if tempo > max_tempo:
+        raise TtsError(f"{seconds:.1f} s of speech for {slot:.1f} s on screen (over ×{max_tempo:g} faster)")
     _ffmpeg(audio, target, f"{SILENCE},atempo={tempo:.4f}")
     return tempo
