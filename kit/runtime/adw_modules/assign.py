@@ -84,6 +84,7 @@ PROOF_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".webm", ".mp4", ".m
 REASONS = ("unknown-run", "not-stopped", "settled", "running", "needs-a-person", "limit", "no-script", "bad-item",
            "bad-note")
 BYS = ("cli", "dashboard", "decider")
+ASSUMED = {"by": "(assumed)", "at": ""}      # an approval a caller of plan(…, assume=…) only supposes
 _CHECK_EXIT = re.compile(r"exited \d+ after")
 _LOGIN = re.compile(r"login was refused|authentication error|not logged in|log ?in (has )?expired", re.I)
 _TIME_LIMIT = re.compile(r"timed out|time limit", re.I)
@@ -262,10 +263,12 @@ def _base_adw(layer: Any, state: Mapping[str, Any]) -> dict[str, Any]:
     return integrate._base_adw(layer, state) or {}
 
 
-def decisions(layer: Any, state: Mapping[str, Any], work: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+def decisions(layer: Any, state: Mapping[str, Any], work: Mapping[str, Any] | None = None,
+              assume: Any = ()) -> list[dict[str, Any]]:
     """The "needs a person" items of a stopped run: [{id, kind, text, path, approvable, approved}].
     `work` is the run whose review is read (an earlier attempt; default the run itself). Approvals
-    come from agents/<run>/assign.json."""
+    come from agents/<run>/assign.json; an approvable item whose id is in `assume` reads as approved
+    (by "(assumed)") without anything being written, so a caller can ask what an approval would start."""
     from . import ship as ship_module
 
     run_id = str(state.get("adw_id") or "")
@@ -332,6 +335,8 @@ def decisions(layer: Any, state: Mapping[str, Any], work: Mapping[str, Any] | No
         given = approvals.get(item["id"])
         if given and item["approvable"]:
             item["approved"] = {"by": str(given.get("by") or ""), "at": str(given.get("at") or "")}
+        elif item["approvable"] and item["id"] in assume:
+            item["approved"] = dict(ASSUMED)
     return found
 
 
@@ -447,9 +452,10 @@ def _attempt_outcome(layer: Any, run_id: str, attempt: Mapping[str, Any]) -> dic
     return {"outcome": "stopped", "after": found["key"] or f"status:{found['status']}", "why": found["why"]}
 
 
-def attempts(layer: Any, run_id: str) -> list[dict[str, Any]]:
+def attempts(layer: Any, run_id: str, settle: bool = True) -> list[dict[str, Any]]:
     """The attempts recorded for a run, each `started` one settled once its run ended: the outcome
-    is written back to assign.json and emitted, once, as `assign.outcome` into the run's events."""
+    is written back to assign.json and emitted, once, as `assign.outcome` into the run's events.
+    With `settle=False` the outcome is only returned: nothing is written or emitted (a reader)."""
     record = read_record(layer, run_id)
     changed = []
     for attempt in record["attempts"]:
@@ -459,7 +465,7 @@ def attempts(layer: Any, run_id: str) -> list[dict[str, Any]]:
         if outcome is not None:
             attempt.update(outcome)
             changed.append(attempt)
-    if changed:
+    if changed and settle:
         try:
             _write_record(layer, run_id, record)
         except OSError:
@@ -501,14 +507,19 @@ def _blocker_lines(blockers: list[dict[str, Any]]) -> list[str]:
     return [f"   - {first_line(item.get('description'))[:200]}" for item in blockers]
 
 
-def plan(layer: Any, run: str, *, note: str = "") -> dict[str, Any]:
+def plan(layer: Any, run: str, *, note: str = "", assume: Any = (), settle: bool = True) -> dict[str, Any]:
     """What giving `run` (an id or a branch) to an agent would do; nothing is started or written
     beyond settling the outcome of an attempt that ended. See the module docstring for the table.
+    The decision ids in `assume` are treated as approved, also for a decision found only on the way
+    (a protected path the integration would refuse); nothing is written for them (approvable.py asks
+    this way what starts after an approval). With `settle=False` the outcome of an attempt that ended
+    is not written either: the call only reads.
 
     Keys: run, asked, title, status, stop, kind, summary, steps, moved, decisions, blockers, found,
     commands, integrate, source, from_step, tier, attempts, clicks, left, same_reason, blocked
     ("" or a reason of REASONS), blocked_why, note."""
     note = check_note(note)
+    assume = {str(item) for item in assume or ()}
     try:
         asked = integrate.resolve_run(layer, run)
     except IntegrateError as exc:
@@ -523,7 +534,7 @@ def plan(layer: Any, run: str, *, note: str = "") -> dict[str, Any]:
         original = str(info.get("run") or "")
         if original and _state(layer, original):      # an integration run: the plan is its original's
             run_id, state = original, _state(layer, original)
-    found = attempts(layer, run_id)
+    found = attempts(layer, run_id, settle)
     clicks = sum(1 for item in found if item.get("by") in ("cli", "dashboard"))
     stopped = stop(layer, state)
     adw = _base_adw(layer, state)
@@ -576,7 +587,7 @@ def plan(layer: Any, run: str, *, note: str = "") -> dict[str, Any]:
     out["source"] = source or run_id
     rejected = stopped["status"] == "handed-over" and integrate._rejected(work)
     out["blockers"] = integrate.blockers_of(work) if rejected else []
-    out["decisions"] = decisions(layer, state, work)
+    out["decisions"] = decisions(layer, state, work, assume)
     # a protected path the integration would refuse is named only when it is asked (see `protected` below):
     # its approval is listed here, and then lets the path through
     known = {item["id"] for item in out["decisions"]}
@@ -620,20 +631,32 @@ def plan(layer: Any, run: str, *, note: str = "") -> dict[str, Any]:
     def integration(mode: str, **extra: Any) -> tuple[str, str]:
         """Fill out["integrate"]; (blocked, why) when the integration run could not start. `decide`
         means a changed protected path a person may approve (the gate still judges it)."""
-        seen = integrate.preview(layer, run_id, mode=mode, source=source, allow_protected=approved_paths, extra=extra)
-        out["integrate"] = seen
-        if seen["eligible"]:
-            return "", ""
-        if seen["reason"] == "already-integrating":
-            return "running", seen["why"]
-        if seen["reason"] == "protected-path" and mode != "conflict":
-            return "decide", seen["why"]
-        return "needs-a-person", f"integrate:{seen['reason']}: {seen['why']}"
+        while True:
+            seen = integrate.preview(layer, run_id, mode=mode, source=source, allow_protected=approved_paths,
+                                     extra=extra)
+            out["integrate"] = seen
+            if seen["eligible"]:
+                return "", ""
+            if seen["reason"] == "already-integrating":
+                return "running", seen["why"]
+            if seen["reason"] == "protected-path" and mode != "conflict":
+                text, path = protected_item(seen["why"])
+                if path and path not in approved_paths and _decision_id(text) in assume:
+                    out["decisions"].append({"id": _decision_id(text), "kind": "protected-path", "text": text,
+                                             "path": path, "approvable": True, "approved": dict(ASSUMED)})
+                    approved_paths.append(path)       # assumed approved: ask again with the path let through
+                    continue
+                return "decide", seen["why"]
+            return "needs-a-person", f"integrate:{seen['reason']}: {seen['why']}"
 
-    def protected(why: str) -> dict[str, Any]:
+    def protected_item(why: str) -> tuple[str, str]:
         found_path = re.search(r"changes (\S+), a protected path", why)
         path = found_path.group(1) if found_path else ""
-        return person(f"{path or 'a file'} is a protected path, and this run changes it", True, "protected-path", path)
+        return f"{path or 'a file'} is a protected path, and this run changes it", path
+
+    def protected(why: str) -> dict[str, Any]:
+        text, path = protected_item(why)
+        return person(text, True, "protected-path", path)
 
     workflow = str(adw.get("name") or state.get("adw") or "?")
     if stopped["status"] == "handed-over":

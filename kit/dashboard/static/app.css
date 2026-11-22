@@ -997,6 +997,27 @@ table.proof td.depth .accounting { color: var(--text-2); }
 .approve-go { cursor: pointer; padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(63, 185, 80, .5);
   background: rgba(63, 185, 80, .12); color: var(--passed); font: inherit; }
 .approve-go:disabled { opacity: .5; cursor: default; }
+/* approve & resume: the Needs-you chip, the row's button and items, the confirmation and the run page's banner */
+.chip.appr { border-color: rgba(63, 185, 80, .5); }
+.chip.appr.active { border-color: var(--passed); background: rgba(63, 185, 80, .12); }
+.btn.approve-resume-all { border-color: rgba(63, 185, 80, .5); }
+td.next .approve-cell { margin: 4px 0; }
+.approve-items { color: var(--dim); display: block; max-width: min(360px, 17vw); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; margin-top: 2px; }
+.approve-result { color: var(--text-2); overflow-wrap: anywhere; }
+.approve-result a { margin-left: 4px; }
+.card.approve-banner { border-color: rgba(63, 185, 80, .5); background: rgba(63, 185, 80, .06); margin-bottom: 12px; }
+.card.approve-banner.done { background: none; }
+.approve-resume-dialog { max-width: min(46rem, 94vw); }
+.approve-resume-scroll { max-height: 46vh; overflow: auto; margin: 6px 0; font-size: 12.5px; }
+.approve-resume-list { margin: 0; padding-left: 1.6rem; }
+.approve-resume-list > li { margin-bottom: 8px; overflow-wrap: anywhere; }
+.approve-resume-items { margin: 4px 0; padding-left: 1.2rem; }
+.approve-resume-items li { overflow-wrap: anywhere; }
+.approve-paths { white-space: pre-wrap; font-size: 12px; }
+.approve-after { font-size: 12.5px; }
+.approve-resume-fields { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.approve-resume-fields input.approve-note-text { flex: 1 1 18rem; min-width: 0; }
 .proof-debt { margin-top: 8px; }
 .round-progress { font-size: 12px; color: var(--dim); margin: 2px 0 4px 18px; }
 .layer-reviews .missing-declaration { overflow-wrap: anywhere; }
