@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -25,6 +26,7 @@ pytestmark = pytest.mark.podman
 
 TEST_IMAGE = "localhost/al-sandbox-test:v2"  # bump when the recipe below changes (kept for the session)
 BASES = ("al-flask-envtest:latest", "docker.io/library/python:3.12-slim")
+SESSION = secrets.token_hex(2)  # container names differ between sessions that overlap on one host
 
 
 def _podman(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
@@ -76,7 +78,7 @@ def _options(network: str = "none", keep: str = "never") -> list[dict]:
 def stack(make_layer, sandbox_image, monkeypatch, request):
     monkeypatch.setattr(envs.EnvStack, "image", property(lambda self: sandbox_image))
     layer = load(make_layer({"environments": _options()}))
-    adw_id = "5b" + hashlib.sha1(request.node.name.encode()).hexdigest()[:6]
+    adw_id = "5b" + hashlib.sha1((SESSION + request.node.name).encode()).hexdigest()[:6]
     state = ADWState(adw_id, "test", prompt="escape attempt", klass="chore")
     env_stack = envs.build(layer, state, ["wt", "box"])
     env_stack.setup()
@@ -189,7 +191,7 @@ def test_tampering_from_inside_is_refused_by_the_host(stack, app_repo, attack) -
 
 def test_end_to_end_sandboxed_mock_run(make_layer, app_repo, sandbox_image, monkeypatch) -> None:
     monkeypatch.setattr(envs.EnvStack, "image", property(lambda self: sandbox_image))
-    adw_id = "5c5c0001"
+    adw_id = "5c" + secrets.token_hex(3)
     layer = make_layer({
         "agents": [{"id": "mock", "kind": "mock", "scriptDir": "mock", "status": "stable", "timeout": 20}],
         "commands": [{"name": "plan", "template": "plan", "modelSet": "base", "output": "path"},

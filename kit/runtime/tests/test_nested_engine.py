@@ -3,6 +3,7 @@ lifecycle, doctor rows, host checks and the preflight refusal. podman is faked h
 behaviour against real rootless podman is in test_nested_engine_podman.py."""
 from __future__ import annotations
 
+import glob
 import json
 import os
 import subprocess
@@ -178,8 +179,11 @@ def test_doctor_lines_only_with_the_option_and_never_print_values(tmp_path, monk
     rows = {check.name: check for check in sandbox.parse_doctor_output(result.stdout)}
     assert set(nested_engine.ROWS) <= set(rows)
     assert rows["engine:isolation"].status == "miss"
-    # which finding is named first depends on the machine: one that has a docker socket names that
-    assert rows["engine:isolation"].detail == "CONTAINER_HOST is set" or "docker.sock" in rows["engine:isolation"].detail
+    # the finding named is the machine's own: the first host engine socket that exists, else the variable
+    found = next((p for p in ["/run/podman/podman.sock", *sorted(glob.glob("/run/user/*/podman/podman.sock")),
+                              "/var/run/docker.sock"] if os.path.exists(p)), None)
+    expected = f"a host engine socket is reachable: {found}" if found else "CONTAINER_HOST is set"
+    assert rows["engine:isolation"].detail == expected
 
 
 def test_parse_engine_rows_and_fixes(make_layer, tmp_path, monkeypatch):

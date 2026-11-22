@@ -364,7 +364,7 @@ class EnvStack:
     def _podman_env(self) -> dict[str, str]:
         """Variables set inside the container: ports, cache locations, forwarded agent credentials."""
         option = self.podman_option or {}
-        env = {**self.env, "HOME": CONTAINER_HOME}  # per container (podman creates it), never the image's or host's
+        env = {**self.env, "HOME": CONTAINER_HOME}  # per container (created at start), never the image's or host's
         for name in option.get("caches", []):
             for variable in CACHE_ENV.get(name, [f"AL_CACHE_{name.upper().replace('-', '_')}"]):
                 env[variable] = f"/caches/{name}"
@@ -538,6 +538,10 @@ class EnvStack:
             raise StepFailed("environment setup", f"podman container start failed: {exc}") from exc
         if result.returncode:
             raise StepFailed("environment setup", result.stderr.strip() or "podman container start failed")
+        # HOME lives on the container's own fresh /tmp (a tmpfs with a read-only root); podman only
+        # creates it as a side effect of a credential mount, so create it here, as the container's user.
+        if not _podman_ok(["exec", name, "mkdir", "-p", CONTAINER_HOME]):
+            raise StepFailed("environment setup", f"could not create {CONTAINER_HOME} in container {name}")
         self._container = name
         events.say(f"[adw {self.state.adw_id}] container started: {name}", "env.container.start", name=name)
         return name
@@ -553,7 +557,9 @@ class EnvStack:
             return ["podman", "exec", *stdin, "-w", str(self.state.worktree), *env_flags,
                     self._ensure_container(), *argv]
         self._ensure_pod()
-        return ["podman", "run", "--rm", *stdin, *self._podman_base(), *env_flags, self.image, *argv]
+        # a fresh container each time: create HOME on its fresh /tmp before the command runs
+        return ["podman", "run", "--rm", *stdin, *self._podman_base(), *env_flags, self.image,
+                "sh", "-c", 'mkdir -p "$HOME" && exec "$@"', "sh", *argv]
 
     def _nix_argv(self) -> list[str]:
         argv = ["nix", "develop", f"path:{self.layer.layer_dir / 'env'}"]
