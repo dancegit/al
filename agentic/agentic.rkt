@@ -105,6 +105,8 @@
   (artefact log)
   (artefact image #:id screenshots #:glob "kit/dashboard/shots/*.png")
   (artefact image #:id run-shots #:glob "kit/dashboard/shots/run-*.png" #:max-files 24)
+  ;; The voice panel's screenshots from the full dashboard suite; `screenshots` keeps only its first twelve by name, never the voice panel's.
+  (artefact image #:id voice-panel-shots #:glob "kit/dashboard/shots/voice-*.png" #:max-files 24)
   (artefact image #:id showcase-stills #:glob "docs/showcase/*.png")
   (artefact video #:id showcase-clips #:glob "docs/showcase/*.mp4")
   ;; Proof of the voice helper: written by its validation commands into a git-ignored folder of the
@@ -120,7 +122,7 @@
           #:require-checks (test-compiler test-runtime) #:allowed-classes (chore bug feature))
   ;; Zero-touch: two reviewer agents and every suite must pass, then the change is merged without a person.
   ;; A change under a protected path, or a very large one, still goes to a person.
-  (review auto #:id zero-touch #:artefacts (log screenshots run-shots showcase-stills showcase-clips voice-shots voice-clips voice-audio voice-report voice-logs) #:reviewers 2 #:max-retries 2 #:ship merge
+  (review auto #:id zero-touch #:artefacts (log screenshots run-shots voice-panel-shots showcase-stills showcase-clips voice-shots voice-clips voice-audio voice-report voice-logs) #:reviewers 2 #:max-retries 2 #:ship merge
           #:require-checks (test-docs test-compiler test-runtime test-tools test-dashboard-proof test-integration) #:require affected
           #:allowed-classes (chore bug feature) #:max-diff-lines 4000)
   (dashboard local #:port 8770)   ; 8765 is often taken by other tools
@@ -232,7 +234,7 @@
       (check test-podman #:cmd test-podman #:in host-engine #:resolve resolve-test #:collect (log) #:when-affected #t
              #:forbid-skip-reason "podman is not installed")
       (check test-tools #:cmd test-tools #:resolve resolve-test #:collect (log) #:when-affected #t)
-      (check test-dashboard #:cmd test-dashboard-proof #:resolve resolve-test #:collect (log screenshots showcase-stills showcase-clips voice-shots voice-clips voice-audio voice-report voice-logs) #:when-affected #t)
+      (check test-dashboard #:cmd test-dashboard-proof #:resolve resolve-test #:collect (log screenshots voice-panel-shots showcase-stills showcase-clips voice-shots voice-clips voice-audio voice-report voice-logs) #:when-affected #t)
       (check test-integration #:cmd test-integration #:resolve resolve-test #:collect (log) #:when-affected #t)
       (run document #:command document #:args ("$plan"))
       (run commit #:command commit)

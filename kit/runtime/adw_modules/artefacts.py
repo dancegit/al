@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import storage
@@ -102,18 +103,43 @@ def _changed_by_run(layer: Any, state: Any, worktree: Path) -> set[str]:
         return set()
 
 
-def _glob_matches(worktree: Path, option: dict[str, Any],
-                  changed: set[str] | None = None) -> tuple[list[tuple[str, Path]], int]:
+def _named_globs(state: Any) -> list[str]:
+    """The Writes globs of the run's proof table: the files its criteria depend on."""
+    globs: list[str] = []
+    for row in (getattr(state, "proof_plan", None) or {}).get("rows") or []:
+        for item in row.get("writes") or []:
+            glob = str(item.get("glob") or "")
+            if glob:
+                globs.append(glob)
+    return globs
+
+
+def _named(relative: str, globs: list[str]) -> bool:
+    """True when a glob of the proof table names `relative` (the rule of evidence._matches)."""
+    for glob in globs:
+        if fnmatch.fnmatchcase(relative, glob):
+            return True
+        try:
+            if PurePosixPath(relative).match(glob):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _glob_matches(worktree: Path, option: dict[str, Any], changed: set[str] | None = None,
+                  named: list[str] | None = None) -> tuple[list[tuple[str, Path]], int]:
     """(the files of an artefact option to hand over, how many more matched and were left out).
-    The files this run changed come first, then the others, each group by name; an image artefact
-    keeps the first `maxFiles` of them."""
+    The files the proof table names come first, then the files this run changed, then the others,
+    each group by name; an image artefact keeps the first `maxFiles` of them."""
     pattern = str(option.get("glob") or "")
     if not pattern:
         raise LayerError(f"artefact {option.get('id')!r} has an empty glob")
     changed = changed or set()
     matches = sorted(((path.relative_to(worktree).as_posix(), path) for path in worktree.glob(pattern)
                       if path.is_file() and path.resolve().is_relative_to(worktree)),
-                     key=lambda item: (0 if item[0] in changed else 1, item[0]))
+                     key=lambda item: (0 if _named(item[0], named or []) else 1,
+                                       0 if item[0] in changed else 1, item[0]))
     total = len(matches)
     if option.get("kind") == "image":
         matches = matches[: max(0, int(option.get("maxFiles", 0)))]
@@ -226,7 +252,8 @@ def _clear(run_root: Path, artefact_id: str) -> None:
 def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str) -> list[dict[str, Any]]:
     """Copy each artefact option's matches into artefacts/<adw_id>/<id>/, store them, update the manifest.
 
-    An image artefact hands over at most its `maxFiles` files, those this run changed first; when
+    An image artefact hands over at most its `maxFiles` files, those the proof table names first,
+    then those this run changed; when
     more matched, its records say so (`left_out`, `matched`) and the manifest gets a `left-out` entry.
 
     A collection REPLACES the previous one of the same id: its manifest entries and copied files
@@ -240,6 +267,7 @@ def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str
     collected: list[dict[str, Any]] = []
     replaced: set[str] = set()
     changed: set[str] | None = None      # what this run changed: asked of git once per collection
+    named = _named_globs(state)          # the files the proof table's rows write
     for artefact_id in artefact_ids:
         option = layer.option("artefacts", artefact_id)
         kind = option["kind"]
@@ -251,7 +279,7 @@ def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str
                 raise StepFailed(producing_step, f"artefact {artefact_id!r} needs a worktree, none exists")
             if changed is None:
                 changed = _changed_by_run(layer, state, worktree)
-            matches, left_out = _glob_matches(worktree, option, changed)
+            matches, left_out = _glob_matches(worktree, option, changed, named)
         else:
             raise LayerError(f"Unknown artefact kind: {kind}")
         _clear(run_root, str(option["id"]))

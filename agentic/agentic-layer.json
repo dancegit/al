@@ -604,6 +604,7 @@
           "collect": [
             "log",
             "screenshots",
+            "voice-panel-shots",
             "showcase-stills",
             "showcase-clips",
             "voice-shots",
@@ -723,6 +724,13 @@
     {
       "glob": "kit/dashboard/shots/run-*.png",
       "id": "run-shots",
+      "kind": "image",
+      "maxFiles": 24,
+      "status": "stable"
+    },
+    {
+      "glob": "kit/dashboard/shots/voice-*.png",
+      "id": "voice-panel-shots",
       "kind": "image",
       "maxFiles": 24,
       "status": "stable"
@@ -1563,6 +1571,7 @@
         "log",
         "screenshots",
         "run-shots",
+        "voice-panel-shots",
         "showcase-stills",
         "showcase-clips",
         "voice-shots",

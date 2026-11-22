@@ -61,6 +61,22 @@ def test_files_of_the_change_come_first(make_layer, app_repo: Path, tmp_path: Pa
             "files of this change first") in out
 
 
+def test_files_the_proof_table_names_come_first(make_layer, app_repo: Path, tmp_path: Path) -> None:
+    layer = load(make_layer({"artefacts": [SHOTS]}))
+    worktree = _worktree(app_repo, tmp_path, old=14)
+    (worktree / "shots" / "zz-new.png").write_bytes(b"new")                  # untracked
+    (worktree / "shots" / "voice-engine-1280.png").write_bytes(b"voice")     # untracked, named by C6
+    state = _state(worktree)
+    state.proof_plan = {"rows": [{"id": "C6", "writes": [{"glob": "shots/voice-engine-1280.png", "count": 1}]}]}
+    collected = artefacts.collect(layer, state, ["shots"], "evidence")
+    names = _names(collected)
+    assert len(names) == 12
+    assert names[0] == "voice-engine-1280.png", names
+    assert names[1] == "zz-new.png", names
+    assert names[2:] == [f"{index:02d}-old.png" for index in range(10)]
+    assert all(item["left_out"] == 4 and item["matched"] == 16 for item in collected)
+
+
 def test_manifest_says_how_many_were_left_out(make_layer, app_repo: Path, tmp_path: Path) -> None:
     layer = load(make_layer({"artefacts": [SHOTS, {**SHOTS, "id": "few", "glob": "few/*.png"}]}))
     worktree = _worktree(app_repo, tmp_path, old=14)
