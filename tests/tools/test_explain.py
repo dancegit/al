@@ -182,6 +182,19 @@ def test_explain_adw_says_where_it_delivers():
     assert "delivers into sprint (`sprint/{cycle}`)" in zte
 
 
+def test_explain_adw_says_what_its_delivery_request_is():
+    _, zte, _ = explain.explain({"head": "adw", "first": "  (adw zte #:description"}, FULL_IR)
+    assert "Its delivery request:" in zte
+    assert "`sprint/{cycle}` into `main` as a promotion request (a pull request on the forge)" in zte
+    assert "never merged by al" in zte
+    no_forge = {**FULL_IR, "forge": {"kind": "none"}}
+    _, text, _ = explain.explain({"head": "adw", "first": "  (adw zte #:description"}, no_forge)
+    assert "`agents/requests/sprint-main.md`" in text
+    no_stages = {k: v for k, v in FULL_IR.items() if k != "stages"}
+    _, text, _ = explain.explain({"head": "adw", "first": "  (adw zte #:description"}, no_stages)
+    assert "promotion request" not in text
+
+
 def test_explain_promotion_in_words():
     heading, text, bullets = explain.explain({"head": "promotion", "first": "  (promotion sprint -> main"}, FULL_IR)
     assert heading == "How a stage is promoted"

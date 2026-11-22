@@ -196,7 +196,11 @@ def refs(app: Path) -> str:
 
 class FakeForgejoPulls:
     """An `http_request` replacement for ForgejoForge: records pulls, reviews, comments, assets and
-    merges; a merge is a real `git merge --no-ff` in the bare remote (through a scratch clone)."""
+    merges; a merge is a real `git merge --no-ff` in the bare remote (through a scratch clone).
+
+    A pull is stored with `head`/`base` as branch names, `state` (open | closed) and `merged`;
+    `GET /pulls` lists them as Forgejo does (`head.ref`, `base.ref`, `html_url`), `PATCH /pulls/N`
+    edits title and body. Every (method, path) is appended to `calls`."""
 
     def __init__(self, remote: Path, scratch: Path) -> None:
         self.remote, self.scratch = Path(remote), Path(scratch)
@@ -205,7 +209,22 @@ class FakeForgejoPulls:
         self.reviews: dict[int, list[dict[str, Any]]] = {}
         self.assets: list[dict[str, Any]] = []
         self.merges: list[dict[str, Any]] = []
+        self.calls: list[tuple[str, str]] = []
         self.next_id = 100
+
+    @staticmethod
+    def _url(number: int) -> str:
+        return f"https://forge.example.org/acme/webshop/pulls/{number}"
+
+    def _listed(self, pull: dict[str, Any]) -> dict[str, Any]:
+        """A stored pull as the Forgejo API returns it."""
+        return {**copy.deepcopy(pull), "head": {"ref": pull["head"]}, "base": {"ref": pull["base"]},
+                "html_url": self._url(pull["number"])}
+
+    def set_state(self, number: int, state: str, merged: bool = False) -> None:
+        """Mark pull `number` open, closed or merged (a merged pull is closed and `merged`)."""
+        self.pulls[number]["state"] = "closed" if merged else state
+        self.pulls[number]["merged"] = bool(merged)
 
     def _merge(self, number: int, method: str) -> None:
         pull = self.pulls[number]
@@ -224,11 +243,18 @@ class FakeForgejoPulls:
         path = url.split("/api/v1/repos/", 1)[1].split("/", 2)[2] if "/api/v1/repos/" in url else url
         path = "/" + path.split("?", 1)[0]
         payload = json.loads(body) if body and headers.get("Content-Type") == "application/json" else None
+        self.calls.append((method, path))
         if method == "POST" and path == "/pulls":
             number = len(self.pulls) + 1
-            self.pulls[number] = {"number": number, **payload}
-            return 201, {"number": number, "html_url": f"https://forge.example.org/acme/webshop/pulls/{number}"}
+            self.pulls[number] = {"number": number, **payload, "state": "open", "merged": False}
+            return 201, {"number": number, "html_url": self._url(number)}
+        if method == "GET" and path == "/pulls":
+            return 200, [self._listed(pull) for pull in self.pulls.values()]
         parts = path.strip("/").split("/")
+        if parts[:1] == ["pulls"] and len(parts) == 2 and method == "PATCH":
+            pull = self.pulls[int(parts[1])]
+            pull.update({k: payload[k] for k in ("title", "body") if k in payload})
+            return 200, self._listed(pull)
         if parts[:1] == ["issues"] and len(parts) == 3 and parts[2] == "comments":
             number = int(parts[1])
             if method == "GET":
@@ -247,11 +273,18 @@ class FakeForgejoPulls:
             name = url.split("name=", 1)[1] if "name=" in url else "file"
             self.assets.append({"path": path, "name": name, "bytes": len(body or b"")})
             return 201, {"browser_download_url": f"https://forge.example.org/attachments/{len(self.assets)}-{name}"}
+        if method == "GET" and parts[:1] == ["branch_protections"]:
+            from adw_modules import forge
+
+            raise forge.ForgeError(f"GET {url} -> HTTP 404: not found")
+        if method == "GET" and parts[:1] == ["pulls"] and len(parts) == 2:
+            return 200, self._listed(self.pulls[int(parts[1])])
         if parts[:1] == ["pulls"] and parts[-1] == "reviews":
             return 200, copy.deepcopy(self.reviews.get(int(parts[1]), []))
         if parts[:1] == ["pulls"] and parts[-1] == "merge":
             self.merges.append({"number": int(parts[1]), "method": payload["Do"]})
             self._merge(int(parts[1]), payload["Do"])
+            self.set_state(int(parts[1]), "closed", merged=True)
             return 200, None
         raise AssertionError(f"unexpected forge call {method} {path}")
 
