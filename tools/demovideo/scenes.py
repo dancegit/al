@@ -6,7 +6,7 @@ the dashboard in the host's Chromium, recorded by tools/showcase/browser_clips.R
 takes a `Ctx` and returns its parts in order; make.py fits each part to its length, lays the captions of
 narration.md over it and writes the clip.
 
-  demo_site    the demo application `cart` and its layer, written beside each other in a work folder
+  demo_site    Rota (a copy of tests/rotademo/app) and beside it the scripted layer `rota.al`
   rota_site    a copy of the Rota app (tests/rotademo/app); install_rota_layer puts its real definition beside it
   COMMANDS     every `al …` command a terminal scene shows ({run} is filled at run time)
   SCENES       scene id → recorder function
@@ -41,15 +41,17 @@ for _folder in (str(ROOT / "tools"), str(SHOWCASE), str(HERE)):
     if _folder not in sys.path:
         sys.path.insert(0, _folder)
 
+import rota_agent  # noqa: E402  (standard library only; importing it runs nothing)
 import rules  # noqa: E402
 
 AL = ROOT / "tools" / "al"
-REPLAY = ROOT / "kit" / "dashboard" / "demo" / "replay_agent.py"
+STAND_IN = HERE / "rota_agent.py"
 LAYER_SOURCE = HERE / "demo_layer.rkt.in"
-PROMPT_A = "Add a percentage discount to the cart"
-PROMPT_B = "Note in the lint tool what it also checks"
-APPROVAL = "edit:tools/lint.py"
-STEPS_A = ("classify", "plan", "prove", "build", "lint", "test", "commit", "evidence", "review", "ship")
+PROMPT_A = "Enforce 11 hours of rest between shifts"
+PROMPT_B = "Note in CONTRIBUTING.md where the rest rule belongs"
+APPROVAL = "edit:CONTRIBUTING.md"
+STEPS_A = ("classify", "plan", "prove", "build", "test", "isolation", "commit", "evidence", "review", "ship")
+RID_REFUSED = "c1000101"                        # the fixture run of 05-review-no
 REPOSITORY = "github.com/dancegit/al"
 WHO = "Ada Example"                             # the fictional person who approves in the dashboard (05-protected)
 
@@ -75,23 +77,32 @@ COMMANDS: dict[str, tuple[str, ...]] = {
 }
 SAMPLES: dict[str, str] = {}
 
-PLAN = """# Feature: a percentage discount
+PLAN = """# Feature: 11 hours of rest between shifts
 
-Add `Cart.discounted(percent)`: the total after a percentage discount, in cents.
+A worker may not be assigned to a shift that starts less than 11 hours after another of their shifts
+ends, or that ends less than 11 hours before another starts.
 
 ## Steps
 
-1. add `discounted()` to `cart.py`
-2. add a test for ten percent off
+1. add the rest rule to `rules.py`
+2. add two tests to `tests/test_rules.py`: less than 11 hours is refused, exactly 11 hours is allowed
 
 ## How it is proven
 
 ### Proof plan
 | # | Criterion | Proven by | Writes | Needs |
 |---|---|---|---|---|
-| C1 | every test of the cart passes, the new one included | `test` | - | none |
-| C2 | every file compiles and no line is too long | `lint` | - | none |
+| C1 | every Rota test passes, the new rest tests included | `test` | - | none |
+| C2 | no route leaks or changes another organisation's data | `isolation` | - | none |
 """
+
+LLM_TXT = """Rota: shift scheduling for hospital wards. All data is synthetic.
+A small Flask and SQLite app: app.py holds the routes, rules.py the pure business rules.
+Tenant data is read and written only through data.py, scoped to one organisation.
+"""
+
+CONTRIBUTING_NOTE = ("\nRest between shifts is a business rule like the others: it belongs in `rules.py`, "
+                     "with its tests in `tests/test_rules.py`.\n")
 
 
 class SceneStopped(RuntimeError):
@@ -192,34 +203,85 @@ def hidden(argv: list, cwd: Path, expect: int = 0, timeout: float = 540) -> str:
 
 
 def demo_site(work: Path, generated: bool = False) -> dict:
-    """The `cart` application (the file texts of kit/dashboard/demo/live_demo.py), committed once by a
-    neutral identity, and beside it the layer `cart.al` with its definition, LLM.txt and the mock
-    agent's scripts. With generated=True `al gen` has run too."""
-    import fixture_imports as fx
-    live = fx.load(ROOT / "kit" / "dashboard" / "demo" / "live_demo.py", "demovideo_live_demo")
-    app, layer = work / "cart", work / "cart.al"
+    """Rota (a copy of tests/rotademo/app, committed once by a neutral identity: rota_site) and beside it
+    the scripted layer `rota.al`: its definition (demo_layer.rkt.in), LLM.txt and the mock agent's
+    scripts. With generated=True `al gen` has run too. Rota's Python is not fetched here: warm_rota_python."""
+    site = rota_site(work)
+    app, layer = site["app"], site["layer"]
     if not (layer / "agentic.rkt").is_file():
-        for path, text in {"cart.py": live.CART, "tests/__init__.py": "", "tests/test_cart.py": live.TEST_CART,
-                           "tools/run_tests.py": live.RUN_TESTS, "tools/lint.py": live.LINT,
-                           "README.md": "# cart\n\nA demo library.\n", ".gitignore": "__pycache__/\n*.pyc\n"}.items():
-            (app / path).parent.mkdir(parents=True, exist_ok=True)
-            (app / path).write_text(text)
-        _git(app, "init", "-q", "-b", "main")
-        _git(app, "add", "-A")
-        _git(app, "-c", "user.name=Showcase", "-c", "user.email=showcase@example.org", "commit", "-qm", "cart")
         mock = layer / "mock"
-        mock.mkdir(parents=True)
-        (layer / "agentic.rkt").write_text(LAYER_SOURCE.read_text(encoding="utf-8").replace("@REPLAY@", str(REPLAY)))
-        (layer / "LLM.txt").write_text(live.LLM_TXT)
+        mock.mkdir(parents=True, exist_ok=True)
+        (layer / "agentic.rkt").write_text(LAYER_SOURCE.read_text(encoding="utf-8").replace("@STAND_IN@", str(STAND_IN)),
+                                           encoding="utf-8")
+        (layer / "LLM.txt").write_text(LLM_TXT, encoding="utf-8")
         (mock / "classify.json").write_text(json.dumps({"output": json.dumps({"class": "feature", "reason": "new behaviour"})}))
-        (mock / "plan.json").write_text(json.dumps({"layer_files": {"specs/feature-discount.md": PLAN},
-                                                    "output": "specs/feature-discount.md"}))
+        (mock / "plan.json").write_text(json.dumps({"layer_files": {"specs/feature-rest-rule.md": PLAN},
+                                                    "output": "specs/feature-rest-rule.md"}))
         (mock / "commit.json").write_text(json.dumps({"commit": True, "output": "Committed the change with a one-line message."}))
-        (mock / "build.json").write_text(json.dumps({"files": {"tools/lint.py": live.LINT + "\n# also checked: trailing blank lines\n"},
-                                                     "output": "Added a note to the lint tool."}))
+        contributing = (app / "CONTRIBUTING.md").read_text(encoding="utf-8") + CONTRIBUTING_NOTE
+        (mock / "build.json").write_text(json.dumps({"files": {"CONTRIBUTING.md": contributing},
+                                                     "output": "Added a line on the rest rule to CONTRIBUTING.md."}))
     if generated and not (layer / "agentic-layer.json").is_file():
         hidden([AL, "gen", layer], work)
     return {"work": work, "app": app, "layer": layer}
+
+
+def warm_rota_python(work: Path) -> None:
+    """Resolve Rota's Flask and pytest once (uv's cache), so the first check of a recording does not wait on a download."""
+    hidden([*rota_agent.PYTHON, "-c", "import flask, pytest"], work, timeout=600)
+
+
+def add_refused_rota_run(layer: Path) -> str:
+    """The fixture run of 05-review-no, written into the Rota layer in the record format of
+    kit/dashboard/tests/test_review_rejected_model.py: the planted change of scenario C
+    (tests/rotademo/planted), refused by both reviewers in three rounds and handed to a person."""
+    import fixture_imports as fx
+    f = fx.dash_fixtures()
+    rec, write = f.rec, f.write
+    rid, base = RID_REFUSED, 30000.0
+    run = layer / "agents" / rid
+    verdict = {"success": False, "summary": "Criterion 3 is not met: an expired worker can still be selected",
+               "issues": [{"severity": "blocker",
+                           "description": "templates/shifts.html still offers an expired worker in the assign dropdown; "
+                                          "nothing disables the option.",
+                           "resolution": "Disable the option of a worker whose registration has expired and show it in "
+                                         "e2e/scenario.py."}]}
+    plan = layer / "specs" / f"feature-{rid}.md"
+    t = base
+    records = [rec("classify", "run", "passed", t, t + 10, '{"class":"feature"}'),
+               rec("plan", "run", "passed", t + 10, t + 40, str(plan)),
+               rec("build", "run", "passed", t + 40, t + 90, "Applied the planted change."),
+               rec("test", "check", "passed", t + 90, t + 100, "exit 0"),
+               rec("isolation", "check", "passed", t + 100, t + 104, "exit 0"),
+               rec("commit", "run", "passed", t + 104, t + 114, "Committed.")]
+    t += 114
+    records += [rec("review", "review", "rejected", t, t + 60, f"fail after 3 round(s): {verdict['summary']}"),
+                rec("ship", "ship", "passed", t + 60, t + 70, "ok")]
+    for n in (1, 2, 3):
+        for i in (1, 2):
+            name = f"review-{i}" if n == 1 else f"review-{n}-{i}"
+            start = t + (n - 1) * 20 + (i - 1) * 10
+            f.agent(run, name, start, start + 10, f.mock_raw(json.dumps(verdict)))
+    patch = (ROTA / "planted" / "planted.patch").read_text(encoding="utf-8")
+    changed = re.findall(r"^\+\+\+ b/(\S+)", patch, re.M)
+    reasons = ["review-failed"]
+    ship = {"action": "pr", "shipped": False, "target": f"agents/{rid}/PR.md", "commit": "3" * 40, "pr": None,
+            "reasons": reasons, "handed_over": ["review-rejected", "review-failed"],
+            "gate": {"action": "pr", "ship": False, "reasons": reasons, "diff_lines": 120, "changed_files": changed}}
+    rounds = [{"round": n, "reviewers": [verdict, verdict], "verdict": {**verdict, "issues": verdict["issues"] * 2}}
+              for n in (1, 2, 3)]
+    review = {"mode": "auto", "verdict": {**verdict, "issues": verdict["issues"] * 2, "mode": "auto"}, "rounds": rounds}
+    end = t + 70
+    prompt = ("Show an Expired badge for an expired registration; an expired worker cannot be selected in the "
+              "assign dropdown")
+    write(run / "state.json", json.dumps(f.state(
+        rid, "feature", prompt, "handed-over", base, end, records, klass="feature", branch=f"feature/{rid}-expired-badge",
+        worktree=str(layer / "trees" / rid), plan=str(plan), review=review, ship=ship)), end)
+    write(run / "run.log", f"[adw {rid}] feature start: class=feature dry_run=False\n", end)
+    events = [{"ts": f.iso(t + n * 20), "seq": n, "type": "review.round", "step": "review", "round": n, "success": False,
+               "reviewers": 2, "summary": verdict["summary"]} for n in (1, 2, 3)]
+    write(run / "events.jsonl", "".join(json.dumps(event) + "\n" for event in events), end)
+    return rid
 
 
 def run_state(layer: Path, run: str) -> dict:
@@ -834,6 +896,7 @@ def scene_03_use(ctx: Ctx) -> list[Part]:
 def scene_04_run(ctx: Ctx) -> list[Part]:
     import browser_clips
     site = demo_site(ctx.home_work, generated=True)
+    warm_rota_python(site["work"])
     layer = site["layer"]
     running = _serve(layer)
     try:
@@ -848,14 +911,14 @@ def scene_04_run(ctx: Ctx) -> list[Part]:
             b.spot(".start-prompt")
             b.cue(1)
             before = runs_of(layer)
-            page.select_option(".start-target", "workflow:change")
+            page.select_option(".start-target", "workflow:feature")
             b.pause(0.6)
             browser_clips._type(page, ".start-prompt", PROMPT_A)
             b.pause(1.0)
             page.click(".start-go")
-            browser_clips.until(page, "location.hash.startsWith('#/run/cart/')", timeout=30000)
+            browser_clips.until(page, "location.hash.startsWith('#/run/rota/')", timeout=30000)
             run = page.evaluate("location.hash").rsplit("/", 1)[1]
-            run_route = f"/run/cart/{run}"
+            run_route = f"/run/rota/{run}"
             page.wait_for_selector(_node("build"), timeout=60000)
             _to_top(page, ".graph-wrap", above=40)
             b.spot(_node("build"))
@@ -906,8 +969,10 @@ def scene_04_run(ctx: Ctx) -> list[Part]:
             b.cue(7)
             b.finish()
         (ctx.work / "run-a.json").write_text(json.dumps({"work": str(site["work"]), "layer": str(layer), "run": run}))
-        ctx.stand_in("04-run: classify, plan, commit and both reviewers are the mock agent; the build is the scripted "
-                     "stand-in kit/dashboard/demo/replay_agent.py, which really edits the worktree and runs the tests. No model is called.")
+        ctx.stand_in("04-run: the Rota app and its scripted layer (tools/demovideo/demo_layer.rkt.in); classify, plan, commit "
+                     "and both reviewers are the mock agent, the build is the scripted stand-in tools/demovideo/rota_agent.py, "
+                     "which really adds the 11-hour rest rule and its tests; Rota's test and isolation checks really run. "
+                     "No model is called.")
         return [b.part]
     finally:
         browser_clips._stop(running)
@@ -932,8 +997,9 @@ def _run_a(ctx: Ctx) -> dict:
         if run_state(Path(found["layer"]), found["run"]).get("status") == "passed":
             return found
     site = demo_site(ctx.home_work, generated=True)
+    warm_rota_python(site["work"])
     before = runs_of(site["layer"])
-    hidden([AL, "run", site["layer"], "/change", PROMPT_A], site["work"])
+    hidden([AL, "run", site["layer"], "/feature", PROMPT_A], site["work"])
     return {"work": str(site["work"]), "layer": str(site["layer"]), "run": new_run(site["layer"], before)}
 
 
@@ -944,7 +1010,7 @@ def scene_05_proof(ctx: Ctx) -> list[Part]:
     try:
         with Browser(ctx, running.base, 0, len(ctx.scene.captions), work=Path(found["work"])) as b:
             page = b.page
-            browser_clips.open_(page, f"/run/cart/{found['run']}")
+            browser_clips.open_(page, f"/run/rota/{found['run']}")
             page.wait_for_selector("[data-role='proof-plan']")
             card = page.locator("[data-role='proof-plan']")
             _to_text(page, "Proof plan", above=90)
@@ -961,7 +1027,7 @@ def scene_05_proof(ctx: Ctx) -> list[Part]:
             rows.nth(1).hover()
             b.spot("[data-role='proof-plan'] tr[data-criterion]", last=True)
             b.finish()
-        ctx.stand_in("05-proof: the run of 04-run (mock agent and scripted stand-in).")
+        ctx.stand_in("05-proof: the Rota run of 04-run (the scripted Rota layer: mock agent and the stand-in rota_agent.py).")
         return [b.part]
     finally:
         browser_clips._stop(running)
@@ -978,12 +1044,13 @@ def scene_05_protected(ctx: Ctx) -> list[Part]:
     import browser_clips
     site = demo_site(ctx.home_work, generated=True)
     layer = site["layer"]
+    warm_rota_python(site["work"])
     before = runs_of(layer)
     hidden([AL, "run", layer, "/tidy", PROMPT_B], site["work"], expect=1)
     run = new_run(layer, before)
     if "evidence:needs-person" not in json.dumps(run_state(layer, run)):
         raise SceneStopped(f"05-protected: run {run} did not stop at evidence:needs-person")
-    route, row = f"/run/cart/{run}", f"tbody tr[data-key='cart/{run}']"
+    route, row = f"/run/rota/{run}", f"tbody tr[data-key='rota/{run}']"
     running = _serve(layer)
     try:
         # the dashboard's own loop asks the layer what the run waits for, every APPROVABLE_EVERY (5 s)
@@ -1031,7 +1098,8 @@ def scene_05_protected(ctx: Ctx) -> list[Part]:
             last.pause(3.0)
             _to_text(page, "Proof plan", above=70)
             last.finish()
-        ctx.stand_in(f"05-protected: a second run of the demo layer; the mock agent's build edits tools/lint.py, a protected path. "
+        ctx.stand_in(f"05-protected: a second run of the scripted Rota layer; the mock agent's build edits CONTRIBUTING.md, "
+                     f"a protected path of the Rota layer. "
                      f"The approval is given in the dashboard (Approve & resume) by the fictional {WHO}.")
         return [first.part, last.part]
     finally:
@@ -1048,15 +1116,13 @@ def scene_05_handoff(ctx: Ctx) -> list[Part]:
 
 def scene_05_review_no(ctx: Ctx) -> list[Part]:
     import browser_clips
-    import fixture_imports as fx
-    fx.dash_fixtures().build(ctx.home_work)
-    layer = ctx.home_work / "demo-shop.al"
-    fx.review_model().add_review_runs(layer)
+    layer = demo_site(ctx.home_work, generated=True)["layer"]
+    rid = add_refused_rota_run(layer)
     running = _serve(layer)
     try:
         with Browser(ctx, running.base, 0, len(ctx.scene.captions)) as b:
             page = b.page
-            browser_clips.open_(page, "/run/demo-shop/a1000101")
+            browser_clips.open_(page, f"/run/rota/{rid}")
             page.wait_for_selector(_node("review"))
             b.cue(0)
             b.pause(1.5)
@@ -1073,8 +1139,8 @@ def scene_05_review_no(ctx: Ctx) -> list[Part]:
             b.spot(".badge.handed-over")
             b.cue(1)
             b.finish()
-        ctx.stand_in("05-review-no: the fixture run a1000101 of kit/dashboard/tests (fixtures.py, test_review_rejected_model.py), "
-                     "as in docs/showcase/04-review-says-no; no review ran here.")
+        ctx.stand_in("05-review-no: a fixture run written by scenes.add_refused_rota_run into the Rota layer: the planted change "
+                     "of tests/rotademo/planted (scenario C) refused in three rounds; no review ran here.")
         return [b.part]
     finally:
         browser_clips._stop(running)

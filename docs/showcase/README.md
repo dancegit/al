@@ -122,13 +122,20 @@ and racket (the demo layer and the Rota layer are compiled by the real `al gen`)
 `make.py`) draws the cards and reads the committed pictures under `docs/demo/rotademo`; `espeak-ng`, Kokoro (say.py) or an ElevenLabs
 key is optional: with any of them, each spoken line is also read aloud (see The voice). The
 verifier's OCR is `rapidocr-onnxruntime` 1.4.4, whose models ship inside the package: no frame leaves the
-machine.
+machine. Rota's checks need Flask and pytest: they are resolved by `uv run --with` (the pins of
+`tests/rotademo/app/requirements.txt`), so recording needs the network once, or a uv cache that already
+holds them.
 
-**What is real and what stands in.** The run of part 4 is a real run of a layer written for the demo
-(`tools/demovideo/demo_layer.rkt.in`, for the `cart` library of `kit/dashboard/demo/live_demo.py`), started
-from the dashboard's Start panel. No model is called: classify, plan, commit and the two reviewers are the
-mock agent, and the build is the scripted stand-in `kit/dashboard/demo/replay_agent.py`, which really edits
-the worktree and really runs the tests. The video says so in its captions. Parts 2 and 3 show the real Rota definition
+**What is real and what stands in.** Every scene is Rota. The run of part 4 is a real run of the scripted
+Rota layer `tools/demovideo/demo_layer.rkt.in` on a copy of `tests/rotademo/app`, with the same commands and
+protected paths as `tests/rotademo/layer.rkt.in`, started from the dashboard's Start panel. No model is
+called: classify, plan, commit and the two reviewers are the mock agent, and the build is the scripted
+stand-in `tools/demovideo/rota_agent.py`, which adds the 11-hour rest rule to `rules.py` and two tests to
+`tests/test_rules.py`; Rota's `test` and `isolation` checks really run. The protected-path run of part 5
+edits `CONTRIBUTING.md`, a protected path of the Rota layer, stops for `edit:CONTRIBUTING.md` and is
+approved with Approve & resume. The refused review of part 5 is a Rota fixture written by
+`scenes.add_refused_rota_run`: the planted change of scenario C (`tests/rotademo/planted`), refused in three
+rounds. The video says so in its captions. Parts 2 and 3 show the real Rota definition
 from `tests/rotademo/layer.rkt.in`, compiled by the real `al init`, `al gen` and `al check` in the work
 folder; `agentic.rkt` is copied in, where in use an LLM writes it with `al author`. The Rota pictures of
 parts 1, 4 and 5 are from the recorded runs with a real model in `docs/EXAMPLES.md`, and only their captions

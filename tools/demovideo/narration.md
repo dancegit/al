@@ -52,16 +52,16 @@ most 2.6 words a second of its caption's time on screen.
 ## 4. A run, end to end
 
 ### 04-run | browser | 68 s
-- [+0.0] A small demo app. A scripted stand-in plays the model.
-  > Now a run, end to end, on a small demo app. No model is called: a script plays the agent, really editing code and running tests.
+- [+0.0] Rota again. A scripted stand-in plays the model.
+  > Now a run, end to end, on Rota. No model is called: a script plays the agent, really editing Rota's code and running its tests.
 - [+11.0] Pick the workflow, type the change, press Start.
-  > I pick the workflow, type the change I want, and press Start.
+  > I pick the workflow, type the rest rule, and press Start.
 - [+17.0] The graph is the layer's workflow, filling in live.
   > The graph is the layer's workflow, filling in live.
 - [+23.0] Plan, then build: edits in a private worktree.
-  > First a plan, then the build, in a private copy of the repository. Every tool call is on the record: it searches, edits the cart, writes a test and runs it.
-- [+38.0] Checks are real commands. This is the log of the tests.
-  > Then the checks: not the agent's opinion, the real command, and this is its log.
+  > First a plan, then the build, in a private copy of the repository. Every tool call is on the record: it reads the rules, adds the rest rule, writes two tests and runs them.
+- [+38.0] Rota's own checks: the tests, then data isolation.
+  > Then Rota's own checks run, the tests and the isolation test. This is the log.
 - [+45.0] Two reviewers read the change. Both approve.
   > Two reviewers read the change against the plan. Here both approve.
 - [+53.0] Ship: a branch and its pull request text, for a person.
@@ -70,8 +70,8 @@ most 2.6 words a second of its caption's time on screen.
   > Passed, and nothing was merged without a person.
 
 ### 04-rota | card | 18 s
-- [+0.0] Rota, with a real model: an 11-hour rest rule, on video.
-  > On Rota itself, with a real model, a run added an eleven-hour rest rule, proven by a recorded browser run.
+- [+0.0] The same rule with a real model: proven on video.
+  > The same rule, built by a real model on Rota, was proven by a recorded browser run.
 - [+9.0] Two reviewers approved on the evidence. The gate merged it.
   > Two reviewer agents checked it against the evidence, the gate's rules held, and it merged.
 
@@ -84,8 +84,8 @@ most 2.6 words a second of its caption's time on screen.
   > Afterwards each claim is marked from what actually ran.
 
 ### 05-protected | browser | 32 s
-- [+0.0] A second run edits a protected file. al stops and asks.
-  > Now a guardrail. A second run edits the lint tool, a protected file. al stops and asks a person.
+- [+0.0] A second run edits a protected file of Rota. al asks.
+  > Now a guardrail. A second run edits Rota's contributing guide, a protected file. al stops and asks a person.
 - [+8.0] Needs you: the run waits for an approval.
   > It shows up under Needs you, waiting for an approval.
 - [+15.0] Approve & resume: what is approved, and where it resumes.
@@ -100,8 +100,8 @@ most 2.6 words a second of its caption's time on screen.
   > Its draft pull request says why, and the exact file a person should add.
 
 ### 05-review-no | browser | 14 s
-- [+0.0] A test fixture: reviewers refuse three times.
-  > And reviewers can say no. This test fixture shows three rounds, three refusals, each with reasons.
+- [+0.0] A Rota test fixture: reviewers refuse three times.
+  > Reviewers can say no. This fixture is a Rota change: three rounds, three refusals, each with reasons.
 - [+7.0] Handed to a person. It does not count as passed.
   > After that, al stops trying and hands the run to a person.
 

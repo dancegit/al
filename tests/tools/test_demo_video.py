@@ -1,8 +1,9 @@
 """The five-minute demo video (tools/demovideo): the privacy rules find and blank what must never be on
 a frame, the narration script has its seven parts with short, gapless captions and no run statistics,
-the demo layer and the real Rota layer compile, every `al` command the video shows is one the tool
-accepts, the protected run is one Approve & resume clears, the Rota pictures shown are committed, and no
-video is kept in the tree. When
+the scripted Rota layer and the real Rota layer compile, every `al` command the video shows is one the
+tool accepts, the protected run is one Approve & resume clears, the Rota pictures shown are committed, and
+no video is kept in the tree. The scripted stand-in's change (the 11-hour rest rule) and the refused-review
+fixture are Rota too: no scene shows another app. When
 a recorded video is in the run's proof folder (.al-proof/demo, or AL_DEMO_VIDEO_DIR), it is verified:
 its shape, its contact sheet, its timed script, OCR of a frame every five seconds and the caption band.
 Two slow tests record a scene and check that the verifier refuses a bad video.
@@ -29,6 +30,7 @@ import sys
 import threading
 import time
 import wave
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -82,8 +84,8 @@ def test_privacy_rules_find_each_kind():
 
 
 def test_privacy_rules_accept_what_the_demo_shows():
-    for text in ("github.com/dancegit/al", "uv 0.13.8", "v0.2.0", "~/work/cart.al", "sped up ×3.5", "run 0123abcd",
-                 "Python 3.12.3", "al dashboard cart.al --port 18765", "4 passed, 0 failed", "256.1.2.3", "1.2.3.4.5"):
+    for text in ("github.com/dancegit/al", "uv 0.13.8", "v0.2.0", "~/work/rota.al", "sped up ×3.5", "run 0123abcd",
+                 "Python 3.12.3", "al dashboard rota.al --port 18765", "48 passed", "256.1.2.3", "1.2.3.4.5"):
         assert rules.find_private(text, VALUES) == [], text
 
 
@@ -134,8 +136,8 @@ def test_narration_has_seven_parts_in_order_and_the_right_length():
     assert all(s.kind in rules.KINDS and all(part.scenes for part in script.parts) for s in script.scenes)
     assert 285 <= script.seconds <= 300 and rules.MIN_SECONDS <= script.seconds <= rules.MAX_SECONDS, script.seconds
     captions = {s.id: [c.text for c in s.captions] for s in script.scenes}
-    assert captions["04-run"][0] == "A small demo app. A scripted stand-in plays the model."
-    assert captions["05-review-no"][0] == "A test fixture: reviewers refuse three times."
+    assert captions["04-run"][0] == "Rota again. A scripted stand-in plays the model."
+    assert captions["05-review-no"][0] == "A Rota test fixture: reviewers refuse three times."
     assert "real model" in captions["04-rota"][0]
 
 
@@ -222,22 +224,127 @@ def test_no_run_statistics_in_the_video():
 
 # ------------------------------------------------------------------------------ the demo layer and the commands shown
 
-def test_the_demo_layer_compiles(tmp_path):
+PROTECTED = re.compile(r"#:protected \(([^)]*)\)")
+
+
+def _protected(text: str) -> list[str]:
+    return re.findall(r'"([^"]+)"', PROTECTED.search(text).group(1))
+
+
+def _rota_protected() -> list[str]:
+    return _protected((scenes.ROTA / "layer.rkt.in").read_text(encoding="utf-8"))
+
+
+def test_the_demo_layer_compiles(tmp_path, monkeypatch):
+    import rota_agent
+    calls: list = []
+    real_hidden = scenes.hidden
+    monkeypatch.setattr(scenes, "hidden", lambda argv, *a, **k: calls.append([str(x) for x in argv]) or real_hidden(argv, *a, **k))
     site = scenes.demo_site(tmp_path)
-    layer = site["layer"]
-    assert (site["app"] / "cart.py").is_file() and (site["app"] / "tools" / "lint.py").is_file()
+    app, layer = site["app"], site["layer"]
+    assert app == tmp_path / "rota" and (app / "rules.py").is_file() and (app / "tests" / "test_isolation.py").is_file()
+    status = subprocess.run(["git", "-C", str(app), "status", "--porcelain"], capture_output=True, text=True)
+    assert status.returncode == 0 and status.stdout == "", "the copy is committed once and clean"
     assert not (layer / "agentic-layer.json").exists(), "al gen is run by the scenes that need it, not by the setup"
     text = (layer / "agentic.rkt").read_text(encoding="utf-8")
-    for needed in ("(adw change ", "(adw tidy ", "(cmd lint ", "(cmd test ", '#:protected ("tools")', "(review agent #:reviewers 2)",
-                   "(agent mock)", "#:agent replay"):
+    for needed in ("(adw feature ", "(adw tidy ", "(cmd test ", "(cmd isolation ", "(review agent #:reviewers 2)",
+                   "(agent mock)", "#:agent replay", "{cwd} 1.0", str(scenes.STAND_IN)):
         assert needed in text, needed
-    assert "@REPLAY@" not in text
-    assert "{cwd} 1.0" in text and "1.6" not in text
-    assert json.loads((layer / "mock" / "build.json").read_text())["files"].keys() == {"tools/lint.py"}
+    assert not re.search(r"@[A-Z_]+@", text) and "(forge" not in text and "cart" not in text
+    assert _protected(text) == _rota_protected()
+    assert f'"{rota_agent.PYTEST} tests"' in text and f'"{rota_agent.PYTEST} tests/test_isolation.py"' in text
+    files = json.loads((layer / "mock" / "build.json").read_text())["files"]
+    assert files.keys() == {"CONTRIBUTING.md"}
+    assert "$" not in files["CONTRIBUTING.md"]
+    assert files["CONTRIBUTING.md"].startswith((scenes.ROTA / "app" / "CONTRIBUTING.md").read_text())
     gen = al("gen", layer)
     assert "generated " in gen.stdout, gen.stdout
     assert al("check", layer).stdout.strip().endswith("check: ok")
     assert scenes.demo_site(tmp_path, generated=True)["layer"] == layer      # set up once, generated once
+    assert not any("flask" in " ".join(argv) for argv in calls), "the setup does not warm Rota's Python (no network)"
+
+
+def test_no_scene_shows_cart():
+    for name in ("scenes.py", "narration.md", "demo_layer.rkt.in", "rota_agent.py"):
+        text = (DEMO / name).read_text(encoding="utf-8")
+        assert not re.search(r"(?i)\bcart\b", text), name
+    source = (DEMO / "scenes.py").read_text(encoding="utf-8")
+    for gone in ("live_demo", "replay_agent", "demo-shop", "dash_fixtures().build"):
+        assert gone not in source, gone
+    assert scenes.STAND_IN == DEMO / "rota_agent.py"
+    assert scenes.APPROVAL == "edit:CONTRIBUTING.md"
+    assert "CONTRIBUTING.md" in _rota_protected()
+    allowed = "classify plan prove build test isolation commit evidence review ship".split()
+    assert all(step in allowed for step in scenes.STEPS_A) and "lint" not in scenes.STEPS_A
+
+
+def _load_rules(path: Path):
+    spec = importlib.util.spec_from_file_location("edited_rota_rules", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module                 # dataclasses look their module up while the class is made
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
+def test_the_rota_stand_in_edits_rules_and_adds_tests(tmp_path):
+    import py_compile
+    import rota_agent
+    app = tmp_path / "rota"
+    shutil.copytree(scenes.ROTA / "app", app, ignore=shutil.ignore_patterns("__pycache__", "e2e-results", "*.db", ".pytest_cache"))
+    assert rota_agent.apply(app) == ["rules.py", "tests/test_rules.py"]
+    for name in ("rules.py", "tests/test_rules.py"):
+        py_compile.compile(str(app / name), cfile=str(tmp_path / (name.replace("/", "_") + "c")), doraise=True)
+    edited = _load_rules(app / "rules.py")
+    nurse = edited.Worker(id=1, name="Test Nurse", role="Registered nurse", registration_expires=date(2027, 1, 31))
+
+    def shift(shift_id, start, end):
+        return edited.Shift(id=shift_id, role_required="Registered nurse", starts_at=datetime.fromisoformat(start),
+                            ends_at=datetime.fromisoformat(end))
+
+    day, today = shift(10, "2026-03-03T07:30", "2026-03-03T19:30"), date(2026, 3, 2)
+    assert edited.NEEDS_REST == "Needs 11 hours rest"
+    before = shift(20, "2026-03-02T13:30", "2026-03-02T21:30")          # ends 10 hours before
+    after = shift(21, "2026-03-04T05:30", "2026-03-04T13:30")           # starts 10 hours after
+    exactly = shift(22, "2026-03-02T12:30", "2026-03-02T20:30")         # ends exactly 11 hours before
+    assert edited.assignment_problem(nurse, day, [before], today) == edited.NEEDS_REST
+    assert edited.assignment_problem(nurse, day, [after], today) == edited.NEEDS_REST
+    assert edited.assignment_problem(nurse, day, [exactly], today) is None
+    with pytest.raises(ValueError):
+        rota_agent.apply(app)                       # the anchors are gone: a drifted app is refused
+    assert rota_agent.PYTEST.startswith("uv run --quiet --no-project")
+    assert "flask>=3.1,<4" in rota_agent.PYTEST and "pytest>=8,<9" in rota_agent.PYTEST
+
+
+def _env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k != "AL_APP_ROOT"}
+
+
+def _head(app: Path, ref: str) -> str:
+    return subprocess.run(["git", "-C", str(app), "rev-parse", ref], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_the_scripted_rota_run_passes(tmp_path):
+    site = scenes.demo_site(tmp_path, generated=True)
+    scenes.warm_rota_python(site["work"])
+    layer, app = site["layer"], site["app"]
+    main = _head(app, "main")
+    before = scenes.runs_of(layer)
+    done = subprocess.run([str(AL), "run", str(layer), "/feature", scenes.PROMPT_A], cwd=site["work"], capture_output=True,
+                          text=True, env=_env(), timeout=900)
+    assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:]
+    run = scenes.new_run(layer, before)
+    state = scenes.run_state(layer, run)
+    assert state.get("status") == "passed", state.get("status")
+    steps = [(s.get("name"), s.get("status")) for s in state.get("steps", [])]
+    assert sorted(steps) == sorted((name, "passed") for name in scenes.STEPS_A), steps
+    changed = subprocess.run(["git", "-C", str(app), "diff", "--name-only", "main", state["branch"]], capture_output=True,
+                             text=True, check=True).stdout.split()
+    assert sorted(changed) == ["rules.py", "tests/test_rules.py"], changed
+    assert _head(app, "main") == main, "nothing is merged"
+    assert (layer / "agents" / run / "PR.md").is_file()
 
 
 def _scrub(text: str, tmp_path: Path) -> str:
@@ -302,25 +409,46 @@ def test_every_al_command_the_demo_shows_is_accepted():
 
 def test_the_protected_run_waits_for_approve_and_resume(tmp_path):
     site = scenes.demo_site(tmp_path, generated=True)
+    scenes.warm_rota_python(site["work"])
     layer = site["layer"]
-    env = {k: v for k, v in os.environ.items() if k != "AL_APP_ROOT"}
     before = scenes.runs_of(layer)
     stopped = subprocess.run([str(AL), "run", str(layer), "/tidy", scenes.PROMPT_B], cwd=site["work"], capture_output=True,
-                             text=True, env=env, timeout=600)
+                             text=True, env=_env(), timeout=900)
     assert stopped.returncode == 1, stopped.stdout[-3000:] + stopped.stderr[-3000:]
     run = scenes.new_run(layer, before)
     assert "evidence:needs-person" in json.dumps(scenes.run_state(layer, run))
     # the same approvable.approve_resume the dashboard's Approve & resume calls
     approved = subprocess.run([str(AL), "approve", str(layer), run, "--all", "--who", scenes.WHO], cwd=site["work"],
-                              capture_output=True, text=True, env=env, timeout=300)
+                              capture_output=True, text=True, env=_env(), timeout=600)
     assert approved.returncode == 0 and "resuming from step evidence" in approved.stdout, approved.stdout + approved.stderr
-    deadline = time.monotonic() + 180
+    deadline = time.monotonic() + 300
     while time.monotonic() < deadline and scenes.run_state(layer, run).get("status") != "passed":
         time.sleep(0.5)
     state = scenes.run_state(layer, run)
     assert state.get("status") == "passed", state.get("status")
     approvals = json.dumps(state.get("approvals"))
     assert scenes.APPROVAL in approvals and scenes.WHO in approvals, approvals
+
+
+def test_the_refused_review_fixture_is_a_rota_change(tmp_path):
+    import fixture_imports as fx
+    layer = scenes.demo_site(tmp_path, generated=True)["layer"]
+    rid = scenes.add_refused_rota_run(layer)
+    d = fx.review_model().d
+    model = d.Model([layer], [])
+    model.discover()
+    model.tick()
+    summary = model.summaries[f"rota/{rid}"]
+    assert summary["status"] == "handed-over"
+    assert next(s for s in summary["steps"] if s["name"] == "review")["status"] == "rejected"
+    state = json.loads((layer / "agents" / rid / "state.json").read_text())
+    review = model.run_detail("rota", rid)["steps_detail"]["review"]
+    assert len(review.get("rounds") or []) == 3 or len(state["review"]["rounds"]) == 3
+    patch = (scenes.ROTA / "planted" / "planted.patch").read_text(encoding="utf-8")
+    assert state["ship"]["gate"]["changed_files"] == re.findall(r"^\+\+\+ b/(\S+)", patch, re.M)
+    assert "Expired" in state["prompt"]
+    dumped = json.dumps(state)
+    assert not re.search(r"(?i)\bcart\b", dumped) and "shop" not in dumped
 
 
 def test_the_rota_pictures_are_committed():
@@ -359,7 +487,7 @@ def test_recorder_keeps_videos_out_of_the_tree():
     assert '".al-proof/demo"' in make and '"media/demo-video"' in make
     ignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert "/media/" in ignore, "the fallback folder is ignored by git"
-    for script in ("make.py", "verify.py", "scenes.py", "rules.py"):
+    for script in ("make.py", "verify.py", "scenes.py", "rules.py", "rota_agent.py"):
         text = (DEMO / script).read_text(encoding="utf-8")
         assert not re.search(r"https?://(?!127\.0\.0\.1)", text), f"{script} names no address to send anything to"
     tts_text = (DEMO / "tts.py").read_text(encoding="utf-8")
@@ -794,8 +922,10 @@ def test_showcase_readme_documents_the_voice():
 
 def test_showcase_readme_tells_the_new_story():
     text = (ROOT / "docs" / "showcase" / "README.md").read_text(encoding="utf-8")
-    for needed in ("seven parts", "Rota", "Approve & resume", "tests/rotademo/layer.rkt.in", "make.py scene 01-problem"):
+    for needed in ("seven parts", "Rota", "Approve & resume", "tests/rotademo/layer.rkt.in", "make.py scene 01-problem",
+                   "tools/demovideo/rota_agent.py", "edit:CONTRIBUTING.md", "Flask"):
         assert needed in text, needed
+    assert "`cart` library" not in text and "replay_agent.py" not in text
     assert "docs/KPIS.md" not in text and "--own-plan" not in text
 
 

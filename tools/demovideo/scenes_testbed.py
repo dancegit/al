@@ -46,7 +46,8 @@ PROMPT_A = "Treat FLASK_DEBUG=off as off"
 PROMPT_B = "Note in sessions.py where the cookie defaults are documented"
 PROMPT_C = "Add a note about debug mode to the README"
 APPROVAL = "edit:src/flask/sessions.py"
-STEPS_A = scenes.STEPS_A
+# the steps of this story's own layer (flask_layer.rkt.in), which differ from the rota story's
+STEPS_A = ("classify", "plan", "prove", "build", "lint", "test", "commit", "evidence", "review", "ship")
 # flask's locked dependencies, the virtual environment outside the worktree, no cache folder in it; the
 # runtime's own VIRTUAL_ENV is dropped, or uv prints a warning with a cache path of this machine into the log
 TEST_CMD = ('unset VIRTUAL_ENV; UV_PROJECT_ENVIRONMENT="$HOME/.cache/al-demo/flask-venv" uv run --locked --no-default-groups '
