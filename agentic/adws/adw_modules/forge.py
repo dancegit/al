@@ -178,6 +178,15 @@ class ForgeClient:
     def merge_pr(self, number: int, method: str | None = None) -> None:
         raise NotImplementedError
 
+    def find_prs(self, head: str, base: str) -> list[dict]:
+        """Every pull request from branch `head` into `base`, in any state, newest first:
+        [{"number", "url", "state": open | merged | closed | unknown, "title", "body"}]."""
+        raise ForgeError(f"forge {self.kind} cannot list pull requests")
+
+    def update_pr(self, number: int, title: str, body: str) -> None:
+        """Replace the title and body of pull request `number` (nothing else: never merges or closes)."""
+        raise ForgeError(f"forge {self.kind} cannot update pull requests")
+
     def branch_protection(self, branch: str) -> dict:
         """{"protected": bool, "linear_history": bool|None, "push_allowed": bool|None} of a branch;
         {"protected": False} when it has no protection, {} when the forge cannot tell."""
@@ -261,6 +270,12 @@ class NoneForge(ForgeClient):
 
     def merge_pr(self, number, method=None):
         return None
+
+    def find_prs(self, head, base):
+        return []
+
+    def update_pr(self, number, title, body):
+        self._unsupported("update_pr")
 
     def pr_approvals(self, number):
         return []
@@ -355,6 +370,24 @@ class GitHubForge(ForgeClient):
         if method not in ("squash", "merge", "rebase"):
             raise ForgeError(f"unknown merge method {method!r}")
         self.gh("pr", "merge", str(number), f"--{method}")
+
+    def find_prs(self, head, base):
+        out = self.gh("pr", "list", "--head", head, "--base", base, "--state", "all",
+                      "--json", "number,url,state,title,body", "--limit", "20")
+        data = json.loads(out or "[]")
+        found = []
+        for d in data if isinstance(data, list) else []:
+            if not isinstance(d, dict) or not d.get("number"):
+                continue
+            state = str(d.get("state") or "").lower()
+            found.append({"number": int(d["number"]), "url": str(d.get("url") or ""),
+                          "state": state if state in ("open", "merged", "closed") else "unknown",
+                          "title": d.get("title") or "", "body": d.get("body") or ""})
+        return sorted(found, key=lambda p: p["number"], reverse=True)
+
+    def update_pr(self, number, title, body):
+        """`gh pr edit`; the body goes on stdin (--body-file -), never on the command line."""
+        self.gh("pr", "edit", str(int(number)), "--title", title, "--body-file", "-", input=body)
 
     def pr_approvals(self, number):
         data = json.loads(self.gh("pr", "view", str(number), "--json", "reviews") or "{}")
@@ -540,6 +573,26 @@ class ForgejoForge(ForgeClient):
         if method not in ("squash", "merge", "rebase"):
             raise ForgeError(f"unknown merge method {method!r}")
         self.request("POST", f"/pulls/{int(number)}/merge", {"Do": method})
+
+    def find_prs(self, head, base):
+        data = self.request("GET", "/pulls", query={"state": "all", "limit": 50}) or []
+        found = []
+        for d in data if isinstance(data, list) else []:
+            if not isinstance(d, dict) or not d.get("number"):
+                continue
+            if ((d.get("head") or {}).get("ref"), (d.get("base") or {}).get("ref")) != (head, base):
+                continue
+            if d.get("merged"):
+                state = "merged"
+            else:
+                state = str(d.get("state") or "").lower()
+                state = state if state in ("open", "closed") else "unknown"
+            found.append({"number": int(d["number"]), "url": str(d.get("html_url") or d.get("url") or ""),
+                          "state": state, "title": d.get("title") or "", "body": d.get("body") or ""})
+        return sorted(found, key=lambda p: p["number"], reverse=True)
+
+    def update_pr(self, number, title, body):
+        self.request("PATCH", f"/pulls/{int(number)}", {"title": title, "body": body})
 
     def pr_approvals(self, number):
         data = self.request("GET", f"/pulls/{int(number)}/reviews") or []
