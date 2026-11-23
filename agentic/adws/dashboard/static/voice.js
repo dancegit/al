@@ -111,8 +111,6 @@
     loading: "Loading the speech models…",
     off: "Voice is off.",
   };
-  // the speech engines the service may report (/health tts_engine, each frame's `engine`)
-  const ENGINE_NAMES = { kokoro: "Kokoro", espeak: "espeak-ng", fake: "the test engine" };
 
   // =========================================================================== panel
   /** Mounts the voice helper panel for a layer (and, on a repository's panel, that repository) into
@@ -148,7 +146,6 @@
     const meter = motion ? h("div", { class: "voice-level", role: "meter", "aria-label": "sound level", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": "0" }, bar) : null;
     const levelEl = canvas || meter;
     const stateLine = h("div", { class: "voice-state", "aria-live": "polite" });
-    const engineEl = h("p", { class: "voice-engine dim", "aria-live": "polite" });
     const talk = h("button", { type: "button", class: "btn primary voice-talk", "aria-pressed": "false", text: "Hold to talk" });
     const stopSpeaking = h("button", { type: "button", class: "btn voice-stop", text: "Stop speaking", disabled: true });
     const closeMicButton = h("button", { type: "button", class: "btn voice-close-mic", text: "Close microphone" });
@@ -165,7 +162,7 @@
     const form = h("form", { class: "voice-form" }, text, send);
     const controls = h("div", { class: "voice-controls" }, talk, stopSpeaking, micOpen);
     const body = h("div", { class: "voice-body" },
-      h("div", { class: "voice-stage" }, levelEl, stateLine, engineEl, controls),
+      h("div", { class: "voice-stage" }, levelEl, stateLine, controls),
       h("div", { class: "voice-talk-side" }, captions, cardsEl, transcript, form));
     const root = h("section", { class: "card voice-panel", "aria-label": "Voice helper", dataset: { state: "idle", layer, mic: "closed" } },
       h("div", { class: "card-head voice-head" }, h("h3", { text: "Voice helper" }),
@@ -177,17 +174,6 @@
     function setNote(message, kind) {
       note.className = `voice-note${kind ? ` ${kind}` : ""}`;
       note.textContent = message || "";
-    }
-
-    // which engine speaks: "Spoken by Kokoro", "Spoken by espeak-ng (Kokoro is not available)", "Speech is off";
-    // the reason Kokoro was not used is the line's title
-    function showEngine(engine, why) {
-      if (!engine) return;
-      root.dataset.engine = engine;
-      engineEl.title = why || "";
-      const line = engine === "off" ? "Speech is off: answers are text only"
-        : `Spoken by ${ENGINE_NAMES[engine] || engine}${engine === "espeak" && why ? " (Kokoro is not available)" : ""}`;
-      if (engineEl.textContent !== line) engineEl.textContent = line;
     }
 
     function showNotSetUp(why) {
@@ -279,7 +265,7 @@
             let health = null;
             try { health = await api(`/api/voice/health?layer=${enc(layer)}`); } catch (_error) { health = null; }
             if (health && health.missing && health.missing.length) { showNotSetUp("voice is not set up"); return false; }
-            if (health && health.ready) { st.ready = true; showEngine(health.tts_engine, health.tts_why); return true; }
+            if (health && health.ready) { st.ready = true; return true; }
             await new Promise((resolve) => setTimeout(resolve, 500));
           }
           setNote("The speech service did not become ready; you can type.", "warn");
@@ -544,7 +530,6 @@
           buffer = parsed.rest;
           for (const frame of parsed.frames) {
             if (frame.header.cancelled) { playback.done = true; break; }
-            showEngine(frame.header.engine, frame.header.why);
             if (frame.wav) {
               const audio = await ctx.decodeAudioData(frame.wav.buffer.slice(frame.wav.byteOffset, frame.wav.byteOffset + frame.wav.byteLength));
               if (playback.gen !== st.gen) break;

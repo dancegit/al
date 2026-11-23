@@ -8583,12 +8583,6 @@ class Jobs:
         now = time.time() if now is None else now
         verdict = job_liveness(job, now)
         if verdict and verdict["died"]:
-            # `job` may be a read from before the runner recorded its end and exited: judge the file as it is now
-            fresh = self.read(str(job.get("id") or ""))
-            if fresh is not None:
-                job, verdict = fresh, job_liveness(fresh, now)
-                if not (verdict and verdict["died"]):
-                    return job
             directory = self.dir(str(job.get("id") or ""))
             job = {**job, "status": "interrupted", "ended": utc_stamp(now),
                    "reason": "its runner is gone (the machine restarted or the process was killed)",
@@ -9242,27 +9236,20 @@ def helper_agent(ir: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any] | No
     return agents[0] if agents else None
 
 
-def _cache_home() -> Path:
-    """$XDG_CACHE_HOME when set and absolute, else ~/.cache (mirror of serve.py's cache_home)."""
-    xdg = os.environ.get("XDG_CACHE_HOME") or ""
-    return Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".cache"
-
-
 def voice_cache_dirs(cfg: dict[str, Any]) -> tuple[Path, Path]:
     """(whisper model directory, Kokoro directory): mirror of serve.py's cache_paths."""
-    root = Path(os.environ.get("AL_VOICE_CACHE") or _cache_home() / "al" / "voice")
-    kokoro = Path(os.environ.get("AL_KOKORO_CACHE") or _cache_home() / "al" / "kokoro")
+    root = Path(os.environ.get("AL_VOICE_CACHE") or Path.home() / ".cache" / "al" / "voice")
+    kokoro = Path(os.environ.get("AL_KOKORO_CACHE") or Path.home() / ".cache" / "al" / "kokoro")
     return root / "whisper" / str(cfg.get("sttModel") or "base.en"), kokoro
 
 
 def voice_missing(layer: Layer, cfg: dict[str, Any]) -> list[str]:
-    """The recognition model files of the layer's manifest that are absent or have the wrong size (a cheap
-    check; the service verifies checksums). Kokoro's files are optional: without them the service speaks with
-    espeak-ng or not at all. Nothing is downloaded: `al voice NAME setup` does that, on purpose."""
+    """The model files of the layer's manifest that are absent or have the wrong size (a cheap check; the
+    service verifies checksums). Nothing is downloaded: `al voice NAME setup` does that, on purpose."""
     manifest = read_json(layer.path / VOICE_MANIFEST)
     if not isinstance(manifest, dict):
         return [VOICE_MANIFEST]
-    whisper_dir, _kokoro_dir = voice_cache_dirs(cfg)
+    whisper_dir, kokoro_dir = voice_cache_dirs(cfg)
     wanted: list[tuple[Path, Any]] = []
     model = ((manifest.get("whisper") or {}).get(str(cfg.get("sttModel"))) if isinstance(manifest.get("whisper"), dict)
              else None)
@@ -9270,6 +9257,10 @@ def voice_missing(layer: Layer, cfg: dict[str, Any]) -> list[str]:
         return [f"whisper {cfg.get('sttModel')} (not in the manifest)"]
     for name, item in (model.get("files") or {}).items():
         wanted.append((whisper_dir / name, item))
+    kokoro = manifest.get("kokoro") if isinstance(manifest.get("kokoro"), dict) else {}
+    for name, item in (kokoro.get("files") or {}).items():
+        if isinstance(item, dict) and not item.get("optional"):
+            wanted.append((kokoro_dir / name, item))
     missing = []
     for path, item in wanted:
         size = item.get("bytes") if isinstance(item, dict) else None
