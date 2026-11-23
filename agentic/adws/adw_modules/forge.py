@@ -173,6 +173,7 @@ class ForgeClient:
 
     def create_pr(self, branch: str, base: str, title: str, body: str, draft: bool = False,
                   reviewers: Iterable[str] = ()) -> dict:
+        """An open pull request from `branch` into `base` is updated in place and returned; otherwise one is opened."""
         raise NotImplementedError
 
     def merge_pr(self, number: int, method: str | None = None) -> None:
@@ -355,6 +356,19 @@ class GitHubForge(ForgeClient):
         return {"number": int(m.group(1)) if m else 0, "url": url}
 
     def create_pr(self, branch, base, title, body, draft=False, reviewers=()):
+        # GitHub refuses a second open pull request for the same head and base (a handed-over
+        # run's [needs human] one, say): that one is updated in place and returned instead.
+        found = next((p for p in self.find_prs(branch, base) if p["state"] == "open"), None)
+        if found:
+            number = found["number"]
+            self.update_pr(number, title, body)
+            if not draft:
+                view = json.loads(self.gh("pr", "view", str(number), "--json", "isDraft") or "{}")
+                if isinstance(view, dict) and view.get("isDraft"):
+                    self.gh("pr", "ready", str(number))
+            for r in reviewers:
+                self.gh("pr", "edit", str(number), "--add-reviewer", r)
+            return {"number": number, "url": found["url"]}
         args = ["pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body]
         if draft:
             args.append("--draft")
@@ -561,9 +575,18 @@ class ForgejoForge(ForgeClient):
         # The Forgejo API has no draft flag; a "WIP: " title prefix is the forge's draft convention.
         if draft and not title.startswith("WIP:"):
             title = f"WIP: {title}"
+        reviewers = list(reviewers)
+        # Forgejo answers 409 to a second open pull request for the same head and base (a
+        # handed-over run's [needs human] one, say): that one is updated in place and returned.
+        found = next((p for p in self.find_prs(branch, base) if p["state"] == "open"), None)
+        if found:
+            number = found["number"]
+            self.update_pr(number, title, body)  # a title without "WIP:" is no longer a draft
+            if reviewers:
+                self.request("POST", f"/pulls/{number}/requested_reviewers", {"reviewers": reviewers})
+            return {"number": number, "url": found["url"]}
         data = self.request("POST", "/pulls", {"head": branch, "base": base, "title": title, "body": body})
         number = int(data.get("number") or 0)
-        reviewers = list(reviewers)
         if reviewers and number:
             self.request("POST", f"/pulls/{number}/requested_reviewers", {"reviewers": reviewers})
         return {"number": number, "url": data.get("html_url") or data.get("url") or ""}
