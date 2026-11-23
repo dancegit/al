@@ -7,7 +7,11 @@ nothing is downloaded.
 
 With AL_DASHBOARD_SHOTS=<directory> it saves voice-talk-clarify-1280.png (the first question with its
 options), voice-talk-readback-{1280,390}.png (waiting for yes or no), voice-talk-done-1280.png (the run
-link and "decision: yes"), voice-talk-cancelled-1280.png and voice-talk-declined-1280.png."""
+link and "decision: yes"), voice-talk-cancelled-1280.png and voice-talk-declined-1280.png.
+Each file is written by one test: clarify, readback and done by test_spoken_conversation_starts_a_run,
+cancelled by test_cancel_midway_does_nothing, declined by test_no_declines. A command that empties the
+directory and then runs only some of these tests leaves only their files, so the six are taken from one
+command that runs all three tests."""
 from __future__ import annotations
 
 import json
