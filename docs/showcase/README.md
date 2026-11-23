@@ -156,6 +156,78 @@ records one scene and checks that the verifier refuses a video with an address o
 The tooling never uploads, publishes or sends the video anywhere: a person reviews it and decides. Only
 the spoken lines go out, to ElevenLabs, and only when that voice is chosen.
 
+### The second story: flask on a local Forgejo
+
+A second video tells the same seven parts on a codebase people know: **flask**, one of the pinned public
+examples, in every scene, with a real forge as its remote. It is chosen with `--story testbed` on
+`make.py scene`, `make.py assemble` and `verify.py`; `rota` stays the default, so every command above
+works as before.
+
+1. the problem, on Flask: locked dependencies, strict tests, the session code;
+2. what al is: the real authored layer `tests/authored/flask/agentic.rkt`, its checks, its protected
+   paths (with `src/flask/sessions.py`) and its review gate;
+3. how to use it: `al init`, `al adopt` (flask has no agent rules, and it says so), `al gen`, `al check` on
+   a copy of flask;
+4. a run end to end from the dashboard's Start panel, then the pull request it opened, on the Forgejo page;
+5. guardrails and proof: the proof table, a second run that edits `src/flask/sessions.py` and waits for
+   Approve & resume, a third whose reviewers refuse;
+6. where it fits; 7. where to find it.
+
+Its files, all in `tools/demovideo/`: `narration-testbed.md` (the script), `scenes_testbed.py` (one
+recorder per scene id; every helper that draws, records or checks is imported from `scenes.py`),
+`flask_layer.rkt.in` (the layer of the runs in parts 4 and 5), `flask_replay.py` (the scripted stand-in
+for the build), `forgejo.py` (the local Forgejo) and `stories.py` (story name → narration, scene module,
+clips folder and output names).
+
+**The flask copy.** Each scene works on the commit pinned for `flask` in `tests/integration/testbeds.toml`,
+taken from `testbeds/flask` when the integration suite has fetched it, else fetched once. Only its tree is
+used: it is archived into a fresh repository and committed once by the neutral identity `Showcase`, at a
+fixed date, so no upstream author, e-mail or path is in the copy and every scene's copy has the same
+commit.
+
+**What is real and what stands in.** The change is small and real: `get_debug_flag()` in
+`src/flask/helpers.py` treats `FLASK_DEBUG=off` as off (today that value turns debug mode on), with a new
+test in `tests/test_helpers.py`. Flask's own pytest really runs on it, with flask's locked dependencies,
+and the pull request is a real one on the Forgejo instance: the ship step pushes the branch and opens it,
+and nothing is merged. The model stands in: classify, plan, commit and both reviewers are the mock agent
+and the build is `flask_replay.py`, which really edits the worktree and really runs the tests; the
+captions say so. The runs use `flask_layer.rkt.in` (flask's protected paths, one test module), not the
+authored definition of parts 2 and 3. The protected `src/flask/sessions.py` stops the second run until a
+person approves; a third scripted run is refused by its two reviewers and handed to a person.
+
+```sh
+uv run tools/demovideo/make.py forgejo up --work /tmp/al-demo-flask     # codeberg.org/forgejo/forgejo:11 on localhost:3910
+uv run tools/demovideo/make.py scene 01-problem 02-layer --story testbed --work /tmp/al-demo-flask
+uv run tools/demovideo/make.py assemble --story testbed --work /tmp/al-demo-flask --voice kokoro
+uv run tools/demovideo/verify.py media/demo-video --story testbed
+uv run tools/demovideo/make.py forgejo down --work /tmp/al-demo-flask   # removes the container and its data
+```
+
+`make.py forgejo up` starts a throwaway Forgejo in rootless podman, published only on `localhost` (port
+3910, or `--port N`), with a throwaway admin `demo` and an empty repository `demo/flask`, and records it in
+the work folder; `make.py forgejo down` removes the container with its data. The access value the instance
+generates is never printed: it lives in `forgejo.env` in the work folder and in the demo layer's
+`local.env` (both mode 0600), where the layer's forge client reads it, and it dies with the container.
+`make.py clean` refuses while an instance is recorded. Without a reachable instance the scenes that need
+one (`04-run`, `04-pr`, `05-proof` without a recorded run, `05-protected`, `05-review-no`) stop with a
+message that says so: the story never fakes its pull request. The video shows `localhost`, never an
+address.
+
+`assemble` writes `al-demo-testbed.mp4` and `narration-testbed.md`, and `verify.py --story testbed` adds
+`al-demo-testbed-contact-sheet.png` and `privacy-ocr-testbed.json`, beside the files of the rota story; the
+clips are in `clips-testbed` of the work folder, so both stories can share one work folder and one output
+folder. The tests use a stubbed Forgejo and a small stand-in for the flask tree, so they need neither
+podman nor network. The recording needs podman, network (the image, flask's dependencies) and the tools
+the rota story needs.
+
+When the second run stops at the protected path, al hands it over on the forge as a pull request marked
+`[needs human]`. Forgejo refuses a second open pull request for the same branch and base (HTTP 409), and
+the resumed run opens the delivery pull request with a new request, so the recorder closes the
+`[needs human]` one through the Forgejo API before Approve & resume is clicked (`close_handoff` in
+`tools/demovideo/scenes_testbed.py`; listed among the stand-ins). The tests show this against a stubbed
+Forgejo that refuses the duplicate as the real one does. The stub is not the real instance: rehearse
+`05-protected` (`--rehearse`) before recording it.
+
 ## The clips
 
 ### 01-start-work

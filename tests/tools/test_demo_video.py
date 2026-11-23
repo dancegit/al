@@ -45,6 +45,9 @@ sys.path.insert(0, str(DEMO))
 
 import rules  # noqa: E402
 import scenes  # noqa: E402  (standard library only at import: Pillow and Playwright are loaded by the recorders)
+import forgejo  # noqa: E402
+import scenes_testbed  # noqa: E402
+import stories  # noqa: E402
 import tts  # noqa: E402
 
 assert Path(rules.__file__).parent == DEMO, rules.__file__
@@ -1049,3 +1052,641 @@ def test_verify_refuses_a_private_frame_and_a_wrong_length(tmp_path):
     assert {"mail", "home"} <= {hit["kind"] for hit in report["ocr"]["hits"]}
     assert len(report["bands"]["failures"]) == report["bands"]["frames"] >= 2
     assert not report["narration"]["ok"]
+
+
+# ------------------------------------------------------------------------------ the second story: flask on a local Forgejo
+
+TESTBED_NARRATION = DEMO / "narration-testbed.md"
+TESTBED_IDS = ["01-problem", "02-layer", "03-use", "04-run", "04-pr", "05-proof", "05-protected", "05-review-no", "06-fit",
+               "07-close"]
+AUTHORED_FLASK = ROOT / "tests" / "authored" / "flask"
+PINNED_RETURN = '    return bool(val and val.lower() not in {"0", "false", "no"})'
+FAKE_TEST_CMD = f"PYTHONPATH=src {sys.executable} -m pytest -q -p no:cacheprovider tests/test_helpers.py"
+FORGE = {"owner": "demo", "repo": "flask", "token": "fake-forgejo-value"}
+PULLS = "/api/v1/repos/demo/flask/pulls"
+
+
+def _fake_flask(tmp_path: Path) -> tuple[Path, str]:
+    """A small git repository shaped like the pinned flask, committed by an upstream identity."""
+    repo = tmp_path / "upstream-flask"
+    files = {
+        "src/flask/__init__.py": "",
+        "src/flask/helpers.py": ('import os\n\n\ndef get_debug_flag() -> bool:\n'
+                                 '    """Get whether debug mode should be enabled for the app."""\n'
+                                 '    val = os.environ.get("FLASK_DEBUG")\n' + PINNED_RETURN + "\n"),
+        "src/flask/sessions.py": '"""Sessions."""\n\n\nclass SessionInterface:\n    cookie_name = "session"\n',
+        "tests/test_helpers.py": ("from flask.helpers import get_debug_flag\n\n\ndef test_get_debug_flag(monkeypatch):\n"
+                                  '    monkeypatch.setenv("FLASK_DEBUG", "0")\n    assert get_debug_flag() is False\n'),
+        "README.md": "# Flask\n", "LICENSE.txt": "A licence.\n", "uv.lock": "version = 1\n",
+        ".pre-commit-config.yaml": "repos: []\n", ".readthedocs.yaml": "version: 2\n",
+        ".github/workflows/tests.yaml": "name: Tests\n", ".gitignore": "__pycache__/\n",
+        "src/flask/sansio/README.md": "# Sans-IO\n", "docs/web-security.rst": "Security\n", "docs/extensiondev.rst": "Extensions\n",
+        "docs/async-await.rst": "Async\n", "docs/cli.rst": "CLI\n", "docs/testing.rst": "Testing\n",
+        "docs/contributing.rst": "Contributing\n",
+    }
+    for name, text in files.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text)
+    for args in (["init", "-q", "-b", "main"], ["add", "-A"],
+                 ["-c", "user.name=Jane Upstream", "-c", "user.email=jane@upstream.example", "commit", "-qm", "upstream work"]):
+        cp = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+        assert cp.returncode == 0, cp.stderr
+    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    return repo, sha
+
+
+def _bare(tmp_path: Path) -> Path:
+    """A bare repository: the git side of the forge."""
+    bare = tmp_path / "forge.git"
+    cp = subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], capture_output=True, text=True)
+    assert cp.returncode == 0, cp.stderr
+    return bare
+
+
+class _FakeForgejo:
+    def __init__(self):
+        self.requests: list[tuple[str, str, dict, object]] = []
+        self.pulls: list[dict] = []
+        self.port = 0
+        self.url = ""
+
+    def posts(self, path: str) -> list[tuple[str, str, dict, object]]:
+        return [r for r in self.requests if r[0] == "POST" and r[1].split("?")[0] == path]
+
+
+@pytest.fixture
+def fake_forgejo():
+    fake = _FakeForgejo()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def _answer(self, data, status: int = 200) -> None:
+            raw = json.dumps(data).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def _serve(self, method: str) -> None:
+            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            try:
+                body = json.loads(raw) if raw else None
+            except ValueError:
+                body = None
+            fake.requests.append((method, self.path, {k.lower(): v for k, v in self.headers.items()}, body))
+            path = self.path.split("?")[0]
+            if method == "GET" and path == "/api/v1/version":
+                self._answer({"version": "11.0.0"})
+            elif method == "POST" and path == "/api/v1/user/repos":
+                self._answer({"name": (body or {}).get("name")})
+            elif method == "POST" and path == PULLS:
+                head, base = (body or {}).get("head"), (body or {}).get("base")
+                if any(p["state"] == "open" and p["head"]["ref"] == head and p["base"]["ref"] == base for p in fake.pulls):
+                    # what Forgejo answers to a second open pull request for the same head and base
+                    self._answer({"message": "pull request already exists for these targets"}, 409)
+                    return
+                number = len(fake.pulls) + 1
+                pull = {"number": number, "html_url": f"{fake.url}/demo/flask/pulls/{number}", "state": "open",
+                        "title": (body or {}).get("title", ""), "body": (body or {}).get("body", ""),
+                        "head": {"ref": (body or {}).get("head")}, "base": {"ref": (body or {}).get("base")}}
+                fake.pulls.append(pull)
+                self._answer(pull)
+            elif method == "GET" and path == PULLS:
+                self._answer(fake.pulls)
+            elif method == "GET":
+                self._answer([])
+            elif method == "PATCH" and (edited := re.fullmatch(re.escape(PULLS) + r"/(\d+)", path)):
+                pull = next((p for p in fake.pulls if p["number"] == int(edited.group(1))), None)
+                if pull is None:
+                    self._answer({"message": "not found"}, 404)
+                    return
+                if (body or {}).get("state") in ("closed", "open"):
+                    pull["state"] = body["state"]
+                self._answer(pull, 201)             # what Forgejo answers to an edited pull request
+            else:
+                self._answer({"id": 1, "browser_download_url": f"{fake.url}/attachments/1"})
+
+        def do_GET(self):
+            self._serve("GET")
+
+        def do_POST(self):
+            self._serve("POST")
+
+        def do_PATCH(self):
+            self._serve("PATCH")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    fake.port = server.server_address[1]
+    fake.url = f"http://localhost:{fake.port}"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield fake
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _verify_module():
+    name = "demovideo_verify"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, DEMO / "verify.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+def _plain_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k not in ("AL_APP_ROOT", forgejo.TOKEN_VAR)}
+
+
+def _testbed(tmp_path: Path, forge: dict | None = None) -> dict:
+    source, sha = _fake_flask(tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    return scenes_testbed.testbed_site(work, source=source, commit=sha, forge=forge)
+
+
+def _testbed_layer(tmp_path: Path, fake) -> tuple[dict, dict]:
+    forge = {**FORGE, "url": fake.url, "git": str(_bare(tmp_path))}
+    site = _testbed(tmp_path, forge)
+    scenes_testbed.demo_layer(site["work"], forge, test_cmd=FAKE_TEST_CMD, generated=True)
+    return site, forge
+
+
+def _al_run(site: dict, workflow: str, prompt: str) -> tuple[subprocess.CompletedProcess, str]:
+    layer = site["layer"]
+    before = scenes.runs_of(layer)
+    cp = subprocess.run([str(AL), "run", str(layer), workflow, prompt], cwd=site["work"], capture_output=True, text=True,
+                        env=_plain_env(), timeout=900)
+    return cp, scenes.new_run(layer, before)
+
+
+def test_stories_keep_rota_as_the_default():
+    assert stories.DEFAULT == "rota" and set(stories.STORIES) == {"rota", "testbed"}
+    rota = stories.get("rota")
+    assert (rota.narration, rota.video, rota.timed, rota.sheet, rota.report, rota.clips) == (
+        NARRATION, "al-demo.mp4", "narration.md", "al-demo-contact-sheet.png", "privacy-ocr.json", "clips")
+    assert stories.scenes_of(rota) is scenes
+    testbed = stories.get("testbed")
+    assert (testbed.narration, testbed.video, testbed.timed, testbed.sheet, testbed.report, testbed.clips) == (
+        TESTBED_NARRATION, "al-demo-testbed.mp4", "narration-testbed.md", "al-demo-testbed-contact-sheet.png",
+        "privacy-ocr-testbed.json", "clips-testbed")
+    assert stories.scenes_of(testbed) is scenes_testbed
+    make = _make()
+    assert [s.id for s in make.script().scenes] == list(scenes.SCENES)
+    assert [s.id for s in make.script("testbed").scenes] == list(scenes_testbed.SCENES)
+    assert (make.NARRATION, make.VIDEO, make.TIMED) == (NARRATION, "al-demo.mp4", "narration.md")
+    with pytest.raises(KeyError, match="rota"):
+        stories.get("nope")
+
+
+def test_make_and_verify_offer_the_story_option(tmp_path, capsys):
+    make = _make()
+    for verb in ("scene", "assemble"):
+        with pytest.raises(SystemExit) as done:
+            make.main([verb, "--help"])
+        assert done.value.code == 0
+        shown = capsys.readouterr().out
+        assert "--story" in shown and "{rota,testbed}" in shown, verb
+    with pytest.raises(SystemExit) as done:
+        _verify_module().main(["--help"])
+    assert done.value.code == 0
+    assert "--story" in capsys.readouterr().out
+    # a rota id asked of the testbed story
+    assert make.main(["scene", "04-rota", "--story", "testbed", "--work", str(tmp_path / "work")]) == 2
+    refused = capsys.readouterr().err
+    assert "no scene" in refused and "story testbed" in refused and "04-pr" in refused
+    assert not (tmp_path / "work").exists()
+    with pytest.raises(SystemExit) as done:
+        make.main(["scene", "01-problem", "--story", "nope", "--work", str(tmp_path / "work")])
+    assert done.value.code == 2
+    capsys.readouterr()
+
+
+def test_verify_and_assemble_take_their_file_names_from_the_story(tmp_path, capsys):
+    verify = _verify_module()
+    assert (verify.VIDEO, verify.TIMED, verify.SHEET, verify.REPORT) == (
+        "al-demo.mp4", "narration.md", "al-demo-contact-sheet.png", "privacy-ocr.json")
+    testbed = " ".join(verify.verify(tmp_path, story="testbed")["problems"])
+    assert "al-demo-testbed.mp4" in testbed
+    default = " ".join(verify.verify(tmp_path)["problems"])
+    assert "al-demo.mp4" in default and "testbed" not in default
+    # nothing recorded yet
+    capsys.readouterr()
+    assert _make().main(["assemble", "--story", "testbed", "--work", str(tmp_path), "--no-voice"]) == 1
+    message = capsys.readouterr().err
+    assert "01-problem" in message and "--story testbed" in message
+    assert _make().main(["assemble", "--work", str(tmp_path), "--no-voice"]) == 1
+    assert "--story" not in capsys.readouterr().err
+
+
+def test_testbed_narration_has_seven_parts_and_the_right_length():
+    script = rules.parse(TESTBED_NARRATION.read_text(encoding="utf-8"))
+    assert rules.validate(script) == []
+    assert [(p.number, p.title) for p in script.parts] == list(enumerate(rules.TITLES, 1))
+    assert [s.id for s in script.scenes] == list(scenes_testbed.SCENES) == TESTBED_IDS
+    assert 285 <= script.seconds <= 300, script.seconds
+    assert all(s.kind in rules.KINDS and s.captions[0].offset == 0.0 for s in script.scenes)
+
+
+def test_testbed_narration_spoken_lines_are_private_and_conversational():
+    script = rules.parse(TESTBED_NARRATION.read_text(encoding="utf-8"))
+    captions = [c for s in script.scenes for c in s.captions]
+    assert captions and all(c.say.strip() and len(c.text) <= 64 for c in captions)
+    words = sum(len(c.say.split()) for c in captions)
+    assert 600 <= words <= 700, words
+    spoken = " ".join(c.say for c in captions)
+    for caption in captions:
+        assert "`" not in caption.say and "/" not in caption.say, caption.say
+    assert re.search(r"\bI\b", spoken), "first person"
+    assert not re.search(r"\bI'm [A-Z]", spoken) and "my name is" not in spoken.lower(), "the script names no person"
+    assert rules.find_private("\n".join(f"{c.text}\n{c.say}" for c in captions), VALUES) == []
+    for part in script.parts[:6]:
+        said = " ".join(f"{c.text} {c.say}" for s in part.scenes for c in s.captions)
+        assert "Flask" in said or "flask" in said or "sessions.py" in said, part.title
+    first = {s.id: s.captions[0].text for s in script.scenes}
+    assert "stand-in" in first["04-run"]
+    assert any("Forgejo" in c.text for c in script.scene("04-pr").captions)
+    assert "sessions.py" in first["05-protected"]
+
+
+def test_testbed_layer_excerpt_shows_checks_protected_paths_and_review():
+    cp = subprocess.run(["sh", "-c", scenes_testbed.EXCERPT], cwd=AUTHORED_FLASK, capture_output=True, text=True, timeout=60)
+    assert cp.returncode == 0, cp.stderr
+    excerpt = cp.stdout.splitlines()
+    assert len(excerpt) == 5 and all(len(line) <= 96 for line in excerpt), excerpt
+    for needed in ("(cmd lint", "(cmd typecheck", "(cmd test", "(review auto", "#:require-checks"):
+        assert needed in cp.stdout, needed
+    shown = subprocess.run(["sh", "-c", scenes_testbed.PROTECTED_SHOWN], cwd=AUTHORED_FLASK, capture_output=True, text=True,
+                           timeout=60)
+    assert shown.returncode == 0, shown.stderr
+    protected = shown.stdout.splitlines()
+    assert len(protected) == 2 and all(len(line) <= 96 for line in protected), protected
+    assert "#:protected" in protected[0] and "src/flask/sessions.py" in protected[1]
+    lines = excerpt + protected
+    for cue, keep in scenes_testbed.HIGHLIGHTS.items():
+        kept = [line for line in lines if any(s in line for s in keep)]
+        assert kept and len(kept) < len(lines), (cue, kept)
+    assert rules.find_private(cp.stdout + shown.stdout, VALUES) == []
+    # one line of the terminal: its 100 columns less the prompt `~/work $ ` (scenes.shell refuses a longer command)
+    assert len(scenes_testbed.EXCERPT) <= 91 and len(scenes_testbed.PROTECTED_SHOWN) <= 91
+
+
+def test_every_al_command_the_testbed_story_shows_is_accepted():
+    shown = [scenes.fill(argv, scenes_testbed.SAMPLES) for argv in scenes_testbed.COMMANDS.values()]
+    assert list(scenes_testbed.COMMANDS) == ["init", "adopt", "gen", "check", "run"]
+    assert all(argv[0] == "al" for argv in shown) and not [a for argv in shown for a in argv if "{" in a]
+    env = _plain_env()
+    for argv in shown:
+        cp = subprocess.run([str(AL), *argv[1:], "--help"], capture_output=True, text=True, env=env, timeout=120)
+        assert cp.returncode == 0, (argv, cp.stdout, cp.stderr)
+
+
+def test_testbed_site_copies_with_a_neutral_identity(tmp_path):
+    source, sha = _fake_flask(tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    site = scenes_testbed.testbed_site(work, source=source, commit=sha)
+    app = site["app"]
+    assert app == work / "flask" and site["layer"] == work / "flask.al" and not site["layer"].exists()
+
+    def git_out(repo: Path, *args: str) -> str:
+        cp = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+        assert cp.returncode == 0, cp.stderr
+        return cp.stdout
+
+    assert git_out(app, "log", "--format=%an %ae|%cn %ce").splitlines() == [
+        "Showcase showcase@example.org|Showcase showcase@example.org"]
+    texts = [git_out(app, "log", "--format=%an%ae%cn%ce%B"), (app / ".git" / "config").read_text(),
+             "\n".join(str(p.relative_to(work)) for p in work.rglob("*"))]
+    for private in ("Jane", "jane@", "upstream.example"):
+        assert not [t for t in texts if private in t], private
+    assert git_out(app, "ls-files") == git_out(source, "ls-files")
+    assert git_out(app, "status", "--porcelain") == ""
+    other = tmp_path / "other"
+    other.mkdir()
+    again = scenes_testbed.testbed_site(other, source=source, commit=sha)
+    assert git_out(again["app"], "rev-parse", "HEAD") == git_out(app, "rev-parse", "HEAD") != sha + "\n"
+    (app / "marker.txt").write_text("kept")
+    assert scenes_testbed.testbed_site(work, source=source, commit=sha)["app"] == app and (app / "marker.txt").is_file()
+
+
+def test_testbed_init_adopt_gen_check(tmp_path):
+    site = _testbed(tmp_path)
+    work, env = site["work"], _plain_env()
+
+    def shown(*argv: str) -> subprocess.CompletedProcess:
+        return subprocess.run([str(AL), *argv], cwd=work, capture_output=True, text=True, env=env, timeout=600)
+
+    init = shown(*scenes_testbed.COMMANDS["init"][1:])
+    assert init.returncode == 0, init.stdout + init.stderr
+    llm = (site["layer"] / "LLM.txt").read_text(encoding="utf-8")
+    layer = scenes_testbed.install_flask_layer(work)
+    assert layer == site["layer"]
+    text = (layer / "agentic.rkt").read_text(encoding="utf-8")
+    assert '#:root "../flask"' in text and "testbeds/" not in text
+    assert (layer / "LLM.txt").read_text(encoding="utf-8") == llm
+    adopt = shown(*scenes_testbed.COMMANDS["adopt"][1:])
+    assert adopt.returncode == 0 and "nothing to adopt" in adopt.stdout, adopt.stdout + adopt.stderr
+    gen = shown(*scenes_testbed.COMMANDS["gen"][1:])
+    assert gen.returncode == 0 and "generated " in gen.stdout, gen.stdout + gen.stderr
+    check = shown(*scenes_testbed.COMMANDS["check"][1:])
+    assert check.returncode == 0 and check.stdout.strip().endswith("check: ok"), check.stdout + check.stderr
+    status = subprocess.run(["git", "-C", str(site["app"]), "status", "--porcelain"], capture_output=True, text=True)
+    assert status.returncode == 0 and status.stdout == "", "the app is untouched"
+    for cp in (init, adopt, gen, check):
+        assert rules.find_private(_scrub(cp.stdout, work), VALUES) == [], cp.args
+
+
+def test_testbed_demo_layer_compiles_with_its_forge(tmp_path):
+    site = _testbed(tmp_path)
+    forge = {**FORGE, "url": "http://localhost:3999"}
+    made = scenes_testbed.demo_layer(site["work"], forge, test_cmd=FAKE_TEST_CMD)
+    layer = made["layer"]
+    assert layer == site["layer"] and not (layer / "agentic-layer.json").exists()
+    text = (layer / "agentic.rkt").read_text(encoding="utf-8")
+    assert '(forge forgejo #:host "http://localhost:3999" #:repo "demo/flask"' in text
+    assert f'#:token-env "{forgejo.TOKEN_VAR}"' in text and not re.search(r"@[A-Z_]+@", text)
+    for needed in ("(adw change ", "(adw tidy ", "(adw strict ", "(review agent #:reviewers 2)", "(agent mock)", "#:agent replay",
+                   FAKE_TEST_CMD):
+        assert needed in text, needed
+    protected = re.compile(r"#:protected \(([^)]*)\)")
+    authored = protected.search((AUTHORED_FLASK / "agentic.rkt").read_text(encoding="utf-8")).group(1)
+    assert protected.search(text).group(1).split() == authored.split() and '"src/flask/sessions.py"' in authored
+    assert [p.relative_to(layer).as_posix() for p in _files_holding(layer, FORGE["token"])] == ["local.env"]
+    assert (layer / "local.env").stat().st_mode & 0o777 == 0o600
+    assert json.loads((layer / "replay.json").read_text()) == {"test": FAKE_TEST_CMD}
+    tidy = json.loads((layer / "mock" / "tidy" / "build.json").read_text())["files"]
+    assert tidy.keys() == {"src/flask/sessions.py"}
+    assert tidy["src/flask/sessions.py"].startswith((site["app"] / "src" / "flask" / "sessions.py").read_text())
+    assert json.loads((layer / "mock" / "strict" / "build.json").read_text())["files"].keys() == {"README.md"}
+    for reviewer in ("review-1", "review-2"):       # the step names of the two reviewers
+        refused = json.loads(json.loads((layer / "mock" / "strict" / f"{reviewer}.json").read_text())["output"])
+        assert refused["success"] is False and refused["issues"][0]["severity"] == "blocker", reviewer
+    gen = al("gen", layer)
+    assert "generated " in gen.stdout, gen.stdout
+    assert al("check", layer).stdout.strip().endswith("check: ok")
+    assert scenes_testbed.demo_layer(site["work"], forge, test_cmd=FAKE_TEST_CMD, generated=True)["layer"] == layer
+    assert [p.relative_to(layer).as_posix() for p in _files_holding(layer, FORGE["token"])] == ["local.env"]
+
+
+def test_testbed_replay_agent_makes_the_small_change(tmp_path):
+    app = _testbed(tmp_path)["app"]
+    config = tmp_path / "replay.json"
+    config.write_text(json.dumps({"test": FAKE_TEST_CMD}))
+    helpers, tests = app / "src" / "flask" / "helpers.py", app / "tests" / "test_helpers.py"
+
+    def replay() -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(DEMO / "flask_replay.py"), str(app), "0", str(config)], input="the plan",
+                              capture_output=True, text=True, timeout=300)
+
+    def suite() -> subprocess.CompletedProcess:
+        return subprocess.run(["sh", "-c", FAKE_TEST_CMD], cwd=app, capture_output=True, text=True, timeout=300)
+
+    done = replay()
+    assert done.returncode == 0, done.stdout[-2000:] + done.stderr
+    events = [json.loads(line) for line in done.stdout.splitlines()]
+    assert events[0]["type"] == "system" and events[-1]["type"] == "result" and events[-1]["is_error"] is False
+    used = [block["name"] for e in events if e["type"] == "assistant" for block in e["message"]["content"]
+            if block["type"] == "tool_use"]
+    assert used == ["Grep", "Read", "Edit", "Edit", "Bash"]
+    assert '"no", "off"}' in helpers.read_text() and "def test_get_debug_flag_off" in tests.read_text()
+    passed = suite()
+    assert passed.returncode == 0 and "2 passed" in passed.stdout, passed.stdout + passed.stderr
+    helpers.write_text(helpers.read_text().replace('"no", "off"}', '"no"}'))
+    failed = suite()
+    assert failed.returncode != 0 and "test_get_debug_flag_off" in failed.stdout, "the new test is real"
+    # a helpers.py that is not the pinned one: nothing is changed
+    helpers.write_text(helpers.read_text().replace('"no"}', '"no", "n"}'))
+    before = (helpers.read_text(), tests.read_text())
+    refused = replay()
+    assert refused.returncode == 1 and "is not the pinned get_debug_flag" in refused.stderr, refused.stderr
+    assert (helpers.read_text(), tests.read_text()) == before
+
+
+def test_testbed_run_opens_a_pull_request_on_a_fake_forgejo(tmp_path, fake_forgejo):
+    site, forge = _testbed_layer(tmp_path, fake_forgejo)
+    layer = site["layer"]
+    done, run = _al_run(site, "/change", scenes_testbed.PROMPT_A)
+    assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:]
+    state = scenes.run_state(layer, run)
+    assert state.get("status") == "passed", state.get("status")
+    assert sorted(s["name"] for s in state["steps"]) == sorted(scenes_testbed.STEPS_A)
+    posted = fake_forgejo.posts(PULLS)
+    assert len(posted) == 1, [r[:2] for r in fake_forgejo.requests]
+    _method, _path, headers, body = posted[0]
+    assert body["head"] == state["branch"] and body["base"] == "main"
+    assert headers["authorization"] == f"token {FORGE['token']}", "read from local.env: the variable is not in the environment"
+    assert forgejo.TOKEN_VAR not in _plain_env()
+    assert not [r for r in fake_forgejo.requests if r[1].split("?")[0].endswith("/merge")]
+    bare = forge["git"]
+    names = subprocess.run(["git", "-C", bare, "diff", "--name-only", "main", f"refs/heads/{state['branch']}"],
+                           capture_output=True, text=True)
+    assert names.returncode == 0, names.stderr
+    assert {"src/flask/helpers.py", "tests/test_helpers.py"} <= set(names.stdout.split())
+    assert scenes_testbed.pull_request_url(layer, run) == fake_forgejo.pulls[0]["html_url"]
+    assert _files_holding(layer / "agents", FORGE["token"]) == []
+    with pytest.raises(scenes.SceneStopped):
+        scenes_testbed.pull_request_url(layer, "00000000")
+
+
+def test_testbed_protected_run_waits_for_approve_and_resume(tmp_path, fake_forgejo):
+    site, forge = _testbed_layer(tmp_path, fake_forgejo)
+    layer = site["layer"]
+    stopped, run = _al_run(site, "/tidy", scenes_testbed.PROMPT_B)
+    assert stopped.returncode == 1, stopped.stdout[-3000:] + stopped.stderr[-3000:]
+    assert "evidence:needs-person" in json.dumps(scenes.run_state(layer, run))
+    # a stopped run is handed over on the forge (ship.handoff): a pull request marked for a person, not the delivery one
+    waiting = [r[3]["title"] for r in fake_forgejo.posts(PULLS)]
+    assert len(waiting) == 1 and waiting[0].startswith("WIP: [needs human]"), waiting
+    assert scenes.run_state(layer, run)["ship"]["action"] == "handoff"
+    branch = scenes.run_state(layer, run)["branch"]
+    assert [p["state"] for p in fake_forgejo.pulls] == ["open"]
+    # the edge: the request the ship step of the resumed run would send is refused while the handoff one is open
+    status, _data = forgejo._http("POST", fake_forgejo.url + PULLS,
+                                  {"Authorization": f"token {FORGE['token']}", "Content-Type": "application/json"},
+                                  json.dumps({"head": branch, "base": "main", "title": "a second one", "body": ""}).encode())
+    assert status == 409 and len(fake_forgejo.pulls) == 1, "refused as Forgejo refuses it, and nothing stored"
+    assert scenes_testbed.close_handoff(forge, layer, run) == [1]
+    assert fake_forgejo.pulls[0]["state"] == "closed"
+    closing = [r for r in fake_forgejo.requests if r[0] == "PATCH" and r[1].split("?")[0] == PULLS + "/1"]
+    assert len(closing) == 1 and closing[0][3] == {"state": "closed"}, closing
+    assert closing[0][2]["authorization"] == f"token {FORGE['token']}"
+    assert scenes_testbed.close_handoff(forge, layer, run) == [], "nothing open is left"
+    approved = subprocess.run([str(AL), "approve", str(layer), run, "--all", "--who", scenes.WHO], cwd=site["work"],
+                              capture_output=True, text=True, env=_plain_env(), timeout=300)
+    assert approved.returncode == 0 and "resuming from step evidence" in approved.stdout, approved.stdout + approved.stderr
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline and scenes.run_state(layer, run).get("status") != "passed":
+        time.sleep(0.5)
+    state = scenes.run_state(layer, run)
+    assert state.get("status") == "passed", state.get("status")
+    approvals = json.dumps(state.get("approvals"))
+    assert scenes_testbed.APPROVAL in approvals and scenes.WHO in approvals, approvals
+    assert _files_holding(layer / "agents", FORGE["token"]) == []
+    open_ = [p for p in fake_forgejo.pulls if p["state"] == "open" and p["head"]["ref"] == state["branch"]]
+    assert len(open_) == 1 and "needs human" not in open_[0]["title"], "exactly one open pull for the branch: the delivery one"
+    assert [p["state"] for p in fake_forgejo.pulls] == ["closed", "open"]
+    assert "needs human" in fake_forgejo.pulls[0]["title"], "the handoff one is closed"
+    assert state["ship"]["action"] == "pr"
+    assert scenes_testbed.pull_request_url(layer, run) == open_[0]["html_url"]
+    # the handoff, the refused probe, the delivery
+    assert [r[3]["head"] for r in fake_forgejo.posts(PULLS)] == [state["branch"]] * 3
+    assert not [r for r in fake_forgejo.requests if r[1].split("?")[0].endswith("/merge")]
+
+
+def test_testbed_reviewers_refuse_and_hand_over(tmp_path, fake_forgejo):
+    site, _forge = _testbed_layer(tmp_path, fake_forgejo)
+    layer = site["layer"]
+    done, run = _al_run(site, "/strict", scenes_testbed.PROMPT_C)
+    assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:]
+    state = scenes.run_state(layer, run)
+    assert state.get("status") == "handed-over", state.get("status")
+    assert "review-rejected" in json.dumps(state["ship"].get("handed_over")), state["ship"]
+    verdict = state["review"]["verdict"]
+    assert verdict["success"] is False and "has no test" in json.dumps(verdict)
+    assert not [r for r in fake_forgejo.requests if r[1].split("?")[0].endswith("/merge")]
+
+
+def test_forgejo_up_starts_a_loopback_instance_with_a_throwaway_admin(tmp_path, fake_forgejo, capsys):
+    value = "0123abcd-fake-access-value"
+    work = tmp_path / "work"
+
+    def podman(calls: list, failing: str = ""):
+        def run(argv, **_kwargs):
+            argv = [str(a) for a in argv]
+            calls.append(argv)
+            code, out = 0, ""
+            if argv[1:3] == ["image", "exists"]:
+                code = 1
+            elif "generate-access-token" in argv:
+                out = f"a line before\n{value}\n"
+            elif failing and failing in argv:
+                code = 1
+            return subprocess.CompletedProcess(argv, code, out, "refused" if code else "")
+        return run
+
+    def found(_name):
+        return "/usr/bin/podman"
+
+    calls: list[list[str]] = []
+    assert forgejo.up(work, port=fake_forgejo.port, run=podman(calls), which=found) == 0
+    port = fake_forgejo.port
+    assert all(argv[0] == "podman" for argv in calls)
+    assert ["podman", "pull", "-q", forgejo.IMAGE] in calls or ["podman", "pull", forgejo.IMAGE] in calls
+    started = next(argv for argv in calls if argv[1] == "run")
+    assert started[1:8] == ["run", "-d", "--name", "al-demo-forgejo", "-p", f"127.0.0.1:{port}:3000", "-e"]
+    assert f"FORGEJO__server__ROOT_URL=http://localhost:{port}/" in started and "FORGEJO__server__OFFLINE_MODE=true" in started
+    assert started[-1] == forgejo.IMAGE == "codeberg.org/forgejo/forgejo:11" and "-v" not in started
+    created = next(argv for argv in calls if "create" in argv and "user" in argv)
+    assert created[:5] == ["podman", "exec", "-u", "git", "al-demo-forgejo"]
+    assert "--must-change-password=false" in created and "demo@example.org" in created and "--admin" in created
+    password = created[created.index("--password") + 1]
+    assert password != "fake-Passw0rd-1!" and len(password) >= 20
+    posted = fake_forgejo.posts("/api/v1/user/repos")
+    assert len(posted) == 1
+    assert posted[0][3]["name"] == "flask" and posted[0][3]["private"] is False and posted[0][3]["auto_init"] is False
+    assert posted[0][2]["authorization"] == f"token {value}"
+    state = json.loads((work / "forgejo.json").read_text())
+    assert state["url"] == f"http://localhost:{port}" and (state["owner"], state["repo"]) == ("demo", "flask")
+    assert value not in (work / "forgejo.json").read_text()
+    assert (work / "forgejo.env").stat().st_mode & 0o777 == 0o600
+    assert (work / "forgejo.env").read_text() == f"{forgejo.TOKEN_VAR}={value}\n"
+    printed = capsys.readouterr()
+    assert f"http://localhost:{port}/demo/flask" in printed.out
+    assert value not in printed.out + printed.err and password not in printed.out + printed.err
+    assert forgejo.status(work) == {"url": f"http://localhost:{port}", "owner": "demo", "repo": "flask", "token": value}
+    assert forgejo.reachable(fake_forgejo.url)
+    assert scenes_testbed.require_forge(work)["token"] == value
+    # make.py clean refuses while the instance is recorded
+    assert _make().main(["clean", "--work", str(work)]) == 2
+    assert "forgejo down" in capsys.readouterr().err and work.is_dir()
+    calls.clear()
+    assert forgejo.down(work, run=podman(calls), which=found) == 0
+    assert calls == [["podman", "rm", "-f", "-v", "al-demo-forgejo"]]
+    assert not (work / "forgejo.json").exists() and not (work / "forgejo.env").exists() and forgejo.status(work) is None
+    assert "removed the Forgejo container and its data" in capsys.readouterr().out
+    assert forgejo.down(work, run=podman(calls), which=found) == 0, "nothing running is not an error"
+    # the admin cannot be created: the container is removed and no state is left
+    calls.clear()
+    other = tmp_path / "other"
+    assert forgejo.up(other, port=port, run=podman(calls, failing="create"), which=found) == 1
+    assert calls[-1] == ["podman", "rm", "-f", "-v", "al-demo-forgejo"] and "create" in calls[-2]
+    assert not (other / "forgejo.json").exists() and not (other / "forgejo.env").exists()
+    assert "make.py forgejo" in capsys.readouterr().err
+
+
+def test_forgejo_helper_refuses_without_podman_and_the_story_stops_without_an_instance(tmp_path, capsys):
+    assert forgejo.up(tmp_path / "work", which=lambda _name: None, run=None) == 2
+    assert "podman" in capsys.readouterr().err and not (tmp_path / "work" / "forgejo.json").exists()
+    with pytest.raises(scenes.SceneStopped, match="make.py forgejo up"):
+        scenes_testbed.require_forge(tmp_path)
+    import socket
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed = probe.getsockname()[1]
+    (tmp_path / "forgejo.json").write_text(json.dumps({"url": f"http://localhost:{closed}", "port": closed, "owner": "demo",
+                                                       "repo": "flask", "container": "al-demo-forgejo", "image": forgejo.IMAGE}))
+    (tmp_path / "forgejo.env").write_text(f"{forgejo.TOKEN_VAR}=fake-forgejo-value\n")
+    assert forgejo.status(tmp_path)["token"] == "fake-forgejo-value" and not forgejo.reachable(f"http://localhost:{closed}")
+    with pytest.raises(scenes.SceneStopped, match="make.py forgejo up") as stopped:
+        scenes_testbed.require_forge(tmp_path)
+    assert "never fakes" in str(stopped.value)
+    with pytest.raises(SystemExit) as done:
+        _make().main(["forgejo", "--help"])
+    assert done.value.code == 0
+    shown = capsys.readouterr().out
+    assert "up" in shown and "down" in shown and "--port" in shown
+
+
+def test_testbed_scenes_reuse_the_shared_helpers():
+    assert scenes_testbed.Ctx is scenes.Ctx and scenes_testbed.Browser is scenes.Browser
+    assert scenes_testbed.card_part is scenes.card_part and scenes_testbed.SceneStopped is scenes.SceneStopped
+    assert scenes_testbed.SCENES["06-fit"] is scenes.scene_06_fit and scenes_testbed.SCENES["07-close"] is scenes.scene_07_close
+    text = (DEMO / "scenes_testbed.py").read_text(encoding="utf-8")
+    for copied in ("def caption_png", "def card_image", "BLANKER =", "class Browser"):
+        assert copied not in text, copied
+    browser = (scenes_testbed.scene_04_run, scenes_testbed.scene_04_pr, scenes_testbed.scene_05_proof,
+               scenes_testbed.scene_05_protected, scenes_testbed.scene_05_review_no)
+    for fn in browser:
+        assert ".spot(" in inspect.getsource(fn), fn.__name__
+    for fn in (scenes_testbed.scene_04_run, scenes_testbed.scene_04_pr, scenes_testbed.scene_05_protected,
+               scenes_testbed.scene_05_review_no):
+        assert "require_forge" in inspect.getsource(fn), fn.__name__
+    assert "page.goto" in inspect.getsource(scenes_testbed.scene_04_pr)
+    protected = inspect.getsource(scenes_testbed.scene_05_protected)
+    assert "button.approve-resume" in protected and "APPROVAL" in protected
+    assert "highlight_frame" in inspect.getsource(scenes_testbed.scene_02_layer)
+    assert list(scenes.SCENES) == ARC, "the rota story is as it was"
+
+
+def test_showcase_readme_documents_the_testbed_story_and_forgejo():
+    text = (ROOT / "docs" / "showcase" / "README.md").read_text(encoding="utf-8")
+    for needed in ("--story testbed", "narration-testbed.md", "make.py forgejo up", "make.py forgejo down", "al-demo-testbed.mp4",
+                   "src/flask/sessions.py", "codeberg.org/forgejo/forgejo:11", "localhost"):
+        assert needed in text, needed
+    heading = "### The second story: flask on a local Forgejo"
+    assert text.count(heading) == 1
+    section = text[text.index(heading):]
+    section = section[:section.index("\n## ")]
+    assert "localhost" in section and not rules.PATTERNS["ipv4"].search(section), "localhost, never an address"
+
+
+def test_recorded_testbed_demo_verifies():
+    folder = Path(os.environ.get("AL_DEMO_VIDEO_DIR") or ROOT / ".al-proof" / "demo")
+    if not (folder / "al-demo-testbed.mp4").is_file():
+        pytest.skip("no recorded testbed demo in .al-proof/demo: record it with tools/demovideo/make.py --story testbed")
+    for tool in ("ffmpeg", "ffprobe"):
+        if not shutil.which(tool):
+            pytest.skip(f"no {tool} on PATH: the recorded demo is not verified")
+    env = {k: v for k, v in os.environ.items() if k != "AL_APP_ROOT"}
+    cp = subprocess.run(["uv", "run", str(DEMO / "verify.py"), str(folder), "--story", "testbed", "--json"], capture_output=True,
+                        text=True, env=env, timeout=1500)
+    assert cp.stdout.strip().startswith("{"), cp.stdout + cp.stderr
+    report = json.loads(cp.stdout)
+    assert cp.returncode == 0 and report["ok"] and report["story"] == "testbed", report.get("problems") or report
