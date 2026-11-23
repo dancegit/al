@@ -4,7 +4,8 @@ For each row of the plan's Proof plan (proofplan.py) the pack records what prove
 tree the reviewers will read (a row narrowed to some tests: the narrowed command's own run and log): the command's result (exit, tree, passed/failed/skipped counts, the
 named test ids found in its log) and the files it wrote (collected artefacts, run-scoped proof).
 Each row gets a state: `proven`, `missing`, `failed`, `stale`, `skipped-only`, `not-run` or
-`files-missing`.
+`files-missing`. A narrowed row whose own log shows no passed result for the tests it names is
+`not-run`.
 
 A row that is not proven is a gap. A gap only an agent can close (`fixable`) goes to a patch round
 with that one line, without calling a reviewer: agents `evidence-patch-N` and
@@ -158,6 +159,7 @@ def _pack_row(layer: Any, state: Any, adw: dict[str, Any], stack: Any, row: dict
                            "check": "", "exit": None, "tree": "none", "passed": 0, "failed": 0, "skipped": 0,
                            "reasons": [], "tests": {}, "files": [], "log": "", "state": "missing", "note": ""}
     log_text = ""
+    narrowed = False
     if cmd is None:
         out["note"] = "the command is no cmd or check of the layer"
     elif check is not None and not cmd.get("selection"):
@@ -232,6 +234,12 @@ def _pack_row(layer: Any, state: Any, adw: dict[str, Any], stack: Any, row: dict
     elif (out["passed"] == 0 and out["skipped"] > 0) or (
             out["tests"] and any(seen == "skipped in log" for seen in out["tests"].values())):
         out["state"] = "skipped-only"
+    elif narrowed and (out["passed"] == 0 or any(seen == "not shown" for seen in out["tests"].values())):
+        # a narrowed row is proven by its own run: a log with no passed test, or without a test the row names, proves nothing
+        out["state"] = "not-run"
+        missing = [test for test, seen in out["tests"].items() if seen == "not shown"]
+        out["note"] = ("the narrowed run's log shows no result for: " + ", ".join(missing) if missing
+                       else "the narrowed run's log shows no passed test")
     elif empty or too_many:
         out["state"] = "files-missing"
         out["note"] = (f"too many proof files ({too_many})" if too_many

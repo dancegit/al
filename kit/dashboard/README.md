@@ -78,6 +78,7 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | **Repos** (`4`) | the workspace: every git repository of the folder(s), searchable, with its state badge (`layer`: an `agentic.rkt` in it or in a sibling `NAME.al`; `setup`: rule files, prompts, workflow scripts or a hand-built suite, the same detection as `al scout`; `none`), branch, a mark for uncommitted changes and its last activity; **refresh** rescans. A selected repository (`#/repo/<key>`) shows al scout's "Existing agent setup" summary, its layer with a link to its workflows and runs, its jobs, and the **al** panel: one button per action with the exact command line(s) it runs, disabled with the reason when it does not apply (`needs the al tool; looked for …`, `--read-only`, `--no-actions`, the state), and a tools table: what `al doctor` sees on this machine (racket, raco, uv, git, the author agent's CLI: where each was found, or the sentence saying where al looked, and its version; kept 5 minutes). **create** and **adopt** have a placement picker above their command lines: **beside the repository** (`<folder>/<name>.al`) or **inside the repository** (`<repository>/agentic`), each with what it means, the resulting path and three checks (exists and is kept / will be created; writable; not a layer yet), disabled with its reason when it cannot be used; the command lines are those of the selected placement. A writing action first shows what it runs and writes (for adopt the dry run's diff, line by line; for create and adopt the placement with its path and the detected choices, each editable, with a sentence saying what it decides and its fact) and runs on **Confirm**. **generate a layer…** beside **refresh**, and **guided** in the al panel of a repository without a layer, open guided generation (below) |
 | **Job** | one action (`#/job/<id>`), in the order a person reads it: the header (repository, action, for a create or adopt its placement (`placement: inside the repository`), status, exit code, duration, why it failed, `needs a person: N` when the author left items out, **Download full output**); once it ended, the **outcome** card: for a passed job what was created (the layer with the files added, changed and removed) or adopted, what is `UNVERIFIED` and the next action (the last `next: …` line the steps printed); for a passed create or adopt the same card also holds the **result card** of its `result` step (forge clause, workflows, adopted rules, commands and suite workflows, what was left behind, unverified commands, the next steps, the first of which is the next action; paths as the job shows them), for a failed or interrupted job the failing step, the reason in one sentence (a generic "exited N" is replaced by the step's last error), up to 12 last relevant lines, **Retry from STEP** (asks first; the steps from the first that did not pass run again in the same job, a retried `author` with `--accept-existing`) and **Download log**; the **steps row**, one chip per step with status, exit code and time, a failed step's reason, and under the running one what it is doing right now ("reading the CI files", "compiling, attempt 2", "writing agentic.rkt", or a plain step's last line); the **activity** of the selected step (the running one, else the failed one, else the last agent step, so `author` rather than `scout`; a click picks another and the address keeps it as `?step=`): an agent step's journal with its messages as Markdown, one line per tool call (tool, target, result size, duration), errors in red, the final report and the totals, hooks, start-up, rate limits and other bookkeeping only with **show everything**; a plain step's own output as text (ANSI stripped); both the latest rows with **show earlier** and a search box, and the step's log (an agent step's **raw events**) and journal to download; the author's **Decisions** and **Left out and why** cards; the layer's files it added, changed or removed, and whether the repository changed (for a layer written inside the repository, when only `agentic/` changed: "the layer was written inside the repository: N path(s); commit agentic/ with the code", not a warning); its documents (`LLM.txt` of scout, `preview.diff.txt` of an adopt preview, `choices.json` of a create or adopt preview, `result.json`, `verify.json`, `EXPLAIN.md`); and, collapsed, **Full output** (every step as it ran, ANSI colours; an agent step condensed), opened by itself for a job from before the `steps/` files |
 | **Layers** (`3`) | a **Start work** panel (below), then each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists. After the declared workflows comes everything else the layer can run, from the runtime's registry: the group **Kit workflows** (`integrate`, one `promote-FROM-TO` per declared promotion or `promote` when the layer has no stages, `improve`, `decider`), each card with a `kit` mark, what it is for, the input it takes, how it is started, its setting, its steps (a graph when the registry has a definition) and its runs; an entry that is off (its setting says so, or its script is missing) is dimmed, marked `off`, with what turns it on. Then **Commands (single-command runs)** with the runs recorded as `command:NAME`, and **Suite commands** (the codebase commands `script` steps run) | A layer's page opens with its **Testing** panel (see "Testing depth and batches")
+| **Ship without review** | on a layer's page, a card with every auto review option: what it ships by, its diff limit, its allowed classes and its required checks, each with where the value comes from (the layer definition, al's default, or a local override with who set it and when), and a form that changes or resets the limit on this machine after a confirmation. A run the gate stopped for its size says "diff 2500 lines > limit 300 (review option zero-touch), 12 files changed" on its Needs-you row, in the head of its page and as the **size** row of its **Gate and ship** block, with the limit in force now beside it (see "Ship without review" below) |
 
 The **Start work** panel (on the Layers view; a layer chooser when several are watched) takes a
 request, any workflow of the layer (adopted ones included) or a single command or hop (one recorded
@@ -306,6 +307,7 @@ chat. Keys: `j`/`k` move through runs, nodes or transcript events, `Enter` opens
 
 Everything comes from files the runtime already writes. The dashboard itself writes
 agents/settings/models.json (the Models panel), agents/settings/testing.json (the Testing panel),
+agents/settings/review.json (the "Ship without review" card),
 agents/settings/assign.json (the Automatic switch of Needs you),
 agents/<id>/testing-request.json ("Full before it ships") and, for the actions, its jobs directory; starting
 work is done by the layer's own `adws/dispatch.py --start`, which writes the run's files; the
@@ -321,6 +323,9 @@ actions run `al`, which writes what that command writes. `--read-only` turns all
 | `agents/hosts.json` | the Now view's "Hosts" panel, for a layer whose IR has a `placement`: the scheduler's last survey (`at`, per host its runs, limit, CPUs, load, memory, disk, image and logins, or `silent` with the reason; `pending` starts), merged with the declared hosts in their order and the layer's running runs per host (a run counts on its host while `state.json` `remote.phase` is `remote`, else at home). Read-only, polled like the run files; a change is pushed to the page. Missing or without a readable `at` = "no survey yet"; a host the survey does not name = "not surveyed yet"; every value is shown as text |
 | `agents/settings/models.json` | the Now view's "Models" panel: the layer's local model setting (`{"models": {TIER: MODEL_ID}, "version": 1}`, never committed), the same file `al models LAYER --set TIER=ID` writes. With the IR's agent tiers it gives each tier's model and its source (`local setting`, `layer`, `built-in default`). Polled like the usage file; a change is pushed to the page. An unreadable file is shown as an error and not used. Also the one file the dashboard writes (see Safety) |
 | `agents/settings/testing.json` | the Testing panel's level: the layer's local testing setting (`{"version": 1, "level": "light\|standard\|heavy"}`, never committed), the file `al testing LAYER --set LEVEL` writes; read and written by `read_testing_setting` / `write_testing_setting`, mirrors of the runtime's `testing.read_setting` / `write_setting`. An unreadable file is shown as an error and not used |
+| `agents/settings/review.json` | the "Ship without review" card's override: the layer's local ship-without-review limit per auto review option (`{"version": 1, "maxDiffLines": {ID: N}, "set": {ID: {"who", "via", "at"}}}`, N from 1 to 50000, `set` optional, never committed), the file `al review LAYER --set ID=N` writes; read and written by `read_review_setting` / `write_review_setting`, mirrors of the runtime's `reviewpolicy.read_setting` / `write_setting` (the same bytes for the same arguments). An unreadable file is shown as an error and not used. Polled like the other settings |
+| `adws/adw_modules/review.py` | the layer's gate, read only for one line: `READS_LOCAL_LIMIT = True` says the gate applies the local limit. Without it (a layer generated before the setting existed) the card writes nothing and shows an override that is there anyway as "not read by this layer's gate" |
+| `agentic.rkt` (and the files it names with `(include "FILE")` inside the layer directory) | read as text for the card's sources only: which keywords each `(review auto …)` form writes (`layer definition`), which it leaves out (`al's default`); comments and strings do not count. A definition that cannot be read, or that has no form of an option's id, gives `compiled layer` |
 | `agents/settings/assign.json` | the Automatic switch of the Needs-you view: the dashboard's own local setting (`{"version": 1, "auto": true}`, never committed, read by no runtime module), written atomically by `POST /api/assign {action: "auto", on: true}` and removed when it is switched off (`read_assign_auto` / `write_assign_auto`). A file of any other shape is shown as an error under the switch and nothing is given |
 | `agents/testing/batches.jsonl`, `misses.jsonl`, `suites.json` | written by the layer's `adw_modules/batch.py` and `testing.py`: one line per batch (`{id, branch, stage, head, since, status: green\|red, depth, checks, delivered, at, culprit, fix_run, source}`), one per miss a batch bisected to a run (`{batch, run, cmd, strategies, tests, files, at}`), and each command's full suite (`{CMD: {seconds, tests, commit, at}}`): the Testing panel's batch state, miss rates and typical minutes, and a culprit's "broke the batch". Polled like the settings; the ledger is part of every run's signature, so a new culprit is marked at once |
 | `state.json` `testing`, `checks[NAME].testing`, `check_results[].depth` | a run's depth (`{requested, depth, source, escalation}`), each check's accounting (`{depth, asked, why, selected, units, strategies, ran, total, seconds, full_seconds}`, shown in the runtime's words: "targeted: ran 14 of 812 tests (changed-tests 3, imports 9, coverage 2): 41 s instead of about 9 min") and the depth of each ledger entry (the Depth column of "What the checks proved"). Runs from before have none of it and read as before |
@@ -534,11 +539,40 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
   batch** badge (in its header and the runs list) and a banner with the batch run, the failing tests and the
   fix run.
 
+## Ship without review
+
+An auto review option ships a run with no person when every rule of its gate holds; one rule is the size
+of the diff, `#:max-diff-lines`. On the dashboard:
+
+- **The "Ship without review" card** (the layer page, after the Testing panel; only for a layer with an auto
+  review option): one row per auto review option with what it **ships by**, its **max diff lines**, its
+  **allowed classes** and its **required checks**. Under every value stands where it comes from: `layer
+  definition` (the keyword is written in `agentic.rkt`), `al's default` (it is not), `compiled layer` (the
+  definition cannot say), or for the limit `local override by WHO, WHEN; declared N (SOURCE)`.
+- **Changing the limit.** The row has a number field (1 to 50000), a field for your name, **Apply** and,
+  when an override is set, **Reset**. Apply is disabled until the value is a whole number in range, differs
+  from the limit in force and a name is given. It asks first: "Runs of this layer reviewed by ID will ship
+  without a person up to N changed lines (declared: D). It applies on this machine to every gate from now
+  on, until you reset it. The checks, the review and the other rules stay as they are." Only then
+  `POST /api/review-limit` writes `agents/settings/review.json` with who, how and when. Reset asks too and
+  removes the override. The other values are shown, not changed here.
+- **A gate that does not read the limit.** Until the layer's `adws/adw_modules/review.py` declares
+  `READS_LOCAL_LIMIT = True`, the form is disabled with "this layer's gate does not read the local limit:
+  run `al gen LAYER`", the write is 409, and an override that is in the file anyway is marked "local
+  override N not read by this layer's gate" while the declared limit stays the one shown as in force. The
+  card never claims a limit the gate does not use.
+- **A run stopped for its size.** Its summary carries `outcome.size_stop` (`{diff_lines, limit, option,
+  files, text}`), and its reason reads "diff 2500 lines > limit 300 (review option zero-touch), 12 files
+  changed" instead of `diff-too-large:2500>300`: on its Needs-you row, in the head of its page and, in the
+  page's **Gate and ship** block, as the row **size**, followed by "limit now N (SOURCE)", the limit in
+  force today, so a person sees whether it was changed since. `outcome.handover` and the block's "gate
+  reasons" keep the raw reason.
+
 ## Safety
 
 - **Writes, guarded** (and the stand-in's three, below). Only GET and HEAD, plus `POST /api/models`, `POST /api/start`,
-  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, `POST /api/promotion`, `POST /api/integrate`, `POST /api/assign`, `POST /api/approve`, `POST /api/approve-resume` and `POST /api/approve-ship`, which start or resume runs (or, for the last, record a ship approval and merge or settle the run) through the layer's own scripts, and the three Testing writes `POST /api/testing`, `POST /api/batch` and `POST /api/run-testing`), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
-  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle`, `/api/integrate`, `/api/assign`, `/api/approve`, `/api/approve-resume`, `/api/approve-ship`, `/api/testing`, `/api/batch` or `/api/run-testing` is
+  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, `POST /api/promotion`, `POST /api/integrate`, `POST /api/assign`, `POST /api/approve`, `POST /api/approve-resume` and `POST /api/approve-ship`, which start or resume runs (or, for the last, record a ship approval and merge or settle the run) through the layer's own scripts, the three Testing writes `POST /api/testing`, `POST /api/batch` and `POST /api/run-testing`, and `POST /api/review-limit`, the "Ship without review" card's write behind a confirmation on the page), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
+  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle`, `/api/integrate`, `/api/assign`, `/api/approve`, `/api/approve-resume`, `/api/approve-ship`, `/api/testing`, `/api/batch`, `/api/run-testing` or `/api/review-limit` is
   405 too). No endpoint changes a run's records (a settlement and a testing request are files of their own), and only an approved voice proposal can resume, answer or stop a run. All four writes pass one guard
   (`Handler._write_guard`): the token as for every request, but from the `Authorization` header or
   the cookie only (a token in the query string is refused); a loopback `Host` when there is no
@@ -927,6 +961,28 @@ only the keys named here.
 - `POST /api/start` accepts `testing` (`light`, `standard`, `heavy`, or empty for the layer's own level; 400
   otherwise) and passes it to the layer's launcher as `--testing`.
 
+### `POST /api/review-limit`
+
+The "Ship without review" card's one write: the layer's local limit of one auto review option
+(`agents/settings/review.json`), as `al review LAYER --set ID=N | --reset ID`. The page asks for a
+confirmation before it sends either body.
+
+- `{layer, option, limit: N, who}` sets the limit of the auto review option `option` to N changed lines and
+  records `who` (a name of 1 to 80 characters), `via: "dashboard"` and the time; `{layer, option, reset: true}`
+  removes that option's override (the file goes with the last one). The file is replaced atomically, in the
+  runtime's format.
+- 200 `{"ok": true, "review_policy": {…}}` carries the card's new state (also in every layer of
+  `/api/snapshot` and in `/api/layer` as `review_policy`: `{options: [{id, ship, allowedClasses,
+  requireChecks, maxDiffLines: {value, declared, source, declared_source, local, set, ignored}}], min, max,
+  gate_reads, writable, why, error}`); the layers are pushed to every page.
+- 400: a body that is not a JSON object, a key other than these five, `layer` or `option` not text, `limit`
+  not a whole number from 1 to 50000 (a string, a fraction, `true`), `who` missing, empty or too long,
+  `reset` other than `true` or together with `limit`, or an `option` that is not an auto review option of
+  the layer. 401: a token server without the token. 403: a foreign Host or Origin, no `X-AL-Dashboard: 1`,
+  or `--read-only`. 404: an unknown layer. 409: `agents/settings` is not writable here, the file cannot be
+  written, or the layer's gate does not read the local limit ("run `al gen LAYER`"). 413: a body over 4 KiB.
+  415: not `application/json`. GET is 405. In every refusal nothing is written.
+
 ### `GET /api/assign/preview`, `GET /api/assign/bulk`, `POST /api/assign`
 
 `GET /api/assign/preview?layer=K&run=ID` (the host and token checks of every GET) runs the layer's own
@@ -1289,6 +1345,21 @@ the watcher; `tests/test_testing_http.py` the three endpoints behind every guard
 culprit's banner, the badge in the runs list, "Run the full suites now" and the start form's choice; with
 `AL_DASHBOARD_SHOTS=DIR` it saves `testing-panel-1280.png`, `testing-heavy-1280.png`,
 `run-targeted-accounting-1280.png`, `batch-failed-1280.png` and `start-testing-1280.png`.
+
+`tests/review_limit_fixtures.py` builds the layer of the "Ship without review" tests (the auto option
+`zero-touch` with a limit of 300, a definition that writes some of its keywords, a stand-in for the gate's
+capability line, and a run handed over because its diff of 2500 lines in 12 files is too large).
+`tests/test_review_limit_model.py` checks the card's model (each auto option with the source of every
+value, the override beside the declared value, the sources without a readable definition, with an included
+file and with keywords in comments or strings, a broken setting, a gate that does not read the limit) and
+the readable size stop on a run's summary and its Needs-you row; `tests/test_review_limit_http.py` the
+policy in the snapshot and the layer, writing and resetting the override, and 400, 401, 403, 404, 409, 413
+and 415; `tests/test_browser_review_limit.py` (Chrome) the card, the form's disabled states, the
+confirmation with Cancel, the override with who and when, Reset, and the run page and Needs-you row of the
+stopped run. With `AL_DASHBOARD_SHOTS=DIR` it saves `review-limit-policy.png`, `review-limit-override.png`
+and `review-limit-run.png`, and the same three under `.al-proof/review-limit/` when the repository has a
+`.al-proof` folder (a run's proof folder). `tests/tools/test_al_review.py` holds the setting's mirrors equal
+to the runtime's.
 
 `tests/test_writes_together.py` runs both features in one server: `--read-only` refuses all three
 writes, `--no-start` and `--no-actions` each refuse only their own, each write has its body limit,
