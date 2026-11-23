@@ -1,0 +1,59 @@
+#lang al
+(agentic-layer #:name "flask" #:description "The demo layer of a copy of Flask"
+  (codebase #:root "../flask" #:languages (python) #:default-branch "main"
+            #:description "Flask is a Python WSGI web application framework; get_debug_flag in src/flask/helpers.py reads FLASK_DEBUG."
+    (cmd lint "python3 -m compileall -q src/flask" #:timeout 120
+         #:description "Every file under src/flask compiles.")
+    (cmd test "@TEST_CMD@" #:timeout 600
+         #:description "Flask's own pytest module tests/test_helpers.py passes.")
+    ; the protected paths of the authored layer (tests/authored/flask/agentic.rkt)
+    (paths #:source ("src/flask") #:tests ("tests")
+           #:protected (".github" ".pre-commit-config.yaml" ".readthedocs.yaml" "uv.lock" "LICENSE.txt" "src/flask/sessions.py")))
+  ; a throwaway local Forgejo (tools/demovideo/forgejo.py); its access value is in this layer's local.env
+  (forge forgejo #:host "@FORGE_HOST@" #:repo "@FORGE_REPO@" #:token-env "AL_DEMO_FORGEJO_TOKEN")
+  (review agent #:reviewers 2)
+  ; the model is played by the mock agent; the build of `change` by a scripted stand-in (no LLM)
+  ; that pauses 1.0 s between its events, so a viewer can follow its transcript
+  (agent mock)
+  (agent custom #:id replay #:command "python3 @REPLAY@ {cwd} 1.0 @REPLAY_CONFIG@" #:timeout 600)
+  (trigger manual)
+  (environment worktree)
+  (command classify #:template classify #:output json)
+  (command plan #:template plan-feature #:output path #:validation (lint test))
+  (command resolve-test #:template resolve-test)
+  (command review #:template review #:output json)
+  (command commit #:template commit)
+  (hop implement #:template run-plan #:takes plan)
+  (adw change #:description "Plan, build, check, review, then a pull request for a person"
+       #:agent mock #:environment (worktree) #:review agent
+    (steps
+      (run classify #:command classify #:args ("$prompt"))
+      (run plan #:command plan #:args ("$prompt"))
+      (run build #:command implement #:args ("$plan") #:agent replay)
+      (check lint #:cmd lint #:resolve resolve-test #:retries 1)
+      (check test #:cmd test #:resolve resolve-test #:retries 2)
+      (run commit #:command commit)
+      (review)
+      (ship)))
+  (adw tidy #:description "The same steps, with the mock agent building"
+       #:agent mock #:environment (worktree) #:review agent
+    (steps
+      (run classify #:command classify #:args ("$prompt"))
+      (run plan #:command plan #:args ("$prompt"))
+      (run build #:command implement #:args ("$plan"))
+      (check lint #:cmd lint #:resolve resolve-test #:retries 1)
+      (check test #:cmd test #:resolve resolve-test #:retries 2)
+      (run commit #:command commit)
+      (review)
+      (ship)))
+  (adw strict #:description "The same steps; its scripted reviewers refuse"
+       #:agent mock #:environment (worktree) #:review agent
+    (steps
+      (run classify #:command classify #:args ("$prompt"))
+      (run plan #:command plan #:args ("$prompt"))
+      (run build #:command implement #:args ("$plan"))
+      (check lint #:cmd lint #:resolve resolve-test #:retries 1)
+      (check test #:cmd test #:resolve resolve-test #:retries 2)
+      (run commit #:command commit)
+      (review)
+      (ship))))
