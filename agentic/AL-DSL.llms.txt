@@ -527,7 +527,7 @@ Declare any number. Default when omitted: `(review human)`.
   - `#:require-checks` (list of name of a declared cmd; default REQUIRED) — Codebase commands that must exit 0 in the final state (the deterministic gate).
   - `#:require` (all | affected; default all) — all = every #:require-checks cmd has a passing result for the exact tree that ships (run at the gate, or reused from the same tree). affected = a required cmd with #:always #f whose #:covers no changed path touches is recorded as not affected instead; the compiler warns when this is combined with #:ship merge or deploy.
   - `#:allowed-classes` (list of chore | bug | feature | patch; default (chore bug)) — Work classes allowed to ship untouched; others fall back to a human PR.
-  - `#:max-diff-lines` (integer; default 2000) — Larger diffs fall back to a human PR.
+  - `#:max-diff-lines` (integer; default 10000) — Larger diffs fall back to a human PR.
   - `#:block-protected-paths` (boolean; default #t) — Any change under codebase protected paths falls back to a human PR.
   - `#:body-cmd` (name of a declared cmd, or ""; default "") — Codebase command whose standard output opens the PR description (see review human).
 
