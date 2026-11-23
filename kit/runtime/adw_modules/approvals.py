@@ -15,7 +15,9 @@ that way still goes to a person there. It only lets the run go on to the build a
 instead of stopping first. An approval of listed protected paths given through approve & resume
 (approvable.py: `al approve LAYER RUN --all`, the dashboard's Approve & resume) is recorded with a
 `gate` mark, with who, when and the person's note. It holds for this run only, and it is what
-`gate_approved` hands the gate once review.py reads it (`gate_takes_approvals`).
+`gate_approved` hands the gate once review.py reads it (`gate_takes_approvals`). A `ship:<reason>`
+approval (shipapproval.py: Approve & ship, `al approve LAYER RUN ship`) is a person's decision to ship
+this run although the gate gave that reason; it is recorded without the `gate` mark.
 """
 from __future__ import annotations
 
