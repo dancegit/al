@@ -194,8 +194,9 @@ for your approval to ship" with the same facts and button. The dashboard runs no
 the layer's runtime records the approval, fast-forwards the stage branch (never the default branch)
 or settles the run as `shipped`. A settlement whose `by` is an `http(s)://` URL shows it as a link.
 In the Needs-you view, **Give all N to agents** (one layer at a time: it
-is disabled while runs of several layers are shown) opens a dialog with every run's plan in the order
-they would start (resumes and restarts first, then one integration at a time; what stays with a person
+is disabled while runs of several layers are shown; N counts the shown rows, a failure group as one
+item handed over as its newest run, its other runs left under Needs you) opens a dialog with the plan
+of each of those items, and only those, in the order they would start (resumes and restarts first, then one integration at a time; what stays with a person
 last, as "skipped: why") and **Start N**; what started is listed above the table. Beside it is the
 switch **Automatic** (`Automatic: off` / `Automatic: on`, one layer at a time). While it is on, the
 dashboard does for every run of the layer under Needs you what a person would do with **Give to an
@@ -946,12 +947,14 @@ unknown layer or run 404.
 `GET /api/assign/bulk?layer=K` runs `adws/assign.py all RUN … --preview --json` with the layer's runs
 under Needs you and answers `{layer, plans: [{run, title, kind, summary, skip, why}], startable, start}`
 in the order a bulk start gives them, `skip` saying why a run is left out, and one `nonce` for exactly
-those runs.
+those runs. `runs=ID,ID` is optional and limits the preview to those runs (the rows the page shows, at
+most 200; echoed as `runs`): empty or malformed is 400, an id that is not a stopped run of the layer
+under Needs you is 409 naming it, and the `nonce` covers exactly that list.
 
-`POST /api/assign` takes `{layer, run, action: start|approve|bulk, confirm, note, override, item, who}`
-and nothing else (`run`, `note`, `override` to start; `run`, `item`, `who` to approve; neither for
-`bulk`; any other key, or a key of another action, is 400), or `{layer, action: "auto", on}` (the
-Automatic switch, below), behind the guard of every write (loopback
+`POST /api/assign` takes `{layer, run, action: start|approve|bulk, confirm, note, override, item, who,
+runs}` and nothing else (`run`, `note`, `override` to start; `run`, `item`, `who` to approve; only
+`runs` for `bulk`; any other key, or a key of another action, is 400), or `{layer, action: "auto", on}`
+(the Automatic switch, below), behind the guard of every write (loopback
 Host or token, the token never from the URL, Origin naming the Host, `X-AL-Dashboard: 1`,
 `application/json`, at most 4 KiB, not `--read-only`), and every action is refused with `--no-start` and
 in a container without `--allow-start-in-container` (403), as `POST /api/integrate` is. `confirm` is the
@@ -971,6 +974,8 @@ preview is stale: open it again", and a refused confirmation spends it.
   already or one that is a person's only is 409 `bad-item`.
 - `bulk`: `assign.py all RUN … --by dashboard --json` with the runs of the bulk preview: 202 `{"status":
   "started", "started": N, "results": [{run, kind, status: started|skipped|error, run_id, why, url}]}`.
+  `runs`, optional, is a list of run ids (400 otherwise) and must equal the list the preview was asked
+  for; a different one is 409 "the preview is stale" and spends the nonce.
 - `auto`: the body is exactly `{layer, action: "auto", on: true|false}` (no `confirm`: it starts
   nothing itself; anything else is 400 `expected {"layer", "action": "auto", "on": true|false}; nothing
   else`). It writes `agents/settings/assign.json` (`{"version": 1, "auto": true}`, atomically) or
@@ -1159,7 +1164,7 @@ the agent, "I approve this, continue" and the plan that remains, **Give all N to
 plans first, and the left-out count on the Artefacts tab. With `AL_DASHBOARD_SHOTS=DIR` it saves
 `work-assign-needs-you-1280.png`, `work-assign-button-1280.png`, `work-assign-preview-rejected-1280.png`,
 `work-assign-preview-rejected-390.png`, `work-assign-preview-person-1280.png`, `work-assign-approved-1280.png`,
-`work-assign-bulk-1280.png` and `work-assign-left-out-1280.png`. The Automatic switch:
+`assign-bulk-1280.png` and `work-assign-left-out-1280.png`. The Automatic switch:
 `tests/test_assign_auto_model.py` checks the setting's one format, its atomic write and removal, the
 `assign_auto` view of a layer (a broken file, `--read-only`, `--no-start`, `--no-stand-in`, the
 container, a layer without the script), which runs the loop takes (every run under Needs you, oldest

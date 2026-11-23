@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -175,6 +176,61 @@ def test_failure_group_row_and_start_all_again(tmp_path, tab, clean_env):
         shot(page, "runs-failure-group-started-1280.png")
         for new in started:
             wait_state(layer, new)
+    finally:
+        stop_server(running)
+
+
+def _run_files(layer: Path) -> dict[str, bytes]:
+    """Every file under agents/, but approvable.json: the dashboard's watcher (Model.tick_approvable) asks
+    the launcher for that derived record of each run under Needs you on its own, whatever the page does."""
+    return {str(p.relative_to(layer)): p.read_bytes() for p in sorted((layer / "agents").rglob("*"))
+            if p.is_file() and p.name != "approvable.json"}
+
+
+def test_give_all_counts_the_rows_shown(tmp_path, tab, clean_env):
+    """With two failure groups of two runs, "Give all N" counts the 2 rows, and the dialog lists and asks
+    for the same 2 items (each group's newest run); a search that hides a group leaves 1. Nothing starts."""
+    sc = sf.build_two_groups_scenario(tmp_path / "g")
+    layer = sc["layer"]
+    before = _run_files(layer)
+    running = start_server(["--layer", str(layer)])
+    try:
+        page = tab(running)
+        asked: list[str] = []
+        page.on("request", lambda req: asked.append(req.url) if "/api/assign/bulk" in req.url else None)
+        open_(page, "/runs")
+        until(page, "document.querySelectorAll('#main tr.group-row').length === 2")
+        assert page.inner_text("button.assign-all").strip() == "Give all 2 to agents"
+
+        def dialog() -> dict[str, str]:
+            page.click("button.assign-all")
+            page.wait_for_selector(".assign-bulk ol.assign-bulk-plans li")
+            return dict(page.evaluate("[...document.querySelectorAll('.assign-bulk ol.assign-bulk-plans li')].map((li) => "
+                                      "[li.dataset.run, (li.querySelector('.assign-group') || {}).innerText || ''])"))
+
+        def runs_asked() -> list[str]:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(asked[-1]).query)
+            return query["runs"][0].split(",")
+
+        listed = dialog()
+        assert set(listed) == {sf.GROUP_A[1], sf.GROUP_B[1]}
+        assert sf.GROUP_A[0] in listed[sf.GROUP_A[1]] and sf.GROUP_B[0] in listed[sf.GROUP_B[1]]
+        assert sorted(runs_asked()) == sorted([sf.GROUP_A[1], sf.GROUP_B[1]])
+        shot(page, "give-all-groups-1280.png")
+        page.click(".assign-bulk .confirm-cancel")
+
+        page.fill("input[aria-label='search runs']", "pruning")
+        until(page, "document.querySelectorAll('#main tr.group-row').length === 1")
+        assert page.inner_text("button.assign-all").strip() == "Give all 1 to agents"
+        listed = dialog()
+        assert set(listed) == {sf.GROUP_A[1]}
+        assert sf.GROUP_A[0] in listed[sf.GROUP_A[1]]
+        assert runs_asked() == [sf.GROUP_A[1]]
+        text = page.inner_text(".assign-bulk")
+        assert not any(run_id in text or run_id in asked[-1] for run_id in sf.GROUP_B)
+        shot(page, "give-all-filtered-1280.png")
+        page.click(".assign-bulk .confirm-cancel")
+        assert _run_files(layer) == before   # nothing started, nothing written
     finally:
         stop_server(running)
 
