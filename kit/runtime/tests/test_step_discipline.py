@@ -330,3 +330,102 @@ def test_branches_other_people_change_meanwhile_are_not_the_steps_doing(make_lay
     _after_mock(monkeypatch, meanwhile)
     assert main("demo", layer, ["Add a feature", "--adw-id", ADW_ID]) == 0
     assert _record(layer, "build")["discipline"]["violations"] == []
+
+
+# ---------------------------------------------------------------- refs other sessions move in their worktrees
+
+WHO = ("-c", "user.name=t", "-c", "user.email=t@t")
+
+
+def test_a_commit_in_another_worktree_is_noted_and_not_judged(make_layer, app_repo, monkeypatch, tmp_path) -> None:
+    """Another session commits to its branch in its own worktree while the build runs: the branch
+    descends from the commit the run started from, and still is not the build step's work."""
+    other = tmp_path / "other-tree"
+    _git(app_repo, "worktree", "add", "-q", "-b", "docs/someones-notes", str(other))
+    layer = make_layer(_ir(BUILD_ONLY))
+    _script(layer, "build", {"files": {"feature.py": "FEATURE = True\n"}})
+
+    def meanwhile(_work: Path) -> None:
+        (other / "notes.md").write_text("x\n")
+        _git(other, "add", "notes.md")
+        _git(other, *WHO, "commit", "-qm", "notes")
+
+    _after_mock(monkeypatch, meanwhile)
+    assert main("demo", layer, ["Add a feature", "--adw-id", ADW_ID]) == 0
+    record = _record(layer, "build")["discipline"]
+    assert record["ok"] is True and record["violations"] == []
+    assert record["refs"]["moved"] == ["refs/heads/docs/someones-notes"]
+    assert len(record["not_judged"]) == 1
+    assert "refs/heads/docs/someones-notes" in record["not_judged"][0] and "not judged" in record["not_judged"][0]
+    assert any(e["type"] == "step.discipline" and e.get("not_judged") == record["not_judged"] for e in _events(layer))
+
+
+def test_a_branch_created_in_another_worktree_is_noted_and_not_judged(make_layer, app_repo, monkeypatch,
+                                                                      tmp_path) -> None:
+    layer = make_layer(_ir(BUILD_ONLY))
+    _script(layer, "build", {"files": {"feature.py": "FEATURE = True\n"}})
+    other = tmp_path / "new-tree"
+
+    def meanwhile(_work: Path) -> None:
+        _git(app_repo, "worktree", "add", "-q", "-b", "someones-new-work", str(other))
+        (other / "notes.md").write_text("x\n")
+        _git(other, "add", "notes.md")
+        _git(other, *WHO, "commit", "-qm", "notes")
+
+    _after_mock(monkeypatch, meanwhile)
+    assert main("demo", layer, ["Add a feature", "--adw-id", ADW_ID]) == 0
+    record = _record(layer, "build")["discipline"]
+    assert record["violations"] == []
+    assert len(record["not_judged"]) == 1
+    assert "refs/heads/someones-new-work" in record["not_judged"][0] and "was created" in record["not_judged"][0]
+
+
+def test_the_target_branch_moved_by_the_step_is_a_violation(make_layer, app_repo, monkeypatch) -> None:
+    """The default branch is skipped because other runs ship to it, but not when the commit it now
+    points at is one the run's own worktree made."""
+    layer = make_layer(_ir(BUILD_ONLY))
+    _script(layer, "build", {"files": {"feature.py": "FEATURE = True\n"}})
+
+    def move_main(work: Path) -> None:
+        _git(work, *WHO, "commit", "--allow-empty", "-qm", "x")
+        made = _git(work, "rev-parse", "HEAD")
+        _git(work, "reset", "-q", "--soft", "HEAD~1")
+        _git(app_repo, "update-ref", "refs/heads/main", made)
+
+    _after_mock(monkeypatch, move_main)
+    assert main("demo", layer, ["Add a feature", "--adw-id", ADW_ID]) == 1
+    record = _record(layer, "build")["discipline"]
+    assert record["violations"] == ["ref-moved"]
+    assert any("refs/heads/main" in text for text in record["texts"])
+    assert record["not_judged"] == []
+
+
+def test_the_target_branch_moved_by_someone_else_is_not_the_steps_doing(make_layer, app_repo, monkeypatch) -> None:
+    """Another run ships to the target branch while the build runs."""
+    layer = make_layer(_ir(BUILD_ONLY))
+    _script(layer, "build", {"files": {"feature.py": "FEATURE = True\n"}})
+
+    def meanwhile(_work: Path) -> None:
+        made = _git(app_repo, *WHO, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "x")
+        _git(app_repo, "update-ref", "refs/heads/main", made)
+
+    _after_mock(monkeypatch, meanwhile)
+    assert main("demo", layer, ["Add a feature", "--adw-id", ADW_ID]) == 0
+    assert _record(layer, "build")["discipline"]["violations"] == []
+
+
+def test_a_branch_the_step_committed_to_is_still_a_violation(make_layer, app_repo, monkeypatch) -> None:
+    """A branch that existed before the step is someone else's, unless the commit it now points at
+    is one the run's own worktree made."""
+    _git(app_repo, "branch", "someones-branch")
+    layer = make_layer(_ir(BUILD_ONLY))
+    _script(layer, "build", {"files": {"feature.py": "FEATURE = True\n"}})
+
+    def commit_to_it(work: Path) -> None:
+        _git(work, *WHO, "commit", "--allow-empty", "-qm", "x")
+        _git(work, "update-ref", "refs/heads/someones-branch", "HEAD")
+        _git(work, "reset", "-q", "--soft", "HEAD~1")
+
+    _after_mock(monkeypatch, commit_to_it)
+    assert main("demo", layer, ["Add a feature", "--adw-id", ADW_ID]) == 1
+    assert _record(layer, "build")["discipline"]["violations"] == ["ref-moved"]
