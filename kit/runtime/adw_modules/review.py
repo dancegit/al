@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from . import agents, artefacts, events, gitsafe, steps
+from . import agents, artefacts, events, gitsafe, reviewpolicy, steps
 from .errors import LayerError, StepFailed
 
 GIT_TIMEOUT = 120
@@ -288,14 +288,21 @@ def gather_facts(layer: Any, state: Any, option: dict[str, Any], env_stack: Any,
     }
 
 
+READS_LOCAL_LIMIT = True   # the gate applies agents/settings/review.json (reviewpolicy.py)
+
+
 def gate(layer: Any, state: Any, env_stack: Any, base: str | None = None,
          extra_reasons: list[str] | None = None, head: str | None = None) -> dict[str, Any]:
     option = layer.option("reviews", layer.adw(state.adw)["review"])
+    option, limit = reviewpolicy.apply(layer.layer_dir, option)   # the local ship-without-review limit, else the declared one
     facts = gather_facts(layer, state, option, env_stack, base, head)
     decision = decide(option, facts)
     if extra_reasons and option["kind"] == "auto":
         decision = {"action": "pr", "ship": False, "reasons": [*decision["reasons"], *extra_reasons]}
-    state.ship["gate"] = {**decision, "diff_lines": facts["diff_lines"], "changed_files": facts["changed_files"]}
+    state.ship["gate"] = {**decision, "diff_lines": facts["diff_lines"], "changed_files": facts["changed_files"],
+                          **({"limit": limit} if limit else {})}
+    if limit:
+        events.say(f"[adw {state.adw_id}] {reviewpolicy.gate_line(limit)}", "gate.limit", **limit)
     events.say(f"[adw {state.adw_id}] gate: action {decision['action']}"
                + (f" (fallback: {', '.join(decision['reasons'])})" if decision["reasons"] and option["kind"] == "auto" else ""),
                "gate.decision", action=decision["action"], ship=bool(decision.get("ship")),

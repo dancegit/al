@@ -131,6 +131,11 @@
   al models  LAYER [--set TIER=ID …] [--reset [TIER]]
                                    show or change which model each tier uses on this machine (a local setting,
                                    agents/settings/models.json, never committed); applies to runs started afterwards
+  al review  LAYER [--set ID=N … | --reset [ID]] [--who NAME] [--json]
+                                   show each auto review option's ship-without-review limit (max diff lines) and where
+                                   it comes from; --set changes it on this machine (a local setting,
+                                   agents/settings/review.json, never committed; 1 to 50000 changed lines), --reset
+                                   drops it; the dashboard's "Ship without review" card does the same
   al decider LAYER [--set off|suggest|auto | --reset] [--may KIND,KIND] [--pause | --unpause]
                                    show or change the stand-in on this machine (a local setting,
                                    agents/settings/decider.json, never committed): its mode, its scope (the decisions
@@ -2496,12 +2501,13 @@ def check_layer(layer: Path) -> list[str]:
     return problems
 
 
-LOCAL_SETTINGS = ("agents/settings/models.json", "agents/settings/decider.json", "agents/settings/testing.json")
+LOCAL_SETTINGS = ("agents/settings/models.json", "agents/settings/decider.json", "agents/settings/testing.json",
+                  "agents/settings/review.json")
 
 
 def tracked_settings(layer: Path, ir: dict, app: Path) -> list[str]:
-    """The layer's local settings (models, the stand-in decider's mode, the testing level) are
-    machine-local: committing one is a problem."""
+    """The layer's local settings (models, the stand-in decider's mode, the testing level, the
+    ship-without-review limit) are machine-local: committing one is a problem."""
     if (ir.get("layer") or {}).get("kind") == "in-repo":
         try:
             repo, prefix = app, f"{layer.resolve().relative_to(app.resolve()).as_posix()}/"
@@ -4142,6 +4148,101 @@ def layer_testing_module(layer: Path):
     return testing, ir_module, errors
 
 
+def layer_reviewpolicy_module(layer: Path):
+    """The layer's own review-limit module (adw_modules/reviewpolicy.py), so `al review`, the dashboard's
+    "Ship without review" card and the layer's gate read and write the local setting with the same code."""
+    if not (layer / "agentic-layer.json").is_file() or not (layer / "adws/adw_modules/reviewpolicy.py").is_file():
+        if (layer / "agentic-layer.json").is_file() and (layer / "adws/adw_modules").is_dir():
+            raise AlError(f"{layer} was generated before the local review limit: run `al gen {layer}`")
+        raise AlError(f"{layer} is not a generated layer: run `al gen {layer}` first")
+    for name in [n for n in sys.modules if n == "adw_modules" or n.startswith("adw_modules.")]:
+        del sys.modules[name]   # another layer's runtime may have been imported before
+    sys.path.insert(0, str(layer / "adws"))
+    try:
+        from adw_modules import errors, ir as ir_module, reviewpolicy
+    except ImportError as exc:
+        raise AlError(f"cannot import the layer runtime from {layer / 'adws'}: {exc}") from exc
+    return reviewpolicy, ir_module, errors
+
+
+def review_cli(a: argparse.Namespace) -> int:
+    """`al review LAYER [--set ID=N … | --reset [ID]] [--who NAME] [--json]`: each auto review option's
+    ship-without-review limit on this machine and where it comes from. Exit 0 shown or changed; 2 bad
+    use, or a layer whose gate does not read the local limit (nothing is written)."""
+    layer = a.layer.resolve()
+    reviewpolicy, _ir_module, _errors = layer_reviewpolicy_module(layer)
+    kit = dashboard_kit_module()
+    loaded = kit.load_layer(layer, set())
+    if loaded is None:
+        raise AlError(f"cannot read {layer / 'agentic-layer.json'}")
+    known = [option["id"] for option in loaded.review_policy_view()["options"]]
+
+    def refuse(message: str) -> int:
+        print(f"al review: {message}", file=sys.stderr)
+        return 2
+
+    def unknown(option_id: str) -> str:
+        return f"no auto review option named {option_id!r}; this layer has: {', '.join(known) or 'none'}"
+
+    if a.set:
+        changes: list[tuple[str, int]] = []
+        for item in a.set:
+            match = re.fullmatch(r"([^=\s]+)=(\d+)", item)
+            if not match:
+                return refuse(f"--set takes ID=N (a review option and a whole number of changed lines), not {item!r}")
+            if match.group(1) not in known:
+                return refuse(unknown(match.group(1)))
+            try:
+                changes.append((match.group(1), reviewpolicy.check_limit(int(match.group(2)))))
+            except ValueError as exc:
+                return refuse(str(exc))
+        try:
+            who = reviewpolicy.check_who(a.who or _login_name())
+        except ValueError as exc:
+            return refuse(str(exc))
+        if not reviewpolicy.gate_reads_limit():
+            return refuse(f"refused: this layer's gate does not read the local limit: run `al gen {a.layer}`")
+        for option_id, limit in changes:
+            reviewpolicy.write_setting(layer, option_id, limit, who=who, via="cli")
+    elif a.reset == "*":
+        reviewpolicy.write_setting(layer, None, None)   # removes the file, a broken one too
+    elif a.reset:
+        if a.reset not in known:
+            return refuse(unknown(a.reset))
+        reviewpolicy.write_setting(layer, a.reset, None)
+    view = loaded.review_policy_view()
+    settings_file = layer / reviewpolicy.SETTING_FILE
+    if a.json:
+        print(json.dumps({"options": view["options"], "settings_file": str(settings_file),
+                          "gate_reads": view["gate_reads"], "error": view["error"]}, indent=2, sort_keys=True))
+        return 0
+    lines = kit.review_policy_lines(view)
+    for line in lines:
+        print(line)
+    if not lines:
+        print("this layer has no auto review option: every run goes to a person")
+    if view["error"]:
+        print(f"note: the local setting is ignored: {view['error']}")
+    print(f"settings: {settings_file} (local to this machine, never committed); applies to every gate from now on")
+    return 0
+
+
+def _explain_limits(layer: Path) -> None:
+    """After `al explain LAYER` on a generated layer: the ship-without-review limits on this machine.
+    Never fails the explanation: anything that goes wrong prints nothing."""
+    try:
+        if not (layer / "agentic-layer.json").is_file():
+            return
+        kit = dashboard_kit_module()
+        lines = kit.review_policy_lines(kit.load_layer(layer.resolve(), set()).review_policy_view())
+    except Exception:  # noqa: BLE001 — the explanation was printed; this is an extra
+        return
+    if lines:
+        print("\nShip without review, on this machine")
+        for line in lines:
+            print(f"    - {line}")
+
+
 def _minutes(value) -> str:
     return "-" if value is None else f"about {value:g} min"
 
@@ -4558,6 +4659,25 @@ def main(argv: list[str] | None = None) -> int:
                        help="use MODEL_ID for tier TIER in runs of this layer on this machine (repeatable)")
     group.add_argument("--reset", nargs="?", const="*", metavar="TIER",
                        help="drop the local setting of TIER, or of every tier without TIER")
+    p = sub.add_parser("review", help="show or change each auto review option's ship-without-review limit (a local "
+                       "setting)",
+                       description="Show each auto review option of LAYER with its ship-without-review limit (the most "
+                       "changed lines a run may have to ship with no person, #:max-diff-lines) and where it comes "
+                       "from: the layer definition, al's default, or a local override. --set ID=N changes it on this "
+                       "machine (agents/settings/review.json, never committed; N from 1 to 50000); --reset ID drops "
+                       "the override of ID, --reset alone every override. The checks, the review and the other rules "
+                       "of the gate stay as they are. Exit 0; 2 bad use, or a layer whose gate does not read the "
+                       "local limit (run `al gen`).")
+    p.add_argument("layer", type=Path)
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--set", action="append", metavar="ID=N",
+                       help="review option ID ships without a person up to N changed lines (1 to 50000) on this "
+                       "machine, from the next gate on (repeatable)")
+    group.add_argument("--reset", nargs="?", const="*", metavar="ID",
+                       help="drop the local limit of ID, or of every review option without ID "
+                       "(agents/settings/review.json)")
+    p.add_argument("--who", metavar="NAME", help="who sets the limit (recorded in the setting; default: your login name)")
+    p.add_argument("--json", action="store_true", help="print the options, their limits and sources as JSON")
     p = sub.add_parser("decider", help="show or change the stand-in: its mode, scope and limits (a local setting)")
     p.add_argument("layer", type=Path)
     group = p.add_mutually_exclusive_group()
@@ -4762,7 +4882,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if a.cmd == "explain":
             extra = (["--md", str(a.md)] if a.md else []) + (["--gif", str(a.gif)] if a.gif else [])
-            return subprocess.call([str(ROOT / "tools" / "explain.py"), str(a.layer), *extra])
+            code = subprocess.call([str(ROOT / "tools" / "explain.py"), str(a.layer), *extra])
+            if code == 0 and not extra and a.layer.is_dir():
+                sys.stdout.flush()
+                _explain_limits(a.layer)   # this machine's limits: never in EXPLAIN.md, which is committed
+            return code
         if a.cmd == "scout" and a.into:
             tools = tools_module()
             tools.need(tools.NEEDS["scout"] + tools.agent_bin(a.agent), a.into.resolve())
@@ -4875,6 +4999,8 @@ def main(argv: list[str] | None = None) -> int:
             return decider_cli(a)
         elif a.cmd == "testing":
             return testing_cli(a)
+        elif a.cmd == "review":
+            return review_cli(a)
         elif a.cmd == "batch":
             return batch_cli(a)
         elif a.cmd == "answer":

@@ -172,6 +172,50 @@ def test_command_without_check_step_is_run_once_and_reused(make_layer, app_repo,
     assert second["log"] == first["log"] == f"agents/{RUN}/checks/evidence-smoke.log"
 
 
+def test_two_rows_on_one_command_both_show_its_counts_and_its_log_keeps_them(make_layer, app_repo):
+    layer_dir = cf.converge_layer(make_layer)
+    data = json.loads((layer_dir / "agentic-layer.json").read_text())
+    data["codebase"]["commands"].append({"name": "smoke",
+                                         "run": "echo 'tests/t.py::test_a PASSED' && echo '1 passed in 0.1s'",
+                                         "timeout": 30})
+    (layer_dir / "agentic-layer.json").write_text(json.dumps(data))
+    layer = ir.load(layer_dir)
+    state = ADWState(adw_id=RUN, adw=cf.ADW, worktree=str(app_repo))
+    state.proof_plan = {"table": "parsed", "rows": [_row(id="C1", command="smoke", tests=["tests/t.py::test_a"]),
+                                                    _row(id="C2", command="smoke", tests=["tests/t.py::test_a"])]}
+    rows = evidence.build_pack(layer, state, layer.adw(cf.ADW), _stack(app_repo))["rows"]
+    assert [row["passed"] for row in rows] == [1, 1]
+    assert all(row["tests"] == {"tests/t.py::test_a": "named in log"} for row in rows)
+    assert [(e["phase"], e["outcome"]) for e in state.check_results] == [("evidence", "passed"), ("evidence", "reused")]
+    log = (Path(layer.layer_dir) / "agents" / RUN / "checks" / "evidence-smoke.log").read_text()
+    assert "1 passed in 0.1s" in log and "not run" not in log
+
+
+def test_narrowed_row_with_skipped_or_missing_results_is_not_proven(make_layer, app_repo, tmp_path):
+    test_id = "tests/test_feature.py::test_feature"
+    fake = tmp_path / "bin" / "pytest"
+    fake.parent.mkdir()
+    fake.write_text('echo "SKIPPED [1] tests/test_feature.py:3: REQUIRES HUMAN: not yet"\n'
+                    'echo "1 skipped in 0.01s"\nexit 0\n')
+    layer, state, stack = _setup(make_layer, app_repo, [_row(command=f"sh {fake} -q -rA {test_id}", tests=[test_id])],
+                                 unit=f"sh {fake} -q")
+    log = Path(layer.layer_dir) / "agents" / RUN / "checks" / "evidence-unit-C1.log"
+    for _ in range(2):   # the second pack reuses the first one's run on the same tree
+        (row,) = evidence.build_pack(layer, state, layer.adw(cf.ADW), stack)["rows"]
+        assert (row["state"], row["skipped"], row["passed"]) == ("skipped-only", 1, 0)
+        assert "1 skipped" in log.read_text()
+
+    silent = tmp_path / "silent" / "pytest"
+    silent.parent.mkdir()
+    silent.write_text('echo "no tests ran in 0.01s"\nexit 0\n')
+    layer, state, stack = _setup(make_layer, app_repo, [_row(command=f"sh {silent} -q -rA {test_id}", tests=[test_id])],
+                                 unit=f"sh {silent} -q")
+    (row,) = evidence.build_pack(layer, state, layer.adw(cf.ADW), stack)["rows"]
+    assert row["state"] == "not-run"
+    assert row["tests"] == {test_id: "not shown"}
+    assert test_id in row["note"]
+
+
 def test_narrowed_row_is_proven_by_its_own_run(make_layer, app_repo, tmp_path):
     fake = tmp_path / "bin" / "pytest"
     fake.parent.mkdir()

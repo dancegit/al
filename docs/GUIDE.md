@@ -299,6 +299,10 @@ al explain ~/code/myapp.al
 This prints the layer back in plain language, block by block: the commands, where work comes from,
 where agents work, who decides, and each workflow's steps. It includes the defaults the author did not
 write down. If a sentence there is not what you want, that is the block to change in `agentic.rkt`.
+In a terminal, on a generated layer with an auto review option, it ends with `Ship without review, on
+this machine` and one line per option: the diff limit that applies here and where it comes from (see
+"The ship-without-review limit" under "Choose models and limit spending"). Those lines are never
+part of the document below.
 For a document and an animation: `al explain ~/code/myapp.al --md layer.md --gif layer.gif`.
 The document's first paragraph also names what the kit adds to every layer (`The kit adds 5 more a
 person or a run can start: integrate, assign, promote, improve and decider.`), and its section **Kit workflows
@@ -583,6 +587,7 @@ b000000b  handed-over  plan-build      Track the cherry trees, part 11         r
           → merge al/b000000b into main, or al settle orchard.al b000000b --as …; or: al assign orchard.al b000000b
 a0000002  failed       plan-build      Draw the orchard map                    build: the map renderer needs a page size
           → al run orchard.al /plan-build --replaces a0000002 < orchard.al/agents/a0000002/request.md; or: al assign orchard.al a0000002
+limit: gate: max-diff-lines 100 (layer definition)
 
 $ al settle orchard.al b000000c --as abandoned --note "the map work replaces it" --who Ada
 settled b000000c as abandoned by Ada: agents/b000000c/settlement.json
@@ -597,8 +602,13 @@ d0000001  failed       plan-build      Add the pruning calendar, part 1        r
 b000000c  handed-over  plan-build      Track the quince trees, part 12         abandoned by Ada: the map work replaces it
 b000000a  handed-over  plan-build      Track the plum trees, part 10           superseded by c0000001
 b0000009  handed-over  plan-build      Track the pear trees, part 9            superseded by c0000001
+limit: gate: max-diff-lines 100 (layer definition)
 ```
 
+The closing `limit:` lines are the layer's ship-without-review limits on this machine, one per auto
+review option (see "The ship-without-review limit" under "Choose models and limit spending"); a run
+the gate stopped for its size says `diff 2500 lines > limit 2000 (review option zero-touch), 31 files
+changed` as its reason.
 `--view needs-you|running|landed|settled|all` picks the list and `--json` prints it as JSON. Several
 failures at the same step with the same reason, within half an hour of each other, show as one line
 ("5 runs: preflight, same reason") followed by their ids. `al settle LAYER RUN --as
@@ -820,6 +830,7 @@ $ al runs pantry.al --view landed
 2 landed (4 need you, 0 running, 2 landed, 1 settled)
 f0000006  handed-over  ship-it         Label the shelves                       landed in 4b3cb6e (patch-id) on main, 2026-11-02
 f0000001  handed-over  ship-it         Give stock a discount                   landed by 1b71fb25 (integration)
+limit: gate: max-diff-lines 100 (layer definition)
 ```
 
 The run is named by its id or by its branch. `--detach` starts it and returns (`started integration
@@ -1501,6 +1512,51 @@ records which model each tier meant and why: the `tiers:` line of its summary, `
 A run that goes over a limit stops and hands over like any other stopped run: a `[needs human]` pull
 request with the reason `budget:run: spent $X of $Y`, and the work so far kept. When today's limit is
 reached, new runs refuse to start (exit code 3).
+
+### The ship-without-review limit
+
+An auto review option (`(review auto …)`) ships a run with no person when every rule of its gate
+holds. One rule is the size of the change: at most `#:max-diff-lines` changed lines. A larger diff
+goes to a person with the reason `diff-too-large:N>LIMIT`, which `al runs` and the dashboard show as
+`diff 2500 lines > limit 2000 (review option zero-touch), 31 files changed`.
+
+`al review LAYER` shows the limit of each auto review option and where it comes from: the layer
+definition, al's default (the definition does not write `#:max-diff-lines`), or a local override:
+
+```console
+$ al review ~/code/myapp.al
+zero-touch: max-diff-lines 2000 (layer definition)
+settings: ~/code/myapp.al/agents/settings/review.json (local to this machine, never committed); applies to every gate from now on
+
+$ al review ~/code/myapp.al --set zero-touch=3000 --who Ada
+zero-touch: max-diff-lines 3000 (local override; declared 2000)
+settings: ~/code/myapp.al/agents/settings/review.json (local to this machine, never committed); applies to every gate from now on
+
+$ al review ~/code/myapp.al --reset zero-touch
+zero-touch: max-diff-lines 2000 (layer definition)
+settings: ~/code/myapp.al/agents/settings/review.json (local to this machine, never committed); applies to every gate from now on
+```
+
+`--set ID=N` takes a whole number from 1 to 50000 and can be given several times; `--reset ID` drops
+one option's override and `--reset` alone all of them (a broken file too). `--who` records a name
+other than your login name, `--json` prints the options as JSON. The override lives in
+`agents/settings/review.json`, with who set it, how and when. It is local to this machine and never
+committed (`al check` reports it as a problem if it is), so `EXPLAIN.md` keeps stating the declared
+limit. It changes this one number: the checks, the review, the allowed classes and the protected
+paths stay as they are. Every gate prints the limit it decides with, `gate: max-diff-lines 3000
+(local override; declared 2000)` or `gate: max-diff-lines 2000 (declared)`, into the run's log. A file
+that cannot be read never raises a limit: the declared value applies and the gate's line says the
+setting was ignored.
+
+A layer whose gate does not read the local limit yet (it was generated before the setting existed)
+refuses the change with `al review: refused: this layer's gate does not read the local limit: run
+`al gen LAYER``, exit code 2, and writes nothing; an override that is there anyway is shown as
+`zero-touch: max-diff-lines 2000 (layer definition; the local override 3000 is not read by this
+layer's gate: run al gen)`. `al runs LAYER` ends with the same lines, prefixed `limit:`, and
+`al explain LAYER` with them under `Ship without review, on this machine`. The dashboard's layer
+page has the same switch: the "Ship without review" card lists every auto review option with what
+it ships by, its limit, its allowed classes and its required checks, each with its source, and
+changes or resets the limit after a confirmation.
 
 ## Step 10 — Hand out work without typing commands
 
