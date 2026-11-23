@@ -1091,7 +1091,7 @@ the agent, "I approve this, continue" and the plan that remains, **Give all N to
 plans first, and the left-out count on the Artefacts tab. With `AL_DASHBOARD_SHOTS=DIR` it saves
 `work-assign-needs-you-1280.png`, `work-assign-button-1280.png`, `work-assign-preview-rejected-1280.png`,
 `work-assign-preview-rejected-390.png`, `work-assign-preview-person-1280.png`, `work-assign-approved-1280.png`,
-`work-assign-bulk-1280.png` and `work-assign-left-out-1280.png`. The Automatic switch:
+`assign-bulk-1280.png` and `work-assign-left-out-1280.png`. The Automatic switch:
 `tests/test_assign_auto_model.py` checks the setting's one format, its atomic write and removal, the
 `assign_auto` view of a layer (a broken file, `--read-only`, `--no-start`, `--no-stand-in`, the
 container, a layer without the script), which runs the loop takes (every run under Needs you, oldest
