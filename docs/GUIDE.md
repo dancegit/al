@@ -1240,8 +1240,10 @@ so an `agentic.rkt` the first attempt wrote is taken when it compiles instead of
 
 ## Talk to the dashboard
 
-A layer that declares `(voice kokoro)` gets a **voice helper** panel on its layer page (`#/layer/NAME`) and
-on the panel of a repository whose layer is watched (`#/repo/NAME`). You speak English, or type; the helper
+A layer that declares `(voice kokoro)` gets a **voice helper**. It opens from the microphone button in the
+top bar on any page (key `v`), in a dock that stays open while you move between pages (Escape with the
+focus in it, or `v` again, closes it); it is also shown on the layer page (`#/layer/NAME`) and on the panel
+of a repository whose layer is watched (`#/repo/NAME`). You speak English, or type; the helper
 answers aloud and in text. Ask it what is running, why a run failed, what can be started; it asks back when
 something is unclear, and when it knows what you want it **proposes** the run as a card: workflow or
 command, request text, class, model tier, repository and what will happen.
@@ -1254,11 +1256,13 @@ al voice ~/code/myapp.al doctor     # files, device, load times and measured spe
 ```
 
 `setup` downloads only the files recorded in `adws/voice/models.json`: the faster-whisper model of
-`#:stt-model` (`base.en`, about 148 MB) into `~/.cache/al/voice/whisper/` and Kokoro's int8 model and voices
-(about 120 MB) into `~/.cache/al/kokoro/` (`$AL_VOICE_CACHE` and `$AL_KOKORO_CACHE` move them). A file whose
-checksum differs is deleted and `setup` fails with both hashes. A second `setup` downloads nothing. After
-that the speech service runs offline: it refuses every connection that is not to this machine, and never
-downloads. Until `setup` has run, the panel says "voice is not set up" and shows the command.
+`#:stt-model` (`base.en`, about 148 MB) into `$XDG_CACHE_HOME/al/voice/whisper/` and Kokoro's int8 model and
+voices (about 120 MB) into `$XDG_CACHE_HOME/al/kokoro/` (default `~/.cache/al/…`; `$AL_VOICE_CACHE` and
+`$AL_KOKORO_CACHE` move them). A file whose checksum differs is deleted and `setup` fails with both hashes. A
+second `setup` downloads nothing. After that the speech service runs offline: it refuses every connection
+that is not to this machine, and never downloads. Until `setup` has run, the panel says "voice is not set up"
+and shows the command. Without Kokoro's files the helper speaks with espeak-ng when it is installed, else not
+at all; `AL_VOICE_TTS=kokoro|espeak|off` chooses, and the panel says which engine spoke.
 
 The panel has two modes, remembered per browser (the layer's `#:listen-mode` is the default):
 

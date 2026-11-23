@@ -445,7 +445,13 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
 ## Voice helper
 
 A layer that declares `(voice kokoro)` (with `#:dashboard-helper`, the default) gets a voice helper panel on
-its layer page and on the panel of a repository whose layer is watched. The person speaks (hold to talk, or
+its layer page and on the panel of a repository whose layer is watched. It is reached from every page
+through the microphone button in the top bar (key `v`), which opens it in a dock that stays open across
+pages. The dock talks to the layer's conversation (no repository), the same as the layer page; with several
+voice layers it has a layer picker (the page's layer first, then the last one chosen). While the dock is
+open the in-page panels stand back, so one panel holds the microphone; Escape with the focus in the dock
+closes it, and closing it closes the microphone; when voice is off for the layer the dock says why. The
+person speaks (hold to talk, or
 always listen with voice-activity detection) or types; the helper answers aloud and in text, and proposes
 work as a **card**. How to use it: "Talk to the dashboard" in `docs/GUIDE.md`.
 
@@ -456,8 +462,23 @@ work as a **card**. How to use it: "Talk to the dashboard" in `docs/GUIDE.md`.
   with a random token in `AL_VOICE_TOKEN` that only the dashboard knows (never on a command line or in the
   page), and proxies to it; it is stopped after 10 idle minutes and when the dashboard stops. The service
   loads models only from the cache `al voice LAYER setup` verified, never downloads, and refuses (and logs)
-  every non-loopback connection. Without the models the panel says "voice is not set up" and shows the
-  command.
+  every non-loopback connection. Without the recognition model the panel says "voice is not set up" and
+  shows the command.
+- **Voice engines.** Speech is **Kokoro-82M** (hexgrad, Apache-2.0): the int8 ONNX export of kokoro-onnx (MIT)
+  on onnxruntime (MIT), on the CPU, with no torch. `kokoro-v1.0.int8.onnx` is 92 MB and `voices-v1.0.bin`
+  28 MB; the optional fp32 `kokoro-v1.0.onnx` (325 MB) is never fetched. Kokoro is the default. When its files
+  are missing, fail their checksum or fail to load, the service falls back to **espeak-ng**
+  (GPL-3.0-or-later; run as a separate system program when it is on PATH, never bundled), then to off (the
+  helper answers in text only). `AL_VOICE_TTS=kokoro|espeak|off` chooses the engine; set it in the
+  dashboard's environment (the service inherits it; `say.py`, which speaks run summaries and the voice
+  trigger, reads it too). The panel's line under the state says "Spoken by Kokoro", "Spoken by espeak-ng
+  (Kokoro is not available)" with the reason as its title, or "Speech is off"; the service's `/health` has
+  `tts_engine` and `tts_why`, and every `/speak` frame header has `engine`. The cache is `$AL_KOKORO_CACHE`,
+  else `$XDG_CACHE_HOME/al/kokoro`, else `~/.cache/al/kokoro` (and `$AL_VOICE_CACHE`, else
+  `$XDG_CACHE_HOME/al/voice`, else `~/.cache/al/voice`, for recognition): one copy per user, shared by every
+  layer and run. Who fetches: `al voice LAYER setup`, and `say.py` on its first use; both check every sha256
+  and hold the cache's lock, so concurrent callers fetch once. Never the speech service, never a run summary
+  (`say.py --no-fetch`), never the tests.
 - **The helper's mind** is the layer's own agent, run through `adws/dispatch.py --helper --json` (the
   prompt on stdin): claude-code with every tool disabled (`--tools ""`, `--strict-mcp-config`,
   `--max-turns 1`) in an empty temporary directory, or the mock agent's `mock/helper.json`. It answers with
@@ -1174,11 +1195,20 @@ registry and that speech cannot widen it, `speakable`, `parse_helper_reply`, the
 `is_echo` and where conversations are kept; `tests/test_voice_server.py` runs the routes against the speech
 service in fake mode (`--voice-fake`, `tests/voice_fixtures.py`): status, guards, a card from an utterance,
 yes without Approve starting nothing, Approve starting a mock run, every refusal, the job, resume, answer
-and stop cards, speak and cancel, echo, recordings and the service's start and reaping.
+and stop cards, speak and cancel, echo, recordings and the service's start and reaping, which engine spoke
+(`test_speak_frames_say_which_engine_spoke`), speech off by `AL_VOICE_TTS` (`test_speech_off_by_setting`), the
+XDG cache directories, "not set up" only for recognition files and the README's engine section.
+`kit/runtime/tests/test_voice_engines.py` (at the repository root) checks the setting, the choice of Kokoro,
+espeak-ng or off with its reason, the espeak-ng call, the checksummed first-use fetch under a lock and that
+run summaries never fetch, with stubbed engines.
 `tests/test_browser_voice.py` (Chrome with a fake microphone and fake engines, 1280 and 390 px) checks every
 panel state, hold to talk, always listen, approve, barge-in, the synthesizer following the audio, reduced
-motion, `--read-only` and hostile text; with `AL_DASHBOARD_SHOTS=DIR` it saves `voice-*.png` and
-`voice-exchange-{1280,390}.webm`. `tests/test_browser_voice_real.py` (markers `voice`, `slow`;
+motion, `--read-only`, hostile text and the line saying which engine spoke
+(`test_panel_says_which_engine_spoke`, `voice-engine-1280.png`); with `AL_DASHBOARD_SHOTS=DIR` it saves
+`voice-*.png` and `voice-exchange-{1280,390}.webm`. `tests/test_browser_voice_dock.py` (same harness) checks the top bar's
+voice button and its dock: open from any page, kept across pages with one live panel, the keys `v` and
+Escape, the microphone closed with the dock, the layer picker, the reason when voice is off and no button
+without a voice layer; it saves `voice-dock-{1280,390}.png`. `tests/test_browser_voice_real.py` (markers `voice`, `slow`;
 `AL_VOICE_REAL=1` and the models set up) runs the same flow with the real engines.
 `tests/testing_fixtures.py` builds a layer with targeted testing as code (`build_testing_site`: the layer
 of `tests/start_layer.py` with a `testing` IR, commands with narrower forms, the sprint, six runs: targeted,

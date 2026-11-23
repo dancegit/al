@@ -1294,6 +1294,9 @@ def _queue(layer: Any, run_id: str, skeleton: Any = None) -> Iterator[float]:
                 pass
             if not announced:
                 words = os.pread(handle, 200, 0).decode("utf-8", "replace").split()
+                if len(words) < 2 and time.monotonic() - started < 2 * QUEUE_POLL:
+                    time.sleep(0.05)  # the holder has the lock and has not written its name yet
+                    continue
                 holder = words[1] if len(words) > 1 else "another one"
                 _note(layer, run_id, f"[adw {run_id}] queued behind integration {holder}")
                 _event(layer, run_id, "integrate.queued", behind=holder)

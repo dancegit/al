@@ -207,10 +207,12 @@ class Voice:
 
     def open(self, width: int = 1280, *, transcripts: list[str] | None = None, mic: list[tuple[float, float]] | None = None,
              args: tuple[str, ...] = (), fake: bool = True, reduced_motion: str | None = None, video: str = "",
-             init: str = "", route: str = "", mic_file: Path | None = None) -> Any:
+             init: str = "", route: str = "", mic_file: Path | None = None, wait_panel: bool = True,
+             layers: tuple[Path, ...] = ()) -> Any:
         helper_rules(self.layer)
         script = voice_fixtures.fake_script(self.site["fake"], transcripts or [])
-        server_args = ["--layer", str(self.layer), "--voice-dir", str(self.site["voice_dir"]), *args]
+        server_args = ["--layer", str(self.layer), *(x for p in layers for x in ("--layer", str(p))),
+                       "--voice-dir", str(self.site["voice_dir"]), *args]
         if fake:
             server_args += ["--voice-fake", str(script)]
         self.running = start_server(server_args)
@@ -236,7 +238,8 @@ class Voice:
         self.page = page
         page.goto(f"{self.running.base}/#{route or '/layer/talk'}")
         page.wait_for_selector("#conn.conn-live", timeout=15000)
-        page.wait_for_selector(".voice-panel[data-session='ready']", timeout=15000)
+        if wait_panel:
+            page.wait_for_selector(".voice-panel[data-session='ready']", timeout=15000)
         return page
 
     def close(self) -> None:
@@ -554,6 +557,16 @@ def test_synthesizer_follows_the_audio(voice):
     loud_px = sorted(px for _, px in loud_s)[len(loud_s) // 2]
     quiet_px = sorted(px for _, px in quiet_s)[len(quiet_s) // 2]
     assert loud_px >= 3 * max(1, quiet_px), (loud_px, quiet_px)
+
+
+def test_panel_says_which_engine_spoke(voice):
+    page = voice.open(1280)
+    voice.type_("hello there")
+    voice.seen("speaking", timeout=20)
+    until(page, "document.querySelector('.voice-panel').dataset.state === 'idle'", timeout=30000)
+    assert page.locator(".voice-engine").inner_text() == "Spoken by the test engine"
+    assert page.locator(".voice-panel[data-engine='fake']").count() == 1
+    shot(page, "voice-engine-1280.png")
 
 
 def test_reduced_motion_uses_a_level_bar(voice):

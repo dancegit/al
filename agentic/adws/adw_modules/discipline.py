@@ -7,7 +7,8 @@ records the worktree's HEAD, the repository's branches and tags, the main checko
 the entries at the top of the layer directory, and compares them after the step. A difference
 fails the step as a step-discipline violation (not a test failure); what can be undone safely is
 undone (HEAD reset with the changes kept, stray layer entries moved into the run's scratch
-directory) and the rest is left for a person. Around a step that may commit (the `commit`
+directory) and the rest is left for a person. A ref another session moves in its own worktree is
+recorded under `not_judged`, never as a violation. Around a step that may commit (the `commit`
 template, or a command with #:may-commit #t), `clean_after_commit` restores what the commit left
 uncommitted under the layer directory and protected paths, so the worktree equals the commit.
 
@@ -170,6 +171,8 @@ class Snapshot:
     refs: dict[str, str] = field(default_factory=dict)
     main_status: list[str] = field(default_factory=list)
     layer_entries: set[str] = field(default_factory=set)
+    elsewhere: set[str] = field(default_factory=set)   # branches checked out in worktrees of the repository
+    head_log: set[str] = field(default_factory=set)    # the commits in the run worktree's HEAD reflog
 
 
 def _under(path: str, prefix: str) -> bool:
@@ -196,6 +199,14 @@ def snapshot(layer: Any, state: Any, env_stack: Any, step: str = "") -> Snapshot
         name, _, sha = line.partition(" ")
         if name:
             snap.refs[name] = sha.strip()
+    trees = _git_app(layer, env_stack, ["worktree", "list", "--porcelain"], step)
+    if trees.returncode == 0:
+        snap.elsewhere = {line[len("branch "):].strip() for line in trees.stdout.splitlines()
+                          if line.startswith("branch ")}
+        snap.elsewhere.discard(snap.head_ref)   # the run's own worktree is not another one
+    log = _git_work(layer, state, env_stack, ["reflog", "show", "--format=%H", "HEAD"], step)
+    if log.returncode == 0:
+        snap.head_log = set(log.stdout.split())
     if not getattr(env_stack, "agent_inside", False):
         status = _git_plain(Path(layer.app_root), ["status", "--porcelain=v1", "-b", "--untracked-files=normal"],
                             step, False)
@@ -213,7 +224,8 @@ def _short(sha: str) -> str:
 
 def _ignored_ref(layer: Any, state: Any, ref: str) -> bool:
     """Refs other runs move while this step runs: other runs' branches (an 8-hex token that is not
-    this run's id), the default branch, al/ship/* and every declared stage branch."""
+    this run's id), the default branch, al/ship/* and every declared stage branch (skipped unless
+    the run's own commit landed on them)."""
     if any(token.lower() != state.adw_id.lower() for token in _HEX8.findall(ref)):
         return True
     if not ref.startswith("refs/heads/"):
@@ -235,8 +247,9 @@ def _is_ancestor(layer: Any, state: Any, env_stack: Any, older: str, newer: str,
 
 
 def compare(layer: Any, state: Any, step_name: str, before: Snapshot, after: Snapshot,
-            env_stack: Any = None) -> list[dict[str, str]]:
-    """The violations of step `step_name`: [{kind, text}] (empty when it stayed in its step)."""
+            env_stack: Any = None, notes: list[str] | None = None) -> list[dict[str, str]]:
+    """The violations of step `step_name`: [{kind, text}] (empty when it stayed in its step).
+    `notes`, when given, collects the ref changes that were not judged, as text."""
     violations: list[dict[str, str]] = []
     if after.head != before.head:
         if _is_ancestor(layer, state, env_stack, before.head, after.head, step_name):
@@ -249,18 +262,38 @@ def compare(layer: Any, state: Any, step_name: str, before: Snapshot, after: Sna
         violations.append({"kind": "head-moved", "text": f"the {step_name} step switched from "
                                                          f"{before.head_ref or '(detached)'} to {after.head_ref or '(detached)'}"})
     own = f"refs/heads/{state.branch}" if getattr(state, "branch", "") else ""
+    made = after.head_log - before.head_log - {before.head}   # commits this worktree's HEAD visited in the step
+    elsewhere = before.elsewhere | after.elsewhere
     for ref in sorted(set(before.refs) | set(after.refs)):
         old, new = before.refs.get(ref), after.refs.get(ref)
-        if old == new or _ignored_ref(layer, state, ref):
+        if old == new:
+            continue
+        mine = bool(new) and new in made
+        if _ignored_ref(layer, state, ref) and not mine:
             continue
         if ref == own and new == after.head:
             continue  # the run's own branch followed HEAD: reported as `committed`
         # The repository is shared: people and other sessions create, move and delete branches while
-        # this step runs. A ref change is this step's doing only when it is the run's own branch, or
-        # when the ref now points at work that grew out of this run's HEAD (a commit made here).
-        if ref != own and not (new and new != before.head
-                               and _is_ancestor(layer, state, env_stack, before.head, new, step_name)):
-            continue
+        # this step runs. A ref that is not the run's own branch is judged when the run's worktree
+        # made the commit it now points at, or when the step created it outside every other worktree
+        # on top of the run's HEAD. A branch that existed before the step, or that is checked out in
+        # another worktree, is another session's and is only noted.
+        if ref != own and not mine:
+            grew = bool(new and new != before.head
+                        and _is_ancestor(layer, state, env_stack, before.head, new, step_name))
+            outside = ref in elsewhere or (old is not None and ref.startswith("refs/heads/"))
+            if not grew or outside:
+                if notes is not None:
+                    if old is None:
+                        notes.append(f"ref {ref} was created at {_short(new or '')} during the step by something "
+                                     "outside this run; not judged")
+                    elif new is None:
+                        notes.append(f"ref {ref} was deleted during the step by something outside this run; "
+                                     "not judged")
+                    else:
+                        notes.append(f"ref {ref} moved from {_short(old)} to {_short(new)} during the step by "
+                                     "something outside this run; not judged")
+                continue
         if old is None:
             violations.append({"kind": "ref-created", "text": f"the {step_name} step created ref {ref} at {_short(new or '')}"})
         elif new is None:
@@ -330,7 +363,7 @@ def restore(layer: Any, state: Any, env_stack: Any, step_name: str, before: Snap
 
 
 def _record(before: Snapshot, after: Snapshot, violations: list[dict[str, str]], restored: list[str],
-            not_restored: list[str]) -> dict[str, Any]:
+            not_restored: list[str], not_judged: list[str]) -> dict[str, Any]:
     return {"ok": not violations, "head_before": before.head, "head_after": after.head,
             "branch_before": before.head_ref, "branch_after": after.head_ref,
             "refs": {"created": sorted(set(after.refs) - set(before.refs)),
@@ -339,7 +372,7 @@ def _record(before: Snapshot, after: Snapshot, violations: list[dict[str, str]],
             "main_checkout": [line for line in after.main_status if line not in before.main_status],
             "layer_entries": sorted(after.layer_entries - before.layer_entries),
             "violations": [v["kind"] for v in violations], "texts": [v["text"] for v in violations],
-            "restored": restored, "not_restored": not_restored}
+            "restored": restored, "not_restored": not_restored, "not_judged": not_judged}
 
 
 @contextlib.contextmanager
@@ -362,12 +395,15 @@ def watched(layer: Any, state: Any, step: dict[str, Any], env_stack: Any) -> Ite
         if raised is not None:
             raise raised   # e.g. the worktree's git metadata was tampered with: the step's own failure comes first
         raise
-    violations = compare(layer, state, name, before, after, env_stack)
+    notes: list[str] = []
+    violations = compare(layer, state, name, before, after, env_stack, notes)
     restored, not_restored = restore(layer, state, env_stack, name, before, violations, after) if violations else ([], [])
-    record = _record(before, after, violations, restored, not_restored)
+    record = _record(before, after, violations, restored, not_restored, notes)
     state.step_record(name, "run")["discipline"] = record
     state.save(layer.layer_dir)
     events.emit("step.discipline", step=name, **record)
+    for note in notes:
+        print(f"[adw {state.adw_id}] step {name}: {note}")
     if raised is not None:
         raise raised
     if violations:
