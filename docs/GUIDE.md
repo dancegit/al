@@ -1240,8 +1240,10 @@ so an `agentic.rkt` the first attempt wrote is taken when it compiles instead of
 
 ## Talk to the dashboard
 
-A layer that declares `(voice kokoro)` gets a **voice helper** panel on its layer page (`#/layer/NAME`) and
-on the panel of a repository whose layer is watched (`#/repo/NAME`). You speak English, or type; the helper
+A layer that declares `(voice kokoro)` gets a **voice helper**. It opens from the microphone button in the
+top bar on any page (key `v`), in a dock that stays open while you move between pages (Escape with the
+focus in it, or `v` again, closes it); it is also shown on the layer page (`#/layer/NAME`) and on the panel
+of a repository whose layer is watched (`#/repo/NAME`). You speak English, or type; the helper
 answers aloud and in text. Ask it what is running, why a run failed, what can be started; it asks back when
 something is unclear, and when it knows what you want it **proposes** the run as a card: workflow or
 command, request text, class, model tier, repository and what will happen.

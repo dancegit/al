@@ -207,10 +207,12 @@ class Voice:
 
     def open(self, width: int = 1280, *, transcripts: list[str] | None = None, mic: list[tuple[float, float]] | None = None,
              args: tuple[str, ...] = (), fake: bool = True, reduced_motion: str | None = None, video: str = "",
-             init: str = "", route: str = "", mic_file: Path | None = None) -> Any:
+             init: str = "", route: str = "", mic_file: Path | None = None, wait_panel: bool = True,
+             layers: tuple[Path, ...] = ()) -> Any:
         helper_rules(self.layer)
         script = voice_fixtures.fake_script(self.site["fake"], transcripts or [])
-        server_args = ["--layer", str(self.layer), "--voice-dir", str(self.site["voice_dir"]), *args]
+        server_args = ["--layer", str(self.layer), *(x for p in layers for x in ("--layer", str(p))),
+                       "--voice-dir", str(self.site["voice_dir"]), *args]
         if fake:
             server_args += ["--voice-fake", str(script)]
         self.running = start_server(server_args)
@@ -236,7 +238,8 @@ class Voice:
         self.page = page
         page.goto(f"{self.running.base}/#{route or '/layer/talk'}")
         page.wait_for_selector("#conn.conn-live", timeout=15000)
-        page.wait_for_selector(".voice-panel[data-session='ready']", timeout=15000)
+        if wait_panel:
+            page.wait_for_selector(".voice-panel[data-session='ready']", timeout=15000)
         return page
 
     def close(self) -> None:
