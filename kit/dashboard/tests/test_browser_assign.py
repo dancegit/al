@@ -9,7 +9,7 @@ real git history; the layer's own adws/assign.py runs with the mock agent).
 Skipped without Playwright or Chrome (nothing is downloaded). With AL_DASHBOARD_SHOTS=<directory> the
 tests save work-assign-needs-you-1280.png, work-assign-button-1280.png, work-assign-preview-rejected-1280.png,
 work-assign-preview-rejected-390.png, work-assign-preview-person-1280.png, work-assign-approved-1280.png,
-work-assign-bulk-1280.png and work-assign-left-out-1280.png there."""
+assign-bulk-1280.png and work-assign-left-out-1280.png there."""
 from __future__ import annotations
 
 import json
@@ -310,7 +310,7 @@ def test_give_all_shows_the_plans_first(scenario, tab):
     assert page.inner_text(".assign-bulk button.assign-bulk-start").strip() == "Start 6"
     assert page.is_enabled(".assign-bulk button.assign-bulk-start")
     no_personal_paths(page)
-    shot(page, "work-assign-bulk-1280.png")
+    shot(page, "assign-bulk-1280.png")
     page.click(".assign-bulk button.confirm-cancel")
     until(page, "document.getElementById('overlay').hidden")
     assert run_dirs(layer) == before and not list((layer / "agents").glob("*/assign.json")), "looking starts nothing"

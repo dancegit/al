@@ -5,9 +5,12 @@
 # ///
 """Check a recorded demo video and write its contact sheet and its privacy report.
 
-  uv run tools/demovideo/verify.py FOLDER [--json]
+  uv run tools/demovideo/verify.py FOLDER [--story {rota,testbed}] [--json]
 
-FOLDER holds al-demo.mp4 and narration.md (what `make.py assemble` writes). Checked, in this order:
+FOLDER holds al-demo.mp4 and narration.md (what `make.py assemble` writes). With --story testbed it holds
+al-demo-testbed.mp4 and narration-testbed.md instead, the sheet is al-demo-testbed-contact-sheet.png, the
+report privacy-ocr-testbed.json, and the timed script must have the scenes of
+tools/demovideo/narration-testbed.md (tools/demovideo/stories.py). Checked, in this order:
 
   shape      H.264, 1280×720 (or 1920×1080), yuv420p, 270–300 s, and it decodes without an error
   sheet      one frame every 10 s from 0, as FOLDER/al-demo-contact-sheet.png (tiles of 320×180, six a row)
@@ -40,6 +43,7 @@ ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
 
 import rules  # noqa: E402
+import stories  # noqa: E402
 
 VIDEO, TIMED, SHEET, REPORT, LOCK = "al-demo.mp4", "narration.md", "al-demo-contact-sheet.png", "privacy-ocr.json", ".verify.lock"
 SIZES = (("1280", "720"), ("1920", "1080"))
@@ -130,11 +134,16 @@ def contact_sheet(sampled: list[tuple[float, Path]], target: Path) -> dict:
     return {"ok": True, "frames": len(chosen), "every": rules.SHEET_EVERY, "file": target.name, "problems": []}
 
 
-def narration(path: Path, duration: float) -> tuple[dict, rules.Script | None]:
+def narration(path: Path, duration: float, committed: Path | None = None) -> tuple[dict, rules.Script | None]:
+    """`committed`: the story's own script; the timed one must have its scenes (given for a story other than the default)."""
     if not path.is_file():
-        return {"ok": False, "problems": [f"no {TIMED} beside the video"]}, None
+        return {"ok": False, "problems": [f"no {path.name} beside the video"]}, None
     script = rules.parse(path.read_text(encoding="utf-8"))
     problems = rules.validate(script)
+    if committed is not None:
+        expected = [s.id for s in rules.parse(committed.read_text(encoding="utf-8")).scenes]
+        if [s.id for s in script.scenes] != expected:
+            problems.append(f"the scenes are not those of {committed.name}")
     untimed = [s.id for s in script.scenes if s.start is None or s.end is None
                or any(c.start is None or c.end is None for c in s.captions)]
     if untimed:
@@ -204,17 +213,21 @@ def read_frames(sampled: list[tuple[float, Path]], script: rules.Script | None, 
     return ocr, bands
 
 
-def verify(folder: Path) -> dict:
-    video = folder / VIDEO
+def verify(folder: Path, story: str = stories.DEFAULT) -> dict:
+    chosen = stories.get(story)
+    default = chosen.name == stories.DEFAULT
+    video = folder / chosen.video
     report: dict = {"version": VERSION, "folder": folder.name, "ok": False}
+    if not default:
+        report["story"] = chosen.name
     if not video.is_file():
-        report["problems"] = [f"no {VIDEO} in {folder}"]
+        report["problems"] = [f"no {chosen.video} in {folder}"]
         return report
-    hashes = {VIDEO: _hash(video)}
-    if (folder / TIMED).is_file():
-        hashes[TIMED] = _hash(folder / TIMED)
-    previous = folder / REPORT
-    if previous.is_file() and (folder / SHEET).is_file():
+    hashes = {chosen.video: _hash(video)}
+    if (folder / chosen.timed).is_file():
+        hashes[chosen.timed] = _hash(folder / chosen.timed)
+    previous = folder / chosen.report
+    if previous.is_file() and (folder / chosen.sheet).is_file():
         try:
             old = json.loads(previous.read_text(encoding="utf-8"))
         except ValueError:
@@ -228,7 +241,8 @@ def verify(folder: Path) -> dict:
                        "machine_values": {key: len(found) for key, found in values.items()},
                        "kinds": list(rules.KINDS_OF_HIT)}
     report["shape"] = shape(video)
-    report["narration"], script = narration(folder / TIMED, report["shape"]["duration"])
+    report["narration"], script = narration(folder / chosen.timed, report["shape"]["duration"],
+                                            None if default else chosen.narration)
     with tempfile.TemporaryDirectory(prefix="al-demo-verify-") as scratch:
         try:
             rate = report["shape"]["fps"].split("/")
@@ -237,7 +251,7 @@ def verify(folder: Path) -> dict:
         except (subprocess.CalledProcessError, ValueError, ZeroDivisionError) as error:
             sampled = []
             report["frames_error"] = str(error)[:300]
-        report["sheet"] = contact_sheet(sampled, folder / SHEET)
+        report["sheet"] = contact_sheet(sampled, folder / chosen.sheet)
         report["ocr"], report["bands"] = read_frames(sampled, script, values)
     report["ok"] = all(report[part]["ok"] for part in ("shape", "narration", "sheet", "ocr", "bands"))
     _write(previous, (json.dumps(report, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
@@ -250,8 +264,8 @@ def summary(report: dict) -> str:
     s, lines = report["shape"], []
     lines.append(f"shape:     {'ok' if s['ok'] else 'NOT OK'}: {s['codec']} {s['width']}×{s['height']} {s['pix_fmt']}, "
                  f"{s['duration']:.1f} s, audio {s['audio']}" + "".join(f"\n           {p}" for p in s["problems"]))
-    sheet = report["sheet"]
-    lines.append(f"sheet:     {'ok' if sheet['ok'] else 'NOT OK'}: {sheet['frames']} frame(s), one every {rules.SHEET_EVERY} s, {SHEET}")
+    sheet, chosen = report["sheet"], stories.get(report.get("story") or stories.DEFAULT)
+    lines.append(f"sheet:     {'ok' if sheet['ok'] else 'NOT OK'}: {sheet['frames']} frame(s), one every {rules.SHEET_EVERY} s, {chosen.sheet}")
     n = report["narration"]
     lines.append(f"narration: {'ok' if n['ok'] else 'NOT OK'}: {len(n.get('parts', []))} parts, {len(n.get('scenes', []))} scenes"
                  + "".join(f"\n           {p}" for p in n["problems"]))
@@ -262,13 +276,15 @@ def summary(report: dict) -> str:
     lines.append(f"bands:     {'ok' if b['ok'] else 'NOT OK'}: {b['frames'] - len(b['failures'])} of {b['frames']} frame(s) carry the caption band"
                  + "".join(f"\n           {f['time']}: bar {f['bar']}, bright {f['bright_share']}" for f in b["failures"]))
     lines.append(f"verify:    {'ok' if report['ok'] else 'NOT OK'}" + (" (report reused: same video and script)" if report.get("reused") else "")
-                 + f"; report in {REPORT}")
+                 + f"; report in {chosen.report}")
     return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Check a recorded demo video; write its contact sheet and privacy report.")
     ap.add_argument("folder", type=Path, metavar="FOLDER")
+    ap.add_argument("--story", choices=tuple(stories.STORIES), default=stories.DEFAULT,
+                    help="rota (the default): al-demo.mp4 and narration.md; testbed: al-demo-testbed.mp4 and narration-testbed.md")
     ap.add_argument("--json", action="store_true", help="print the report as JSON")
     a = ap.parse_args(argv)
     for tool in ("ffmpeg", "ffprobe"):
@@ -281,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     with (folder / LOCK).open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        report = verify(folder)
+        report = verify(folder, a.story)
     print(json.dumps(report, indent=2, ensure_ascii=False) if a.json else summary(report))
     return 0 if report.get("ok") else 1
 

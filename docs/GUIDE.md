@@ -565,6 +565,9 @@ A run leaves it when its work is done, even when nobody told al:
   or issue) reads "replaced by" the new run.
 - **Settled by you.** Anything else you decide needs nothing more: the run page's **Settle this run**
   card, or `al settle`.
+- **Shipped.** A run whose work is on a pull request or a branch that is not merged yet (**Approve &
+  ship**, or `al settle … --as shipped --by PR-URL`). It leaves Needs you, is listed under Settled as
+  "shipped (…)", and moves to Landed by itself once git shows its work on the target.
 
 The chips **Running**, **Landed**, **Settled** and **All** show the rest, each with what landed or settled
 it. Nothing is deleted. The same list in a terminal:
@@ -609,7 +612,8 @@ changed` as its reason.
 `--view needs-you|running|landed|settled|all` picks the list and `--json` prints it as JSON. Several
 failures at the same step with the same reason, within half an hour of each other, show as one line
 ("5 runs: preflight, same reason") followed by their ids. `al settle LAYER RUN --as
-landed|superseded|abandoned` takes `--by RUN|COMMIT` (a run of the layer or a commit of the application),
+landed|superseded|abandoned|shipped` takes `--by RUN|COMMIT|PR-URL` (a run of the layer or a commit of the
+application; a pull request's URL only with `shipped`, below),
 `--note TEXT` (at most 500 characters) and `--who NAME` (default: your `git config user.name` in the
 application). It writes `agents/<run id>/settlement.json`, then removes the run's worktree under `trees/`
 (it keeps `agents/<id>`, `artefacts/<id>` and the branch) and prints
@@ -619,6 +623,25 @@ settle form and the stand-in remove the worktree the same way, and so does an in
 run. Undoing a settlement does not bring the worktree back: the branch is kept, so a run resumed later
 needs its worktree made again from the branch. Exit codes: 0 written, 2 bad use, 3 refused (the run is
 still running, or `--by` names neither a run nor a commit), 4 no such run.
+
+**Shipped, not merged yet.** `--as shipped` is for a run you shipped by hand to a pull request or a
+branch that nobody merged yet. It needs `--by`: the pull request's URL (`http://` or `https://`) or
+the commit; without it the command exits 3 with "shipped needs by: the pull request's URL or the
+commit". The run leaves Needs you at once and is listed as landed once git shows its work on the
+target (`al runs … prune` keeps its branch until then: it is the head of the pull request):
+
+```bash
+$ al settle orchard.al b000000b --as shipped --by https://forge.example/o/r/pull/7 --note "opened by hand" --who Ada
+settled b000000b as shipped (https://forge.example/o/r/pull/7) by Ada: agents/b000000b/settlement.json
+
+$ al runs orchard.al --view settled
+b000000b  handed-over  plan-build      Track the cherry trees, part 11         shipped (https://forge.example/o/r/pull/7) by Ada: opened by hand
+
+$ al runs orchard.al --view landed        # after the pull request was merged and fetched
+b000000b  handed-over  plan-build      Track the cherry trees, part 11         landed in 259efd3 (ancestor) on main, 2026-11-23
+```
+
+(Each list is shown without its header line and its other runs.)
 
 Finished runs leave worktrees, containers and branches behind. `al runs LAYER prune --landed --older-than
 DAYS` removes them for runs in the Landed or Settled list that ended more than DAYS ago, and keeps the
@@ -1251,8 +1274,10 @@ so an `agentic.rkt` the first attempt wrote is taken when it compiles instead of
 
 ## Talk to the dashboard
 
-A layer that declares `(voice kokoro)` gets a **voice helper** panel on its layer page (`#/layer/NAME`) and
-on the panel of a repository whose layer is watched (`#/repo/NAME`). You speak English, or type; the helper
+A layer that declares `(voice kokoro)` gets a **voice helper**. It opens from the microphone button in the
+top bar on any page (key `v`), in a dock that stays open while you move between pages (Escape with the
+focus in it, or `v` again, closes it); it is also shown on the layer page (`#/layer/NAME`) and on the panel
+of a repository whose layer is watched (`#/repo/NAME`). You speak English, or type; the helper
 answers aloud and in text. Ask it what is running, why a run failed, what can be started; it asks back when
 something is unclear, and when it knows what you want it **proposes** the run as a card: workflow or
 command, request text, class, model tier, repository and what will happen.
@@ -1265,11 +1290,13 @@ al voice ~/code/myapp.al doctor     # files, device, load times and measured spe
 ```
 
 `setup` downloads only the files recorded in `adws/voice/models.json`: the faster-whisper model of
-`#:stt-model` (`base.en`, about 148 MB) into `~/.cache/al/voice/whisper/` and Kokoro's int8 model and voices
-(about 120 MB) into `~/.cache/al/kokoro/` (`$AL_VOICE_CACHE` and `$AL_KOKORO_CACHE` move them). A file whose
-checksum differs is deleted and `setup` fails with both hashes. A second `setup` downloads nothing. After
-that the speech service runs offline: it refuses every connection that is not to this machine, and never
-downloads. Until `setup` has run, the panel says "voice is not set up" and shows the command.
+`#:stt-model` (`base.en`, about 148 MB) into `$XDG_CACHE_HOME/al/voice/whisper/` and Kokoro's int8 model and
+voices (about 120 MB) into `$XDG_CACHE_HOME/al/kokoro/` (default `~/.cache/al/…`; `$AL_VOICE_CACHE` and
+`$AL_KOKORO_CACHE` move them). A file whose checksum differs is deleted and `setup` fails with both hashes. A
+second `setup` downloads nothing. After that the speech service runs offline: it refuses every connection
+that is not to this machine, and never downloads. Until `setup` has run, the panel says "voice is not set up"
+and shows the command. Without Kokoro's files the helper speaks with espeak-ng when it is installed, else not
+at all; `AL_VOICE_TTS=kokoro|espeak|off` chooses, and the panel says which engine spoke.
 
 The panel has two modes, remembered per browser (the layer's `#:listen-mode` is the default):
 
@@ -1682,16 +1709,69 @@ approve: after:     resume from prove
 approve: approved vocabulary for run 4ddebf7e; resuming from step prove
 ```
 
-Give either WHAT … or `--all`, not both; `--note TEXT` goes with `--all`. Exit: 0 resumed, 1 refused
-(`al approve: refused (REASON): …`, e.g. `not-waiting` with why nothing is offered, or `running`),
-2 bad use.
+Give either WHAT … or `--all`, not both; `--note TEXT` goes with `--all` or `ship`. Exit: 0 resumed
+(or merged or shipped, below), 1 refused (`al approve: refused (REASON): …`, e.g. `not-waiting` with
+why nothing is offered, or `running`), 2 bad use.
+
+**A gate stop that only needs your yes.** A run can pass its checks and its review and still be handed
+to you by the gate: the diff is larger than the review allows (`diff-too-large:N>M`), its class is not
+one the gate ships (`class-not-allowed:CLASS`), or the ship failed and fell back to a pull request
+(`ship-failed:…`). Nothing is wrong with the work; the gate asked for a person. Under Needs you such
+a row has **Approve & merge** (the target is a stage branch agents may merge into) or **Approve &
+ship** (the run has a pull request, or the target is a branch only a person merges), and **Approve &
+ship all N** takes every shown run of one layer. The confirmation lists exactly what you approve: the
+gate's reasons, the size of the diff and the changed files, the target branch or the pull request,
+and every check with its state. From the command line the one word `ship` does the same (and so does
+`--all`):
+
+```bash
+$ tools/al approve ~/code/myapp.al f4000001 ship --who ana --note agreed
+approve: run f4000001 waits for your approval of 1 item(s):
+approve:   diff-too-large:3148>400: 3148 lines in 1 file(s) → integration; checks: 1 passed
+approve:   target:    integration
+approve:   diff:      3148 lines, 1 file(s)
+approve:     shelf_f4000001.py
+approve:   checks:    test passed
+approve: after:     the run's branch is merged into integration (fast-forward)
+approve: approved by ana: chore/f4000001-ship-fixture is merged into integration (70feac6)
+```
+
+The usage line is the one above (`usage: al approve [-h] [--all] [--note TEXT] [--who NAME] layer RUN
+[WHAT ...]`), with `ship` as WHAT. The approval is recorded in the run's `state.approvals` as
+`ship:<reason>` with who, when, how and the note, and in its events (`approval.granted`, then
+`ship.approved` with what was done). Then the runtime acts, never the dashboard:
+
+- **a merge** only into a stage branch agents may merge into, never into the default branch or the
+  final stage, and fast-forward only, so what lands is exactly the commit the gate judged; the run is
+  settled as landed. When that stage branch is checked out in a working tree, the result goes to
+  `al/ship/STAGE` and the answer names the `git merge --ff-only` to run;
+- **a pull request** the run already has is kept, or one is opened where the forge takes pull
+  requests; the run is settled as shipped to it and listed as landed once git shows it;
+- **anything else** (the default branch, a stage only a person merges into) is settled as shipped by
+  its commit: a person merges the branch.
+
+It is never offered when the review rejected the run, when a check failed, did not run or is stale
+(`checks-not-green`), when the gate also named a protected path (that is Approve & resume, above), for
+a spending limit, a `REQUIRES HUMAN` blocker or a workflow that changes the layer, when someone
+changed the run's branch since the gate judged it (`branch-changed`), or when the stage branch moved
+(`target-moved`: give the run to an agent, or merge it by hand). A refusal says why and records
+nothing:
+
+```bash
+$ tools/al approve ~/code/myapp.al f4000001 ship --who ana
+approve: run f4000001 does not wait for an approval: checks are not all green: test failed
+al approve: refused (checks-not-green): checks are not all green: test failed
+```
+
+A layer generated before this needs `al gen` first (the command says so).
 
 Every approval is recorded with who, when, how (`cli` or `dashboard`) and the note, where the runtime
 already reads it: `state.approvals` of the run, `agents/<run>/assign.json`, the answers of the
 stand-in's decision, or an integration's `approval.json`. An approval of protected paths holds for
 that run only and is marked for the gate; an approval given at the start (`al run --approve`) or
-with `al approve LAYER RUN WHAT` never lowers the gate. Nothing ships because of an approval: the
-resumed run goes on through its checks, its review and the gate.
+with `al approve LAYER RUN WHAT` never lowers the gate. Nothing ships because of an approval, with
+the one exception above (`ship`, which is the yes the gate asked for): the resumed run goes on
+through its checks, its review and the gate.
 
 ## Step 12 — Let small things ship by themselves
 

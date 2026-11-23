@@ -49,7 +49,7 @@ TYPES = (
     "integrate.queued", "integrate.lock", "integrate.unlock", "integrate.prepared", "integrate.resolved",
     "integrate.result",
     "standin.decision", "standin.action",
-    "approval.granted", "proof.checked", "evidence.pack", "review.progress", "freshen.result",
+    "approval.granted", "ship.approved", "proof.checked", "evidence.pack", "review.progress", "freshen.result",
     "placement.decision", "remote.start", "remote.sync", "remote.push", "remote.lost", "remote.takeover",
     "assign.attempt", "assign.outcome", "assign.approval",
 )

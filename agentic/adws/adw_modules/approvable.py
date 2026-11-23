@@ -26,6 +26,13 @@ The rules of `derive`, the first that applies:
     are protected paths, the worktree is there                 (approvals.gate_takes_approvals): kind gate, one
                                                                item `gate`; the ship step runs again. Otherwise
                                                                not waiting: a person merges the pull request
+    handed over (not an integration run), the gate's only      kind ship, one item `ship` (shipapproval.facts:
+    reasons are diff-too-large, class-not-allowed,             the reasons, the diff, the files, the target, the
+    needs-person or ship-failed                                checks). Not waiting when the review rejected it,
+                                                               a check is not green, the branch changed or the
+                                                               target moved. Approved with approve_ship: the stage
+                                                               branch is fast-forwarded, or the run is settled as
+                                                               shipped to its pull request or branch
     otherwise handed over, failed, died or waiting             the plan of assign.py: only a plan `person` whose
                                                                open decisions are all approvable can wait, and
                                                                only when the plan with them approved can start:
@@ -40,18 +47,23 @@ Where an approval is recorded, by kind: proof and protected-paths in `state.appr
 (approvals.grant_and_resume; protected paths with the `gate` mark); gate in `state.approvals` with
 the mark and in agents/<run>/assign.json; proposal as the `go` answer of the decision
 (decide.answer); decision in agents/<run>/assign.json (assign.approve, then assign.give);
-integration in the integration run's approval.json (integrate.approve). Every resume is detached
-and refuses a run held by a live process. Nothing here ships: a resumed run goes on through its
-checks, its review and the unchanged gate.
+integration in the integration run's approval.json (integrate.approve); ship in `state.approvals`
+as `ship:<reason>` and in agents/<run>/settlement.json (shipapproval.perform). Every resume is
+detached and refuses a run held by a live process. Only kind ship lands or ships anything, and only
+what the person approved; every other kind resumes a run that goes on through its checks, its review
+and the unchanged gate.
 
 Records:
     agents/<run>/approvable.json   {version: 1, run, basis, waiting, kind, items: [{id, kind, text, what:
                                     [approval tokens], paths, decisions: [assign decision ids]}], from_step,
-                                    after, why, token, at}
+                                    after, why, token, at}; kind ship adds ship: {reasons, way, label,
+                                    target, pr, commit, tree, diff_lines, files, files_total, checks:
+                                    [{name, phase, state}]}, and a refused ship stop ship_refused: REASON
     (kit/dashboard/dashboard.py read_approvable reads the same file and approval_basis builds the same
     string as `basis`; keep the two alike)
 
-The token is a digest of what was derived (run, basis, resume step, items): a caller that shows the
+The token is a digest of what was derived (run, basis, resume step, items; for kind ship also the
+way, the target, the commit, the reasons, the checks and the pull request): a caller that shows the
 items hands it back, and an approval of something else than what was shown is refused (`stale`).
 
 Standard library only.
@@ -68,13 +80,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 
-from . import approvals, assign, decide, events, integrate, standin, state as state_module
+from . import approvals, assign, decide, events, integrate, shipapproval, standin, state as state_module
 from .errors import LayerError, StepFailed
 from .integrate import IntegrateError
 
 RECORD_FILE = "approvable.json"
-KINDS = ("proof", "protected-paths", "gate", "proposal", "decision", "integration")
-REASONS = ("unknown-run", "not-waiting", "running", "stale", "bad-item", "bad-who", "bad-note", "resume-failed")
+KINDS = ("proof", "protected-paths", "gate", "proposal", "decision", "integration", "ship")
+REASONS = ("unknown-run", "not-waiting", "running", "stale", "bad-item", "bad-who", "bad-note", "resume-failed",
+           *shipapproval.REASONS)
 VIAS = ("cli", "dashboard")
 MAX_WHO = 80
 NOTE_MAX = 500
@@ -152,6 +165,11 @@ def _ship_step(layer: Any, state: Mapping[str, Any]) -> str:
 def _token(record: Mapping[str, Any]) -> str:
     shown = [record["run"], record["basis"], record["from_step"],
              [[item["id"], item["text"]] for item in record["items"]]]
+    ship = record.get("ship")
+    if ship:                                          # a record without it digests what it always did
+        shown.append([ship["way"], ship["target"], ship["commit"], ship["reasons"],
+                      [[check["name"], check["state"]] for check in ship["checks"]],
+                      (ship["pr"] or {}).get("url", "")])
     return hashlib.sha256(json.dumps(shown).encode("utf-8")).hexdigest()[:16]
 
 
@@ -268,7 +286,32 @@ def derive(layer: Any, run_id: str) -> dict[str, Any]:
                                  [f"edit:{path}" for path in paths], paths, ids)],
                    _ship_step(layer, state), "the ship step runs again: the gate ships it")
 
-    # 6. a decision of give-to-an-agent
+    # 6. a gate stop that only needs a person's yes (shipapproval.py)
+    if status == "handed-over" and state.get("adw") != integrate.ADW_NAME and shipapproval.claims(reasons):
+        found = shipapproval.facts(layer, state)
+        if not found["approvable"]:
+            record["ship_refused"] = found["reason"] or "not-waiting"
+            return no(found["why"])
+        reasons = [clean(reason) for reason in found["reasons"]]
+        shown_pr = ({"number": found["pr"].get("number"), "url": clean(found["pr"].get("url"))}
+                    if found["pr"] else None)
+        record["ship"] = {
+            "reasons": reasons, "way": found["way"], "label": found["label"], "target": clean(found["target"]),
+            "pr": shown_pr, "commit": found["commit"], "tree": found["tree"], "diff_lines": found["diff_lines"],
+            "files": [clean(path) for path in found["files"]], "files_total": found["files_total"],
+            "checks": [{key: clean(check[key]) for key in ("name", "phase", "state")} for check in found["checks"]]}
+        target, branch = record["ship"]["target"], clean(state.get("branch"))
+        url = (shown_pr or {}).get("url") or ""
+        after = {"merge": f"the run's branch is merged into {target} (fast-forward)",
+                 "pr": f"the run is settled as shipped to {url or 'its pull request'}",
+                 "forge": "the pull request is opened and the run is settled as shipped",
+                 "branch": f"the run is settled as shipped; a person merges {branch} into {target}"}[found["way"]]
+        text = (f"{', '.join(reasons)}: {found['diff_lines']} lines in {found['files_total']} file(s) → "
+                f"{url or target}; checks: {len(found['checks'])} passed")
+        return yes("ship", [item("ship", "ship", text, [shipapproval.token_of(reason) for reason in found["reasons"]],
+                                 found["files"])], "", after)
+
+    # 7. a decision of give-to-an-agent
     if status not in ("handed-over", "failed", "died", "waiting"):
         return no(f"run {run_id} is {status or 'unknown'}: not a stopped run")
     try:
@@ -320,8 +363,19 @@ def lines(record: Mapping[str, Any]) -> list[str]:
     if not record.get("waiting"):
         return [f"run {record.get('run')} does not wait for an approval: {record.get('why')}"]
     items = list(record.get("items") or [])
+    facts: list[str] = []
+    ship = record.get("ship") if record.get("kind") == "ship" else None
+    if isinstance(ship, dict):
+        url = str((ship.get("pr") or {}).get("url") or "")
+        files = [str(path) for path in ship.get("files") or []][:shipapproval.MAX_FILES]
+        more = int(ship.get("files_total") or 0) - len(files)
+        facts = [f"  target:    {ship.get('target')}" + (f" ({url})" if url else ""),
+                 f"  diff:      {ship.get('diff_lines')} lines, {ship.get('files_total')} file(s)",
+                 *[f"    {path}" for path in files], *([f"    and {more} more"] if more > 0 else []),
+                 "  checks:    " + (", ".join(shipapproval.check_text(check) for check in ship.get("checks") or [])
+                                    or "none")]
     return [f"run {record.get('run')} waits for your approval of {len(items)} item(s):",
-            *[f"  {item.get('text')}" for item in items], f"after:     {record.get('after')}"]
+            *[f"  {item.get('text')}" for item in items], *facts, f"after:     {record.get('after')}"]
 
 
 # ---------------------------------------------------------------- approve & resume
@@ -420,38 +474,49 @@ def _integration(layer: Any, run_id: str, who: str, spawn: Any) -> dict[str, Any
                     waiting or run_id)
 
 
-def approve_resume(layer: Any, run_id: str, items: Any, who: str, via: str, *, note: str = "", token: str = "",
-                   spawn: Any = None) -> dict[str, Any]:
-    """A person approves what `run_id` waits for and the run resumes: {status: resumed | refused,
-    reason, message, run_id: the run to watch}. `items` are the ids of the items approved, or None
-    for all of them; `token` is the one of the derivation that was shown ("" skips that check). A
-    refusal records nothing; `spawn` replaces the process start of a "decision" or "integration"
-    resume (tests)."""
+def _checked(layer: Any, run_id: Any, who: Any, via: str, note: Any) -> tuple[dict[str, Any] | None, Any, str, str, str]:
+    """What every approval checks before it derives anything: (a refusal or None, the layer, the run
+    id, who, the note). A `via` that is not one of VIAS is a caller's error."""
     if via not in VIAS:
         raise ValueError(f"via: one of {', '.join(VIAS)}")
     run_id = str(run_id or "")
     who = " ".join(str(who or "").split())
+
+    def no(reason: str, message: str) -> tuple[dict[str, Any] | None, Any, str, str, str]:
+        return _refused(reason, message, run_id), layer, run_id, who, str(note or "")
+
     if not who or len(who) > MAX_WHO or not who.isprintable():
-        return _refused("bad-who", f"who approves: 1 to {MAX_WHO} printable characters", run_id)
+        return no("bad-who", f"who approves: 1 to {MAX_WHO} printable characters")
     if _has_control(str(note or "")):
-        return _refused("bad-note", "the note holds a line break or a control character: plain text on one line",
-                        run_id)
+        return no("bad-note", "the note holds a line break or a control character: plain text on one line")
     try:
         note = assign.check_note(note)
     except assign.AssignError as exc:
-        return _refused("bad-note", exc.message, run_id)
+        return no("bad-note", exc.message)
     if not _RUN_ID.fullmatch(run_id):
-        return _refused("unknown-run", f"no run {run_id!r} (a run id is 8 hexadecimal characters)", run_id)
+        return no("unknown-run", f"no run {run_id!r} (a run id is 8 hexadecimal characters)")
     try:
         layer = approvals._layer(layer)
     except LayerError as exc:
-        return _refused("resume-failed", f"the layer cannot be read: {exc}", run_id)
+        return no("resume-failed", f"the layer cannot be read: {exc}")
     if not integrate._state(layer, run_id):
-        return _refused("unknown-run", f"no run {run_id} in this layer", run_id)
+        return no("unknown-run", f"no run {run_id} in this layer")
     held = state_module.run_holder(layer.layer_dir, run_id)
     if held:
-        return _refused("running", f"run {run_id} is held by process {held.get('pid')}: it is left to that process",
-                        run_id)
+        return no("running", f"run {run_id} is held by process {held.get('pid')}: it is left to that process")
+    return None, layer, run_id, who, note
+
+
+def approve_resume(layer: Any, run_id: str, items: Any, who: str, via: str, *, note: str = "", token: str = "",
+                   spawn: Any = None) -> dict[str, Any]:
+    """A person approves what `run_id` waits for and the run resumes: {status: resumed | refused,
+    reason, message, run_id: the run to watch} (a ship approval answers what `approve_ship` answers). `items` are the ids of the items approved, or None
+    for all of them; `token` is the one of the derivation that was shown ("" skips that check). A
+    refusal records nothing; `spawn` replaces the process start of a "decision" or "integration"
+    resume (tests)."""
+    refusal, layer, run_id, who, note = _checked(layer, run_id, who, via, note)
+    if refusal is not None:
+        return refusal
     record = derive(layer, run_id)
     try:
         if not record["waiting"]:
@@ -469,6 +534,8 @@ def approve_resume(layer: Any, run_id: str, items: Any, who: str, via: str, *, n
                 return _refused("stale", f"run {run_id} waits for {_plural(len(open_ids), 'item')} "
                                          f"({', '.join(open_ids)}): look again", run_id)
         kind = record["kind"]
+        if kind == "ship":
+            return approve_ship(layer, run_id, who, via, note=note, token=token)
         if kind in ("proof", "protected-paths"):
             whats = [what for item in record["items"] for what in item["what"]]
             result = {**approvals.grant_and_resume(layer, run_id, whats, who, via, note=note,
@@ -489,6 +556,28 @@ def approve_resume(layer: Any, run_id: str, items: Any, who: str, via: str, *, n
         else:
             result = _integration(layer, run_id, who, spawn)
         return result
+    finally:                                          # the stored record follows the new state
+        with contextlib.suppress(Exception):
+            write(layer, run_id)
+
+
+def approve_ship(layer: Any, run_id: str, who: str, via: str, *, note: str = "", token: str = "") -> dict[str, Any]:
+    """A person approves a gate stop that only needs a yes (kind ship) and the runtime acts
+    (shipapproval.perform): {status: merged | shipped | refused, reason, message, run_id, settled}.
+    `token` is the one of the derivation that was shown ("" skips that check). A refusal before the
+    action records nothing; a failing action (`ship-failed`) keeps the approval and settles nothing."""
+    refusal, layer, run_id, who, note = _checked(layer, run_id, who, via, note)
+    if refusal is not None:
+        return {**refusal, "settled": ""}
+    record = derive(layer, run_id)
+    try:
+        if not record["waiting"] or record["kind"] != "ship":
+            return {**_refused(str(record.get("ship_refused") or "not-waiting"),
+                               record["why"] or f"run {run_id} does not wait for a ship approval", run_id),
+                    "settled": ""}
+        if token and str(token) != record["token"]:
+            return {**_refused("stale", "what was shown changed: look again", run_id), "settled": ""}
+        return shipapproval.perform(layer, run_id, record["ship"], who, via, note)
     finally:                                          # the stored record follows the new state
         with contextlib.suppress(Exception):
             write(layer, run_id)

@@ -7,6 +7,7 @@
   dispatch.py --grant RUN --approve WHAT [--approve WHAT …] [--who WHO] [--json]
   dispatch.py --approvable RUN [RUN …] [--json]
   dispatch.py --approve-resume RUN [--item ID …] [--token T] --who NAME [--note TEXT] [--json]
+  dispatch.py --approve-ship RUN [--token T] --who NAME [--note TEXT] [--json]
   dispatch.py --pr-state N [--json]
   dispatch.py --command NAME [runner flags: --prompt-file F --adw-id ID --class C --dry-run …]
   dispatch.py --resume ID [--answer] [--json]   [< answer]
@@ -27,7 +28,11 @@ and where it resumes (adw_modules/approvable.py), stores that as agents/RUN/appr
 dashboard reads it) and prints it (with --json: one line {"runs": {RUN: record}}); exit 0.
 --approve-resume RUN approves the items the run waits for (--item ID, repeatable; none means all of them;
 --token T is the token of the derivation that was shown) as --who, with an optional one-line --note, and
-resumes the run; exit 0 resumed, 1 refused. --command alone runs one
+resumes the run; exit 0 resumed, 1 refused. --approve-ship RUN approves a gate stop that only needs a
+person's yes (kind ship of approvable.json: the diff is too large, the class is not one the gate ships, the
+ship failed) as --who, with --token and --note as above; the runtime records the approval, then
+fast-forwards the stage branch or settles the run as shipped to its pull request or branch
+(adw_modules/shipapproval.py); exit 0 merged or shipped, 1 refused. --command alone runs one
 command or hop in the foreground as a recorded run (what a single-command start executes).
 --registry prints what the layer can run (adw_modules/registry.py: its workflows, the kit's
 workflows, its commands), read only; with --json the whole registry as one JSON line.
@@ -145,6 +150,19 @@ def approve_resume_cli(a: argparse.Namespace) -> int:
     else:
         print(f"dispatch: {result['status']}: {result.get('message') or ''}", flush=True)
     return 0 if result["status"] == "resumed" else 1
+
+
+def approve_ship_cli(a: argparse.Namespace) -> int:
+    """--approve-ship RUN [--token T] --who NAME [--note TEXT]: approve a gate stop and merge or ship."""
+    from adw_modules import approvable
+
+    result = approvable.approve_ship(LAYER, a.approve_ship, a.who or "", "dashboard", note=a.note or "",
+                                     token=a.token or "")
+    if a.json:
+        print(json.dumps(result), flush=True)
+    else:
+        print(f"dispatch: {result['status']}: {result.get('message') or ''}", flush=True)
+    return 0 if result["status"] in ("merged", "shipped") else 1
 
 
 def pr_state(a: argparse.Namespace) -> int:
@@ -295,19 +313,23 @@ def main() -> int:
                     help="with --start: the stand-in's mode for this run")
     ap.add_argument("--approve", action="append", default=[], metavar="WHAT",
                     help="with --start or --grant: an approval for the run (repeatable)")
-    ap.add_argument("--who", metavar="WHO", help="with --approve or --approve-resume: who approves")
+    ap.add_argument("--who", metavar="WHO", help="with --approve, --approve-resume or --approve-ship: who approves")
     ap.add_argument("--grant", metavar="RUN", help="approve --approve WHAT for stopped run RUN and resume it")
     ap.add_argument("--approvable", nargs="+", metavar="RUN",
                     help="what each stopped run waits for a person's approval of (stored as approvable.json)")
     ap.add_argument("--approve-resume", metavar="RUN", help="approve what stopped run RUN waits for and resume it")
     ap.add_argument("--item", action="append", default=[], metavar="ID",
                     help="with --approve-resume: an item to approve (repeatable; none means all of them)")
-    ap.add_argument("--token", metavar="T", help="with --approve-resume: the token of what was shown")
-    ap.add_argument("--note", metavar="TEXT", help="with --approve-resume: one line kept with the approval")
+    ap.add_argument("--approve-ship", metavar="RUN",
+                    help="approve a gate stop of run RUN that only needs a person's yes, then merge or ship it")
+    ap.add_argument("--token", metavar="T",
+                    help="with --approve-resume or --approve-ship: the token of what was shown")
+    ap.add_argument("--note", metavar="TEXT",
+                    help="with --approve-resume or --approve-ship: one line kept with the approval")
     ap.add_argument("--pr-state", type=int, metavar="N", help="is pull request N merged? (read only)")
     ap.add_argument("--registry", action="store_true", help="print what the layer can run (read only)")
     ap.add_argument("--json", action="store_true",
-                    help="with --start, --grant, --approvable, --approve-resume, --pr-state, --resume, --stop, "
+                    help="with --start, --grant, --approvable, --approve-resume, --approve-ship, --pr-state, --resume, --stop, "
                          "--helper or --registry: print one JSON line")
     ap.add_argument("--resume", metavar="ID", help="continue a waiting, failed or handed-over run, detached")
     ap.add_argument("--answer", action="store_true", help="with --resume: a person's answer to a waiting run on stdin")
@@ -322,6 +344,8 @@ def main() -> int:
         return approvable_cli(a)
     if a.approve_resume:
         return approve_resume_cli(a)
+    if a.approve_ship:
+        return approve_ship_cli(a)
     if a.pr_state is not None:
         return pr_state(a)
     if a.helper:

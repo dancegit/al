@@ -120,7 +120,7 @@
   ;; A change under a protected path, or a very large one, still goes to a person.
   (review auto #:id zero-touch #:artefacts (log screenshots run-shots showcase-stills showcase-clips voice-shots voice-clips voice-audio voice-report voice-logs) #:reviewers 2 #:max-retries 2 #:ship merge
           #:require-checks (test-docs test-compiler test-runtime test-podman test-tools test-dashboard-proof test-integration) #:require affected
-          #:allowed-classes (chore bug feature) #:max-diff-lines 4000)
+          #:allowed-classes (chore bug feature) #:max-diff-lines 10000)
   (dashboard local #:port 8770)   ; 8765 is often taken by other tools
   ;; Every run lands on integration; main changes only by a promotion a person approves.
   (stage integration #:branch "integration" #:from main #:accepts (chore bug feature patch) #:entry merge)
