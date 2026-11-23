@@ -344,11 +344,13 @@ def _decided(layer: Any, state: Any, step: dict[str, Any], decision: Any, phase:
                              "paths_total": decision.paths_total, "from": source if reused else None}
     if log_path is None and not reused:
         log_path = Path(layer.layer_dir) / "agents" / state.adw_id / "checks" / f"{name}.not-affected.log"
-    if log_path is not None:
+    relative = Path(log_path).relative_to(layer.layer_dir).as_posix() if log_path is not None else None
+    # a reused pass whose log is this same file keeps its real output: the note would destroy it
+    if log_path is not None and not (reused and str(source.get("log") or "") == relative):
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
         Path(log_path).write_text(_decision_text(cmd_name if phase in ("gate", "evidence") else name, decision, entry),
                                   encoding="utf-8")
-        log = Path(log_path).relative_to(layer.layer_dir).as_posix()
+        log = relative
     else:
         log = str(source.get("log") or "")
     events.emit("check.decision", step=name, owner=running_step(state), phase=phase, cmd=cmd_name,
