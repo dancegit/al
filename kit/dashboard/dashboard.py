@@ -8583,12 +8583,6 @@ class Jobs:
         now = time.time() if now is None else now
         verdict = job_liveness(job, now)
         if verdict and verdict["died"]:
-            # `job` may be a read from before the runner recorded its end and exited: judge the file as it is now
-            fresh = self.read(str(job.get("id") or ""))
-            if fresh is not None:
-                job, verdict = fresh, job_liveness(fresh, now)
-                if not (verdict and verdict["died"]):
-                    return job
             directory = self.dir(str(job.get("id") or ""))
             job = {**job, "status": "interrupted", "ended": utc_stamp(now),
                    "reason": "its runner is gone (the machine restarted or the process was killed)",
