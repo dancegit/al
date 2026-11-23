@@ -68,6 +68,20 @@ def test_manifest_carries_evidence_approvals_and_round_scope(make_layer):
         assert (Path(layer.layer_dir) / entries[kind]["path"]).is_file()
 
 
+def test_approvals_manifest_shows_note_and_gate(make_layer):
+    layer = _layer(make_layer)
+    state = _state()
+    approvals.record(state, ["vocabulary"], "ana", "start")
+    approvals.record(state, ["edit:docs/DESIGN.md"], "Robin Example", "dashboard", note="agreed in review", gate=True)
+    (entry,) = [e for e in convergence.manifest_entries(layer, state) if e["type"] == "approvals"]
+    assert [(a["what"], a.get("gate"), a.get("note")) for a in entry["approvals"]] == [
+        ("vocabulary", None, None), ("edit:docs/DESIGN.md", True, "agreed in review")]
+    first, second = (Path(layer.layer_dir) / entry["path"]).read_text().splitlines()[2:4]
+    assert first.startswith("- `vocabulary` by ana at ") and first.endswith("(start)")
+    assert second.startswith("- `edit:docs/DESIGN.md` by Robin Example at ")
+    assert second.endswith("(dashboard); accepted at the gate for this run; note: agreed in review")
+
+
 def test_round_two_scope_lists_earlier_blockers_and_safety(make_layer):
     layer = _layer(make_layer)
     state = _state()

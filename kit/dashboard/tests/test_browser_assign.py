@@ -7,9 +7,9 @@ real git history; the layer's own adws/assign.py runs with the mock agent).
     uv run --with pytest --with playwright pytest kit/dashboard/tests/test_browser_assign.py
 
 Skipped without Playwright or Chrome (nothing is downloaded). With AL_DASHBOARD_SHOTS=<directory> the
-tests save assign-needs-you-1280.png, assign-button-1280.png, assign-preview-rejected-1280.png,
-assign-preview-rejected-390.png, assign-preview-person-1280.png, assign-approved-1280.png,
-assign-bulk-1280.png and assign-left-out-1280.png there."""
+tests save work-assign-needs-you-1280.png, work-assign-button-1280.png, work-assign-preview-rejected-1280.png,
+work-assign-preview-rejected-390.png, work-assign-preview-person-1280.png, work-assign-approved-1280.png,
+work-assign-bulk-1280.png and work-assign-left-out-1280.png there."""
 from __future__ import annotations
 
 import json
@@ -145,7 +145,7 @@ def test_button_in_row_and_on_page_for_every_needs_you_run(scenario, tab, tmp_pa
     assert "Start again, or Give to an agent" in row(page, af.NOTHING)["next"]
     assert page.inner_text("button.assign-all").strip() == "Give all 9 to agents" and page.is_enabled("button.assign-all")
     no_personal_paths(page)
-    shot(page, "assign-needs-you-1280.png")
+    shot(page, "work-assign-needs-you-1280.png")
     page.click(".chips .chip[data-view=landed]")              # only the runs that need you have the button
     until(page, "document.querySelectorAll('#main tbody tr[data-key]').length === 1")
     assert not page.query_selector("button.assign-open") and not page.query_selector("button.assign-all")
@@ -162,7 +162,7 @@ def test_button_in_row_and_on_page_for_every_needs_you_run(scenario, tab, tmp_pa
     page.wait_for_selector(".settle-card button.assign-open:not([disabled])")
     assert page.query_selector("button.start-again"), "Start again stays beside it"
     no_personal_paths(page)
-    shot(page, "assign-button-1280.png")
+    shot(page, "work-assign-button-1280.png")
     open_(page, "/runs")
     needs_you(page, 9)
     page.click(f'#main tbody tr[data-key="pantry/{af.FAILED_CHECK}"] button.assign-open')   # the row's button opens the plan
@@ -215,7 +215,7 @@ def test_plan_preview_of_a_rejected_review(scenario, tab):
     assert not page.query_selector(".assign-card input.assign-override"), "the override is offered only at the limit"
     assert page.inner_text(".assign-card button.assign-start").strip() == "Start" and page.is_enabled(".assign-card button.assign-start")
     no_personal_paths(page)
-    shot(page, "assign-preview-rejected-1280.png")
+    shot(page, "work-assign-preview-rejected-1280.png")
     narrow = tab(running, 390, 844)
     open_preview(narrow, RUN)
     narrow.locator(".assign-card").scroll_into_view_if_needed()
@@ -223,7 +223,7 @@ def test_plan_preview_of_a_rejected_review(scenario, tab):
         .filter((el) => el.getBoundingClientRect().right > window.innerWidth + 1).map((el) => el.className || el.tagName)""")
     assert wide == [], f"the plan fits a phone's width: {wide}"
     no_personal_paths(narrow)
-    shot(narrow, "assign-preview-rejected-390.png")
+    shot(narrow, "work-assign-preview-rejected-390.png")
     narrow.click(".assign-card button.assign-close")
     until(narrow, "!document.querySelector('.assign-card')")
     assert run_dirs(layer) == before and not (layer / "agents" / RUN / "assign.json").exists(), "looking starts nothing"
@@ -268,7 +268,7 @@ def test_needs_a_person_offers_the_approval(scenario, tab):
     assert not page.query_selector(".assign-card button.assign-start"), "nothing can start before the person decided"
     assert not page.query_selector(".assign-card input.assign-note-text")
     no_personal_paths(page)
-    shot(page, "assign-preview-person-1280.png")
+    shot(page, "work-assign-preview-person-1280.png")
     page.fill(".assign-card input.assign-who", "Ada Example")
     page.click(".assign-card button.assign-approve")
     page.wait_for_selector(".assign-card .assign-decision.approved")
@@ -285,7 +285,7 @@ def test_needs_a_person_offers_the_approval(scenario, tab):
         ("Ada Example", af.PERSON_BLOCKER["description"], "dashboard")]
     assert run_dirs(layer) == before, "the approval starts nothing"
     no_personal_paths(page)
-    shot(page, "assign-approved-1280.png")
+    shot(page, "work-assign-approved-1280.png")
     # the approval is a record: the card shows the same remaining plan when it is opened again
     again = tab(running)
     open_preview(again, af.PERSON)
@@ -310,7 +310,7 @@ def test_give_all_shows_the_plans_first(scenario, tab):
     assert page.inner_text(".assign-bulk button.assign-bulk-start").strip() == "Start 6"
     assert page.is_enabled(".assign-bulk button.assign-bulk-start")
     no_personal_paths(page)
-    shot(page, "assign-bulk-1280.png")
+    shot(page, "work-assign-bulk-1280.png")
     page.click(".assign-bulk button.confirm-cancel")
     until(page, "document.getElementById('overlay').hidden")
     assert run_dirs(layer) == before and not list((layer / "agents").glob("*/assign.json")), "looking starts nothing"
@@ -348,7 +348,7 @@ def test_left_out_count_on_the_run_page(scenario, tab):
     assert "5 files matched" in page.get_attribute(".left-out", "title")
     assert page.locator(".art-group .thumb").count() == 2, "the two that were handed over are shown"
     no_personal_paths(page)
-    shot(page, "assign-left-out-1280.png")
+    shot(page, "work-assign-left-out-1280.png")
     open_(page, f"/run/pantry/{af.PERSON}/artefacts")
     page.wait_for_selector("#main .empty")
     assert not page.query_selector(".left-out")

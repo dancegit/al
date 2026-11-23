@@ -257,7 +257,10 @@ set FORGEJO_TOKEN in the environment (or /home/you/code/myapp.al/local.env) befo
 ```
 
 A token is never read: the forge clause names the variable (`FORGEJO_TOKEN`, `GITHUB_TOKEN`) that will
-hold it. A GitLab repository gets `(forge none)` with the reason (GitLab is planned in the language).
+hold it. A run looks that variable up like every other private value: a non-empty value in the
+environment, then the layer's `local.env`, then `~/.config/al/<layer name>.env` (with GitHub, `gh auth`
+after those); the value stays in the forge client and is never passed to agents, checks or containers.
+A GitLab repository gets `(forge none)` with the reason (GitLab is planned in the language).
 `--choice KEY=VALUE` (repeatable) changes one choice: `forge` (none, github, forgejo), `host`, `repo`,
 `input` (tasklist, issue), `trigger` and `environment` (comma-separated lists), `review` (human, agent),
 `delivery` (a preset, or none); an unknown key or value stops it with the list of what is allowed. Each
@@ -1555,7 +1558,7 @@ tools/al run ~/code/myapp.al /change add a search command --approve vocabulary -
 approve what it asks for:
 
 ```text
-usage: al approve [-h] [--who NAME] layer RUN WHAT [WHAT ...]
+usage: al approve [-h] [--all] [--note TEXT] [--who NAME] layer RUN [WHAT ...]
 ```
 
 ```bash
@@ -1566,8 +1569,9 @@ al approve: refused (not-stopped-for-an-approver): run b1000002 is failed, stopp
 ```
 
 Exit: 0 resumed, 1 refused (unknown run, or not stopped for an approver), 2 bad use (e.g. an approval
-that is not of the three forms). `--who NAME` defaults to `AL_APPROVED_BY`, else your login name. The
-dashboard's **Approve** button does the same.
+that is not of the three forms, or neither WHAT nor `--all`). `--who NAME` defaults to
+`AL_APPROVED_BY`, else your login name. The dashboard's **Approve** button does the same. `--all`
+approves everything the run waits for: see [Approving an escalation](#approving-an-escalation).
 
 The run summary has a `proof:` line for a plan with the table: what the Proof plan came to, or where
 the run stopped and for whom:
@@ -1576,6 +1580,62 @@ the run stopped and for whom:
 proof:     3 criteria, 3 proven; 1 round; 2 debt tasks filed
 proof:     stopped at prove: needs-declaration (layer author)
 ```
+
+### Approving an escalation
+
+Some runs under **Needs you** wait for one thing only: your approval. The runtime works out, for
+every stopped run, whether that is so, what exactly you would approve, the step the run resumes from
+and what happens after (`adw_modules/approvable.py`). You then approve and resume in one step, from
+the dashboard or the command line.
+
+What can be approved:
+
+- what a plan's Proof plan needs with `approval:…` (`vocabulary`, `edit:PATH`, `dependency:NAME`): the
+  run stopped at `prove`, one item per approval;
+- protected paths the `evidence` step found the run changed: one item for all of them;
+- a proposal of the stand-in that waits for an answer: approving it is the answer `go`;
+- a "needs a person" item of give-to-an-agent (a `REQUIRES HUMAN` blocker of the review, a protected
+  path): offered only when the plan can start once it is approved; the approval then starts that plan;
+- the `approve` step of an integration run whose checks and review passed;
+- the protected paths the gate named for a handed-over run whose review passed, **once the gate takes
+  approvals**. It does not yet: `kit/runtime/adw_modules/review.py` is a protected path, and a person
+  has to wire it. Until then this item is never offered, and a run you resumed after approving
+  protected paths at the `evidence` step still ends handed over at the gate, now reviewed: a person
+  merges its pull request.
+
+What is never approvable here: a stop for the layer author or the operator (`needs-declaration`, a
+tool this machine does not have), a spending or usage limit, a git-integrity failure, a workflow that
+changes the layer, and a promotion (that is `al promote`). A failing check, a login failure or a time
+limit is not an approval either: give such a run to an agent, or start it again.
+
+**In the dashboard.** The Needs-you view has a chip **waiting for approval (N)** that keeps only these
+runs. Each such row has **Approve & resume** with what it approves beside it, and **Approve & resume
+all N** does the same for every shown run of one layer. A run's page starts with a banner, "This run
+waits for your approval", with the same button. The button opens a confirmation that lists every item
+in full, where the run resumes and what happens after; you give your name (remembered in the browser)
+and, when you want, a one-line note. A run whose process is alive, or whose state changed since the
+page drew it, is refused and nothing is recorded.
+
+**From the command line.** `--all` lists the items, approves them and resumes the run:
+
+```bash
+$ tools/al approve ~/code/myapp.al 4ddebf7e --all --who ana --note "agreed in review"
+approve: run 4ddebf7e waits for your approval of 1 item(s):
+approve:   vocabulary: needed by C1: the tests pass
+approve: after:     resume from prove
+approve: approved vocabulary for run 4ddebf7e; resuming from step prove
+```
+
+Give either WHAT … or `--all`, not both; `--note TEXT` goes with `--all`. Exit: 0 resumed, 1 refused
+(`al approve: refused (REASON): …`, e.g. `not-waiting` with why nothing is offered, or `running`),
+2 bad use.
+
+Every approval is recorded with who, when, how (`cli` or `dashboard`) and the note, where the runtime
+already reads it: `state.approvals` of the run, `agents/<run>/assign.json`, the answers of the
+stand-in's decision, or an integration's `approval.json`. An approval of protected paths holds for
+that run only and is marked for the gate; an approval given at the start (`al run --approve`) or
+with `al approve LAYER RUN WHAT` never lowers the gate. Nothing ships because of an approval: the
+resumed run goes on through its checks, its review and the gate.
 
 ## Step 12 — Let small things ship by themselves
 
@@ -1692,6 +1752,19 @@ al: check test fails: 2 tests skipped because "no podman", forbidden by #:forbid
 
 With a rule set, output al cannot read fails the check too, with a line that says what to add
 (`pytest -rs`, `go test -v`, or `#:collect` a JUnit report): a gate never passes on tests it could not count.
+
+**al's own gate.** al's `zte` runs the sandbox, isolation and nested-engine suites of the runtime as
+the check `test-podman`, `#:in` a nix-devshell option on the host, with
+`#:forbid-skip-reason "podman is not installed"`, and its zero-touch review names `test-podman` in
+`#:require-checks`. They do not run in a nested engine because they need what the nested engine
+leaves out by design (`docs/DESIGN.md`, "An engine for the sandbox"): the cgroup freezer for
+`podman pause`, cgroup limits for memory, CPU and processes, a user-mode network with `/dev/net/tun`
+for published ports, and a subuid range, whose setuid `newuidmap` needs `no-new-privileges` off.
+`test-runtime` still runs in the run's container and still lists their skips. On disk, the git test
+image and the engine image are each built once per session from a local `python:3.12-slim` with one
+`apt-get install git`, and nothing is pulled. The label shim removes everything the session built,
+and leftovers older than six hours go when the next session starts, so nothing accumulates on the
+host.
 
 ### Run only the checks a change needs
 
@@ -2193,6 +2266,54 @@ runtime again) refuses `#:approval agent` or `auto` into a stage where agents ma
   other than its `#:environment-name`; `#:back-merge` naming FROM or TO.
 - A `#:frozen` period that is not `"YYYY-MM-DD..YYYY-MM-DD"` with real dates, the first not after the second.
 
+### The delivery request
+
+Every hands-off cycle ends with one delivery request: what is waiting to go one stage further. A
+hands-off cycle is a run of a workflow that ships without a person (zte and every other auto review
+that merges or deploys), an integration run, a verify batch and a promotion run.
+
+The source and the target come from the declarations, never from a fixed branch name:
+
+- A hands-off run that did not merge (the gate said `pr`, a fallback, a handoff) already left its own
+  request: the pull request or `PR.md` of its branch into its stage. That request is adopted: recorded and
+  shown, not rewritten.
+- A run or an integration run that merged into stage S, or a batch on S, requests S's branch into the
+  branch of S's next stage.
+- A promotion that moved its TO stage requests TO into TO's next stage. A promotion that waits for its
+  approval keeps its own request.
+- When S is the final stage, or the layer has no stages, there is no request. When the source is not ahead
+  of the target, no new request is made. A dry run makes none and says so.
+
+With `(forge github …)` or `(forge forgejo …)` and pull requests on, the request is a pull request on the
+forge. Otherwise, and with `#:pull-requests #f`, the same title and body go to
+`agents/requests/FROM-TO.md`. Either way `agents/requests/FROM-TO.json` records it.
+
+The request carries the marker `<!-- al:delivery-request FROM->TO -->`. The next cycle finds it by head and
+base and updates it in place, so a stage pair has one request that always shows the current state. An
+open pull request without the marker is a person's: it is recorded and left alone. Merged and closed
+requests are never touched; a new one is opened only when none is open and the source is ahead. al never
+merges a request and never pushes a branch for one: a source branch that is not on the forge gets the
+file. A forge that fails does not fail the run: the error is recorded and the file is written.
+
+The body says who opened it and how it moves on (`al promote LAYER FROM TO` and the declared approval),
+then:
+
+- **Runs and commits**: each run in it, with its delivered commit.
+- **What changed**: files and lines per area.
+- **Checks**: what each run's checks proved (tests passed, or not run and why), and the latest batch on
+  the source. A failure that is also red in the last batch of the target is named as a baseline failure.
+- **Unblocks**: runs waiting on either stage, and an open promotion waiting for approval.
+- **Not included**: refused changes, runs handed over to a person, and runs still open.
+
+The promotion step `request` writes the same request, so `al promote` adopts what the cycles opened
+instead of opening a second one.
+
+The run summary prints it on a `request:` line, for example
+`request:   written to agents/requests/sprint-main.md (no forge)` or
+`request:   PR #3 sprint/2026-s47 → main (updated) https://…`. `al explain` says for each workflow what
+its request will be. On the dashboard the run page shows the request's link or path and its state, and
+the layer page's promotions show the request of each stage pair.
+
 ### How al itself delivers
 
 Runs of al's own layer (`agentic/agentic.rkt`) land on the branch `integration`, which is cut from `main`.
@@ -2228,6 +2349,9 @@ al promote agentic integration main             # merges into main
 ```
 
 The promotion button on the dashboard does the same.
+
+Because the layer declares `#:pull-requests #f`, its delivery request is the file
+`agents/requests/integration-main.md`, updated after every run that lands on `integration`.
 
 A fast-forward needs `main` to be contained in `integration`. It is, as long as `main` changes only by
 promotions; a commit made on `main` directly stops the next promotion with `not-fast-forward`. The matching

@@ -50,6 +50,7 @@ def test_forgejo_issue_list_pr_merge(tmp_path):
         [{"number": 3, "title": "T", "body": "", "labels": [{"name": "adw"}, {"name": "bug"}], "state": "open"},
          {"number": 4, "title": "U", "body": "", "labels": [{"name": "bug"}], "state": "open"}],
         [{"id": 1, "body": "hi", "user": {"login": "per"}}],
+        [],
         {"number": 12, "html_url": "https://git.example.org/acme/shop/pulls/12"},
         {},
         None,
@@ -61,13 +62,16 @@ def test_forgejo_issue_list_pr_merge(tmp_path):
     assert c.list_comments(3) == [{"id": 1, "body": "hi", "user": "per"}]
     pr = c.create_pr("feat-x", "main", "Add x", "body", draft=True, reviewers=["alice"])
     assert pr == {"number": 12, "url": "https://git.example.org/acme/shop/pulls/12"}
-    assert http.calls[3]["json"] == {"head": "feat-x", "base": "main", "title": "WIP: Add x", "body": "body"}
-    assert http.calls[4]["url"].endswith("/pulls/12/requested_reviewers")
-    assert http.calls[4]["json"] == {"reviewers": ["alice"]}
+    assert http.calls[3]["method"] == "GET"  # the open pull requests of feat-x -> main, looked up first
+    assert http.calls[3]["url"].split("?")[0] == "https://git.example.org/api/v1/repos/acme/shop/pulls"
+    assert http.calls[4]["method"] == "POST" and http.calls[4]["url"].endswith("/pulls")
+    assert http.calls[4]["json"] == {"head": "feat-x", "base": "main", "title": "WIP: Add x", "body": "body"}
+    assert http.calls[5]["url"].endswith("/pulls/12/requested_reviewers")
+    assert http.calls[5]["json"] == {"reviewers": ["alice"]}
     c.merge_pr(12)
-    assert http.calls[5]["method"] == "POST"
-    assert http.calls[5]["url"] == "https://git.example.org/api/v1/repos/acme/shop/pulls/12/merge"
-    assert http.calls[5]["json"] == {"Do": "squash"}
+    assert http.calls[6]["method"] == "POST"
+    assert http.calls[6]["url"] == "https://git.example.org/api/v1/repos/acme/shop/pulls/12/merge"
+    assert http.calls[6]["json"] == {"Do": "squash"}
     assert "Authorization" not in http.calls[0]["headers"]  # no token in env -> no header
 
 
@@ -77,7 +81,8 @@ class FakeRun:
 
     def __call__(self, argv, **kw):
         self.calls.append((argv, kw))
-        return SimpleNamespace(returncode=0, stdout=self.stdout, stderr="")
+        out = self.stdout(argv) if callable(self.stdout) else self.stdout  # a callable answers per command
+        return SimpleNamespace(returncode=0, stdout=out, stderr="")
 
 
 def test_github_argv_and_env(tmp_path, monkeypatch):
@@ -97,7 +102,7 @@ def test_github_issue_pr_merge(tmp_path):
     assert run.calls[0][0] == ["gh", "issue", "view", "9", "--json", "number,title,body,labels,state",
                                "--repo", "acme/shop"]
     assert "GH_HOST" not in run.calls[0][1]["env"] and "GH_TOKEN" not in run.calls[0][1]["env"]
-    run.stdout = "https://github.com/acme/shop/pull/42\n"
+    run.stdout = lambda argv: "[]" if argv[1:3] == ["pr", "list"] else "https://github.com/acme/shop/pull/42\n"
     assert c.create_pr("b", "main", "t", "x", draft=True, reviewers=["r1"]) == {
         "number": 42, "url": "https://github.com/acme/shop/pull/42"}
     assert run.calls[-1][0] == ["gh", "pr", "create", "--head", "b", "--base", "main", "--title", "t",

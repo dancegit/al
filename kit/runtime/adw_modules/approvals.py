@@ -10,8 +10,12 @@ was given. They come in, each recorded in `state.approvals` with who, when and h
 - after a stop: `al approve LAYER RUN WHAT` ("cli"), the dashboard's Approve button
   ("dashboard"), the stand-in's `go` answer by mail or webhook ("answer:mail" …).
 
-An approval never lowers the gate: a pre-approved protected-path edit still goes to a person
-there. It only lets the run go on to the build and the review instead of stopping first.
+A pre-approval or `al approve LAYER RUN WHAT` never lowers the gate: a protected-path edit approved
+that way still goes to a person there. It only lets the run go on to the build and the review
+instead of stopping first. An approval of listed protected paths given through approve & resume
+(approvable.py: `al approve LAYER RUN --all`, the dashboard's Approve & resume) is recorded with a
+`gate` mark, with who, when and the person's note. It holds for this run only, and it is what
+`gate_approved` hands the gate once review.py reads it (`gate_takes_approvals`).
 """
 from __future__ import annotations
 
@@ -27,6 +31,8 @@ TOKEN = re.compile(r"[a-z][a-z0-9-]*(:[^\s]{1,200})?")
 GRAMMAR = ("an approval is a word of lower-case letters, digits and -, optionally followed by :ARG "
            "(1 to 200 characters, no spaces), e.g. vocabulary, edit:docs/DESIGN.md, dependency:requests")
 APPROVER = "approver"
+GATE_CAPABILITY = "ACCEPTS_APPROVED_EDITS"     # review.py sets it true once the gate reads gate_approved
+NOTE_MAX = 500
 
 
 def parse(text: str) -> str:
@@ -59,19 +65,45 @@ def covered(state: Any, need: str) -> dict[str, Any] | None:
     return None
 
 
-def record(state: Any, whats: Iterable[str], who: str, via: str) -> list[dict[str, Any]]:
-    """Add each approval (validated; one already recorded is not added again) with a UTC `at`."""
+def record(state: Any, whats: Iterable[str], who: str, via: str, *, note: str = "",
+           gate: bool = False) -> list[dict[str, Any]]:
+    """Add each approval (validated; one already recorded is not added again) with a UTC `at`, the
+    person's `note` (one line, at most NOTE_MAX characters) when given and `gate: True` when `gate`.
+    With `gate`, a token is skipped only when an entry of it already carries the mark, so the
+    person's approval for the gate is recorded with its own who and when."""
     added = []
-    known = {str(item.get("what")) for item in state.approvals if isinstance(item, dict)}
+    note = " ".join(str(note or "").split())[:NOTE_MAX]
+    recorded = [item for item in state.approvals if isinstance(item, dict)]
+    known = {str(item.get("what")) for item in recorded if item.get("gate") is True or not gate}
     for what in whats:
         token = parse(what)
         if token in known:
             continue
         known.add(token)
         item = {"what": token, "who": str(who or "unknown"), "at": state_module.now(), "via": str(via)}
+        if note:
+            item["note"] = note
+        if gate:
+            item["gate"] = True
         state.approvals.append(item)
         added.append(item)
     return added
+
+
+def gate_approved(state: Any, paths: Iterable[str]) -> list[str]:
+    """The paths of `paths` a person approved for the gate, for this run: those an entry with the
+    `gate` mark covers as `edit:PATH`. An approval given at the start or by `al approve WHAT` has
+    no mark and lets nothing through here."""
+    marked = [str(item.get("what") or "") for item in getattr(state, "approvals", None) or []
+              if isinstance(item, dict) and item.get("gate") is True]
+    return [str(path) for path in paths if any(matches(what, f"edit:{path}") for what in marked)]
+
+
+def gate_takes_approvals() -> bool:
+    """True once the gate (review.py) reads `gate_approved`; until then nothing is offered for it."""
+    from . import review  # read only: whether it declares the capability
+
+    return bool(getattr(review, GATE_CAPABILITY, False))
 
 
 def _refused(why: str, message: str) -> dict[str, Any]:
@@ -86,7 +118,8 @@ def _layer(layer: Any) -> Any:
     return layer
 
 
-def grant(layer: Any, adw_id: str, whats: Iterable[str], who: str, via: str) -> dict[str, Any]:
+def grant(layer: Any, adw_id: str, whats: Iterable[str], who: str, via: str, *, note: str = "",
+          gate: bool = False) -> dict[str, Any]:
     """Approve `whats` for a run that stopped for an approver. {status: granted | refused, reason,
     message, state}; a refusal changes nothing."""
     layer = _layer(layer)
@@ -109,15 +142,21 @@ def grant(layer: Any, adw_id: str, whats: Iterable[str], who: str, via: str) -> 
                         f"run {adw_id} is {state.status}"
                         + (f", stopped for the {stopped.get('party')}" if stopped.get("party") else "")
                         + "; only a run stopped for an approver takes an approval")
-    added = record(state, tokens, who, via)
+    added = record(state, tokens, who, via, note=note, gate=gate)
     state.save(layer.layer_dir)
+    more: dict[str, Any] = {}
+    if " ".join(str(note or "").split()):
+        more["note"] = " ".join(str(note).split())[:NOTE_MAX]
+    if gate:
+        more["gate"] = True
     with events.recording(layer.layer_dir, adw_id):
-        events.emit("approval.granted", what=tokens, who=str(who or ""), via=str(via))
+        events.emit("approval.granted", what=tokens, who=str(who or ""), via=str(via), **more)
     return {"status": "granted", "reason": "", "state": state, "added": added,
             "message": f"approved {', '.join(tokens)} for run {adw_id}"}
 
 
-def grant_and_resume(layer: Any, adw_id: str, whats: Iterable[str], who: str, via: str) -> dict[str, Any]:
+def grant_and_resume(layer: Any, adw_id: str, whats: Iterable[str], who: str, via: str, *, note: str = "",
+                     gate: bool = False) -> dict[str, Any]:
     """`grant`, then make the stopped step pending again and start the run's resume (detached).
     {status: resumed | refused, reason, message}. A run held by a live process is refused
     (`running`) and nothing is recorded."""
@@ -127,7 +166,7 @@ def grant_and_resume(layer: Any, adw_id: str, whats: Iterable[str], who: str, vi
     held = state_module.run_holder(layer.layer_dir, adw_id)
     if held:
         return _refused("running", f"run {adw_id} is held by process {held.get('pid')}: it is left to that process")
-    result = grant(layer, adw_id, whats, who, via)
+    result = grant(layer, adw_id, whats, who, via, note=note, gate=gate)
     if result["status"] != "granted":
         return {key: result[key] for key in ("status", "reason", "message")}
     state = result["state"]

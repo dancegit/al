@@ -2,7 +2,8 @@
 
 Stdlib only. `get_client(layer)` picks the client from `ir["forge"]["kind"]`.
 
-    github  -> shells out to `gh` (GH_HOST for Enterprise, GH_TOKEN from tokenEnv)
+    github  -> shells out to `gh` (GH_HOST for Enterprise; GH_TOKEN from tokenEnv, looked up through
+               localenv: environment, `local.env`, per-layer config file; `gh auth` after that)
     forgejo -> REST v1 via `http_request` (replace it in tests)
     none    -> no issues; comments go to <layer>/agents/forge-comments.log
 
@@ -35,6 +36,8 @@ import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Iterable, Mapping
+
+from . import localenv
 
 DEFAULT_BOT_MARKER = "[ADW-BOT]"
 CI_POLL_SECONDS = 30  # how often wait_for_ci asks the forge again
@@ -105,6 +108,7 @@ class ForgeClient:
     kind = "base"
     # how ship merges a pull request; a run that delivers into a stage gets the stage's #:entry
     merge_method = "squash"
+    layer: Any = None  # the loaded layer (set by get_client); where the token files are found
 
     def __init__(self, option: Mapping[str, Any], layer_dir: Path | None = None,
                  env: Mapping[str, str] | None = None):
@@ -112,6 +116,36 @@ class ForgeClient:
         self.layer_dir = Path(layer_dir) if layer_dir else None
         self.env = dict(os.environ if env is None else env)
         self.bot_marker = self.option.get("botMarker") or DEFAULT_BOT_MARKER
+        self._file_values: dict[str, str] | None = None
+
+    def token(self, name: str) -> str:
+        """The value of the token variable `name`, or "".
+
+        Looked up like every other private value of a layer: a non-empty value in the process
+        environment, then `<layer>/local.env`, then `$XDG_CONFIG_HOME/al/<layer name>.env`. The value
+        stays in the client (an HTTP header, or `GH_TOKEN` for the client's own `gh`): it is never
+        copied into `os.environ`, never logged and never written to state or events.
+        """
+        if not name:
+            return ""
+        value = self.env.get(name)
+        if value:
+            return value
+        if self._file_values is None:
+            self._file_values = localenv.load(self.layer) if self.layer is not None else {}
+        return self._file_values.get(name, "")
+
+    def token_hint(self, name: str) -> str:
+        """Where to set the token variable `name`: names and paths only, never a value."""
+        layer_dir = getattr(self.layer, "layer_dir", None) or self.layer_dir
+        layer_name = str(getattr(self.layer, "name", "") or "")
+        local = str(Path(layer_dir) / localenv.FILE_NAME) if layer_dir else f"{localenv.FILE_NAME} in the layer directory"
+        try:
+            config = localenv.config_file(layer_name) if layer_name else None
+        except Exception:  # noqa: BLE001 — e.g. no home directory
+            config = None
+        config_text = str(config) if config is not None else f"~/.config/al/{layer_name or '<layer name>'}.env"
+        return f"{name} is not set: set it in the environment, in {local} or in {config_text}"
 
     def mark(self, body: str) -> str:
         """Prefix a comment body with the bot marker (idempotent)."""
@@ -139,10 +173,20 @@ class ForgeClient:
 
     def create_pr(self, branch: str, base: str, title: str, body: str, draft: bool = False,
                   reviewers: Iterable[str] = ()) -> dict:
+        """An open pull request from `branch` into `base` is updated in place and returned; otherwise one is opened."""
         raise NotImplementedError
 
     def merge_pr(self, number: int, method: str | None = None) -> None:
         raise NotImplementedError
+
+    def find_prs(self, head: str, base: str) -> list[dict]:
+        """Every pull request from branch `head` into `base`, in any state, newest first:
+        [{"number", "url", "state": open | merged | closed | unknown, "title", "body"}]."""
+        raise ForgeError(f"forge {self.kind} cannot list pull requests")
+
+    def update_pr(self, number: int, title: str, body: str) -> None:
+        """Replace the title and body of pull request `number` (nothing else: never merges or closes)."""
+        raise ForgeError(f"forge {self.kind} cannot update pull requests")
 
     def branch_protection(self, branch: str) -> dict:
         """{"protected": bool, "linear_history": bool|None, "push_allowed": bool|None} of a branch;
@@ -228,6 +272,12 @@ class NoneForge(ForgeClient):
     def merge_pr(self, number, method=None):
         return None
 
+    def find_prs(self, head, base):
+        return []
+
+    def update_pr(self, number, title, body):
+        self._unsupported("update_pr")
+
     def pr_approvals(self, number):
         return []
 
@@ -246,9 +296,9 @@ class GitHubForge(ForgeClient):
 
     def _env(self) -> dict:
         env = dict(self.env)
-        token_env = self.option.get("tokenEnv") or ""
-        if token_env and env.get(token_env):
-            env["GH_TOKEN"] = env[token_env]
+        token = self.token(self.option.get("tokenEnv") or "")
+        if token:  # with none, `gh` uses its own `gh auth` login
+            env["GH_TOKEN"] = token
         if self.host != "github.com":
             env["GH_HOST"] = self.host
         return env
@@ -306,6 +356,19 @@ class GitHubForge(ForgeClient):
         return {"number": int(m.group(1)) if m else 0, "url": url}
 
     def create_pr(self, branch, base, title, body, draft=False, reviewers=()):
+        # GitHub refuses a second open pull request for the same head and base (a handed-over
+        # run's [needs human] one, say): that one is updated in place and returned instead.
+        found = next((p for p in self.find_prs(branch, base) if p["state"] == "open"), None)
+        if found:
+            number = found["number"]
+            self.update_pr(number, title, body)
+            if not draft:
+                view = json.loads(self.gh("pr", "view", str(number), "--json", "isDraft") or "{}")
+                if isinstance(view, dict) and view.get("isDraft"):
+                    self.gh("pr", "ready", str(number))
+            for r in reviewers:
+                self.gh("pr", "edit", str(number), "--add-reviewer", r)
+            return {"number": number, "url": found["url"]}
         args = ["pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body]
         if draft:
             args.append("--draft")
@@ -321,6 +384,24 @@ class GitHubForge(ForgeClient):
         if method not in ("squash", "merge", "rebase"):
             raise ForgeError(f"unknown merge method {method!r}")
         self.gh("pr", "merge", str(number), f"--{method}")
+
+    def find_prs(self, head, base):
+        out = self.gh("pr", "list", "--head", head, "--base", base, "--state", "all",
+                      "--json", "number,url,state,title,body", "--limit", "20")
+        data = json.loads(out or "[]")
+        found = []
+        for d in data if isinstance(data, list) else []:
+            if not isinstance(d, dict) or not d.get("number"):
+                continue
+            state = str(d.get("state") or "").lower()
+            found.append({"number": int(d["number"]), "url": str(d.get("url") or ""),
+                          "state": state if state in ("open", "merged", "closed") else "unknown",
+                          "title": d.get("title") or "", "body": d.get("body") or ""})
+        return sorted(found, key=lambda p: p["number"], reverse=True)
+
+    def update_pr(self, number, title, body):
+        """`gh pr edit`; the body goes on stdin (--body-file -), never on the command line."""
+        self.gh("pr", "edit", str(int(number)), "--title", title, "--body-file", "-", input=body)
 
     def pr_approvals(self, number):
         data = json.loads(self.gh("pr", "view", str(number), "--json", "reviews") or "{}")
@@ -420,7 +501,7 @@ class ForgejoForge(ForgeClient):
 
     def headers(self) -> dict:
         h = {"Accept": "application/json", "Content-Type": "application/json"}
-        token = self.env.get(self.option.get("tokenEnv") or "FORGEJO_TOKEN")
+        token = self.token(self.option.get("tokenEnv") or "FORGEJO_TOKEN")
         if token:
             h["Authorization"] = f"token {token}"
         return h
@@ -431,7 +512,13 @@ class ForgejoForge(ForgeClient):
             url += "?" + urllib.parse.urlencode(query)
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         http = self._http or http_request  # looked up at call time so tests can patch the module
-        _status, data = http(method, url, self.headers(), body)
+        try:
+            _status, data = http(method, url, self.headers(), body)
+        except ForgeError as exc:
+            name = self.option.get("tokenEnv") or "FORGEJO_TOKEN"
+            if self.token(name):
+                raise
+            raise ForgeError(f"{exc}; {self.token_hint(name)}") from exc
         return data
 
     @staticmethod
@@ -488,9 +575,18 @@ class ForgejoForge(ForgeClient):
         # The Forgejo API has no draft flag; a "WIP: " title prefix is the forge's draft convention.
         if draft and not title.startswith("WIP:"):
             title = f"WIP: {title}"
+        reviewers = list(reviewers)
+        # Forgejo answers 409 to a second open pull request for the same head and base (a
+        # handed-over run's [needs human] one, say): that one is updated in place and returned.
+        found = next((p for p in self.find_prs(branch, base) if p["state"] == "open"), None)
+        if found:
+            number = found["number"]
+            self.update_pr(number, title, body)  # a title without "WIP:" is no longer a draft
+            if reviewers:
+                self.request("POST", f"/pulls/{number}/requested_reviewers", {"reviewers": reviewers})
+            return {"number": number, "url": found["url"]}
         data = self.request("POST", "/pulls", {"head": branch, "base": base, "title": title, "body": body})
         number = int(data.get("number") or 0)
-        reviewers = list(reviewers)
         if reviewers and number:
             self.request("POST", f"/pulls/{number}/requested_reviewers", {"reviewers": reviewers})
         return {"number": number, "url": data.get("html_url") or data.get("url") or ""}
@@ -500,6 +596,26 @@ class ForgejoForge(ForgeClient):
         if method not in ("squash", "merge", "rebase"):
             raise ForgeError(f"unknown merge method {method!r}")
         self.request("POST", f"/pulls/{int(number)}/merge", {"Do": method})
+
+    def find_prs(self, head, base):
+        data = self.request("GET", "/pulls", query={"state": "all", "limit": 50}) or []
+        found = []
+        for d in data if isinstance(data, list) else []:
+            if not isinstance(d, dict) or not d.get("number"):
+                continue
+            if ((d.get("head") or {}).get("ref"), (d.get("base") or {}).get("ref")) != (head, base):
+                continue
+            if d.get("merged"):
+                state = "merged"
+            else:
+                state = str(d.get("state") or "").lower()
+                state = state if state in ("open", "closed") else "unknown"
+            found.append({"number": int(d["number"]), "url": str(d.get("html_url") or d.get("url") or ""),
+                          "state": state, "title": d.get("title") or "", "body": d.get("body") or ""})
+        return sorted(found, key=lambda p: p["number"], reverse=True)
+
+    def update_pr(self, number, title, body):
+        self.request("PATCH", f"/pulls/{int(number)}", {"title": title, "body": body})
 
     def pr_approvals(self, number):
         data = self.request("GET", f"/pulls/{int(number)}/reviews") or []
@@ -619,6 +735,7 @@ def get_client(layer: Any, env: Mapping[str, str] | None = None) -> ForgeClient:
     if cls is None:
         raise ForgeError(f"forge kind {kind!r} is not supported by this runtime")
     client = cls(option, layer_dir=lay.layer_dir, env=os.environ if env is None else env)
+    client.layer = lay  # the token lookup reads the layer's local.env and per-layer config file
     entry = (getattr(lay, "delivery", None) or {}).get("entry")
     if entry in ("merge", "squash", "rebase"):
         client.merge_method = entry  # the run delivers into a stage that takes changes this way
