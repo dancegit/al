@@ -19,11 +19,13 @@
   </nav>
   <div class="crumbs" id="crumbs" aria-live="polite"></div>
   <div class="spacer"></div>
+  <button id="voice-button" class="icon-button voice-button" type="button" title="Voice helper (v)" aria-label="Voice helper" aria-haspopup="dialog" aria-controls="voice-dock" aria-expanded="false" hidden><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2M5.5 14.5h5"/></svg></button>
   <div id="conn" class="conn conn-wait" title="Live connection to the dashboard server">connecting</div>
   <button id="help-button" class="icon-button" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
 </header>
 <main id="main" tabindex="-1"></main>
 <div id="overlay" class="overlay" hidden></div>
+<aside id="voice-dock" class="voice-dock" role="dialog" aria-label="Voice helper" tabindex="-1" hidden></aside>
 <script src="/static/app.js"></script>
 <script src="/static/voice.js"></script>
 </body>

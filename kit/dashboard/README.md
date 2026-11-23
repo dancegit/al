@@ -444,7 +444,13 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
 ## Voice helper
 
 A layer that declares `(voice kokoro)` (with `#:dashboard-helper`, the default) gets a voice helper panel on
-its layer page and on the panel of a repository whose layer is watched. The person speaks (hold to talk, or
+its layer page and on the panel of a repository whose layer is watched. It is reached from every page
+through the microphone button in the top bar (key `v`), which opens it in a dock that stays open across
+pages. The dock talks to the layer's conversation (no repository), the same as the layer page; with several
+voice layers it has a layer picker (the page's layer first, then the last one chosen). While the dock is
+open the in-page panels stand back, so one panel holds the microphone; Escape with the focus in the dock
+closes it, and closing it closes the microphone; when voice is off for the layer the dock says why. The
+person speaks (hold to talk, or
 always listen with voice-activity detection) or types; the helper answers aloud and in text, and proposes
 work as a **card**. How to use it: "Talk to the dashboard" in `docs/GUIDE.md`.
 
@@ -1173,7 +1179,10 @@ and stop cards, speak and cancel, echo, recordings and the service's start and r
 `tests/test_browser_voice.py` (Chrome with a fake microphone and fake engines, 1280 and 390 px) checks every
 panel state, hold to talk, always listen, approve, barge-in, the synthesizer following the audio, reduced
 motion, `--read-only` and hostile text; with `AL_DASHBOARD_SHOTS=DIR` it saves `voice-*.png` and
-`voice-exchange-{1280,390}.webm`. `tests/test_browser_voice_real.py` (markers `voice`, `slow`;
+`voice-exchange-{1280,390}.webm`. `tests/test_browser_voice_dock.py` (same harness) checks the top bar's
+voice button and its dock: open from any page, kept across pages with one live panel, the keys `v` and
+Escape, the microphone closed with the dock, the layer picker, the reason when voice is off and no button
+without a voice layer; it saves `voice-dock-{1280,390}.png`. `tests/test_browser_voice_real.py` (markers `voice`, `slow`;
 `AL_VOICE_REAL=1` and the models set up) runs the same flow with the real engines.
 `tests/testing_fixtures.py` builds a layer with targeted testing as code (`build_testing_site`: the layer
 of `tests/start_layer.py` with a `testing` IR, commands with narrower forms, the sprint, six runs: targeted,
