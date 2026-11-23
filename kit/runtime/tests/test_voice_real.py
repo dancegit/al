@@ -64,6 +64,30 @@ def call(port: int, method: str, path: str, body: bytes | None = None, kind: str
     return resp.status, data
 
 
+def test_kokoro_speaks_audible_audio_of_plausible_length(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+    sentence = "The last run passed every check and now waits for your review."   # twelve words
+    cache = serve.kokoro_cache()
+    before = sorted(p.name for p in cache.iterdir())
+    out = tmp_path / "k.wav"
+    env = {**os.environ, "AL_VOICE_TTS": "kokoro"}
+    cp = subprocess.run(["uv", "run", "--quiet", "--script", str(SERVE.parent / "say.py"), "--no-fetch", "--no-play",
+                         "--out", str(out), sentence], capture_output=True, text=True, env=env, timeout=600)
+    assert cp.returncode == 0, cp.stderr
+    assert "spoken by kokoro" in cp.stderr, cp.stderr
+    pcm, rate = serve.read_wav(out.read_bytes())
+    assert rate == 24000
+    samples = serve.pcm_to_floats(pcm)
+    seconds = len(samples) / rate
+    rms = (sum(v * v for v in samples) / len(samples)) ** 0.5
+    words_n = len(sentence.split())
+    assert rms > 0.01 and max(abs(v) for v in samples) > 0.1, (rms,)
+    assert 1.5 <= seconds <= 8 and 0.12 <= seconds / words_n <= 0.7, seconds
+    assert sorted(p.name for p in cache.iterdir()) == before          # nothing fetched
+
+
 def test_round_trip_wer(tmp_path: Path) -> None:
     reason = _skip_reason()
     if reason:
@@ -90,6 +114,7 @@ def test_round_trip_wer(tmp_path: Path) -> None:
             time.sleep(1)
         assert health["ready"], health
         assert health["fake"] is False and health["missing"] == []
+        assert health["tts_engine"] == "kokoro" and health["tts_why"] == "", health
         transcripts, ref_words, errors = [], 0, 0
         artefacts = Path(os.environ["AL_VOICE_ARTEFACTS"]) if os.environ.get("AL_VOICE_ARTEFACTS") else None
         if artefacts:

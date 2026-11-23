@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -106,7 +107,7 @@ def test_status_not_set_up_names_the_command(voice_site, voice_server):
     status = layer_voice(running, "talk")
     assert status["panel"] and status["available"] is False and status["not_set_up"] is True
     assert status["why"] == "voice is not set up: run `al voice talk setup`", status
-    assert "model.bin" in status["missing"] and "kokoro-v1.0.int8.onnx" in status["missing"]
+    assert "model.bin" in status["missing"] and "kokoro-v1.0.int8.onnx" not in status["missing"]
     voice = client(running)
     code, body = voice.post("/api/voice/service", {"layer": "talk", "action": "start"})
     assert code == 409 and "al voice talk setup" in body["error"] and body["missing"], body
@@ -474,6 +475,74 @@ def test_speak_proxies_frames_and_cancel(voice_server):
         404, {"error": "no such reply in this conversation"})
     other = client(running)   # another browser cannot have this conversation's replies spoken
     assert other.post("/api/voice/speak", {"layer": "talk", "reply": reply["id"]})[0] == 404
+
+
+def test_speak_frames_say_which_engine_spoke(voice_server):
+    running = voice_server()
+    voice = client(running)
+    assert voice.post("/api/voice/service", {"layer": "talk", "action": "start"})[0] == 200
+    code, health = voice.get("/api/voice/health?layer=talk")
+    assert code == 200 and health["tts_engine"] == "fake" and health["tts_why"] == "", health
+    reply = voice.turn("hello there")["reply"]
+    connection, response = speak(running, voice, reply["id"])
+    try:
+        frames = read_frames(response)
+    finally:
+        connection.close()
+    assert frames and all(h["engine"] == "fake" for h, _w in frames), frames
+
+
+def test_speech_off_by_setting(voice_server, monkeypatch):
+    monkeypatch.setenv("AL_VOICE_TTS", "off")
+    running = voice_server()
+    voice = client(running)
+    assert voice.post("/api/voice/service", {"layer": "talk", "action": "start"})[0] == 200
+    code, health = voice.get("/api/voice/health?layer=talk")
+    assert code == 200 and health["ready"] and health["tts_engine"] == "off", health
+    reply = voice.turn("hello there")["reply"]
+    assert reply["text"]                                   # the typed turn still answers in text
+    connection, response = speak(running, voice, reply["id"])
+    try:
+        assert response.status == 200
+        frames = read_frames(response)
+    finally:
+        connection.close()
+    assert len(frames) == 1, frames
+    head, audio = frames[0]
+    assert head["engine"] == "off" and head["last"] is True and audio == b""
+
+
+def test_voice_cache_dirs_follow_xdg(monkeypatch, tmp_path):
+    for name in ("AL_VOICE_CACHE", "AL_KOKORO_CACHE", "XDG_CACHE_HOME"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    cfg = {"sttModel": "base.en"}
+    home = Path.home()
+    assert d.voice_cache_dirs(cfg) == (home / ".cache" / "al" / "voice" / "whisper" / "base.en",
+                                       home / ".cache" / "al" / "kokoro")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "x"))
+    assert d.voice_cache_dirs(cfg) == (tmp_path / "x" / "al" / "voice" / "whisper" / "base.en",
+                                       tmp_path / "x" / "al" / "kokoro")
+    monkeypatch.setenv("AL_VOICE_CACHE", str(tmp_path / "v"))
+    monkeypatch.setenv("AL_KOKORO_CACHE", str(tmp_path / "k"))
+    assert d.voice_cache_dirs(cfg) == (tmp_path / "v" / "whisper" / "base.en", tmp_path / "k")
+    monkeypatch.delenv("AL_VOICE_CACHE")
+    monkeypatch.delenv("AL_KOKORO_CACHE")
+    monkeypatch.setenv("XDG_CACHE_HOME", "relative")
+    assert d.voice_cache_dirs(cfg)[1] == home / ".cache" / "al" / "kokoro"
+
+
+def test_voice_missing_lists_only_recognition_files(voice_site):
+    layer = types.SimpleNamespace(path=voice_site["talk"])
+    missing = d.voice_missing(layer, dict(d.VOICE_DEFAULTS))
+    assert "model.bin" in missing, missing
+    assert not [m for m in missing if m.startswith("kokoro-")], missing
+
+
+def test_readme_documents_the_voice_engines():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    for needle in ("AL_VOICE_TTS", "AL_KOKORO_CACHE", "XDG_CACHE_HOME", "Apache-2.0", "espeak-ng", "Kokoro-82M"):
+        assert needle in readme, needle
 
 
 def test_listen_echo_is_ignored(voice_site, voice_server):

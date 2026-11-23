@@ -559,6 +559,16 @@ def test_synthesizer_follows_the_audio(voice):
     assert loud_px >= 3 * max(1, quiet_px), (loud_px, quiet_px)
 
 
+def test_panel_says_which_engine_spoke(voice):
+    page = voice.open(1280)
+    voice.type_("hello there")
+    voice.seen("speaking", timeout=20)
+    until(page, "document.querySelector('.voice-panel').dataset.state === 'idle'", timeout=30000)
+    assert page.locator(".voice-engine").inner_text() == "Spoken by the test engine"
+    assert page.locator(".voice-panel[data-engine='fake']").count() == 1
+    shot(page, "voice-engine-1280.png")
+
+
 def test_reduced_motion_uses_a_level_bar(voice):
     page = voice.open(1280, reduced_motion="reduce")
     assert page.locator("canvas.voice-synth").count() == 0

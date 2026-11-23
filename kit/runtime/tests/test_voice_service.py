@@ -395,12 +395,90 @@ def test_serve_refuses_without_models(tmp_path: Path) -> None:
     assert f"voice is not set up: al voice {layer} setup" in cp.stderr
     first = json.loads(cp.stdout.splitlines()[0])
     assert "al voice" in first["error"] and any("model.bin" in m for m in first["missing"])
+    assert any(m.startswith("whisper base.en/model.bin") for m in first["missing"])
     assert not log.exists() or log.read_text() == ""                   # nothing tried to download
     assert not cache.exists() or not any(cache.rglob("*"))
     no_token = {k: v for k, v in env.items() if k != "AL_VOICE_TOKEN"}
     cp = subprocess.run([sys.executable, str(SERVE), "serve", "--fake"], capture_output=True, text=True,
                         env=no_token, timeout=60)
     assert cp.returncode == 2 and "AL_VOICE_TOKEN" in cp.stderr
+
+
+def test_health_and_frames_name_the_engine(service) -> None:
+    svc = service()
+    status, health = svc.json("GET", "/health")
+    assert status == 200 and health["tts_engine"] == "fake" and health["tts_why"] == ""
+    got = read_frames(svc, {"id": "e1", "text": "The run passed. Shall I start another?"})
+    assert len(got) == 2 and all(h["engine"] == "fake" for h, _w in got)
+
+
+def test_speech_off_answers_without_audio(service, tmp_path: Path) -> None:
+    svc = service(["still heard"], env={"AL_VOICE_TTS": "off"})
+    status, health = svc.json("GET", "/health")
+    assert status == 200 and health["ready"] is True and health["tts_engine"] == "off"
+    assert "AL_VOICE_TTS=off" in health["tts_why"]
+    got = read_frames(svc, {"id": "o1", "text": "The run passed. Shall I start another?"})
+    assert len(got) == 1
+    head, wav = got[0]
+    assert head["engine"] == "off" and head["last"] is True and wav == b""
+    status, out = svc.json("POST", "/transcribe", serve.wav_bytes(tone(1.0), 16000), headers={"Content-Type": "audio/wav"})
+    assert status == 200 and out["text"] == "still heard"
+    script = tmp_path / "fake.json"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("AL_VOICE", "AL_KOKORO"))}
+    env.update({"AL_VOICE_TOKEN": TOKEN, "HOME": str(tmp_path), "AL_VOICE_TTS": "bogus"})
+    cp = subprocess.run([sys.executable, str(SERVE), "serve", "--port", "0", "--fake", "--fake-script", str(script)],
+                        capture_output=True, text=True, env=env, timeout=60)
+    assert cp.returncode == 1
+    error = json.loads(cp.stdout.splitlines()[0])["error"]
+    assert "AL_VOICE_TTS must be kokoro, espeak or off" in error and "bogus" in error
+
+
+def test_serve_starts_when_only_kokoro_is_missing(tmp_path: Path) -> None:
+    import hashlib
+    cache = tmp_path / "cache"
+    whisper = {"config.json": b"{}", "model.bin": b"weights " * 32}
+    kokoro = {"tiny.int8.onnx": b"kokoro model", "voices-tiny.bin": b"voices"}
+
+    def entry(data: bytes) -> dict:
+        return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+    manifest = {"version": 1,
+                "whisper": {"base.en": {"repo": "x/y", "revision": "0" * 40,
+                                        "files": {n: entry(b) for n, b in whisper.items()}}},
+                "kokoro": {"release": "https://example.invalid/k", "model": "tiny.int8.onnx",
+                           "files": {n: entry(b) for n, b in kokoro.items()}}}
+    (tmp_path / "models.json").write_text(json.dumps(manifest))
+    for name, data in whisper.items():
+        path = cache / "voice" / "whisper" / "base.en" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    log = tmp_path / "net.jsonl"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("AL_VOICE", "AL_KOKORO"))}
+    env.update({"AL_VOICE_TOKEN": TOKEN, "AL_VOICE_CACHE": str(cache / "voice"), "AL_KOKORO_CACHE": str(cache / "kokoro"),
+                "AL_VOICE_MANIFEST": str(tmp_path / "models.json"), "AL_VOICE_NET_LOG": str(log), "HOME": str(tmp_path)})
+    proc = subprocess.Popen([sys.executable, str(SERVE), "serve", "--layer", str(voice_layer(tmp_path)), "--port", "0"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, start_new_session=True)
+    try:
+        line = proc.stdout.readline()
+        assert line, proc.stderr.read()
+        assert "not set up" not in line
+        svc = Service(proc, json.loads(line)["port"], tmp_path)
+        deadline = time.monotonic() + 60
+        while True:
+            status, health = svc.json("GET", "/health")
+            if not health["loading"] or time.monotonic() > deadline:
+                break
+            time.sleep(0.2)
+        assert status == 200 and health["missing"] == [], health
+        assert health["tts_engine"] in ("espeak", "off"), health
+        assert "tiny.int8.onnx" in health["tts_why"] and "voices-tiny.bin" in health["tts_why"], health
+        assert not log.exists() or log.read_text() == ""
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
 
 def test_manifest_records_the_spike_files() -> None:

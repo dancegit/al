@@ -1256,11 +1256,13 @@ al voice ~/code/myapp.al doctor     # files, device, load times and measured spe
 ```
 
 `setup` downloads only the files recorded in `adws/voice/models.json`: the faster-whisper model of
-`#:stt-model` (`base.en`, about 148 MB) into `~/.cache/al/voice/whisper/` and Kokoro's int8 model and voices
-(about 120 MB) into `~/.cache/al/kokoro/` (`$AL_VOICE_CACHE` and `$AL_KOKORO_CACHE` move them). A file whose
-checksum differs is deleted and `setup` fails with both hashes. A second `setup` downloads nothing. After
-that the speech service runs offline: it refuses every connection that is not to this machine, and never
-downloads. Until `setup` has run, the panel says "voice is not set up" and shows the command.
+`#:stt-model` (`base.en`, about 148 MB) into `$XDG_CACHE_HOME/al/voice/whisper/` and Kokoro's int8 model and
+voices (about 120 MB) into `$XDG_CACHE_HOME/al/kokoro/` (default `~/.cache/al/…`; `$AL_VOICE_CACHE` and
+`$AL_KOKORO_CACHE` move them). A file whose checksum differs is deleted and `setup` fails with both hashes. A
+second `setup` downloads nothing. After that the speech service runs offline: it refuses every connection
+that is not to this machine, and never downloads. Until `setup` has run, the panel says "voice is not set up"
+and shows the command. Without Kokoro's files the helper speaks with espeak-ng when it is installed, else not
+at all; `AL_VOICE_TTS=kokoro|espeak|off` chooses, and the panel says which engine spoke.
 
 The panel has two modes, remembered per browser (the layer's `#:listen-mode` is the default):
 
