@@ -397,7 +397,7 @@ def explain(block: dict, ir: dict) -> tuple[str, str, list[str]]:
         text = "Speech in and out, both running locally (Kokoro for speech, Whisper for recognition)."
         if (ir.get("voice") or {}).get("dashboardHelper", True):
             text += (" The dashboard gets a voice helper: you talk with it about the runs and it proposes the next one "
-                     "as a card, but nothing starts until you answer yes and click Approve "
+                     "as a card, but nothing starts until you say or click yes "
                      "(`al voice LAYER setup` downloads the speech models once).")
         return "Voice", text, []
     if head == "layer":

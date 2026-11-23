@@ -989,7 +989,7 @@
       "deployCmd": "",
       "id": "zero-touch",
       "kind": "auto",
-      "maxDiffLines": 400,
+      "maxDiffLines": 2000,
       "maxRetries": 3,
       "require": "all",
       "requireChecks": [

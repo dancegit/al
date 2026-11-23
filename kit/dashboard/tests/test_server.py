@@ -274,6 +274,20 @@ def test_page_is_static_with_a_strict_csp(server):
     assert not re.search(rb"https?://", body.replace(b"http://www.w3.org/2000/svg", b""))  # nothing from a CDN
 
 
+def test_index_has_the_voice_button_and_dock(server):
+    """The top bar's voice button and the dock it opens are in the served page, both hidden until the
+    page knows a layer that declares voice."""
+    status, _headers, body = server.get("/")
+    text = body.decode()
+    assert status == 200 and 'id="voice-button"' in text and 'id="voice-dock"' in text
+    button = re.search(r'<button\b[^>]*\bid="voice-button"[^>]*>', text)
+    dock = re.search(r'<aside\b[^>]*\bid="voice-dock"[^>]*>', text)
+    assert button and dock
+    assert re.search(r"\shidden(\s|>)", button.group(0)) and re.search(r"\shidden(\s|>)", dock.group(0))
+    assert 'aria-label="Voice helper"' in button.group(0) and 'aria-controls="voice-dock"' in button.group(0)
+    assert text.index("voice-button") < text.index('id="conn"')
+
+
 @pytest.mark.parametrize("name", ["app.js", "voice.js", "voice-worklet.js"])
 def test_page_script_never_parses_data_as_html(name):
     script = (d.STATIC_DIR / name).read_text()

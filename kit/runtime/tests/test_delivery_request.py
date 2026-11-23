@@ -406,7 +406,12 @@ def test_final_stage_and_dry_run_open_nothing(make_layer, app_repo, tmp_path):
 def test_a_forge_failure_never_fails_the_run(make_layer, app_repo, tmp_path, monkeypatch):
     layer, _remote, fake = _forgejo(make_layer, app_repo, tmp_path, monkeypatch)
 
+    real_find_prs = forge.ForgejoForge.find_prs
+
     def broken(self, head, base):
+        # only the delivery request's lookup fails; ship's own create_pr (run branch -> sprint) looks up too
+        if (head, base) != (SPRINT, "main"):
+            return real_find_prs(self, head, base)
         raise forge.ForgeError("GET https://forge.example.org/api/v1/repos/acme/webshop/pulls -> HTTP 502: bad gateway")
 
     monkeypatch.setattr(forge.ForgejoForge, "find_prs", broken)

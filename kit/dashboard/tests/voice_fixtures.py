@@ -5,7 +5,10 @@
                                    or the fake recogniser's voice-activity detector hears as speech and pauses
   fake_script(path, transcripts)   the fake recogniser's script {"transcripts": [...]}: one text per utterance
   helper_mock(layer, rules, default)  the mock helper agent's mock/helper.json (rules: (regex, reply object))
-  PROPOSE_SEARCH_BOX ...            replies the tests' mock helper gives
+  PROPOSE_SEARCH_BOX ...            replies the tests' mock helper gives (a complete proposal, the partial ones
+                                   PROPOSE_BARE_START, PROPOSE_RESUME_NO_RUN, PROPOSE_SETTLE, and NEEDS_YOU)
+  VoiceClient                      one browser of the panel: turn (spoken, typed or clicked), event (the
+                                   timeout), clear, approve, and proposal() — a read-back confirmed by "yes"
 """
 from __future__ import annotations
 
@@ -79,6 +82,10 @@ PROPOSE_SEARCH_BOX = {
     "say": "I can start plan-build for that.", "tool": "propose",
     "args": {"action": {"kind": "start", "target": {"kind": "workflow", "name": "plan-build"},
                         "prompt": "Add a search box to the notes page", "class": "feature"}}}
+PROPOSE_BARE_START = {"say": "I can start something.", "tool": "propose", "args": {"action": {"kind": "start"}}}
+PROPOSE_RESUME_NO_RUN = {"say": "I can resume it.", "tool": "propose", "args": {"action": {"kind": "resume"}}}
+PROPOSE_SETTLE = {"say": "I can settle it.", "tool": "propose", "args": {"action": {"kind": "settle"}}}
+NEEDS_YOU = {"say": "Let me see what waits for you.", "tool": "needs_you", "args": {}}
 LIST_RUNS = {"say": "Let me look at the runs.", "tool": "list_runs", "args": {"limit": 3}}
 SHELL = {"say": "Running that for you.", "tool": "shell", "args": {"cmd": "rm -rf /"}}
 SCOUT = {"say": "I can scout it.", "tool": "propose", "args": {"action": {"kind": "job", "action": "scout"}}}
@@ -89,6 +96,10 @@ LONG_STORY = {"say": "The first run planned the notes page and it passed after a
 
 DEFAULT_RULES: list[tuple[str, Any]] = [
     ("search box", PROPOSE_SEARCH_BOX),
+    ("start a run", PROPOSE_BARE_START),
+    ("^resume\\b", PROPOSE_RESUME_NO_RUN),
+    ("^settle\\b", PROPOSE_SETTLE),
+    ("what needs me", NEEDS_YOU),
     ("what is running|which runs", LIST_RUNS),
     ("shell|rm -rf", SHELL),
     ("scout", SCOUT),
@@ -159,10 +170,20 @@ class VoiceClient:
             self.cookie = cookie.split(";", 1)[0].split("=", 1)[1]
         return json.loads(data)
 
-    def turn(self, text: str, via: str = "text") -> dict:
-        status, body = self.post("/api/voice/turn", {"layer": self.layer, "text": text, "via": via})
+    def turn(self, text: str, via: str = "text", **extra: Any) -> dict:
+        """One turn, spoken, typed or clicked (`via`); `extra` goes into the body (`sure`, `repo`)."""
+        status, body = self.post("/api/voice/turn", {"layer": self.layer, "text": text, "via": via, **extra})
         assert status == 200, (status, body)
         return body
+
+    def event(self, name: str = "timeout") -> dict:
+        """The page's event that the person did not answer in time."""
+        status, body = self.post("/api/voice/turn", {"layer": self.layer, "event": name})
+        assert status == 200, (status, body)
+        return body
+
+    def clear(self) -> tuple[int, dict]:
+        return self.post("/api/voice/clear", {"layer": self.layer})
 
     def utterance(self, wav: bytes) -> tuple[int, dict]:
         return self.post(f"/api/voice/utterance?layer={self.layer}", wav, "audio/wav")
@@ -176,9 +197,14 @@ class VoiceClient:
                                                 "digest": card.get("digest", "") if digest is None else digest})
 
     def proposal(self, text: str = "start a plan for adding a search box") -> dict:
-        """A card the mock helper proposes, confirmed by a typed yes → the confirmed card."""
-        card = self.turn(text)["card"]
+        """A card the mock helper proposes and the dashboard reads back, confirmed by a typed yes → the
+        confirmed card (what the page then sends to /api/voice/approve)."""
+        read_back = self.turn(text)
+        card = read_back["card"]
         assert card and card["state"] == "proposed", card
-        confirmed = self.turn("yes")["card"]
+        assert read_back["dialogue"]["state"] == "confirm" and read_back["dialogue"]["proposal"] == card["id"], read_back
+        answer = self.turn("yes")
+        confirmed = answer["card"]
         assert confirmed["state"] == "confirmed" and confirmed["digest"], confirmed
+        assert answer["dialogue"]["state"] == "idle" and answer["dialogue"]["decision"] == "yes", answer
         return confirmed

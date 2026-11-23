@@ -1537,7 +1537,7 @@
       "deployCmd": "",
       "id": "two-reviewers",
       "kind": "auto",
-      "maxDiffLines": 400,
+      "maxDiffLines": 2000,
       "maxRetries": 2,
       "require": "all",
       "requireChecks": [

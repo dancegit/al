@@ -2,18 +2,26 @@
 # /// script
 # requires-python = ">=3.11,<3.14"
 # dependencies = [
-#   "kokoro-onnx>=0.4,<0.7",
-#   "soundfile>=0.12",
+#   # the same Kokoro packages as serve.py, so uv keeps one set of wheels
+#   "kokoro-onnx>=0.6,<0.7",
+#   "onnxruntime>=1.20",
+#   "numpy",
 # ]
 # ///
-"""Speak text with Kokoro TTS (local, ONNX, English).
+"""Speak text with Kokoro TTS (local, int8 ONNX, English), falling back to espeak-ng.
 
     say.py "text" [--voice af_heart] [--lang en-us] [--speed 1.0]
-           [--out file.wav] [--no-play] [--layer DIR]
+           [--out file.wav] [--no-play] [--no-fetch] [--layer DIR]
 
-Text is read from stdin when no argument is given. Model files are downloaded
-once into ~/.cache/al/kokoro/. Defaults come from the layer's `voice`
-declaration when --layer is given. Diagnostics go to stderr only.
+Text is read from stdin when no argument is given. Defaults come from the layer's `voice` declaration when
+--layer is given. Diagnostics go to stderr only.
+
+$AL_VOICE_TTS chooses the engine: kokoro (the default), espeak or off. Kokoro's files are the ones models.json
+records, in the cache the voice service uses ($AL_KOKORO_CACHE, else $XDG_CACHE_HOME/al/kokoro, default
+~/.cache/al/kokoro). On first use they are fetched (about 120 MB, every sha256 checked, under a lock so
+concurrent callers fetch once); --no-fetch (or AL_VOICE_NO_FETCH=1) never fetches, which is how a run speaks
+its summary. Without Kokoro's files, or when Kokoro fails to load, espeak-ng speaks when it is on PATH, else
+nothing is spoken.
 """
 from __future__ import annotations
 
@@ -29,9 +37,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-RELEASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
-MODEL_FILES = ("kokoro-v1.0.onnx", "voices-v1.0.bin")
-CACHE_DIR = Path(os.environ.get("AL_KOKORO_CACHE", Path.home() / ".cache" / "al" / "kokoro"))
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+import serve  # noqa: E402 - beside this file; standard library at module level, nothing loaded or fetched
+
 PLAYERS = (["pw-play"], ["paplay"], ["aplay", "-q"], ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"])
 
 
@@ -79,19 +90,6 @@ def download(url: str, dest: Path, attempts: int = 20) -> None:
     raise SystemExit(f"say: could not download {url} after {attempts} attempts")
 
 
-def ensure_models(cache: Path = CACHE_DIR) -> tuple[Path, Path]:
-    cache.mkdir(parents=True, exist_ok=True)
-    paths = []
-    for name in MODEL_FILES:
-        dest = cache / name
-        if not dest.exists() or dest.stat().st_size == 0:
-            url = f"{RELEASE}/{name}"
-            log(f"downloading {url} into {cache}")
-            download(url, dest)
-        paths.append(dest)
-    return paths[0], paths[1]
-
-
 def layer_defaults(layer: str | None) -> dict:
     if not layer:
         return {}
@@ -117,14 +115,44 @@ def play(path: Path) -> bool:
     return False
 
 
+def synthesize(text: str, voice: str, lang: str, speed: float, fetch: bool,
+               layer: str | None) -> tuple[list[float], int, str, str]:
+    """(samples, rate, engine, why): Kokoro (fetched first when allowed and missing), else espeak-ng, else
+    ([], 0, "off", why)."""
+    setting = serve.tts_setting()
+    manifest = serve.load_manifest()
+    rows = serve.kokoro_paths(manifest)
+    missing = serve.missing_files(serve.verify(rows, checksum=False))
+    if setting == "kokoro" and missing and fetch:
+        log(f"downloading the Kokoro model (about 120 MB) into {serve.kokoro_cache()}")
+        try:
+            serve.fetch_kokoro(manifest, download)
+        except serve.FetchError as exc:
+            log(f"could not fetch the Kokoro model: {exc}; speaking with espeak-ng instead")
+        missing = serve.missing_files(serve.verify(rows, checksum=False))
+    prog = serve.espeak_program()
+    engine, why = serve.choose_tts(setting, missing, prog, layer)
+    kokoro = manifest["kokoro"]
+    voices = next(n for n in kokoro["files"] if n.startswith("voices"))
+    model_path, voices_path = serve.kokoro_cache() / kokoro["model"], serve.kokoro_cache() / voices
+    synthesizer, engine, why = serve.pick_synthesizer(
+        engine, why, lambda: serve.KokoroSynthesizer(model_path, voices_path, threads=4),
+        (lambda: serve.EspeakSynthesizer(prog)) if prog else None)
+    if synthesizer is None:
+        return [], 0, "off", why
+    samples, rate = synthesizer.synth(text, voice, speed, lang)
+    return samples, int(rate), engine, why
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Kokoro text-to-speech")
+    ap = argparse.ArgumentParser(description="Kokoro text-to-speech, with espeak-ng as the fallback")
     ap.add_argument("text", nargs="?")
     ap.add_argument("--voice")
     ap.add_argument("--lang")
     ap.add_argument("--speed", type=float)
     ap.add_argument("--out")
     ap.add_argument("--no-play", action="store_true")
+    ap.add_argument("--no-fetch", action="store_true", help="never download Kokoro's model (run summaries)")
     ap.add_argument("--layer")
     args = ap.parse_args(argv)
 
@@ -139,22 +167,28 @@ def main(argv: list[str] | None = None) -> int:
         log("nothing to say")
         return 2
 
-    import soundfile as sf
-    from kokoro_onnx import Kokoro
-
-    model, voices = ensure_models()
-    samples, rate = Kokoro(str(model), str(voices)).create(text, voice=voice, speed=speed, lang=lang)
+    fetch = not (args.no_fetch or os.environ.get("AL_VOICE_NO_FETCH") == "1")
+    try:
+        samples, rate, engine, why = synthesize(text, voice, lang, speed, fetch, args.layer)
+    except ValueError as exc:                        # an unknown AL_VOICE_TTS
+        log(str(exc))
+        return 2
+    if engine == "off":
+        log(f"nothing spoken: {why}")
+        return 0
+    log(f"spoken by {engine}" + (f" ({why})" if why else ""))
+    wav = serve.wav_bytes(serve.floats_to_pcm(samples), rate)
 
     if args.out:
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
-        sf.write(str(out), samples, rate)
+        out.write_bytes(wav)
         if not args.no_play:
             play(out)
     elif not args.no_play:
         with tempfile.TemporaryDirectory(prefix="al-say-") as tmp:
             out = Path(tmp) / "say.wav"
-            sf.write(str(out), samples, rate)
+            out.write_bytes(wav)
             play(out)
     return 0
 

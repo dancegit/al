@@ -12,15 +12,21 @@ request (or a branch + PR.md without a forge) that a person reviews; there is no
 The checks run in the worktree, whose layer copy cannot reach the application through its relative
 `#:root`. They name the application explicitly: the runtime's ir.load and `tools/al` honour
 AL_APP_ROOT, and the checks point it at a pristine clone of the application's default branch, so
-nothing is rewritten and the user's own checkout is never touched.
+nothing is rewritten and the user's own checkout is never touched. The clone shares the application's
+git objects (none is copied) and is sparse when every workflow of the changed layer runs in a sparse
+worktree, so each dry run's worktree is born sparse too. Before the clone and before each dry run the
+free space is checked (diskuse.room_problem); a dry run's worktree is removed when it ends, and what
+a stopped run left behind is removed when the next `al improve` starts.
 """
 from __future__ import annotations
 
 import argparse
 import contextlib
 import difflib
+import fcntl
 import json
 import os
+import posixpath
 import re
 import secrets
 import shlex
@@ -258,6 +264,7 @@ def improve(a: argparse.Namespace, al: Any) -> int:
     target.prepare_repo(al, say)
     self_dir = target.self_dir
     self_dir.mkdir(exist_ok=True)
+    sweep_stale(self_dir, target.sub, say)
     (self_dir / "agentic.rkt").write_text(self_definition(al, target, a.review, say))
     gen = al.Generator(self_dir, al.compile_layer(self_dir))
     gen.generate(discard_edits=True)  # the workflow's own layer belongs to al improve: always regenerated
@@ -305,6 +312,69 @@ def improve(a: argparse.Namespace, al: Any) -> int:
     return code
 
 
+RUN_DIR = re.compile(r"[0-9a-fA-F]{8}")
+
+
+def run_is_alive(run_dir: Path) -> bool:
+    """A run holds an flock on its run.lock for its life (kit/runtime/adw_modules/state.py). A lock
+    that cannot be probed counts as held: hands off."""
+    lock = run_dir / "run.lock"
+    if not lock.exists():
+        return False
+    try:
+        with open(lock, "rb") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(handle, fcntl.LOCK_UN)
+    except OSError:
+        return True
+    return False
+
+
+def sweep_stale(self_dir: Path, sub: str, say) -> None:
+    """Remove what runs of `al improve` that are no longer alive left under `self_dir` (<layer>/.al-improve):
+    the dry-run worktrees inside each kept worktree (they belong to a clone that is gone, so git
+    cannot remove them) and the run's copy of the application. Only eight-hex run ids, only children
+    of a worktree option's directory, only paths that resolve inside `self_dir`; a held run.lock
+    means the run is alive and nothing of it is touched."""
+    try:
+        runs = sorted(p for p in (self_dir / "agents").iterdir() if p.is_dir() and not p.is_symlink())
+    except OSError:
+        return
+    inside = self_dir.resolve()
+    for run_dir in runs:
+        run_id = run_dir.name
+        if not RUN_DIR.fullmatch(run_id) or run_is_alive(run_dir):
+            continue
+        removed = 0
+        kept = self_dir / "trees" / run_id
+        if kept.is_dir() and not kept.is_symlink():
+            try:
+                options = json.loads((kept / sub / "agentic-layer.json").read_text())["environments"]
+                dirs = sorted({str(o.get("dir") or "trees") for o in options if o.get("kind") == "worktree"}) or ["trees"]
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                dirs = ["trees"]
+            for tree_dir in dirs:
+                try:
+                    children = sorted((kept / sub / tree_dir).iterdir())
+                except OSError:
+                    continue
+                for child in children:
+                    if child.is_symlink() or not child.is_dir() or inside not in child.resolve().parents:
+                        continue
+                    shutil.rmtree(child, ignore_errors=True)
+                    removed += 0 if child.exists() else 1
+        clone = run_dir / "app"
+        had_clone = clone.is_dir() and not clone.is_symlink()
+        if had_clone:
+            shutil.rmtree(clone, ignore_errors=True)
+        if removed or had_clone:
+            say(f"removed what run {run_id} left behind: {removed} dry-run worktree(s)"
+                + (" and its copy of the application" if had_clone else ""))
+
+
 # ------------------------------------------------------------------------------------------ al improve-check
 
 class CheckFailed(Exception):
@@ -348,30 +418,99 @@ def in_repo(a: argparse.Namespace) -> bool:
     return a.sub not in ("", ".")
 
 
-def pristine_app(worktree: Path, a: argparse.Namespace) -> Path:
+def cone_dir(path: Any) -> str:
+    """A repository-relative directory as git's cone mode names it ("" for the root)."""
+    text = posixpath.normpath(str(path or "").strip().replace("\\", "/")).strip("/")
+    return "" if text in (".", "") or text.startswith("..") else text
+
+
+def sparse_paths(al: Any, worktree: Path, a: argparse.Namespace) -> list[str]:
+    """The directories a pristine clone of the application needs when every workflow of the changed
+    layer runs in a sparse worktree: the union of those `#:sparse` lists, plus the directories of
+    what `al check` and the prompts read from the application (the readme, the conditional documents,
+    the adopted sources). [] = a full checkout: no generated layer, or a workflow that runs on one
+    (a worktree without #:sparse, or no worktree at all)."""
+    layer = worktree / a.sub
+    try:
+        ir = json.loads((layer / "agentic-layer.json").read_text())
+    except (OSError, ValueError):
+        return []
+    options = {o.get("id"): o for o in ir.get("environments") or []}
+    paths: set[str] = set()
+    for adw in ir.get("adws") or []:
+        sparse = [o["sparse"] for o in (options.get(i) for i in adw.get("environment") or [])
+                  if o and o.get("kind") == "worktree" and o.get("sparse")]
+        if not sparse:
+            return []
+        paths.update(cone_dir(p) for group in sparse for p in group)
+    if not paths or "" in paths:   # no workflow, or a sparse list that names the root: everything
+        return []
+    codebase = ir.get("codebase") or {}
+    read = [codebase.get("readme")] + [d.get("path") for d in codebase.get("conditionalDocs") or []]
+    read += list(al.adopt_module().load_record(layer).get("sources") or {})
+    paths.update(cone_dir(posixpath.dirname(cone_dir(p))) for p in read if p)
+    return sorted(paths - {""})
+
+
+def checkout_bytes(app: Path, branch: str, paths: list[str]) -> int:
+    """The bytes of the files a checkout of `branch` holds: all of them when `paths` is empty, else
+    what a cone-mode sparse checkout of `paths` contains (the files of the root, of each path and
+    everything below it, and of each directory above one). 0 when git fails."""
+    cp = sh(["git", "-C", str(app), "ls-tree", "-r", "-l", "-z", branch])
+    if cp.returncode != 0:
+        return 0
+    total = 0
+    for entry in cp.stdout.split("\0"):
+        meta, tab, name = entry.partition("\t")
+        fields = meta.split()
+        if not tab or len(fields) < 4 or not fields[3].isdigit():   # a submodule has size "-"
+            continue
+        where = posixpath.dirname(name)
+        if not paths or not where or any(where == p or where.startswith(p + "/") or p.startswith(where + "/") for p in paths):
+            total += int(fields[3])
+    return total
+
+
+def pristine_app(al: Any, worktree: Path, a: argparse.Namespace) -> Path:
     """A clone of the application's default branch (as the changed definition names it), made once
     per run inside the run's own record (<.al-improve>/agents/<run id>/app; `al improve` removes it
     when the run ends). Dry runs, `al check` of a non-in-repo layer and `al verify` work on it, so
-    the user's checkout is never touched, whatever state it is in."""
+    the user's checkout is never touched, whatever state it is in.
+
+    The clone shares the application's objects (`--shared`: none is copied). It is sparse when every
+    workflow of the changed layer runs in a sparse worktree (sparse_paths), and a worktree git adds
+    from a sparse checkout is sparse from its first moment, so no dry run checks out the rest of
+    the application. It is not made when the disk has no room for it."""
     self_dir = worktree.parent.parent
     clone = self_dir / "agents" / worktree.name / "app"
     if not (clone / ".git").is_dir():
         shutil.rmtree(clone, ignore_errors=True)
-        clone.parent.mkdir(parents=True, exist_ok=True)
         ir_file = (worktree / a.sub / "agentic-layer.json")
         branch = json.loads(ir_file.read_text())["codebase"]["defaultBranch"] if ir_file.is_file() else a.default_branch
-        cp = sh(["git", "clone", "-q", "--branch", branch, str(a.app), str(clone)])
-        if cp.returncode != 0:
-            raise CheckFailed(f"cannot clone the application {a.app} at {branch}: {cp.stderr.strip()}")
+        paths = sparse_paths(al, worktree, a)
+        problem = al.diskuse_module().room_problem(clone.parent, checkout_bytes(a.app, branch, paths),
+                                                   disk_usage=shutil.disk_usage)
+        if problem:
+            raise CheckFailed(f"the pristine copy of the application was not made: {problem}")
+        clone.parent.mkdir(parents=True, exist_ok=True)
+        steps = [["clone", "-q", "--shared", "--no-checkout", "--branch", branch, str(a.app), str(clone)]]
+        if paths:
+            steps.append(["-C", str(clone), "sparse-checkout", "set", "--cone", *paths])
+        steps.append(["-C", str(clone), "checkout", "-q", branch])
+        for args in steps:
+            cp = sh(["git", *args])
+            if cp.returncode != 0:
+                shutil.rmtree(clone, ignore_errors=True)   # a half-made clone is not a finished one
+                raise CheckFailed(f"cannot clone the application {a.app} at {branch}: {cp.stderr.strip()}")
     return clone
 
 
-def app_for(worktree: Path, a: argparse.Namespace, need_clone: bool) -> Path | None:
+def app_for(al: Any, worktree: Path, a: argparse.Namespace, need_clone: bool) -> Path | None:
     """The AL_APP_ROOT a check uses: none for an in-repo layer whose own worktree is an application
     checkout (unless a pristine clone is needed), else the pristine clone."""
     if in_repo(a) and not need_clone:
         return None
-    return pristine_app(worktree, a)
+    return pristine_app(al, worktree, a)
 
 
 def check_definition(al, worktree, target, a, out) -> None:
@@ -421,7 +560,7 @@ def check_scope(al, worktree, target, a, out) -> None:
 
 
 def check_layer(al, worktree, target, a, out) -> None:
-    with app_root(app_for(worktree, a, False)):
+    with app_root(app_for(al, worktree, a, False)):
         problems = al.check_layer(target)
     if problems:
         raise CheckFailed("al check found problems:\n  " + "\n  ".join(problems))
@@ -429,28 +568,38 @@ def check_layer(al, worktree, target, a, out) -> None:
 
 
 def check_dry_runs(al, worktree, target, a, out) -> None:
-    clone = pristine_app(worktree, a)
+    clone = pristine_app(al, worktree, a)
     ir = json.loads((target / "agentic-layer.json").read_text())
     env = {**{k: v for k, v in os.environ.items() if not k.startswith("ADW_")}, "AL_APP_ROOT": str(clone)}
     failed = []
     logs = worktree.parent.parent / "agents" / worktree.name / "dry-runs"
     logs.mkdir(parents=True, exist_ok=True)
+    diskuse = al.diskuse_module()
+    tree_dirs = sorted({str(o.get("dir") or "trees") for o in ir["environments"] if o["kind"] == "worktree"})
+    per_run = checkout_bytes(clone, git_out(clone, "symbolic-ref", "--short", "HEAD"), sparse_paths(al, worktree, a))
     for adw in ir["adws"]:
+        problem = diskuse.room_problem(target, per_run, disk_usage=shutil.disk_usage)
+        if problem:
+            raise CheckFailed(f"dry run of {adw['name']} not started: {problem}")
         adw_id = secrets.token_hex(4)
         klass = (adw.get("classes") or ["chore"])[0]
         argv = al_tools.argv(["uv", "run", "--quiet", str(target / "adws" / f"adw_{adw['name']}.py"),
                               f"al improve: dry run of {adw['name']}", "--dry-run", "--class", klass, "--adw-id", adw_id])
-        cp = sh(argv, cwd=target, env=env, timeout=3000)
-        (logs / f"{adw['name']}.log").write_text(cp.stdout + cp.stderr)
-        state = target / "agents" / adw_id / "state.json"
-        status = json.loads(state.read_text()).get("status") if state.is_file() else "did not start"
-        line = f"{adw['name']}: {status} (exit {cp.returncode})"
-        if cp.returncode != 0 or status not in ("passed", "handed-over"):
-            failed.append(adw["name"])
-            tail = (cp.stdout + cp.stderr).strip().splitlines()[-15:]
-            out(f"FAIL {line}\n      " + "\n      ".join(tail))
-        else:
-            out(f"ok   {line}")
+        try:
+            cp = sh(argv, cwd=target, env=env, timeout=3000)
+            (logs / f"{adw['name']}.log").write_text(cp.stdout + cp.stderr)
+            state = target / "agents" / adw_id / "state.json"
+            status = json.loads(state.read_text()).get("status") if state.is_file() else "did not start"
+            line = f"{adw['name']}: {status} (exit {cp.returncode})"
+            if cp.returncode != 0 or status not in ("passed", "handed-over"):
+                failed.append(adw["name"])
+                tail = (cp.stdout + cp.stderr).strip().splitlines()[-15:]
+                out(f"FAIL {line}\n      " + "\n      ".join(tail))
+            else:
+                out(f"ok   {line}")
+        finally:   # the dry run's worktree goes, pass or fail; its log and its record (agents/<id>) stay
+            for tree_dir in tree_dirs:
+                diskuse.release_worktree(target, clone, adw_id, tree_dir)
     if failed:
         raise CheckFailed(f"{len(failed)} of {len(ir['adws'])} workflow(s) did not complete a --dry-run: {', '.join(failed)}")
     out(f"ok: all {len(ir['adws'])} workflow(s) complete a --dry-run against a pristine copy of the application")
@@ -480,7 +629,7 @@ def check_verify(al, worktree, target, a, out) -> None:
     if not names:
         out(f"ok: {why}; nothing to verify")
         return
-    clone = pristine_app(worktree, a)
+    clone = pristine_app(al, worktree, a)
     out(f"{why}: al verify --cmd {' --cmd '.join(names)}")
     with app_root(clone):
         rows, _ = al.verify_layer(target, names, None, out)

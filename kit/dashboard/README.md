@@ -444,9 +444,16 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
 ## Voice helper
 
 A layer that declares `(voice kokoro)` (with `#:dashboard-helper`, the default) gets a voice helper panel on
-its layer page and on the panel of a repository whose layer is watched. The person speaks (hold to talk, or
-always listen with voice-activity detection) or types; the helper answers aloud and in text, and proposes
-work as a **card**. How to use it: "Talk to the dashboard" in `docs/GUIDE.md`.
+its layer page and on the panel of a repository whose layer is watched. It is reached from every page
+through the microphone button in the top bar (key `v`), which opens it in a dock that stays open across
+pages. The dock talks to the layer's conversation (no repository), the same as the layer page; with several
+voice layers it has a layer picker (the page's layer first, then the last one chosen). While the dock is
+open the in-page panels stand back, so one panel holds the microphone; Escape with the focus in the dock
+closes it, and closing it closes the microphone; when voice is off for the layer the dock says why. The
+person speaks (hold to talk, or
+always listen with voice-activity detection) or types; the helper answers aloud and in text, and a change
+of state is a turn-by-turn **conversation**: questions for what is missing, a read-back, and an explicit yes
+or no. How to use it: "Talk to the dashboard" in `docs/GUIDE.md`.
 
 - **Speech service.** Speech runs in a separate uv script, the layer's `adws/voice/serve.py`
   (faster-whisper, Kokoro int8 ONNX with 4 threads, the Silero VAD bundled in faster-whisper), so
@@ -455,19 +462,75 @@ work as a **card**. How to use it: "Talk to the dashboard" in `docs/GUIDE.md`.
   with a random token in `AL_VOICE_TOKEN` that only the dashboard knows (never on a command line or in the
   page), and proxies to it; it is stopped after 10 idle minutes and when the dashboard stops. The service
   loads models only from the cache `al voice LAYER setup` verified, never downloads, and refuses (and logs)
-  every non-loopback connection. Without the models the panel says "voice is not set up" and shows the
-  command.
+  every non-loopback connection. Without the recognition model the panel says "voice is not set up" and
+  shows the command.
+- **Voice engines.** Speech is **Kokoro-82M** (hexgrad, Apache-2.0): the int8 ONNX export of kokoro-onnx (MIT)
+  on onnxruntime (MIT), on the CPU, with no torch. `kokoro-v1.0.int8.onnx` is 92 MB and `voices-v1.0.bin`
+  28 MB; the optional fp32 `kokoro-v1.0.onnx` (325 MB) is never fetched. Kokoro is the default. When its files
+  are missing, fail their checksum or fail to load, the service falls back to **espeak-ng**
+  (GPL-3.0-or-later; run as a separate system program when it is on PATH, never bundled), then to off (the
+  helper answers in text only). `AL_VOICE_TTS=kokoro|espeak|off` chooses the engine; set it in the
+  dashboard's environment (the service inherits it; `say.py`, which speaks run summaries and the voice
+  trigger, reads it too). The panel's line under the state says "Spoken by Kokoro", "Spoken by espeak-ng
+  (Kokoro is not available)" with the reason as its title, or "Speech is off"; the service's `/health` has
+  `tts_engine` and `tts_why`, and every `/speak` frame header has `engine`. The cache is `$AL_KOKORO_CACHE`,
+  else `$XDG_CACHE_HOME/al/kokoro`, else `~/.cache/al/kokoro` (and `$AL_VOICE_CACHE`, else
+  `$XDG_CACHE_HOME/al/voice`, else `~/.cache/al/voice`, for recognition): one copy per user, shared by every
+  layer and run. Who fetches: `al voice LAYER setup`, and `say.py` on its first use; both check every sha256
+  and hold the cache's lock, so concurrent callers fetch once. Never the speech service, never a run summary
+  (`say.py --no-fetch`), never the tests.
 - **The helper's mind** is the layer's own agent, run through `adws/dispatch.py --helper --json` (the
   prompt on stdin): claude-code with every tool disabled (`--tools ""`, `--strict-mcp-config`,
   `--max-turns 1`) in an empty temporary directory, or the mock agent's `mock/helper.json`. It answers with
   one JSON object per turn. Its only tools are a fixed, read-only registry inside the dashboard
   (`HELPER_TOOLS`: `list_runs`, `run_summary`, `run_documents`, `startables`, `repo_state`, `queue`,
-  `propose`); it cannot read files, run processes or write. Recognised speech is quoted to it as data.
-- **Proposals.** `propose` validates an action (`start`, `retry`, `resume`, `answer`, `stop`, or a `scout`,
-  `check` or `explain` job) and creates a card whose summary the server writes. The person's "yes", "no"
-  or a change is classified by the server, never by the agent: yes confirms the card, a change supersedes it.
-- **Transcript** in `<voice-dir>/<conversation>.jsonl` (mode 0600). Audio stays in memory unless **Keep
-  recordings** is ticked; then utterances are written under the layer's `agents/voice/<conversation>/`.
+  `needs_you`, `propose`); it cannot read files, run processes or write. Recognised speech is quoted to it
+  as data. `needs_you` lists the layer's runs under Needs you, with why and what comes next. Read-only
+  questions ("what is running", "what needs me", "what did run X do") are answered at once: no question,
+  no card.
+- **Conversation.** A small state machine per conversation (`Dialogue`: `idle`, `clarify`, `confirm`) drives
+  every change of state; the server words every question and every read-back, never the agent.
+  - *Clarify.* The agent's `propose` takes a **partial** action (only what the person said). The server
+    works out what is missing (`action_gaps`) and asks for it, one question at a time: the layer (only in
+    the dock, when several layers have a voice panel and the person did not choose this one), the run, a
+    start's workflow or command and its request, an answer's text, a settlement's kind and what superseded
+    the run, the person's name. Nothing is guessed: several possible runs, a run or workflow that does not
+    exist, or a missing text is a question; choices come as buttons and are matched by name, by ordinal
+    ("the second one") or by a spoken run id ("run 3 F A 2"). The answer is handled by the server alone (no
+    agent call).
+  - *Read-back.* A complete action is validated and becomes a proposal (a card); the helper says the layer,
+    the action with its run and request, what will happen, and "Shall I do it?" (`read_back_text`).
+  - *Yes, no, cancel, change* are classified by the server (`classify_reply`). **Yes** (only agreement
+    words; spoken, typed or the **Yes, do it** button) confirms the proposal, and the page then sends the
+    guarded `POST /api/voice/approve` — the turn route itself never writes. **No** declines. **Cancel** or
+    **stop** ("never mind", "forget it") ends a question or a read-back with nothing done. **Change …**
+    supersedes the proposal and goes to the agent with the proposal as a note; the new action is read back
+    again (a change that yields no new proposal ends with "Nothing was done."). No spoken text of the helper
+    contains the word "yes", so its own voice is never agreement.
+  - *Silence and unclear answers.* A question or a read-back waits 45 s (`DIALOGUE_WAIT`); then the page
+    sends `{layer, event: "timeout"}` (not while the person is speaking or a turn is under way), and the
+    server itself times out an answer that comes more than 10 s later still (`DIALOGUE_GRACE`): silence and
+    a late yes are no. An unclear answer is asked again twice (`DIALOGUE_RETRIES`), then the action is
+    cancelled.
+  - *The nine kinds*, each carried out by the method its button's endpoint calls: `start` and `retry`
+    (`start_checked`, as `POST /api/start`), a `scout`, `check` or `explain` `job` (`Model.start_action`),
+    `resume`, `answer` and `stop` (the layer's launcher `--resume` / `--stop`), `approve-resume`
+    (`Model.approve_resume`, with the items and the token of the run's approval as read back; 409 `stale`
+    when it changed), `assign` — give to an agent (`Model.assign_preview` when it is read back, then
+    `Model.assign_start` with that preview's single-use nonce) and `settle` (`Model.settle`). The token and
+    the nonce stay on the server; a card never carries them.
+- **Transcript** in `<voice-dir>/<conversation>.jsonl` (mode 0600; the dashboard's own state folder,
+  `~/.local/state/al/dashboard-voice` or `--voice-dir`, outside every repository, so never committed). The
+  helper's entries carry `kind` (`question`, `readback`, `decision` with `decision`: yes, no, cancel,
+  timeout or unclear, `outcome`), shown in the panel as marks ("question", "read-back", "decision: yes",
+  "result"); a clicked answer is marked "(clicked)". `POST /api/voice/clear {layer}` (the **Clear
+  transcript** button) forgets the entries and deletes the file; what was proposed or confirmed in the
+  conversation can no longer be approved. Audio stays in memory unless **Keep recordings** is ticked; then
+  utterances are written under the layer's `agents/voice/<conversation>/`.
+- **The panel** shows the question with its option buttons, or **Yes, do it**, **No** and **Cancel** for a
+  read-back, and the time left; its state line says "Waiting for your answer" (`data-state="asking"`) or
+  "Waiting for yes or no" (`waiting`) beside listening, thinking and speaking. Every step works by keyboard
+  (Tab, Enter or Space on the buttons) and by typing.
 
 ## Testing depth and batches
 
@@ -668,16 +731,23 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
   `--no-actions` (403 "actions are off") and `--read-only` turn actions off; without the al tool they are
   409 and every button says where it looked. No action in `--in-container` or `al dashboard --podman`.
 - **The voice routes** (`/api/voice/session`, `service`, `utterance`, `listen`, `turn`, `speak`, `cancel`,
-  `recordings`) pass the same guard as the writes, in the same order and with the same messages, except
-  the `--read-only` refusal, plus the per-browser `al_voice_session` cookie (HttpOnly, SameSite=Strict);
-  `recordings` is refused under `--read-only`. They talk and listen; none of them starts anything. A layer
-  without `(voice …)` answers 404.
-- **Approval.** `POST /api/voice/approve {layer, proposal, digest}` is the one write of the voice helper. It
+  `recordings`, `clear`) pass the same guard as the writes, in the same order and with the same messages,
+  except the `--read-only` refusal, plus the per-browser `al_voice_session` cookie (HttpOnly,
+  SameSite=Strict); `recordings` is refused under `--read-only`. They talk and listen; none of them starts
+  anything or changes a layer: `turn` never writes (a yes only moves the proposal to `confirmed`), and
+  `clear` only forgets the dashboard's own transcript. `turn` takes `{layer, text, via: voice|text|click,
+  repo?, sure?}` or `{layer, event: "timeout"}`, anything else is 400. A layer without `(voice …)` answers
+  404.
+- **Approval.** `POST /api/voice/approve {layer, proposal, digest}` is the one write of the voice helper;
+  the page sends it when the person's yes confirmed the proposal (the card's **Do it now** sends it again
+  if that request did not get through). It
   passes the full write guard and the session cookie, and succeeds only for a proposal of the same browser
   session (403 otherwise) that the person confirmed by answering yes (409 "not confirmed: answer yes first"),
   unchanged since (409 "changed after confirmation"), within two minutes of the yes (410), once (409 on a
-  second click). `--read-only` refuses every card; `--no-start` (and a container without
-  `--allow-start-in-container`) refuses start, retry, resume, answer and stop; `--no-actions` refuses jobs
+  second request). Its answer's `reply` is what the helper says about the outcome ("Done. …" or "I could
+  not do it: …"). `--read-only` refuses every card; `--no-start` (and a container without
+  `--allow-start-in-container`) refuses start, retry, resume, answer, stop, approve-resume and assign (not
+  settle, which starts nothing); `--no-actions` refuses jobs
   (403; the conversation keeps working and the card says why). A start or retry goes through the same code as
   `POST /api/start`, a job through the same code as `POST /api/action`, a resume, answer or stop through the
   layer's own `adws/dispatch.py --resume/--stop --json` (a stop sends SIGTERM to the run's process group on
@@ -1163,17 +1233,43 @@ default for a repository with a setup, and the reason shown when actions are off
 `generate-wizard-job.png`. `tests/tools/test_dashboard_workspace.py` (at the
 repository root) runs the same flows end to end with the real al and the mock author agent, a create
 inside the repository included.
+`tests/test_voice_dialogue.py` covers the conversation without HTTP, with a scripted agent and an injected
+clock: `classify_reply`, `match_option`, the `Dialogue` state machine, one question at a time and never a
+guess, the read-back (layer, run, action, request; no spoken text says "yes"), yes and no, the timeout and a
+late yes, cancel at any point, change, two repeats of an unclear answer, read-only questions, the layer
+question, the three kinds `approve-resume`, `assign` and `settle`, and `Conversation.clear`.
+`tests/test_voice_conversation_http.py` covers it over HTTP: the turn route never writes and only the
+guarded approve does (its 403 and 409 refusals, single use), no / cancel / timeout / a late yes leave
+nothing to approve, the flags, the buttons' own checks for the three kinds (a stale approval token, a used
+nonce, a run that runs again; neither token nor nonce in a card), `via: click`, the timeout event,
+`POST /api/voice/clear`, and the transcript's kinds and file mode.
 `tests/test_voice_helper.py` covers proposals (confirm then approve, every refusal, expiry with an injected
-clock, single use, the flags per action kind, retry as a start), `classify_answer`, the fixed tool
+clock, single use, the flags per action kind, retry as a start), the fixed tool
 registry and that speech cannot widen it, `speakable`, `parse_helper_reply`, the four-tool loop limit,
 `is_echo` and where conversations are kept; `tests/test_voice_server.py` runs the routes against the speech
 service in fake mode (`--voice-fake`, `tests/voice_fixtures.py`): status, guards, a card from an utterance,
-yes without Approve starting nothing, Approve starting a mock run, every refusal, the job, resume, answer
-and stop cards, speak and cancel, echo, recordings and the service's start and reaping.
+a yes confirming without starting anything, the guarded approve starting a mock run, every refusal, the job, resume, answer
+and stop cards, speak and cancel, echo, recordings and the service's start and reaping, which engine spoke
+(`test_speak_frames_say_which_engine_spoke`), speech off by `AL_VOICE_TTS` (`test_speech_off_by_setting`), the
+XDG cache directories, "not set up" only for recognition files and the README's engine section.
+`kit/runtime/tests/test_voice_engines.py` (at the repository root) checks the setting, the choice of Kokoro,
+espeak-ng or off with its reason, the espeak-ng call, the checksummed first-use fetch under a lock and that
+run summaries never fetch, with stubbed engines.
 `tests/test_browser_voice.py` (Chrome with a fake microphone and fake engines, 1280 and 390 px) checks every
-panel state, hold to talk, always listen, approve, barge-in, the synthesizer following the audio, reduced
-motion, `--read-only` and hostile text; with `AL_DASHBOARD_SHOTS=DIR` it saves `voice-*.png` and
-`voice-exchange-{1280,390}.webm`. `tests/test_browser_voice_real.py` (markers `voice`, `slow`;
+panel state, hold to talk, always listen, a yes that starts a mock run (`test_yes_starts_mock_run`), words
+that are not a yes starting nothing (`test_speech_without_a_yes_never_starts`), barge-in, the synthesizer following the audio, reduced
+motion, `--read-only`, hostile text and the line saying which engine spoke
+(`test_panel_says_which_engine_spoke`, `voice-engine-1280.png`); with `AL_DASHBOARD_SHOTS=DIR` it saves
+`voice-*.png` and `voice-exchange-{1280,390}.webm`. `tests/test_browser_voice_talk.py` (same harness)
+holds whole conversations: a spoken start-a-run with two questions, the read-back and a spoken or clicked
+yes; cancel mid-way (spoken and clicked); a spoken no; an ambiguous resume clarified and declined by keyboard
+alone; silence counted as no; the visible states (listening, thinking, speaking, asking, waiting); and the
+Clear transcript button. It saves `voice-talk-clarify-1280.png`, `voice-talk-readback-{1280,390}.png`,
+`voice-talk-done-1280.png`, `voice-talk-cancelled-1280.png` and `voice-talk-declined-1280.png`.
+`tests/test_browser_voice_dock.py` (same harness) checks the top bar's
+voice button and its dock: open from any page, kept across pages with one live panel, the keys `v` and
+Escape, the microphone closed with the dock, the layer picker, the reason when voice is off and no button
+without a voice layer; it saves `voice-dock-{1280,390}.png`. `tests/test_browser_voice_real.py` (markers `voice`, `slow`;
 `AL_VOICE_REAL=1` and the models set up) runs the same flow with the real engines.
 `tests/testing_fixtures.py` builds a layer with targeted testing as code (`build_testing_site`: the layer
 of `tests/start_layer.py` with a `testing` IR, commands with narrower forms, the sprint, six runs: targeted,
