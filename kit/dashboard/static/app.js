@@ -2092,6 +2092,16 @@
     return run.reason || "";
   }
 
+  /** settledText as nodes: a settlement whose `by` is an http(s) URL (a shipped run's pull request) links it. */
+  function settledNodes(run) {
+    const text = settledText(run);
+    const by = run.settled && typeof run.settled.by === "string" ? run.settled.by : "";
+    const at = by && isHttpUrl(by) ? text.indexOf(by) : -1;
+    if (at < 0) return [text];
+    return [text.slice(0, at), h("a", { href: by, target: "_blank", rel: "noopener", text: by, onclick: (e) => e.stopPropagation() }),
+      text.slice(at + by.length)];
+  }
+
   /** Start each failed run of `runs` again (POST /api/start {again}), one after the other; `report`
    * gets one line per run. The request key again-<id> starts one run however often it is sent. */
   async function startAgain(runs, report) {
@@ -2152,7 +2162,7 @@
     const bucketOf = (r) => r.bucket || (r.status === "running" || r.status === "unknown" ? "running" : "done");
     const inView = (r) => (params.view === "all" || bucketOf(r) === params.view)
       && !(params.view === "needs-you" && params.sug === "1" && !r.suggestion)
-      && !(params.view === "needs-you" && params.appr === "1" && !approvalOf(r));
+      && !(params.view === "needs-you" && params.appr === "1" && !(approvalOf(r) || shipApprovalOf(r)));
 
     function filtered(all) {
       const q = params.q.toLowerCase();
@@ -2192,7 +2202,7 @@
           title: "runs the stand-in has a proposal for", "aria-pressed": params.sug === "1" ? "true" : "false",
           onclick: () => { params.sug = params.sug === "1" ? "" : "1"; update(); } }, "with a suggestion ", h("span", { class: "num", text: `(${suggested})` })));
       }
-      const approvable = every.filter((r) => approvalOf(r)).length;
+      const approvable = every.filter((r) => approvalOf(r) || shipApprovalOf(r)).length;
       if (params.view === "needs-you" && (approvable || params.appr === "1")) {
         chips.appendChild(h("button", { type: "button", class: `chip appr${params.appr === "1" ? " active" : ""}`, dataset: { view: "approval" },
           title: "runs that only wait for your approval: approve and they go on from where they stopped",
@@ -2262,11 +2272,27 @@
         h("td", { class: "next" }, toggle, again));
     }
 
-    /** "Give all N to agents": N = the shown needs-you runs whose layer has adws/assign.py; one layer at a time.
-     * Beside it the layer's Automatic switch (layer.assign_auto of the snapshot), with what the loop did under it. */
+    /** "Give all N to agents": N = the shown needs-you rows that can be given to an agent (their layer has
+     * adws/assign.py), walked as render() walks them: a failure group counts as one item, its newest shown
+     * run, and its other runs stay under Needs you. The same items are what the dialog lists and starts;
+     * one layer at a time. Beside it the layer's Automatic switch (layer.assign_auto of the snapshot), with
+     * what the loop did under it. */
     function renderGiveAll(runs, needs) {
-      const mine = needs ? runs.filter((r) => r.assign && r.assign.script) : [];
-      const layers = [...new Set(mine.map((r) => r.layer))];
+      const items = [];
+      const seen = new Set();
+      for (const r of needs ? runs : []) {
+        if (!(r.assign && r.assign.script)) continue;
+        if (r.group && r.group.count > 1) {
+          if (seen.has(r.group.id)) continue;
+          seen.add(r.group.id);
+          const members = runs.filter((m) => m.group && m.group.id === r.group.id && m.assign && m.assign.script);
+          const newest = members.reduce((a, b) => ((b.started || 0) > (a.started || 0) ? b : a));
+          items.push({ run: newest, group: r.group, members });
+        } else {
+          items.push({ run: r, group: null, members: [r] });
+        }
+      }
+      const layers = [...new Set(items.map((i) => i.run.layer))];
       const several = layers.length > 1;
       const key = several ? "" : layers[0] || oneLayer(runs);
       const auto = needs ? (several ? layers.map((l) => (store.layer(l) || {}).assign_auto).find((a) => a && a.available)
@@ -2309,13 +2335,13 @@
           }
         }
       }
-      if (!mine.length) { replace(giveAll, parts); return; }
-      const button = h("button", { type: "button", class: "btn integrate assign-all", text: `Give all ${mine.length} to agents`,
+      if (!items.length) { replace(giveAll, parts); return; }
+      const button = h("button", { type: "button", class: "btn integrate assign-all", text: `Give all ${items.length} to agents`,
         disabled: layers.length !== 1,
         title: layers.length !== 1 ? "runs of several layers are shown: choose one layer in the filter first"
           : "see what an agent would do for each run, in the order they start; nothing starts until you confirm",
         onclick: async () => {
-          const results = await assignAllDialog(layers[0]);
+          const results = await assignAllDialog(layers[0], items);
           if (!results) return;
           showReport([{ ok: true, text: `Give all to agents (${layers[0]}):` }, ...results.map((r) => ({ ok: r.status !== "error",
             text: r.status === "started" ? `${r.run} → ${r.run_id && r.run_id !== r.run ? r.run_id : "resumed in place"} (${r.kind})` : `${r.run}: ${r.status}${r.why ? `: ${r.why}` : ""}` }))]);
@@ -2326,9 +2352,25 @@
     /** "Approve & resume all N": N = the shown needs-you runs that only wait for an approval; one layer at a time. */
     function renderApproveAll(runs, needs) {
       const mine = needs ? runs.filter((r) => approvalOf(r)) : [];
-      if (!mine.length) { replace(approveAll); return; }
+      const ships = needs ? runs.filter((r) => shipApprovalOf(r)) : [];
+      if (!mine.length && !ships.length) { replace(approveAll); return; }
       const layers = [...new Set(mine.map((r) => r.layer))];
-      const button = h("button", { type: "button", class: "btn approve-resume-all", text: `Approve & resume all ${mine.length}`,
+      const shipLayers = [...new Set(ships.map((r) => r.layer))];
+      // "Approve & ship all N": the shown runs whose gate only asked for a person's yes; one layer at a time
+      const shipButton = ships.length ? h("button", { type: "button", class: "btn approve-ship-all", text: `Approve & ship all ${ships.length}`,
+        disabled: shipLayers.length !== 1,
+        title: shipLayers.length !== 1 ? "runs of several layers are shown: choose one layer in the filter first"
+          : "see what you approve for each run; nothing is recorded until you confirm",
+        onclick: async () => {
+          const answer = await approveShipDialog(shipLayers[0], ships.map((r) => ({ run: r.id, title: r.title || r.problem || "", approval: shipApprovalOf(r) })));
+          if (!answer) return;
+          const results = answer.results || [{ run: ships[0].id, status: answer.status, message: answer.message }];
+          const ok = (r) => r.status === "merged" || r.status === "shipped";
+          showReport([{ ok: true, text: `Approve & ship (${shipLayers[0]}):` }, ...results.map((r) => ({ ok: ok(r),
+            text: ok(r) ? `${r.run} → ${r.message || r.status}` : `${r.run}: refused${r.reason ? ` (${r.reason})` : ""}: ${r.message || ""}` }))]);
+          render();
+        } }) : null;
+      const button = !mine.length ? null : h("button", { type: "button", class: "btn approve-resume-all", text: `Approve & resume all ${mine.length}`,
         disabled: layers.length !== 1,
         title: layers.length !== 1 ? "runs of several layers are shown: choose one layer in the filter first"
           : "see what you approve for each run; nothing is recorded until you confirm",
@@ -2339,13 +2381,30 @@
           showReport([{ ok: true, text: `Approve & resume (${layers[0]}):` }, ...results.map((r) => ({ ok: r.status === "resumed",
             text: r.status === "resumed" ? `${r.run} → ${r.message || "resumed"}` : `${r.run}: refused${r.reason ? ` (${r.reason})` : ""}: ${r.message || ""}` }))]);
         } });
-      replace(approveAll, button, h("span", { class: "faint", text: " what you approve is listed first" }));
+      replace(approveAll, button, button && shipButton ? " " : null, shipButton, h("span", { class: "faint", text: " what you approve is listed first" }));
     }
 
     /** The row's Approve & resume: the button, what it approves, and what the last one answered. */
     function approveCell(run) {
       const approval = approvalOf(run);
       const result = h("span", { class: "approve-result" }, approveResultNodes(approveResults.get(run.key)));
+      const shipping = shipApprovalOf(run);
+      if (shipping) {                                    // a gate stop that only needs a yes: Approve & merge / Approve & ship
+        const ship = shipping.ship;
+        const shipButton = h("button", { type: "button", class: "btn primary approve-ship", text: ship.label || "Approve & ship", dataset: { way: ship.way || "" },
+          title: "the checks and the review passed and the gate asked for a person: see exactly what you approve first",
+          onclick: async (event) => {
+            event.stopPropagation();
+            const answer = await approveShipDialog(run.layer, [{ run: run.id, title: run.title || run.problem || "", approval: shipping }]);
+            if (!answer) return;
+            approveResults.set(run.key, { text: answer.message || answer.status || "approved", url: "", at: Date.now() });
+            showReport([{ ok: true, text: `${run.id}: ${answer.message || answer.status || "approved"}` }]);
+            render();
+          } });
+        return h("div", { class: "approve-cell" }, shipButton,
+          h("span", { class: "approve-items", title: (shipping.items || []).map((item) => item.text).join("\n") },
+            (ship.reasons || []).join(", "), " · ", shipSize(ship), " → ", shipTarget(ship)), result);
+      }
       if (!approval) return approveResults.has(run.key) ? h("div", { class: "approve-cell" }, result) : null;
       const button = h("button", { type: "button", class: "btn primary approve-resume", text: "Approve & resume",
         title: "approve what this run waits for; it goes on from where it stopped, and nothing ships without the checks, the review and the gate",
@@ -2378,7 +2437,7 @@
       }
       const bucket = bucketOf(run);
       const why = bucket === "landed" ? h("span", { class: "landing", text: landedText(run) })
-        : bucket === "settled" ? h("span", { class: "landing settled", text: settledText(run) }) : null;
+        : bucket === "settled" ? h("span", { class: "landing settled" }, settledNodes(run)) : null;
       return h("tr", { "data-key": run.key, "data-bucket": bucket, class: run.key === selectedKey ? "selected" : "", onclick: open },
         ...base, h("td", { text: run.klass }),
         h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }), h("td", {}, progress(run.steps)),
@@ -2567,7 +2626,7 @@
   const settleForm = new Map();   // run key -> {as, by, note}: kept while the card is rebuilt
 
   /** The settle card of a finished run nobody settled yet: a person records that it needs nothing more
-   * (landed, superseded or abandoned, with an optional run or commit and a note); POST /api/settle
+   * (landed, superseded, abandoned or shipped, with a run, a commit or a pull request's URL and a note); POST /api/settle
    * writes agents/<id>/settlement.json and nothing else. */
   function settleCard(detail, layerKey, reload) {
     const sm = detail.summary;
@@ -2575,9 +2634,10 @@
     settleForm.set(sm.key, form);
     const note = h("div", { class: "settle-note", role: "status" });
     const as = h("select", { class: "settle-as", "aria-label": "settle as", onchange: () => { form.as = as.value; } },
-      ["landed", "superseded", "abandoned"].map((v) => h("option", { value: v, text: v, selected: form.as === v })));
-    const by = h("input", { type: "text", class: "settle-by mono", placeholder: "by run or commit (optional)", maxlength: 40, value: form.by,
-      "aria-label": "by run or commit", oninput: () => { form.by = by.value; } });
+      ["landed", "superseded", "abandoned", "shipped"].map((v) => h("option", { value: v, text: v, selected: form.as === v })));
+    const by = h("input", { type: "text", class: "settle-by mono", placeholder: "by run or commit; shipped: the pull request URL", maxlength: 300, value: form.by,
+      "aria-label": "by run, commit or pull request URL", title: "shipped: the pull request's URL or the commit; it is listed as landed once git shows it",
+      oninput: () => { form.by = by.value; } });
     const why = h("textarea", { class: "settle-note-text", placeholder: "note (optional)", maxlength: 500, rows: 2, "aria-label": "note",
       oninput: () => { form.note = why.value; } });
     why.value = form.note;
@@ -2886,7 +2946,36 @@
   // `approval`, read from agents/<id>/approvable.json). One dialog and one endpoint for the row button,
   // "Approve & resume all N", the run page's banner and the proof-plan box's Approve button.
   const approveResults = new Map();   // run key -> {text, url, at}: what the last approve & resume answered
-  const approvalOf = (run) => (run && run.bucket === "needs-you" && run.approval ? run.approval : null);
+  // An approval of kind `ship` (a gate stop that only needs a yes) has its own buttons, dialog and endpoint.
+  const isShipApproval = (approval) => !!(approval && approval.kind === "ship" && approval.ship);
+  const approvalOf = (run) => (run && run.bucket === "needs-you" && run.approval && !isShipApproval(run.approval) ? run.approval : null);
+  const shipApprovalOf = (run) => (run && run.bucket === "needs-you" && isShipApproval(run.approval) ? run.approval : null);
+  const isHttpUrl = (text) => /^https?:\/\//.test(String(text || ""));
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const shipSize = (ship) => `${ship.diff_lines} lines, ${plural(ship.files_total, "file")}`;
+  /** Where an approved run goes: its pull request (a link only for an http(s) URL), else the target branch. */
+  function shipTarget(ship) {
+    return isHttpUrl(ship.pr_url)
+      ? h("a", { class: "approve-ship-target", href: ship.pr_url, target: "_blank", rel: "noopener", text: ship.pr_url, onclick: (e) => e.stopPropagation() })
+      : h("span", { class: "mono approve-ship-target", text: ship.target || "?" });
+  }
+  /** Exactly what a ship approval approves: the gate's reasons, the diff size and files, the target or the
+   * pull request, every check with its state, and what happens after. Text only. */
+  function shipFacts(approval) {
+    const ship = approval.ship;
+    const files = ship.files || [];
+    const more = (ship.files_total || 0) - files.length;
+    return h("div", { class: "approve-ship-facts" },
+      h("ul", { class: "approve-ship-reasons" }, (ship.reasons || []).map((reason) => h("li", { class: "mono", text: reason }))),
+      h("div", { class: "approve-ship-size" }, `${ship.diff_lines} lines in ${plural(ship.files_total, "file")}`),
+      files.length ? h("div", { class: "mono dim approve-ship-files" }, files.join("\n"), more > 0 ? `\nand ${more} more` : "") : null,
+      h("div", { class: "approve-ship-to" }, ship.way === "merge" ? "merges into " : isHttpUrl(ship.pr_url) ? "pull request " : "for ", shipTarget(ship),
+        ship.commit ? h("span", { class: "mono dim", text: ` (${String(ship.commit).slice(0, 7)})` }) : null),
+      h("ul", { class: "approve-ship-checks" }, (ship.checks || []).map((check) => h("li", { dataset: { state: check.state || "" } },
+        h("span", { class: "mono", text: check.name }), check.phase === "gate" ? h("span", { class: "dim", text: " (gate)" }) : null,
+        " ", h("span", { class: "approve-ship-check-state", text: check.state })))),
+      approval.after ? h("div", { class: "dim approve-after", text: `after: ${approval.after}` }) : null);
+  }
   function itemsLine(approval) {
     const text = ((approval && approval.items) || []).map((item) => item.text || item.id).join("; ");
     return text.length > 140 ? `${text.slice(0, 139)}…` : text;
@@ -2963,10 +3052,76 @@
     });
   }
 
-  /** "Give all N to agents" of the Needs-you view: the plans of one layer's runs in the order they would
-   * start (GET /api/assign/bulk), then Start N (POST /api/assign {action: "bulk"} with that preview's
-   * nonce). Resolves with the answer's results, or null when the person cancelled. */
-  function assignAllDialog(layerKey) {
+  /** The confirmation of Approve & ship / Approve & merge for one run or several of one layer (`entries`:
+   * [{run, title, approval}], approvals of kind ship): per run the gate's reasons, the diff size and files,
+   * the target or the pull request, every check and what happens after; the person's name (remembered) and
+   * an optional note. Confirm posts /api/approve-ship and resolves with the answer (one run: {status,
+   * message, run_id, url}; several: {approved, results}); null when cancelled. */
+  function approveShipDialog(layerKey, entries) {
+    return new Promise((resolve) => {
+      const overlay = document.getElementById("overlay");
+      let done = false;
+      let watch = null;
+      const finish = (answer) => {
+        if (done) return;
+        done = true;
+        if (watch) watch.disconnect();
+        overlay.hidden = true;
+        clear(overlay);
+        overlay.onclick = null;
+        resolve(answer);
+      };
+      const single = entries.length === 1;
+      const label = single ? (entries[0].approval.ship.label || "Approve & ship") : `Approve & ship ${entries.length} runs`;
+      const who = h("input", { type: "text", class: "approve-who", placeholder: "your name", maxlength: 80, "aria-label": "your name",
+        value: localStorage.getItem("al.approve.who") || localStorage.getItem("al.settle.who") || "" });
+      const noteText = h("input", { type: "text", class: "approve-note-text", placeholder: "a note, kept with the approval (optional)",
+        maxlength: 500, "aria-label": "a note (optional)" });
+      const note = h("div", { class: "assign-note", role: "status" });
+      const cancel = h("button", { class: "btn confirm-cancel", type: "button", text: "Cancel", onclick: () => finish(null) });
+      const go = h("button", { class: "btn primary approve-ship-go", type: "button", text: label, disabled: !who.value.trim() });
+      who.oninput = () => { go.disabled = !who.value.trim(); };
+      go.onclick = async () => {
+        const name = who.value.trim();
+        if (!name) return;
+        go.disabled = true;
+        localStorage.setItem("al.approve.who", name);
+        const one = (entry) => ({ run: entry.run, token: entry.approval.token });
+        const body = single ? { layer: layerKey, ...one(entries[0]), who: name, note: noteText.value.trim() }
+          : { layer: layerKey, runs: entries.map(one), who: name, note: noteText.value.trim() };
+        try {
+          finish(await api.post("/api/approve-ship", body));
+        } catch (error) {
+          if (!single && error.data && Array.isArray(error.data.results)) { finish(error.data); return; }
+          replace(note, h("span", { class: "badge warn", text: error.message }));
+          go.disabled = false;
+        }
+      };
+      const title = single ? `${label}: run ${entries[0].run}` : `Approve & ship ${entries.length} runs of ${layerKey}`;
+      const list = h("ol", { class: "approve-resume-list approve-ship-list" }, entries.map((entry) => h("li", { dataset: { run: entry.run } },
+        h("span", { class: "mono", text: entry.run }), " ", h("span", { class: "dim", text: entry.title || "" }),
+        single ? null : h("span", { class: "badge", text: entry.approval.ship.label || "Approve & ship" }),
+        shipFacts(entry.approval))));
+      replace(overlay, h("div", { class: "panel start-confirm approve-resume-dialog approve-ship-dialog", role: "dialog", "aria-modal": "true", "aria-label": title,
+        dataset: { role: "approve-ship-dialog" }, onclick: (e) => e.stopPropagation() },
+        h("h3", { text: title }),
+        h("p", { class: "confirm-message", text: "The checks and the review passed; the gate asked for a person, and this is that yes. You approve exactly what is listed; it is recorded with your name, the time and your note. A merge is fast-forward only and never into the default branch; everything else is settled as shipped, and a person or the forge merges it." }),
+        h("div", { class: "approve-resume-scroll" }, list),
+        h("div", { class: "approve-resume-fields" }, who, noteText), note,
+        h("div", { class: "confirm-buttons" }, cancel, go)));
+      overlay.hidden = false;
+      overlay.onclick = () => finish(null);
+      watch = new MutationObserver(() => { if (overlay.hidden) finish(null); });
+      watch.observe(overlay, { attributes: true, attributeFilter: ["hidden"] });
+      (who.value.trim() ? go : who).focus();
+    });
+  }
+
+  /** "Give all N to agents" of the Needs-you view: the plans of the shown items of one layer in the order
+   * they would start (GET /api/assign/bulk?runs=, each item's run; a failure group's item is its newest
+   * run), then Start N (POST /api/assign {action: "bulk"} with that preview's nonce and the same runs).
+   * Resolves with the answer's results, or null when the person cancelled. */
+  function assignAllDialog(layerKey, items) {
     return new Promise((resolve) => {
       const overlay = document.getElementById("overlay");
       let done = false;
@@ -2995,19 +3150,29 @@
       watch = new MutationObserver(() => { if (overlay.hidden) finish(null); });
       watch.observe(overlay, { attributes: true, attributeFilter: ["hidden"] });
       cancel.focus();
-      api(`/api/assign/bulk?layer=${enc(layerKey)}`).then((p) => {
+      const ids = items.map((i) => i.run.id);
+      const groupOf = new Map(items.filter((i) => i.group).map((i) => [i.run.id, i]));
+      const groupLine = (run) => {
+        const item = groupOf.get(run);
+        if (!item) return null;
+        const others = item.members.filter((m) => m.id !== run).map((m) => m.id).join(" ");
+        return h("div", { class: "assign-group dim",
+          text: `newest of ${item.members.length} runs failing at ${item.group.step} the same way; the others (${others}) stay under Needs you` });
+      };
+      api(`/api/assign/bulk?layer=${enc(layerKey)}&runs=${ids.map(enc).join(",")}`).then((p) => {
         if (done) return;
         replace(list, h("ol", { class: "assign-bulk-plans" }, (p.plans || []).map((plan) => h("li", { class: plan.skip ? "skipped" : "", dataset: { run: plan.run } },
           h("span", { class: "mono", text: plan.run }), " ", h("span", { class: "dim", text: plan.title || "" }),
-          h("div", { class: plan.skip ? "skip dim" : "summary", text: plan.skip ? `skipped: ${plan.skip}` : plan.summary || plan.kind }))))
-          , !(p.plans || []).length ? h("div", { class: "dim", text: "no run of this layer needs you" }) : null);
+          h("div", { class: plan.skip ? "skip dim" : "summary", text: plan.skip ? `skipped: ${plan.skip}` : plan.summary || plan.kind }),
+          groupLine(plan.run))))
+          , !(p.plans || []).length ? h("div", { class: "dim", text: "none of the shown runs can be given" }) : null);
         go.textContent = `Start ${p.startable || 0}`;
         go.disabled = !(p.start && p.start.enabled && p.nonce && p.startable);
         if (p.start && !p.start.enabled) replace(note, h("span", { class: "faint", text: p.start.why }));
         go.onclick = async () => {
           go.disabled = true;
           try {
-            const answer = await api.post("/api/assign", { layer: layerKey, action: "bulk", confirm: p.nonce });
+            const answer = await api.post("/api/assign", { layer: layerKey, action: "bulk", confirm: p.nonce, runs: ids });
             finish(answer.results || []);
           } catch (error) {
             replace(note, h("span", { class: "badge warn", text: error.message }));
@@ -3163,7 +3328,7 @@
             sm.bucket === "landed" && sm.landed_by ? h("a", { class: "badge good landing landed-by", href: `#/run/${enc(layerKey)}/${enc(sm.landed_by)}`,
               title: "the integration run that brought it onto its target", text: landedText(sm) })
               : sm.bucket === "landed" ? h("span", { class: "badge good landing", text: landedText(sm) }) : null,
-            sm.bucket === "settled" ? h("span", { class: "badge settled", text: settledText(sm) }) : null,
+            sm.bucket === "settled" ? h("span", { class: "badge settled" }, settledNodes(sm)) : null,
             sm.integrates ? h("a", { class: "badge info integrates acts-on", href: `#/run/${enc(layerKey)}/${enc(sm.integrates)}`, text: `integrates ${sm.integrates}` }) : null,
             sm.acts_on && sm.acts_on.kind === "promotion" ? h("a", { class: "badge info acts-on", href: `#/layer/${enc(layerKey)}`,
               title: "the promotion's row on the layer's page", text: `promotes ${sm.acts_on.from} → ${sm.acts_on.to}` }) : null,
@@ -3263,9 +3428,26 @@
           (broke.failing || []).length ? h("div", {}, "Failing: ", h("span", { class: "mono", text: broke.failing.join(", ") })) : null,
           h("div", {}, broke.fix_run ? ["Fix run: ", run(broke.fix_run)] : "No fix run was opened (the layer's #:on-batch-failure has no open-fix).")));
       }
+      const shipping = shipApprovalOf(sm);
+      if (shipping) {
+        // first on the page: the checks and the review passed, and the gate asked for this person's yes
+        const result = h("div", { class: "approve-result", role: "status" });
+        const button = h("button", { type: "button", class: "btn primary approve-ship", text: shipping.ship.label || "Approve & ship",
+          dataset: { way: shipping.ship.way || "" }, onclick: async () => {
+            const answer = await approveShipDialog(layerKey, [{ run: sm.id, title: sm.title || "", approval: shipping }]);
+            if (!answer) return;
+            approveResults.set(sm.key, { text: answer.message || answer.status || "approved", url: "", at: Date.now() });
+            replace(result, approveResultNodes(approveResults.get(sm.key)));
+            button.disabled = true;
+            load();
+          } });
+        body.insertBefore(h("div", { class: "card approve-banner", role: "status", dataset: { role: "approve-banner" } },
+          h("div", { class: "card-head" }, h("h3", { text: "This run waits for your approval to ship" }), h("span", { class: "badge", text: "ship" })),
+          shipFacts(shipping), h("div", { class: "approve-row" }, button, " ", result)), body.firstChild);
+      }
       const approval = approvalOf(sm);
       const approved = approveResults.get(sm.key);
-      if (approval || (approved && Date.now() - approved.at < 120000)) {
+      if (!shipping && (approval || (approved && Date.now() - approved.at < 120000))) {
         // first on the page: the run waits only for this person's approval (or was just approved here)
         const result = h("div", { class: "approve-result", role: "status" }, approveResultNodes(approved));
         const banner = h("div", { class: `card approve-banner${approval ? "" : " done"}`, role: "status", dataset: { role: "approve-banner" } });

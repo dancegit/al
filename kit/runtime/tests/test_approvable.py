@@ -3,6 +3,7 @@ what the items are, where it resumes and what happens after; and the one action 
 approval where the runtime reads it and resumes the run with the mechanism its stop already has."""
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -278,6 +279,16 @@ def test_write_stores_the_record_with_basis_and_token(make_layer, app_repo):
     state.save(layer)
     assert approvable.basis(layer, RUN) != stored["basis"]
     assert approvable.derive(layer, RUN)["token"] != stored["token"]
+
+
+def test_tokens_of_other_kinds_are_unchanged(make_layer, app_repo):
+    """A record without a `ship` object digests exactly run, basis, from_step and the items: a page
+    that was open before an upgrade still holds a valid token."""
+    layer = _proof_stop(make_layer, app_repo)
+    found = approvable.derive(layer, RUN)
+    assert found["kind"] == "proof" and "ship" not in found
+    shown = [found["run"], found["basis"], found["from_step"], [[item["id"], item["text"]] for item in found["items"]]]
+    assert found["token"] == hashlib.sha256(json.dumps(shown).encode("utf-8")).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------- approve & resume

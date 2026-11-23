@@ -177,9 +177,26 @@ confirmation (`[data-role='approve-resume-dialog']`) that lists every item in fu
 needs your name (kept in the browser as `al.approve.who`) and takes an optional one-line note, then
 sends `POST /api/approve-resume` (below). What it answered is shown in the row or the banner and
 above the table. Nothing is offered for a stop only the layer author or the operator clears, nor for
-a failing check, a limit or a promotion. In the Needs-you view, **Give all N to agents** (one layer at a time: it
-is disabled while runs of several layers are shown) opens a dialog with every run's plan in the order
-they would start (resumes and restarts first, then one integration at a time; what stays with a person
+a failing check, a limit or a promotion. A handed-over run whose checks and review passed and whose
+gate only asked for a person (its `approval` has kind `ship`: `diff-too-large`, `class-not-allowed`,
+`needs-person` or a `ship-failed` fallback) has **Approve & merge** or **Approve & ship** instead
+(`button.approve-ship`, its `data-way` one of `merge`, `pr`, `forge`, `branch`): merge when the
+target is a stage branch agents may merge into, ship when the run has a pull request or a person
+merges the target. Beside it are the gate's reasons, the diff size and the target or the pull request
+(a link only for an `http(s)://` URL); **Approve & ship all N** (`button.approve-ship-all`, one layer
+at a time) takes every shown one, and the chip counts these runs too. The confirmation
+(`[data-role='approve-ship-dialog']`) lists per run the reasons (`ul.approve-ship-reasons`), "N lines
+in M files" with the files (`.approve-ship-files`, at most 20 and "and K more"), the target or the
+pull request, every check with its state (`ul.approve-ship-checks li[data-state]`) and what happens
+after; it needs your name (the same `al.approve.who`), takes an optional note and sends `POST
+/api/approve-ship` (below) with `button.approve-ship-go`. The run page's banner reads "This run waits
+for your approval to ship" with the same facts and button. The dashboard runs no git command for it:
+the layer's runtime records the approval, fast-forwards the stage branch (never the default branch)
+or settles the run as `shipped`. A settlement whose `by` is an `http(s)://` URL shows it as a link.
+In the Needs-you view, **Give all N to agents** (one layer at a time: it
+is disabled while runs of several layers are shown; N counts the shown rows, a failure group as one
+item handed over as its newest run, its other runs left under Needs you) opens a dialog with the plan
+of each of those items, and only those, in the order they would start (resumes and restarts first, then one integration at a time; what stays with a person
 last, as "skipped: why") and **Start N**; what started is listed above the table. Beside it is the
 switch **Automatic** (`Automatic: off` / `Automatic: on`, one layer at a time). While it is on, the
 dashboard does for every run of the layer under Needs you what a person would do with **Give to an
@@ -562,8 +579,8 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
 ## Safety
 
 - **Writes, guarded** (and the stand-in's three, below). Only GET and HEAD, plus `POST /api/models`, `POST /api/start`,
-  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, `POST /api/promotion`, `POST /api/integrate`, `POST /api/assign`, `POST /api/approve` and `POST /api/approve-resume`, which start or resume runs through the layer's own scripts, and the three Testing writes `POST /api/testing`, `POST /api/batch` and `POST /api/run-testing`), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
-  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle`, `/api/integrate`, `/api/assign`, `/api/approve`, `/api/approve-resume`, `/api/testing`, `/api/batch` or `/api/run-testing` is
+  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, `POST /api/promotion`, `POST /api/integrate`, `POST /api/assign`, `POST /api/approve`, `POST /api/approve-resume` and `POST /api/approve-ship`, which start or resume runs (or, for the last, record a ship approval and merge or settle the run) through the layer's own scripts, and the three Testing writes `POST /api/testing`, `POST /api/batch` and `POST /api/run-testing`), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
+  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle`, `/api/integrate`, `/api/assign`, `/api/approve`, `/api/approve-resume`, `/api/approve-ship`, `/api/testing`, `/api/batch` or `/api/run-testing` is
   405 too). No endpoint changes a run's records (a settlement and a testing request are files of their own), and only an approved voice proposal can resume, answer or stop a run. All four writes pass one guard
   (`Handler._write_guard`): the token as for every request, but from the `Authorization` header or
   the cookie only (a token in the query string is refused); a loopback `Host` when there is no
@@ -782,10 +799,13 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
 
 ### `POST /api/settle`
 
-`{layer, run, as: landed|superseded|abandoned, by, note, who}` passes the same guard as every write (a body
+`{layer, run, as: landed|superseded|abandoned|shipped, by, note, who}` passes the same guard as every write (a body
 of at most 4 KiB; refused with `--read-only`). Only those keys are accepted. `by` is empty, a run of the
 layer (8 hexadecimal characters with a `state.json`) or a commit (7 to 40 hexadecimal characters that `git
-cat-file -e` finds in the application repository); a note is at most 500 characters (kept as one
+cat-file -e` finds in the application repository). `shipped` (shipped to a pull request or a branch, not
+merged yet) needs `by`: the pull request's URL (`http://` or `https://`, at most 300 characters, not
+looked up) or the commit; such a run leaves Needs you, is checked for landing like an unsettled one and
+moves to Landed once git shows its work on the target. A note is at most 500 characters (kept as one
 paragraph), `who` at most 80 printable characters on one line. An unknown layer or run is 404, a running or
 unknown run 409, any other bad field 400. It writes `agents/<id>/settlement.json` (above) and nothing
 else, recomputes the layer's buckets and answers `{"status": "settled", "record": …}`. `al settle` writes
@@ -866,6 +886,39 @@ Several runs are taken in the order given, each on its own: 202 `{"status": "don
 resumed, else 409 with the same body. `al approve LAYER RUN --all` does the same for one run from
 the command line.
 
+### `POST /api/approve-ship`
+
+Approve & ship (Approve & merge) of a handed-over run whose gate only asked for a person's yes. One
+run: `{layer, run, token, who, note}`; several of one layer: `{layer, runs: [{run, token}, …], who,
+note}` (1 to 50 runs, each once); nothing else. `token` is the token of the run's `approval` (kind
+`ship`) as the page showed it; `who` is 1 to 80 printable characters; `note` is optional, at most 500
+printable characters on one line. It passes the guard of every write and is refused with `--no-start`
+and in a container without `--allow-start-in-container` (403); a malformed body is 400, an unknown
+layer or run 404, a GET 405.
+
+The dashboard first compares with what it shows now: the run must be under Needs you with an
+`approval` of kind `ship` whose token is the one sent, else 409 `{"error", "reason": "stale"}`. Then
+the layer's own `adws/dispatch.py --approve-ship RUN --token T --who W [--note N] --json` (argv list,
+no shell, without the dashboard's token) derives the facts again, records the approval in the run's
+`state.approvals` as `ship:<reason>` (with who, when, `via: dashboard` and the note) and acts: a
+fast-forward of the stage branch (never the default branch or the final stage) and a settlement as
+`landed`, or a settlement as `shipped` to the run's pull request (one is opened where the forge takes
+them) or to its branch. No git command runs in the dashboard. 200 `{"status": "merged" | "shipped",
+"message", "run_id", "url": "#/run/K/RUN"}`. A refusal of the runtime is 409 `{"error", "reason",
+"refused": true}`: `stale` (what it derives is not what was shown), `not-waiting` (nothing is offered
+any more, with why: a rejected review, a decision that is a person's only), `running` (a live process
+holds the run), `checks-not-green` (a check failed, did not run or is stale; the error names it),
+`branch-changed` (the run's branch is not the commit the gate judged), `target-moved` (the stage
+branch moved: give the run to an agent, or merge it by hand); these record nothing. `ship-failed`
+means the approval is recorded but the merge or the pull request failed, with the reason; nothing is
+settled. A launcher that failed is 502 with the tail of its stderr. `POST /api/approve-resume` with a
+ship approval's token is 409 with reason `ship`.
+
+Several runs are taken in the order given, each on its own: 200 `{"status": "done", "approved": N,
+"results": [{run, status: merged | shipped | refused, message, reason, url}]}` when at least one was
+approved, else 409 with the same body. `al approve LAYER RUN ship` does the same for one run from the
+command line.
+
 ### `GET /api/integrate/preview`, `POST /api/integrate`, `GET /api/settle/evidence`
 
 `GET /api/integrate/preview?layer=K&run=ID` is read-only (the host and token checks of every GET): it
@@ -943,12 +996,14 @@ unknown layer or run 404.
 `GET /api/assign/bulk?layer=K` runs `adws/assign.py all RUN … --preview --json` with the layer's runs
 under Needs you and answers `{layer, plans: [{run, title, kind, summary, skip, why}], startable, start}`
 in the order a bulk start gives them, `skip` saying why a run is left out, and one `nonce` for exactly
-those runs.
+those runs. `runs=ID,ID` is optional and limits the preview to those runs (the rows the page shows, at
+most 200; echoed as `runs`): empty or malformed is 400, an id that is not a stopped run of the layer
+under Needs you is 409 naming it, and the `nonce` covers exactly that list.
 
-`POST /api/assign` takes `{layer, run, action: start|approve|bulk, confirm, note, override, item, who}`
-and nothing else (`run`, `note`, `override` to start; `run`, `item`, `who` to approve; neither for
-`bulk`; any other key, or a key of another action, is 400), or `{layer, action: "auto", on}` (the
-Automatic switch, below), behind the guard of every write (loopback
+`POST /api/assign` takes `{layer, run, action: start|approve|bulk, confirm, note, override, item, who,
+runs}` and nothing else (`run`, `note`, `override` to start; `run`, `item`, `who` to approve; only
+`runs` for `bulk`; any other key, or a key of another action, is 400), or `{layer, action: "auto", on}`
+(the Automatic switch, below), behind the guard of every write (loopback
 Host or token, the token never from the URL, Origin naming the Host, `X-AL-Dashboard: 1`,
 `application/json`, at most 4 KiB, not `--read-only`), and every action is refused with `--no-start` and
 in a container without `--allow-start-in-container` (403), as `POST /api/integrate` is. `confirm` is the
@@ -968,6 +1023,8 @@ preview is stale: open it again", and a refused confirmation spends it.
   already or one that is a person's only is 409 `bad-item`.
 - `bulk`: `assign.py all RUN … --by dashboard --json` with the runs of the bulk preview: 202 `{"status":
   "started", "started": N, "results": [{run, kind, status: started|skipped|error, run_id, why, url}]}`.
+  `runs`, optional, is a list of run ids (400 otherwise) and must equal the list the preview was asked
+  for; a different one is 409 "the preview is stale" and spends the nonce.
 - `auto`: the body is exactly `{layer, action: "auto", on: true|false}` (no `confirm`: it starts
   nothing itself; anything else is 400 `expected {"layer", "action": "auto", "on": true|false}; nothing
   else`). It writes `agents/settings/assign.json` (`{"version": 1, "auto": true}`, atomically) or
@@ -1156,7 +1213,7 @@ the agent, "I approve this, continue" and the plan that remains, **Give all N to
 plans first, and the left-out count on the Artefacts tab. With `AL_DASHBOARD_SHOTS=DIR` it saves
 `work-assign-needs-you-1280.png`, `work-assign-button-1280.png`, `work-assign-preview-rejected-1280.png`,
 `work-assign-preview-rejected-390.png`, `work-assign-preview-person-1280.png`, `work-assign-approved-1280.png`,
-`work-assign-bulk-1280.png` and `work-assign-left-out-1280.png`. The Automatic switch:
+`assign-bulk-1280.png` and `work-assign-left-out-1280.png`. The Automatic switch:
 `tests/test_assign_auto_model.py` checks the setting's one format, its atomic write and removal, the
 `assign_auto` view of a layer (a broken file, `--read-only`, `--no-start`, `--no-stand-in`, the
 container, a layer without the script), which runs the loop takes (every run under Needs you, oldest
@@ -1182,6 +1239,20 @@ token, an unknown item, a run whose process is alive), several runs at once, mal
 guard; `tests/test_browser_approve_resume.py` (Chrome) the chip, the row button with its confirmation
 and the run page's banner. With `AL_DASHBOARD_SHOTS=DIR` it saves `run-approve-row.png`,
 `run-approve-confirm.png` and `run-approve-banner.png`.
+
+`tests/ship_fixtures.py` gives a test layer a handed-over run whose gate said `diff-too-large` (its
+branch with one commit, the stage branch `integration`, green checks, a passed review) and can write
+the matching `approvable.json` of kind `ship`. `tests/test_approve_ship_model.py` checks the row's
+`approval.ship` (hostile text kept as data, a record without the object not shown), the buckets of a
+`shipped` settlement (settled, then landed once git shows it) and its `by`;
+`tests/test_approve_ship_http.py` `POST /api/approve-ship` on a real layer with its real launcher: the
+approval recorded with who and note, the stage branch fast-forwarded and the default branch untouched,
+a stale token, red checks refused with the reason, several runs at once, malformed bodies, the guard,
+`--no-start`, `POST /api/approve-resume` refusing a ship approval and `POST /api/settle` as `shipped`;
+`tests/test_browser_approve_ship.py` (Chrome) the row button, the confirmation, the pull request link,
+"Approve & ship all N" and the run page's banner. With `AL_DASHBOARD_SHOTS=DIR` it saves
+`ship-approve-row.png`, `ship-approve-confirm.png`, `ship-approve-all.png` and
+`ship-approve-banner.png`.
 
 `tests/test_workspace.py` covers the workspace scan (states, sibling layers, al scout's summary, depth,
 symlinks out of the folder, the file and time bounds, git without fsmonitor or hooks, the cache and the
