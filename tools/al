@@ -98,8 +98,10 @@
   al kpis    LAYER [--since YYYY-MM-DD] [--json|--md]
                                    numbers from the layer's run records: runs by outcome and why, attempts per step,
                                    review rounds, how often a person acted, time and cost; no names, paths or prompts
-  al settle  LAYER RUN --as landed|superseded|abandoned [--by RUN|COMMIT] [--note T] [--who NAME]
-                                   record that a finished run needs nothing more (agents/<id>/settlement.json)
+  al settle  LAYER RUN --as landed|superseded|abandoned|shipped [--by RUN|COMMIT|PR-URL] [--note T] [--who NAME]
+                                   record that a finished run needs nothing more (agents/<id>/settlement.json);
+                                   shipped: shipped to a pull request or a branch, not merged yet (--by says
+                                   which); `al runs` lists it as landed once git shows it
   al integrate LAYER RUN|BRANCH [--model-set TIER] [--detach] [--preview] [--approve [--who NAME]] [--json]
                                    bring a handed-over run that could not merge onto its target branch with an
                                    agent: prepare, resolve the conflicts, the checks, the review, ship; the run is
@@ -144,6 +146,10 @@
                                    and resume it; 0 resumed, 1 refused, 2 bad use
   al approve LAYER RUN --all [--who NAME] [--note TEXT]
                                    approve every item RUN waits for a person's approval of and resume it
+  al approve LAYER RUN ship [--who NAME] [--note TEXT]
+                                   approve a gate stop that only needs your yes (the diff is too large, the class
+                                   is not one the gate ships, the ship failed): the stage branch is fast-forwarded,
+                                   or the run is settled as shipped to its pull request or branch
   al dashboard --remote HOST [--port N] [--remote-port N] [--open]
                                    watch a deployed layer through an ssh tunnel (loopback on both ends)
   al deploy  LAYER --to HOST [--path DIR] [--as ID] [--provision [--yes]] [--dry-run] [--no-enable] | --status
@@ -3167,14 +3173,33 @@ def approve_cli(a: argparse.Namespace) -> int:
     """`al approve LAYER RUN WHAT… [--who NAME]`: approve what a run stopped for and resume it.
     `al approve LAYER RUN --all [--who NAME] [--note TEXT]`: approve every item the run waits for a
     person's approval of (adw_modules/approvable.py) and resume it.
-    0 resumed, 1 refused (unknown run, not stopped for an approver, nothing waits), 2 bad use."""
+    `al approve LAYER RUN ship [--who NAME] [--note TEXT]`: approve a gate stop that only needs a
+    person's yes; the runtime merges into the stage branch or settles the run as shipped
+    (adw_modules/shipapproval.py).
+    0 resumed, merged or shipped, 1 refused (unknown run, not stopped for an approver, nothing waits,
+    checks not green), 2 bad use."""
     layer = a.layer.resolve()
     if bool(a.what) == bool(a.all):
         print("al approve: name what you approve (WHAT …) or --all", file=sys.stderr)
         return 2
-    if a.note is not None and not a.all:
-        print("al approve: --note goes with --all", file=sys.stderr)
+    ship = a.what == ["ship"]
+    if a.note is not None and not (a.all or ship):
+        print("al approve: --note goes with --all or ship", file=sys.stderr)
         return 2
+    if ship:
+        approvable, _shipapproval, ir_module, errors = layer_runtime_modules(layer, "approvable", "shipapproval")
+        try:
+            loaded = ir_module.load(layer)
+        except errors.LayerError as exc:
+            raise AlError(str(exc)) from exc
+        for line in approvable.lines(approvable.derive(loaded, a.run)):
+            print(f"approve: {line}", flush=True)
+        result = approvable.approve_ship(loaded, a.run, a.who or _login_name(), "cli", note=a.note or "")
+        if result["status"] in ("merged", "shipped"):
+            print(f"approve: {result['message']}")
+            return 0
+        print(f"al approve: refused ({result.get('reason')}): {result.get('message')}", file=sys.stderr)
+        return 1
     if a.all:
         approvable, ir_module, errors = layer_runtime_modules(layer, "approvable")
         try:
@@ -3184,7 +3209,7 @@ def approve_cli(a: argparse.Namespace) -> int:
         for line in approvable.lines(approvable.derive(loaded, a.run)):
             print(f"approve: {line}", flush=True)
         result = approvable.approve_resume(loaded, a.run, None, a.who or _login_name(), "cli", note=a.note or "")
-        if result["status"] == "resumed":
+        if result["status"] in ("resumed", "merged", "shipped"):
             print(f"approve: {result['message']}")
             return 0
         print(f"al approve: refused ({result.get('reason')}): {result.get('message')}", file=sys.stderr)
@@ -4427,13 +4452,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--md", action="store_true", help="print a Markdown document (for docs/KPIS.md)")
     p.add_argument("--sample", action="store_true", help=argparse.SUPPRESS)
     p = sub.add_parser("settle", help="record that a finished run needs nothing more (agents/<id>/settlement.json)",
-                       description="Write LAYER's run RUN a settlement: landed, superseded or abandoned, with the run "
-                       "or commit that did it and a note. Nothing else of the run is touched. Exit 0 written, 2 bad "
+                       description="Write LAYER's run RUN a settlement: landed, superseded, abandoned or shipped, "
+                       "with the run or commit that did it and a note. shipped: shipped to a pull request or a "
+                       "branch, not merged yet (--by is the pull request's URL or the commit); `al runs` lists it "
+                       "as landed once git shows it. Nothing else of the run is touched. Exit 0 written, 2 bad "
                        "use, 3 refused (the run is running, or --by names neither a run nor a commit), 4 no such run.")
     p.add_argument("layer", type=Path)
     p.add_argument("run", metavar="RUN")
-    p.add_argument("--as", dest="as_", required=True, choices=("landed", "superseded", "abandoned"))
-    p.add_argument("--by", metavar="RUN|COMMIT", help="the run or commit that landed or superseded it")
+    p.add_argument("--as", dest="as_", required=True, choices=("landed", "superseded", "abandoned", "shipped"))
+    p.add_argument("--by", metavar="RUN|COMMIT|PR-URL",
+                   help="the run or commit that landed or superseded it; with shipped: the pull request's URL or "
+                        "the commit")
     p.add_argument("--note", metavar="TEXT", help="why, in one paragraph (at most 500 characters)")
     p.add_argument("--who", metavar="NAME", help="who settles it (default: git config user.name of the application)")
     p = sub.add_parser("integrate", help="bring a handed-over run onto its target branch with an agent: prepare, resolve, "
@@ -4590,13 +4619,19 @@ def main(argv: list[str] | None = None) -> int:
                        "edit:PATH, dependency:NAME), and resume it from the step that stopped. The approval is "
                        "recorded with who and when. With --all instead of WHAT, every item RUN waits for a "
                        "person's approval of is listed, approved and the run resumed with the mechanism its stop "
-                       "has. Exit: 0 resumed, 1 refused (unknown run, not stopped for an approver, or nothing "
-                       "waits), 2 bad use.")
+                       "has. With the one word ship as WHAT, a gate stop that only needs a person's yes (the "
+                       "diff is too large, the class is not one the gate ships, the ship failed) is approved: "
+                       "the stage branch is fast-forwarded, or the run is settled as shipped to its pull request "
+                       "or branch; never offered with red checks or a rejected review. Exit: 0 resumed, merged "
+                       "or shipped, 1 refused (unknown run, not stopped for an approver, or nothing waits), "
+                       "2 bad use.")
     p.add_argument("layer", type=Path)
     p.add_argument("run", metavar="RUN", help="the run id (8 hexadecimal characters)")
-    p.add_argument("what", nargs="*", metavar="WHAT", help="an approval: vocabulary, edit:PATH, dependency:NAME …")
+    p.add_argument("what", nargs="*", metavar="WHAT",
+                   help="an approval: vocabulary, edit:PATH, dependency:NAME …; or ship, for a gate stop that "
+                        "only needs your yes")
     p.add_argument("--all", action="store_true", help="approve every item the run waits for and resume it")
-    p.add_argument("--note", metavar="TEXT", help="with --all: one line kept with the approval")
+    p.add_argument("--note", metavar="TEXT", help="with --all or ship: one line kept with the approval")
     p.add_argument("--who", metavar="NAME", help="who approves (default: AL_APPROVED_BY, else your login name)")
     p = sub.add_parser("deploy", help="put an in-repo layer on another machine over ssh and keep it running there",
                        description="Put an in-repo layer and its repository on HOST over ssh (your own ssh configuration; "

@@ -41,7 +41,7 @@ LOW_FREE = 0.10
 GIT_TIMEOUT = 120
 PODMAN_TIMEOUT = 120
 RUN_ID = re.compile(r"[0-9a-fA-F]{8}")
-SETTLED = ("landed", "superseded", "abandoned")
+SETTLED = ("landed", "superseded", "abandoned", "shipped")
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess]
 

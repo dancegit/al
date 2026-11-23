@@ -201,3 +201,66 @@ def test_al_runs_prune_needs_landed_flag(scenario):
     assert cp.returncode == 2 and "--landed" in cp.stderr
     cp = al("runs", scenario["layer"], "prune", "--landed", ok=False)
     assert cp.returncode == 2
+
+
+URL = "https://forge.example/o/r/pull/7"
+
+
+def test_al_settle_as_shipped_lists_it_out_of_needs_you(scenario):
+    """Run with -s to see the commands' output (docs/GUIDE.md quotes it)."""
+    layer, repo, run = scenario["layer"], scenario["repo"], sf.OPEN[0]
+    cp = al("settle", layer, run, "--as", "shipped", "--by", URL, "--note", "opened by hand", "--who", "Ada")
+    print(f"$ al settle LAYER {run} --as shipped --by {URL} --note 'opened by hand' --who Ada\n{cp.stdout}", end="")
+    assert cp.stdout.strip() == f"settled {run} as shipped ({URL}) by Ada: agents/{run}/settlement.json"
+    record = json.loads((layer / "agents" / run / "settlement.json").read_text())
+    assert (record["as"], record["by"], record["who"], record["via"]) == ("shipped", URL, "Ada", "cli")
+    listed = al("runs", layer).stdout
+    assert listed.splitlines()[0] == "5 need you (5 running, 8 landed, 8 settled; --view all for every run)"
+    assert run not in ids_in(listed)
+    settled = al("runs", layer, "--view", "settled").stdout
+    line = next(line for line in settled.splitlines() if line.startswith(run))
+    print(f"$ al runs LAYER --view settled\n{line}")
+    assert f"shipped ({URL}) by Ada: opened by hand" in line
+    assert run not in ids_in(al("runs", layer, "--view", "landed").stdout)
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.org", "merge", "-q", "--no-ff", "-m", f"Merge al/{run}",
+        f"al/{run}")                                     # the pull request is merged: git shows the work on main
+    landed = al("runs", layer, "--view", "landed").stdout
+    line = next(line for line in landed.splitlines() if line.startswith(run))
+    print(f"$ al runs LAYER --view landed\n{line}")
+    assert re.search(r"landed in [0-9a-f]{7} \(ancestor\) on main", line), line
+    assert run not in ids_in(al("runs", layer, "--view", "settled").stdout)
+    assert run not in ids_in(al("runs", layer).stdout)
+
+
+def test_al_settle_as_shipped_needs_by(scenario):
+    layer, run = scenario["layer"], sf.OPEN[0]
+    for by in ([], ["--by", "not a url"], ["--by", "javascript:alert(1)"]):
+        cp = al("settle", layer, run, "--as", "shipped", *by, ok=False)
+        assert cp.returncode == 3, (by, cp.stdout, cp.stderr)
+        assert "al settle: shipped needs by: the pull request's URL or the commit" in cp.stderr
+    unknown = al("settle", layer, run, "--as", "shipped", "--by", "deadbeefdeadbeef", ok=False)
+    assert unknown.returncode == 3 and "neither a run" in unknown.stderr
+    assert al("settle", layer, run, "--as", "landed", "--by", URL, ok=False).returncode == 2   # a URL only for shipped
+    assert not (layer / "agents" / run / "settlement.json").exists()
+    tip = git(scenario["repo"], "rev-parse", f"al/{run}")
+    cp = al("settle", layer, run, "--as", "shipped", "--by", tip[:9], "--who", "Ada")
+    assert cp.stdout.strip() == f"settled {run} as shipped ({tip[:9]}) by Ada: agents/{run}/settlement.json"
+
+
+def test_al_runs_prune_keeps_a_shipped_run_that_has_not_landed(scenario):
+    layer, repo = scenario["layer"], scenario["repo"]
+    shipped, abandoned = sf.OPEN[0], sf.OPEN[1]
+    al("settle", layer, shipped, "--as", "shipped", "--by", URL, "--who", "Ada")
+    al("settle", layer, abandoned, "--as", "abandoned", "--who", "Ada")
+    cp = al("runs", layer, "prune", "--landed", "--older-than", "1")
+    heads = git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").split()
+    assert f"al/{shipped}" in heads, "the head of a pull request that is not merged yet is kept"
+    assert shipped not in cp.stdout
+    assert f"al/{abandoned}" not in heads and f"removed branch al/{abandoned} (was " in cp.stdout
+    assert "pruned" not in json.loads((layer / "agents" / shipped / "settlement.json").read_text())
+    # once git shows it on its target, it is pruned like every landed run
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.org", "merge", "-q", "--no-ff", "-m",
+        f"Merge al/{shipped}", f"al/{shipped}")
+    cp = al("runs", layer, "prune", "--landed", "--older-than", "1")
+    assert f"removed branch al/{shipped} (was " in cp.stdout
+    assert json.loads((layer / "agents" / shipped / "settlement.json").read_text())["as"] == "shipped"
