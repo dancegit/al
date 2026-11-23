@@ -1045,7 +1045,8 @@ f0000012  person       skipped: needs-a-person: 1 item of run f0000012 only a pe
 ```
 
 The limits. You can give one run to an agent twice; after that `al assign` refuses with `limit` until
-you say `--override`, which allows one more. Every attempt is kept with its outcome (in
+you say `--override`, which allows one more (the preview then counts `limit:      2 of 2 used, and 1
+more by --override`). Every attempt is kept with its outcome (in
 `agents/<run>/assign.json`, in the run's events as `assign.attempt` and `assign.outcome`, and in the
 preview under `attempts:`). When two attempts stopped for the same reason, the refusal says so (`it
 stopped twice for the same reason (…): it stays with you`). A second blocker round continues from the
@@ -1146,7 +1147,9 @@ name, 3 refused by a limit, 4 needs `--yes`. The prompt is written to `agents/<r
 never put on a command line. To start a failed run again under a new id, use `al run … --replaces OLD`, or
 **Start again** on its run page (which reuses its recorded request): the new run records that it replaces
 OLD, and OLD leaves the runs that need you. "Start again" of a run that came from an issue restarts from
-the recorded prompt, not from the issue.
+the recorded prompt, not from the issue. A failed batch run (kit workflow `verify-batch`) has neither
+Start again nor Give to an agent, because it is not a request: its next action, on the dashboard and in
+`al runs`, is `al batch LAYER run [--stage S]` or a settlement.
 
 ## Work with several repositories from the dashboard
 
@@ -2030,7 +2033,9 @@ batch rhythm is declared, with the compiler's words.
 **Batches.** The kit workflow `verify-batch` runs every check at full depth on a stage head or the
 default branch. It starts by itself when a landing makes it due, when a cycle closes, and a
 promotion's checks on a stage head count as that stage's batch; `al batch LAYER run [--stage S]
-[--if-due]` starts one by hand. `al batch LAYER status`:
+[--if-due]` starts one by hand. A batch run that failed is run again the same way, with `al batch LAYER
+run [--stage S]`, or settled (`al settle`); it is never started again as a request or given to an agent,
+and the earlier failed batch run stays under Needs you until you settle it. `al batch LAYER status`:
 
 ```text
 main: no batch yet

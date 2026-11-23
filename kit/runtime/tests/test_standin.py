@@ -377,6 +377,33 @@ def test_not_eligible_as_before(make_layer, tmp_path, spawned):
     assert "decision" not in json.loads(original)
 
 
+def test_a_batch_run_is_not_eligible_and_is_looked_at_once(make_layer, tmp_path, spawned):
+    """A failed run of the kit workflow verify-batch is not a request: the stand-in never restarts or
+    resumes it (`al batch` runs the full suites again), and it looks at the stop once."""
+    layer_dir = stopped_run(make_layer, tmp_path, stand_in=declared("auto", may=["restart", "resume", "settle"]))
+    decider(layer_dir, "restart")
+    definition = {"name": "verify-batch", "batch": {"branch": "main", "stage": "", "base": "demo"},
+                  "steps": [{"kind": "batch", "name": n, "action": n} for n in ("open", "checks", "record", "close")]}
+    path = layer_dir / "agents" / ADW_ID / "state.json"
+    data = json.loads(path.read_text())
+    data.update(adw="verify-batch", prompt="verify the full suites on main", definition=definition, ship={})
+    path.write_text(json.dumps(data))
+    layer = ir.load(layer_dir)
+    state = ADWState(adw_id=ADW_ID, adw="verify-batch", prompt="verify the full suites on main", status="failed",
+                     definition=definition)
+    why = standin.not_eligible(layer, state, definition, item_for())
+    assert "a batch run (kit workflow verify-batch)" in why and "`al batch`" in why
+    assert standin.not_eligible(layer, ADWState(adw_id=ADW_ID, adw="demo", prompt=PROMPT, status="failed"), ADW,
+                                item_for()) == "", "an ordinary failed run is looked at as before"
+    calls = len(state_module.load(layer_dir, ADW_ID).agent_calls)
+    result = standin.consider(layer, item_for())
+    assert result["status"] == "skipped" and result["entry"]["reason"] == why, result
+    assert spawned == [] and len(state_module.load(layer_dir, ADW_ID).agent_calls) == calls
+    assert standin.consider(ir.load(layer_dir), item_for())["status"] == "seen", "the same stop is not looked at twice"
+    assert spawned == [] and [(e["status"], e["reason"]) for e in log(layer_dir)] == [("skipped", why)]
+    assert sorted(p.name for p in (layer_dir / "agents").iterdir() if (p / "state.json").is_file()) == [ADW_ID]
+
+
 # ------------------------------------------------------------------------------------ every decision kind
 
 AUTO_REVIEW = {"id": "auto", "kind": "auto", "status": "stable", "artefacts": [], "command": "review", "reviewers": 1,

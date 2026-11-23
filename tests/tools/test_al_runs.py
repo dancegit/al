@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -77,6 +78,64 @@ def test_al_runs_views_and_json(scenario):
     assert by_id[sf.FAILED[0]]["replaced_by"] == sf.RESTARTS[0]
     assert by_id[sf.INTEGRATED[0]]["superseded_by"] == sf.INTEGRATION
     assert json.loads(al("runs", scenario["layer"], "--json").stdout).__len__() == 6
+
+
+BATCH_RUN = "7e570005"
+BATCH_STANDIN = '''"""A stand-in for the layer's batch module: `al batch` reaches main(), which records its arguments."""
+import json
+from pathlib import Path
+
+
+def main(layer_dir, argv=None):
+    (Path(layer_dir) / "batch-argv.json").write_text(json.dumps(list(argv or [])))
+    return 0
+'''
+
+
+def test_al_runs_batch_run_next_action_is_al_batch(scenario):
+    """A failed run of the kit workflow verify-batch is not a request: `al runs` prints `al batch LAYER
+    run --stage S` or a settlement for it (never `al run … --replaces`, never `al assign`), and the
+    printed `al batch` command runs."""
+    layer = scenario["layer"]
+    names = ("open", "checks", "record", "close")
+    steps = [{"name": n, "kind": "batch", "status": "failed" if n == "close" else "passed",
+              "started": f"2026-11-17T10:0{i}:00+00:00", "ended": f"2026-11-17T10:0{i}:30+00:00",
+              "detail": "red: tests/test_plugins.py failed" if n == "close" else ""} for i, n in enumerate(names)]
+    state = {"adw_id": BATCH_RUN, "adw": "verify-batch", "prompt": "verify the full suites on sprint/2026-s47",
+             "source": "cli", "klass": "chore", "status": "failed", "started": "2026-11-17T10:00:00+00:00",
+             "ended": "2026-11-17T10:04:00+00:00", "steps": steps,
+             "definition": {"name": "verify-batch", "batch": {"branch": "sprint/2026-s47", "stage": "sprint", "base": "change"},
+                            "steps": [{"name": n, "kind": "batch", "action": n} for n in names]},
+             "batch": {"branch": "sprint/2026-s47", "stage": "sprint", "head": "c0ffee1" + "0" * 33}}
+    run = layer / "agents" / BATCH_RUN
+    run.mkdir(parents=True)
+    (run / "state.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    (run / "run.log").write_text(f"[adw {BATCH_RUN}] verify-batch\n", encoding="utf-8")
+    (run / "request.md").write_text(state["prompt"] + "\n", encoding="utf-8")
+    (layer / "adws" / "adw_modules").mkdir(parents=True, exist_ok=True)
+    (layer / "adws" / "adw_modules" / "batch.py").write_text(BATCH_STANDIN, encoding="utf-8")
+    (layer / "adws" / "verify_batch.py").write_text("# a stand-in: `al batch` only needs the file to be there\n", encoding="utf-8")
+
+    lines = al("runs", layer).stdout.splitlines()
+    assert lines[0].startswith("7 need you (")
+    at = next(i for i, line in enumerate(lines) if line.startswith(f"{BATCH_RUN}  failed"))
+    arrow = lines[at + 1].strip()
+    assert arrow == f"→ al batch {layer} run --stage sprint; or: al settle {layer} {BATCH_RUN} --as …"
+    assert not arrow.startswith("→ al run ") and "/verify-batch" not in arrow     # not the request started again
+    assert "--replaces" not in arrow and "request.md" not in arrow and "al assign" not in arrow
+    others = [line for line in lines if line.lstrip().startswith("→ ") and line.strip() != arrow]
+    assert len(others) == 6 and all("; or: al assign " in line for line in others), "every other row is as before"
+    row = next(r for r in json.loads(al("runs", layer, "--json").stdout) if r["id"] == BATCH_RUN)
+    assert row["bucket"] == "needs-you"
+    assert row["next"] == "run the full suites again: `al batch LAYER run --stage sprint`, or `al settle`"
+
+    command = shlex.split(arrow.removeprefix("→ ").split("; or: ")[0])
+    assert command[:2] == ["al", "batch"]
+    al(*command[1:])                                             # exits 0
+    assert json.loads((layer / "batch-argv.json").read_text()) == ["run", "--stage", "sprint"]
+    # and the settlement it names takes the run out of Needs you
+    al("settle", layer, BATCH_RUN, "--as", "abandoned", "--note", "run again by hand")
+    assert BATCH_RUN not in ids_in(al("runs", layer).stdout)
 
 
 def test_al_runs_groups_failures(tmp_path):

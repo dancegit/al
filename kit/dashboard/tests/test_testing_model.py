@@ -183,6 +183,42 @@ def test_run_broke_the_batch_badge(site):
     assert d.broken_by([{"status": "red", "culprit": "commit 1234567 (no run)", "id": "7e5700c2"}]) == {}
 
 
+def test_failed_batch_run_names_al_batch_and_no_agent(site):
+    """A failed run of the kit workflow verify-batch is not a request: its next action is `al batch`
+    or a settlement, never "Start again" or "Give to an agent", and the Automatic switch leaves it out."""
+    layer_dir = site["layer"]
+    assert (layer_dir / d.ASSIGN_SCRIPT).is_file(), "the site's layer has adws/assign.py: the offer is not missing for that reason"
+    other = "7e5700e1"                                           # an ordinary failed run of the same layer
+    tf.write_run(layer_dir, other, prompt="Round the cart total", start=330, status="failed")
+    model = model_for(layer_dir)
+    layer = model.layers[tf.NAME]
+    rows = {key.split("/")[1]: model._decorated(summary) for key, summary in model.summaries.items()}
+    batch, plain = rows[tf.BATCH], rows[other]
+    assert batch["acts_on"] == {"kind": "batch", "branch": tf.SPRINT, "stage": "sprint"}
+    assert batch["assign"]["script"] is False
+    assert (batch["status"], batch["bucket"]) == ("failed", "needs-you")
+    assert batch["next"] == "run the full suites again: `al batch LAYER run --stage sprint`, or `al settle`"
+    assert batch["group"] is None, "no failure group offers Start all again for it"
+    assert "Start again" not in batch["next"] and "Give to an agent" not in batch["next"]
+    # the ordinary failed run beside it is as before
+    assert (plain["bucket"], plain["next"], plain["acts_on"]) == ("needs-you", "Start again, or Give to an agent", None)
+    assert plain["assign"]["script"] is True
+    # the Automatic switch: on, it takes the ordinary run and never the batch run
+    d.write_assign_auto(layer_dir, True)
+    assert model.assign_auto_view(layer)["on"] is True
+    assert [item["run"] for item in model.assign_auto_items(layer)] == [other]
+    # "Start again" over the model is refused with the entry point's name
+    request, code, why = model.again_request(layer, tf.BATCH, "again-batch")
+    assert request is None and code == 400
+    assert why == (f"run {tf.BATCH} is a batch run (kit workflow verify-batch): run the full suites again with "
+                   "`al batch LAYER run --stage sprint`, or Run the full suites now on the layer's page")
+    # the shape a real batch run records (definition.batch, no state.batch), and one of the default branch
+    assert d.is_batch_run({"adw": "x", "definition": {"batch": {"branch": "main", "stage": ""}}}) is True
+    assert d.is_batch_run({"adw": "plan-build", "definition": {}}) is False
+    assert d.batch_command(d.batch_target({"definition": {"batch": {"branch": "main", "stage": ""}}})) == "al batch LAYER run"
+    assert d.BATCH_ADW == "verify-batch"
+
+
 def test_proof_rows_carry_depth(site):
     rows = model_for(site["layer"]).run_detail(tf.NAME, tf.TARGETED)["proof"]
     assert [(r["check"], r["where"], r["outcome"], r["depth"]) for r in rows] == [

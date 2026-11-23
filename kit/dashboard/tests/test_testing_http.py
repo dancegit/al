@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import Iterator
 
@@ -135,6 +136,40 @@ def test_batch_start_202_and_no_start_refusal(server, site):
         finally:
             stop_server(running)
     assert len(calls(site)) == 2
+
+
+def _row(running: Running, run: str, timeout: float = 30.0, bucket: str = "") -> dict:
+    """The snapshot's row of `run` (once it is in `bucket`, when one is named)."""
+    deadline = time.monotonic() + timeout
+    row: dict = {}
+    while time.monotonic() < deadline:
+        rows = [r for r in running.json("/api/snapshot")["runs"] if r["layer"] == tf.NAME and r["id"] == run]
+        row = rows[0] if rows else {}
+        if row and (not bucket or row.get("bucket") == bucket):
+            return row
+        time.sleep(0.2)
+    raise AssertionError(f"run {run} never reached {bucket or 'the snapshot'}: {row.get('bucket')}")
+
+
+def test_failed_batch_run_is_not_started_again_and_can_be_settled(server, site):
+    """A failed batch run (kit workflow verify-batch) is not a request: Start again is refused with the
+    entry point's name and starts nothing; settling it works and takes it out of Needs you."""
+    row = _row(server, tf.BATCH, bucket="needs-you")
+    assert row["next"] == "run the full suites again: `al batch LAYER run --stage sprint`, or `al settle`"
+    assert row["acts_on"] == {"kind": "batch", "branch": tf.SPRINT, "stage": "sprint"}
+    assert row["assign"]["script"] is False and row.get("group") is None
+    agents = site["layer"] / "agents"
+    before = sorted(p.name for p in agents.iterdir())
+    status, data = post(server, {"layer": tf.NAME, "again": tf.BATCH, "request_key": f"again-{tf.BATCH}"}, path="/api/start")
+    assert status == 400, data
+    assert "al batch LAYER run --stage sprint" in data["error"] and "batch run (kit workflow verify-batch)" in data["error"]
+    assert "no longer declares" not in data["error"]
+    assert sorted(p.name for p in agents.iterdir()) == before, "nothing was started"
+    assert not (agents / tf.BATCH / "assign.json").exists() and calls(site) == []
+    status, data = post(server, {"layer": tf.NAME, "run": tf.BATCH, "as": "abandoned", "by": "", "note": "",
+                                 "who": "Ada Example"}, path="/api/settle")
+    assert status == 200 and data["record"]["as"] == "abandoned", data
+    assert _row(server, tf.BATCH, bucket="settled")["next"] == ""
 
 
 def test_batch_refusal_of_the_layer_is_409(server, site):

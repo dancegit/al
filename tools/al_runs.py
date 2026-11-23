@@ -131,6 +131,13 @@ def why(row: dict[str, Any]) -> str:
 def next_action(layer_dir: Path, row: dict[str, Any]) -> str:
     """The next action, as a command where there is one."""
     layer_dir = SHOWN or layer_dir
+    # a batch run (kit workflow verify-batch) is not a request: `al batch` runs the full suites again, and
+    # it is never given to an agent (the dashboard's attention() words it; no `al assign`)
+    acts_on = row.get("acts_on") if isinstance(row.get("acts_on"), dict) else {}
+    if acts_on.get("kind") == "batch" and str(row.get("next") or "").startswith("run the full suites again"):
+        stage = str(acts_on.get("stage") or "")
+        return (f"al batch {layer_dir} run" + (f" --stage {stage}" if stage else "")
+                + f"; or: al settle {layer_dir} {row['id']} --as …")
     # the dashboard's words for `al assign` (alone when the row has no other next action)
     nxt = str(row.get("next") or "").removesuffix(", or Give to an agent").removesuffix("Give to an agent")
     # every run that needs you can be given to an agent: al assign shows the plan first (--preview)

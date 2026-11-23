@@ -133,7 +133,8 @@ each new run above the table. A run page shows "replaces OLD", "replaced by NEW"
 the landing result in its Status block, a **Start again** button on a failed or died run nothing
 replaces, and, on a finished run nobody settled, a **Settle this run** card: landed, superseded or
 abandoned, an optional run or commit (`by`), a note, and your name (kept in the browser like the
-promotion card's).
+promotion card's). A failed batch run (kit workflow `verify-batch`) has neither Start again nor Give
+to an agent, because it is not a request: its next action is `al batch LAYER run [--stage S]` or Settle.
 
 **Give to an agent.** Every run under Needs you has a **Give to an agent** button: in the Next column
 of its row, and above the fields of its Settle card (address `…?assign=1`). It opens a card that says
