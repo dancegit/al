@@ -181,7 +181,10 @@ def test_failure_group_row_and_start_all_again(tmp_path, tab, clean_env):
 
 
 def _run_files(layer: Path) -> dict[str, bytes]:
-    return {str(p.relative_to(layer)): p.read_bytes() for p in sorted((layer / "agents").rglob("*")) if p.is_file()}
+    """Every file under agents/, but approvable.json: the dashboard's watcher (Model.tick_approvable) asks
+    the launcher for that derived record of each run under Needs you on its own, whatever the page does."""
+    return {str(p.relative_to(layer)): p.read_bytes() for p in sorted((layer / "agents").rglob("*"))
+            if p.is_file() and p.name != "approvable.json"}
 
 
 def test_give_all_counts_the_rows_shown(tmp_path, tab, clean_env):
