@@ -1,33 +1,36 @@
 #lang al
-(agentic-layer #:name "cart" #:description "A tiny cart library"
-  (codebase #:root "../cart" #:languages (python) #:default-branch "main"
-            #:description "cart.py is a shopping cart with integer prices in cents."
-    (cmd lint "python3 tools/lint.py" #:timeout 120
-         #:description "Every file compiles; no long lines.")
-    (cmd test "python3 tools/run_tests.py" #:timeout 300
-         #:description "Every test in tests/ passes.")
-    (paths #:source ("cart.py") #:tests ("tests") #:protected ("tools")))
+(agentic-layer #:name "rota" #:description "Rota, shift scheduling for hospital wards (synthetic data), with a scripted stand-in for the model"
+  (codebase #:root "../rota" #:languages (python sql html css) #:default-branch "main"
+            #:description "Rota is a small Flask and SQLite app for staffing hospital wards (synthetic data). The business rules are in rules.py; tenant data is read and written only through data.py."
+    (cmd test "uv run --quiet --no-project --with 'flask>=3.1,<4' --with 'pytest>=8,<9' python -m pytest -q tests" #:timeout 300
+         #:description "The whole pytest suite passes: business rules, API and permissions, user journeys, tenant isolation.")
+    (cmd isolation "uv run --quiet --no-project --with 'flask>=3.1,<4' --with 'pytest>=8,<9' python -m pytest -q tests/test_isolation.py" #:timeout 300
+         #:description "Tenant isolation: every route in the URL map, called as Northfield's manager with Riverside's ids, leaks nothing and changes nothing of Riverside's.")
+    (paths #:source ("app.py" "data.py" "rules.py" "assignments.py" "clock.py" "seed.py" "templates" "static")
+           #:tests ("tests" "e2e") #:docs ("README.md" "CONTRIBUTING.md")
+           #:protected ("migrations" "db.py" "auth.py" "tests/test_isolation.py" "e2e/capture.py"
+                        "requirements.txt" ".gitignore" "CONTRIBUTING.md")))
   (review agent #:reviewers 2)
-  ; the model is played by the mock agent; the build of `change` by a scripted stand-in (no LLM)
-  ; that pauses 1.6 s between its events, so a viewer can follow its transcript
+  ; the model is played by the mock agent; the build of `feature` by a scripted stand-in (no LLM)
+  ; that pauses 1.0 s between its events, so a viewer can follow its transcript
   (agent mock)
-  (agent custom #:id replay #:command "python3 @REPLAY@ {cwd} 1.6" #:timeout 300)
+  (agent custom #:id replay #:command "python3 @STAND_IN@ {cwd} 1.0" #:timeout 300)
   (trigger manual)
   (environment worktree)
   (command classify #:template classify #:output json)
-  (command plan #:template plan-feature #:output path #:validation (lint test))
+  (command plan #:template plan-feature #:output path #:validation (test isolation))
   (command resolve-test #:template resolve-test)
   (command review #:template review #:output json)
   (command commit #:template commit)
   (hop implement #:template run-plan #:takes plan)
-  (adw change #:description "Plan, build, check, review, then a branch for a person"
+  (adw feature #:description "Plan, build, check, review, then a branch for a person"
        #:agent mock #:environment (worktree) #:review agent
     (steps
       (run classify #:command classify #:args ("$prompt"))
       (run plan #:command plan #:args ("$prompt"))
       (run build #:command implement #:args ("$plan") #:agent replay)
-      (check lint #:cmd lint #:resolve resolve-test #:retries 1)
-      (check test #:cmd test #:resolve resolve-test #:retries 2)
+      (check test #:cmd test #:resolve resolve-test #:retries 1)
+      (check isolation #:cmd isolation #:resolve resolve-test #:retries 1)
       (run commit #:command commit)
       (review)
       (ship)))
@@ -37,8 +40,8 @@
       (run classify #:command classify #:args ("$prompt"))
       (run plan #:command plan #:args ("$prompt"))
       (run build #:command implement #:args ("$plan"))
-      (check lint #:cmd lint #:resolve resolve-test #:retries 1)
-      (check test #:cmd test #:resolve resolve-test #:retries 2)
+      (check test #:cmd test #:resolve resolve-test #:retries 1)
+      (check isolation #:cmd isolation #:resolve resolve-test #:retries 1)
       (run commit #:command commit)
       (review)
       (ship))))

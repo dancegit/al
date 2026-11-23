@@ -97,10 +97,12 @@ def _layer(make_layer, *, forge=None, ship_step=True, sandboxed=False, failing="
     return layer
 
 
-def _build_changes(layer: Path, commit: bool = False) -> None:
-    """The build step: one committed or uncommitted feature file."""
+def _build_changes(layer: Path, commit: bool = False, env_file: bool = True) -> None:
+    """The build step: one committed or uncommitted feature file (and a .env that is never committed;
+    ship's review gate sees it as a change after review, so a test that merges leaves it out)."""
+    files = {"seed.py": "PAY_BANDS = {'hca': 'Band 3'}\n", **({".env": "SECRET=1\n"} if env_file else {})}
     (layer / "mock" / "demo" / "build.json").write_text(json.dumps({
-        "files": {"seed.py": "PAY_BANDS = {'hca': 'Band 3'}\n", ".env": "SECRET=1\n"}, "commit": commit,
+        "files": files, "commit": commit,
         "output": "Report\n\n- REQUIRES HUMAN: add `migrations/003_worker_pay_band.sql` (protected path)."}))
 
 
@@ -260,6 +262,48 @@ def test_failing_agent_step_hands_over_too(make_layer, app_repo, monkeypatch) ->
     assert "REQUIRES HUMAN: add `migrations/003_worker_pay_band.sql` (protected path)." in body   # build's report
 
 
+def test_forgejo_token_from_local_env_never_reaches_state_events_or_the_pr(make_layer, app_repo, tmp_path,
+                                                                           monkeypatch) -> None:
+    import os
+    import secrets
+
+    from adw_modules import forge as forge_module
+
+    var = "AL_TEST_FORGE_TOKEN"
+    value = f"tok-{secrets.token_hex(12)}"
+    _with_origin(app_repo)
+    layer = _layer(make_layer, forge={"id": "forgejo", "kind": "forgejo", "status": "stable", "remote": "",
+                                      "host": "https://forge.invalid", "repo": "acme/shop", "tokenEnv": var,
+                                      "botMarker": "[ADW-BOT]"})
+    (layer / "local.env").write_text(f"{var}={value}\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv(var, raising=False)
+    _build_changes(layer)
+    calls: list[dict] = []
+
+    def http(method, url, headers, body):
+        calls.append({"method": method, "url": url, "headers": dict(headers),
+                      "body": None if body is None else body.decode("utf-8")})
+        if method == "POST" and url.endswith("/pulls"):
+            return 201, {"number": 7, "html_url": "https://forge.invalid/acme/shop/pulls/7"}
+        return 200, ([] if method == "GET" else {})
+    monkeypatch.setattr(forge_module, "http_request", http)
+    assert main("demo", layer, ["Record each worker's pay band", "--adw-id", ADW_ID, "--class", "feature"]) == 1
+    state = _state(layer)
+    assert state["ship"]["action"] == "handoff"
+    assert state["ship"]["pr"]["number"] == 7, state["ship"]
+    pr_calls = [c for c in calls if c["method"] == "POST" and c["url"].endswith("/pulls")]
+    assert len(pr_calls) == 1
+    assert pr_calls[0]["headers"]["Authorization"] == f"token {value}"
+    payload = json.loads(pr_calls[0]["body"])
+    assert "[needs human]" in payload["title"] and value not in pr_calls[0]["body"]
+    assert all(value not in (c["body"] or "") for c in calls)
+    assert var not in os.environ and not any(value in v for v in os.environ.values())
+    leaked = [path for root in (layer / "agents", app_repo) for path in root.rglob("*")
+              if path.is_file() and value.encode() in path.read_bytes()]
+    assert leaked == []
+
+
 def test_resume_after_a_handoff_starts_the_ship_record_afresh(make_layer, app_repo, monkeypatch) -> None:
     layer = _layer(make_layer)
     _build_changes(layer)
@@ -271,6 +315,75 @@ def test_resume_after_a_handoff_starts_the_ship_record_afresh(make_layer, app_re
     ship = _state(layer)["ship"]
     assert ship["previous_handoff"]["action"] == "handoff"
     assert ship.get("action") != "handoff" and "stopped_at" not in ship and "url" not in ship
+
+
+class _ForgejoRefusingASecondPull:
+    """FakeForgejoPulls answering `POST /pulls` with HTTP 409 while an open pull of the same head and
+    base exists, as Forgejo does; the title and body of every PATCH are kept."""
+
+    @staticmethod
+    def make(remote: Path, scratch: Path):
+        from adw_modules import forge as forge_module
+        from promotion_fixtures import FakeForgejoPulls
+
+        class Fake(FakeForgejoPulls):
+            patched: list = []
+
+            def __call__(self, method, url, headers, body, timeout=30.0):
+                path = "/" + url.split("/api/v1/repos/", 1)[1].split("/", 2)[2].split("?", 1)[0]
+                payload = json.loads(body) if body else None
+                if method == "POST" and path == "/pulls" and any(
+                        pull["state"] == "open" and (pull["head"], pull["base"]) == (payload["head"], payload["base"])
+                        for pull in self.pulls.values()):
+                    self.calls.append((method, path))
+                    raise forge_module.ForgeError(f"POST {url} -> HTTP 409: pull request already exists for these targets")
+                if method == "PATCH" and path.startswith("/pulls/"):
+                    self.patched.append(payload)
+                return super().__call__(method, url, headers, body, timeout)
+
+        return Fake(remote, scratch)
+
+
+@pytest.mark.parametrize("mode", ["pr", "merge"])
+def test_resumed_handoff_ships_into_the_same_pull_request(make_layer, app_repo, tmp_path, monkeypatch, mode) -> None:
+    from adw_modules import forge as forge_module
+
+    bare = _with_origin(app_repo)
+    layer = _layer(make_layer, forge={"id": "forgejo", "kind": "forgejo", "status": "stable", "remote": "",
+                                      "host": "https://forge.invalid", "repo": "acme/shop",
+                                      "tokenEnv": "AL_TEST_FORGE_TOKEN", "botMarker": "[ADW-BOT]"})
+    monkeypatch.setenv("AL_TEST_FORGE_TOKEN", "t0k")
+    _build_changes(layer, env_file=False)
+    scratch = tmp_path / "forge-scratch"
+    scratch.mkdir()
+    fake = _ForgejoRefusingASecondPull.make(bare, scratch)
+    monkeypatch.setattr(forge_module, "http_request", fake)
+    # the worktree is kept so the resumed run continues in it (the environment's own keep is "never")
+    assert main("demo", layer, ["Record each worker's pay band", "--adw-id", ADW_ID, "--class", "feature",
+                                "--keep-worktree"]) == 1
+    assert _state(layer)["ship"]["action"] == "handoff"
+    assert len(fake.pulls) == 1 and next(iter(fake.pulls.values()))["title"].startswith("WIP: [needs human]")
+    monkeypatch.setenv("FAILING_LOG_FILE", "/dev/null")           # the human fixed it: the check passes now
+    config = (layer / "agentic-layer.json").read_text().replace("exit 2", "exit 0")
+    if mode == "pr":
+        config = config.replace('"ship": "merge"', '"ship": "pr"')
+        assert '"ship": "pr"' in config
+    (layer / "agentic-layer.json").write_text(config)
+    main("demo", layer, ["--adw-id", ADW_ID, "--resume", "--keep-worktree"])
+    state = _state(layer)
+    ship = state["ship"]
+    assert "fallback" not in ship and "handoff_error" not in ship, ship
+    assert ship.get("action") != "handoff", ship
+    assert [call for call in fake.calls if call == ("POST", "/pulls")] == [("POST", "/pulls")]   # one pull ever opened
+    assert len(fake.pulls) == 1
+    pull = next(iter(fake.pulls.values()))
+    assert "WIP:" not in pull["title"] and "[needs human]" not in pull["title"]
+    assert pull["title"] == fake.patched[-1]["title"] and pull["body"] == fake.patched[-1]["body"]
+    assert "## Why this stopped" not in pull["body"]
+    if mode == "pr":
+        assert pull["state"] == "open" and not pull["merged"]
+    else:
+        assert pull["merged"] and ship["shipped"] is True
 
 
 # ---------------------------------------------------------------- without a forge

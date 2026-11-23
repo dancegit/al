@@ -179,6 +179,11 @@ def proof_globs(state: Any) -> list[str]:
             for item in row.get("proof") or [] if item.get("glob")]
 
 
+def write_globs(state: Any) -> list[str]:
+    return [str(item["glob"]) for row in (getattr(state, "proof_plan", None) or {}).get("rows") or []
+            for item in row.get("writes") or [] if item.get("glob")]
+
+
 # ---------------------------------------------------------------- what proves a row
 
 def _tokens(text: str) -> list[str] | None:

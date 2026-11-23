@@ -604,7 +604,6 @@
           "collect": [
             "log",
             "screenshots",
-            "voice-panel-shots",
             "showcase-stills",
             "showcase-clips",
             "voice-shots",
@@ -729,13 +728,6 @@
       "status": "stable"
     },
     {
-      "glob": "kit/dashboard/shots/voice-*.png",
-      "id": "voice-panel-shots",
-      "kind": "image",
-      "maxFiles": 24,
-      "status": "stable"
-    },
-    {
       "glob": "docs/showcase/*.png",
       "id": "showcase-stills",
       "kind": "image",
@@ -843,13 +835,9 @@
         "coverageFile": "",
         "coverageRun": "",
         "covers": [
-          "kit/runtime/adw_modules/envs.py",
-          "kit/runtime/adw_modules/nested_engine.py",
-          "kit/runtime/adw_modules/gitsafe.py",
-          "kit/runtime/tests/test_sandbox_podman.py",
-          "kit/runtime/tests/test_isolation_podman.py",
-          "kit/runtime/tests/test_nested_engine.py",
-          "kit/runtime/tests/test_nested_engine_podman.py"
+          "kit/runtime",
+          "racket",
+          "schemas"
         ],
         "description": "The sandbox's escape, isolation and nested-engine tests against this machine's real rootless podman",
         "maxTargeted": 200,
@@ -1571,7 +1559,6 @@
         "log",
         "screenshots",
         "run-shots",
-        "voice-panel-shots",
         "showcase-stills",
         "showcase-clips",
         "voice-shots",
@@ -1593,6 +1580,7 @@
         "test-docs",
         "test-compiler",
         "test-runtime",
+        "test-podman",
         "test-tools",
         "test-dashboard-proof",
         "test-integration"

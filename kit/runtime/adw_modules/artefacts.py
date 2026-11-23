@@ -6,8 +6,8 @@ import json
 import shutil
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath
-from typing import Any
+from pathlib import Path
+from typing import Any, Sequence
 
 from . import storage
 from .errors import LayerError, StepFailed
@@ -103,43 +103,20 @@ def _changed_by_run(layer: Any, state: Any, worktree: Path) -> set[str]:
         return set()
 
 
-def _named_globs(state: Any) -> list[str]:
-    """The Writes globs of the run's proof table: the files its criteria depend on."""
-    globs: list[str] = []
-    for row in (getattr(state, "proof_plan", None) or {}).get("rows") or []:
-        for item in row.get("writes") or []:
-            glob = str(item.get("glob") or "")
-            if glob:
-                globs.append(glob)
-    return globs
-
-
-def _named(relative: str, globs: list[str]) -> bool:
-    """True when a glob of the proof table names `relative` (the rule of evidence._matches)."""
-    for glob in globs:
-        if fnmatch.fnmatchcase(relative, glob):
-            return True
-        try:
-            if PurePosixPath(relative).match(glob):
-                return True
-        except ValueError:
-            continue
-    return False
-
-
-def _glob_matches(worktree: Path, option: dict[str, Any], changed: set[str] | None = None,
-                  named: list[str] | None = None) -> tuple[list[tuple[str, Path]], int]:
+def _glob_matches(worktree: Path, option: dict[str, Any],
+                  changed: set[str] | None = None,
+                  wanted: Sequence[str] = ()) -> tuple[list[tuple[str, Path]], int]:
     """(the files of an artefact option to hand over, how many more matched and were left out).
-    The files the proof table names come first, then the files this run changed, then the others,
-    each group by name; an image artefact keeps the first `maxFiles` of them."""
+    The files a proof plan row writes (`wanted` globs) come first, then the files this run changed,
+    then the others, each group by name; an image artefact keeps the first `maxFiles` of them."""
     pattern = str(option.get("glob") or "")
     if not pattern:
         raise LayerError(f"artefact {option.get('id')!r} has an empty glob")
     changed = changed or set()
     matches = sorted(((path.relative_to(worktree).as_posix(), path) for path in worktree.glob(pattern)
                       if path.is_file() and path.resolve().is_relative_to(worktree)),
-                     key=lambda item: (0 if _named(item[0], named or []) else 1,
-                                       0 if item[0] in changed else 1, item[0]))
+                     key=lambda item: (0 if any(fnmatch.fnmatchcase(item[0], g) for g in wanted)
+                                        else 1 if item[0] in changed else 2, item[0]))
     total = len(matches)
     if option.get("kind") == "image":
         matches = matches[: max(0, int(option.get("maxFiles", 0)))]
@@ -252,8 +229,7 @@ def _clear(run_root: Path, artefact_id: str) -> None:
 def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str) -> list[dict[str, Any]]:
     """Copy each artefact option's matches into artefacts/<adw_id>/<id>/, store them, update the manifest.
 
-    An image artefact hands over at most its `maxFiles` files, those the proof table names first,
-    then those this run changed; when
+    An image artefact hands over at most its `maxFiles` files, those this run changed first; when
     more matched, its records say so (`left_out`, `matched`) and the manifest gets a `left-out` entry.
 
     A collection REPLACES the previous one of the same id: its manifest entries and copied files
@@ -261,13 +237,15 @@ def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str
     reviewer again. Logs lose nothing by this: every attempt's log stays in agents/<id>/checks/
     and each log collection takes all of them. Remote copies of dropped files are left alone,
     just no longer referenced."""
+    from . import proofplan  # the files a proof plan row writes; the run-scoped proof it declares (.al-proof/)
+
     worktree = Path(state.worktree).resolve() if state.worktree else None
     store = storage.get_storage(layer)
     run_root = storage.artefacts_root(layer) / state.adw_id
     collected: list[dict[str, Any]] = []
     replaced: set[str] = set()
     changed: set[str] | None = None      # what this run changed: asked of git once per collection
-    named = _named_globs(state)          # the files the proof table's rows write
+    wanted = proofplan.write_globs(state)
     for artefact_id in artefact_ids:
         option = layer.option("artefacts", artefact_id)
         kind = option["kind"]
@@ -279,7 +257,7 @@ def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str
                 raise StepFailed(producing_step, f"artefact {artefact_id!r} needs a worktree, none exists")
             if changed is None:
                 changed = _changed_by_run(layer, state, worktree)
-            matches, left_out = _glob_matches(worktree, option, changed, named)
+            matches, left_out = _glob_matches(worktree, option, changed, wanted)
         else:
             raise LayerError(f"Unknown artefact kind: {kind}")
         _clear(run_root, str(option["id"]))
@@ -290,12 +268,11 @@ def collect(layer: Any, state: Any, artefact_ids: list[str], producing_step: str
             for record in records:
                 record.update(left_out=left_out, matched=total)
             print(f"[adw {state.adw_id}] artefact {option['id']}: {len(records)} of {total} files handed over, "
-                  f"{left_out} left out (limit {len(records)}); files of this change first")
+                  f"{left_out} left out (limit {len(records)}); files the proof plan names and of this change first")
         collected.extend(records)
     state.artefacts[:] = [item for item in state.artefacts if item.get("id") not in replaced] + collected
     write_manifest(layer, state)
-    from . import proofplan  # the run-scoped proof the plan declares (.al-proof/), refreshed with every collection
-
+    # the run-scoped proof the plan declares (.al-proof/), refreshed with every collection
     if proofplan.proof_globs(state):
         collected += proofplan.collect_proof(layer, state, producing_step)
     return collected

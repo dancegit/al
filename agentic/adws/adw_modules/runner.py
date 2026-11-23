@@ -16,7 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from . import affected, approvals, assign, budget, checkenv, decide, delivery, envs, envsource, events, ir, models
+from . import affected, approvals, assign, budget, checkenv, decide, delivery, delivery_request, envs, envsource
+from . import events, ir, models
 from . import nested_engine, notify, placement, prepare, sandbox, selfrun, skips, testing
 from . import state as state_module, steps
 from . import slots
@@ -342,6 +343,7 @@ def summary_lines(layer: Any, state: state_module.ADWState) -> list[str]:
         f"cost:      {budget.summary(state)}",
         *([f"models:    {_models_line(state)}"] if state.agent_calls else []),
         f"ship:      {ship}",
+        *([f"request:   {delivery_request.summary_line(state)}"] if state.delivery_request else []),
         *([f"kept:      {_kept_line(state)}"] if state.kept.get("changed") or state.kept.get("error") else []),
         *([f"delivery:  {_delivery_line(state)}"] if state.delivery or state.kept else []),
         *([f"promotion: {_promotion_line(state)}"] if state.promotion else []),
@@ -563,7 +565,7 @@ def _speak(layer: Any, line: str) -> None:
     if not voice.get("speakSummaries") or not script.is_file():
         return
     try:
-        subprocess.Popen([sys.executable, str(script), line], cwd=layer.layer_dir, stdin=subprocess.DEVNULL,
+        subprocess.Popen([sys.executable, str(script), "--no-fetch", line], cwd=layer.layer_dir, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError as exc:
         print(f"[adw] warning: spoken summary failed: {exc}", file=sys.stderr)
@@ -798,6 +800,11 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
         beat.stop()
         state.ended = state_module.now()
         state.save(layer.layer_dir)
+        if not contained and state.status != "waiting":
+            try:  # after_run never raises by contract; this keeps the run result intact
+                delivery_request.after_run(layer, state, adw)
+            except Exception as exc:
+                print(f"[adw {state.adw_id}] warning: the delivery request failed: {type(exc).__name__}: {exc}")
         if not contained and notify.report(layer, state, force=bool(getattr(args, "notify", False))):
             state.save(layer.layer_dir)
         events.emit("run.end", status=state.status, exit=exit_code)

@@ -10,6 +10,8 @@
               [--testing LEVEL] [--model T=ID …] [--issue none|start|trigger] [--confirm-duplicate] [--confirm-ships]
               [--dry-run] [--replaces OLD] [--decider off|suggest|auto] [--approve WHAT …] [--who WHO] [--json]   < prompt
   dispatch.py --grant RUN --approve WHAT [--approve WHAT …] [--who WHO] [--json]
+  dispatch.py --approvable RUN [RUN …] [--json]
+  dispatch.py --approve-resume RUN [--item ID …] [--token T] --who NAME [--note TEXT] [--json]
   dispatch.py --pr-state N [--json]
   dispatch.py --command NAME [runner flags: --prompt-file F --adw-id ID --class C --dry-run …]
   dispatch.py --resume ID [--answer] [--json]   [< answer]
@@ -24,7 +26,13 @@ detached and prints the result (with --json: one JSON line); exit 0 started or i
 --replaces OLD names the run the start begins again ("Start again"); --decider MODE is the stand-in's
 mode for that run (the run's own --decider; without it the layer's mode applies). --approve WHAT pre-approves a
 decision only a person may take for the run (approvals.py), given by --who. --grant RUN approves
-WHAT for a run that stopped for an approver and resumes it; exit 0 resumed, 1 refused, 2 invalid. --command alone runs one
+WHAT for a run that stopped for an approver and resumes it; exit 0 resumed, 1 refused, 2 invalid.
+--approvable RUN … derives, for each run, whether it waits only for a person's approval, of which items,
+and where it resumes (adw_modules/approvable.py), stores that as agents/RUN/approvable.json (where the
+dashboard reads it) and prints it (with --json: one line {"runs": {RUN: record}}); exit 0.
+--approve-resume RUN approves the items the run waits for (--item ID, repeatable; none means all of them;
+--token T is the token of the derivation that was shown) as --who, with an optional one-line --note, and
+resumes the run; exit 0 resumed, 1 refused. --command alone runs one
 command or hop in the foreground as a recorded run (what a single-command start executes).
 --registry prints what the layer can run (adw_modules/registry.py: its workflows, the kit's
 workflows, its commands), read only; with --json the whole registry as one JSON line.
@@ -109,6 +117,39 @@ def grant(a: argparse.Namespace) -> int:
         return done({"status": "invalid", "reason": "bad-approval", "message": str(exc)}, 2)
     result = approvals.grant_and_resume(LAYER, a.grant, a.approve, a.who or "dashboard", "dashboard")
     return done(result, 0 if result["status"] == "resumed" else 1)
+
+
+def approvable_cli(a: argparse.Namespace) -> int:
+    """--approvable RUN [RUN …]: what each run waits for, stored for the dashboard and printed."""
+    from adw_modules import approvable
+
+    records = {}
+    for run_id in a.approvable:
+        try:
+            records[run_id] = approvable.write(LAYER, run_id)
+        except Exception as exc:  # one run that cannot be derived does not hide the others
+            records[run_id] = {"version": 1, "run": run_id, "basis": "", "waiting": False, "kind": "", "items": [],
+                               "from_step": "", "after": "", "token": "", "at": "",
+                               "why": f"not derived: {type(exc).__name__}: {exc}"[:300]}
+    if a.json:
+        print(json.dumps({"runs": records}), flush=True)
+    else:
+        for record in records.values():
+            print("\n".join(approvable.lines(record)), flush=True)
+    return 0
+
+
+def approve_resume_cli(a: argparse.Namespace) -> int:
+    """--approve-resume RUN [--item ID …] [--token T] --who NAME [--note TEXT]: approve and resume."""
+    from adw_modules import approvable
+
+    result = approvable.approve_resume(LAYER, a.approve_resume, list(a.item) or None, a.who or "", "dashboard",
+                                       note=a.note or "", token=a.token or "")
+    if a.json:
+        print(json.dumps(result), flush=True)
+    else:
+        print(f"dispatch: {result['status']}: {result.get('message') or ''}", flush=True)
+    return 0 if result["status"] == "resumed" else 1
 
 
 def pr_state(a: argparse.Namespace) -> int:
@@ -259,12 +300,20 @@ def main() -> int:
                     help="with --start: the stand-in's mode for this run")
     ap.add_argument("--approve", action="append", default=[], metavar="WHAT",
                     help="with --start or --grant: an approval for the run (repeatable)")
-    ap.add_argument("--who", metavar="WHO", help="with --approve: who approves")
+    ap.add_argument("--who", metavar="WHO", help="with --approve or --approve-resume: who approves")
     ap.add_argument("--grant", metavar="RUN", help="approve --approve WHAT for stopped run RUN and resume it")
+    ap.add_argument("--approvable", nargs="+", metavar="RUN",
+                    help="what each stopped run waits for a person's approval of (stored as approvable.json)")
+    ap.add_argument("--approve-resume", metavar="RUN", help="approve what stopped run RUN waits for and resume it")
+    ap.add_argument("--item", action="append", default=[], metavar="ID",
+                    help="with --approve-resume: an item to approve (repeatable; none means all of them)")
+    ap.add_argument("--token", metavar="T", help="with --approve-resume: the token of what was shown")
+    ap.add_argument("--note", metavar="TEXT", help="with --approve-resume: one line kept with the approval")
     ap.add_argument("--pr-state", type=int, metavar="N", help="is pull request N merged? (read only)")
     ap.add_argument("--registry", action="store_true", help="print what the layer can run (read only)")
     ap.add_argument("--json", action="store_true",
-                    help="with --start, --grant, --pr-state, --resume, --stop, --helper or --registry: print one JSON line")
+                    help="with --start, --grant, --approvable, --approve-resume, --pr-state, --resume, --stop, "
+                         "--helper or --registry: print one JSON line")
     ap.add_argument("--resume", metavar="ID", help="continue a waiting, failed or handed-over run, detached")
     ap.add_argument("--answer", action="store_true", help="with --resume: a person's answer to a waiting run on stdin")
     ap.add_argument("--stop", metavar="ID", help="stop a run running on this host")
@@ -274,6 +323,10 @@ def main() -> int:
         return registry_cli(a)
     if a.grant:
         return grant(a)
+    if a.approvable:
+        return approvable_cli(a)
+    if a.approve_resume:
+        return approve_resume_cli(a)
     if a.pr_state is not None:
         return pr_state(a)
     if a.helper:
