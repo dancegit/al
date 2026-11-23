@@ -871,6 +871,7 @@ td.reason .proposal { color: var(--accent); margin-top: 2px; overflow-wrap: anyw
 .voice-state { min-height: 1.45em; color: var(--text-2); text-align: center; }
 .voice-panel[data-state="interrupted"] .voice-state { color: var(--failed); }
 .voice-panel[data-state="listening"] .voice-state { color: var(--passed); }
+.voice-engine { margin: 4px 0 0; font-size: 12px; }
 .voice-controls { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; }
 .voice-talk { min-width: 140px; padding: 8px 16px; font-size: 13px; touch-action: none; user-select: none; -webkit-user-select: none; }
 .voice-talk[aria-pressed="true"] { background: rgba(63, 185, 80, .22); border-color: var(--passed); }
@@ -921,6 +922,26 @@ td.reason .proposal { color: var(--accent); margin-top: 2px; overflow-wrap: anyw
   .voice-mic-dot { animation: none; }
   .voice-level-bar { transition: none; }
   .voice-panel * { animation: none !important; transition: none !important; }
+}
+/* the voice dock: the helper, reachable from every page (top bar button) */
+.voice-button { display: inline-flex; align-items: center; justify-content: center; padding: 0; flex: none; }
+.voice-button[hidden] { display: none; }
+.voice-button[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+.voice-dock { position: fixed; right: 16px; bottom: 16px; z-index: 30; width: min(440px, calc(100vw - 32px)); max-height: calc(100vh - var(--top) - 32px);
+  overflow: auto; background: var(--panel); border: 1px solid var(--border-2); border-radius: 8px; box-shadow: 0 10px 40px rgba(0, 0, 0, .6); padding: 10px 12px; }
+.voice-dock[hidden] { display: none; }
+.voice-dock:focus { outline: none; }
+.voice-dock-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.voice-dock-head h3 { margin: 0; }
+.voice-dock-head .spacer { flex: 1; }
+.voice-dock-layer { max-width: 180px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border-2); border-radius: 4px; padding: 3px 6px; font: inherit; }
+.voice-dock-off { color: var(--waiting); overflow-wrap: anywhere; }
+.voice-dock .voice-host { margin: 0; }
+.voice-dock .voice-panel { border: 0; padding: 0; margin: 0; background: none; box-shadow: none; }
+.voice-dock .voice-panel .voice-head h3 { display: none; }
+.voice-dock .voice-body { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 760px) {
+  .voice-dock { left: 8px; right: 8px; bottom: 8px; width: auto; max-height: calc(100vh - var(--top) - 16px); }
 }
 /* what a layer can run besides its declared workflows: the kit's workflows, single commands, suite commands */
 .badge.kit { color: var(--promote, #b07cd8); border-color: rgba(176, 124, 216, .5); background: rgba(176, 124, 216, .1); font-weight: 600; letter-spacing: .02em; }

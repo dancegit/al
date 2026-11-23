@@ -15,6 +15,8 @@
   a kept reference is never touched. `al sandbox LAYER prune --tests` uses it.
 - `report` and `lines`: the `disk:` lines of `al doctor` (worktrees, run records, al's images, test
   leftovers, pytest's temp dirs, free space, a warning below 10% free).
+- `room_problem`: the free-space guard before a large checkout is made (`al improve`'s copy of the
+  application and its dry-run worktrees): "" when there is room, else one sentence saying why not.
 
 Standard library only, no sibling imports: tools/al and the test suites load it by path.
 """
@@ -38,6 +40,7 @@ TEST_LABEL = "al.test"
 SESSION_LABEL = "al.test.session"
 STALE_SECONDS = 6 * 3600
 LOW_FREE = 0.10
+SMALL_CHECKOUT = 1 << 30
 GIT_TIMEOUT = 120
 PODMAN_TIMEOUT = 120
 RUN_ID = re.compile(r"[0-9a-fA-F]{8}")
@@ -289,6 +292,27 @@ def human_size(n: Any) -> str:
         if value < 1024 or unit == "T":
             return f"{value:.1f}{unit}" if value < 100 else f"{value:.0f}{unit}"
     return f"{value:.0f}T"
+
+
+def room_problem(path: Path | str, needed: int, *, disk_usage: Callable[[str], Any] = shutil.disk_usage) -> str:
+    """"" when the filesystem that holds `path` (asked at its nearest existing ancestor) has room for
+    `needed` bytes, else one sentence. No room: more is needed than is free; or, for SMALL_CHECKOUT
+    bytes or more, it would leave less than LOW_FREE of the filesystem free (a small checkout is only
+    refused when it does not fit at all). A filesystem that cannot be asked is never a reason to refuse."""
+    where = Path(path).absolute()
+    while not where.exists() and where.parent != where:
+        where = where.parent
+    try:
+        usage = disk_usage(str(where))
+        total, free = int(usage.total), int(usage.free)
+    except (OSError, ValueError, AttributeError):
+        return ""
+    needed = max(int(needed), 0)
+    if needed <= free and (needed < SMALL_CHECKOUT or free - needed >= LOW_FREE * total):
+        return ""
+    return (f"not enough free disk space on {where}: this needs about {human_size(needed)}, {human_size(free)} of "
+            f"{human_size(total)} is free (al keeps {LOW_FREE:.0%} free); free space (al doctor shows where it went) "
+            "or narrow the layer's worktree with #:sparse")
 
 
 def _bytes(path: Path) -> int:

@@ -523,14 +523,19 @@
     return !!(voice && window.alVoice && (voice.panel || voice.available));
   }
 
-  /** The voice panel of a page: mounts once per (layer, repository) and survives the page's re-renders. */
-  function voiceSlot() {
+  const pageVoiceSlots = new Set();   // the in-page slots (layer page, repository panel): refreshed when the dock opens or closes
+
+  /** The voice panel of a page: mounts once per (layer, repository) and survives the page's re-renders.
+   * A page slot (not `docked`) stands back while the voice dock is open, so one panel is live (and holds
+   * the microphone) at a time; `refresh()` shows again what was last asked for. */
+  function voiceSlot(docked = false) {
     const host = h("div", { class: "voice-host" });
-    let mounted = null, mountedKey = "";
-    return {
+    let mounted = null, mountedKey = "", last = null;
+    const slot = {
       host,
       show(voice, layerKey, repoKey) {
-        const wanted = voiceShown(voice) ? `${layerKey}|${repoKey || ""}` : "";
+        last = [voice, layerKey, repoKey];
+        const wanted = (!docked && voiceDock.isOpen()) ? "" : voiceShown(voice) ? `${layerKey}|${repoKey || ""}` : "";
         if (wanted === mountedKey) return;
         if (mounted) mounted.destroy();
         mounted = null;
@@ -538,9 +543,113 @@
         clear(host);
         if (wanted) mounted = window.alVoice.panel(host, { layer: layerKey, repo: repoKey || "" });
       },
-      destroy() { if (mounted) mounted.destroy(); mounted = null; mountedKey = ""; },
+      refresh() { if (last) slot.show(...last); },
+      destroy() { if (mounted) mounted.destroy(); mounted = null; mountedKey = ""; last = null; pageVoiceSlots.delete(slot); },
     };
+    if (!docked) pageVoiceSlots.add(slot);
+    return slot;
   }
+
+  /** The voice helper in a dock, reachable from the top bar's microphone button on every page (key `v`).
+   * The dock is not part of a view, so it survives navigation; it opens the layer's conversation with no
+   * repository (the one the layer page uses). While it is open the page slots stand back: one live panel. */
+  const voiceDock = (() => {
+    const LAYER_KEY = "al.voice.layer";
+    const button = document.getElementById("voice-button");
+    const dock = document.getElementById("voice-dock");
+    const slot = voiceSlot(true);
+    let open = false, chosen = "", listed = "", shown = false;
+
+    // voice.js loads after this file: window.alVoice is read here, at event time, never at load
+    function layers() { return window.alVoice ? store.layers.filter((l) => l.voice && l.voice.declared) : []; }
+
+    function pick(list) {
+      const has = (key) => !!key && list.some((l) => l.key === key);
+      const route = parseRoute();
+      const onPage = (route.view === "layer" || route.view === "run") ? route.parts[1] : "";
+      if (has(onPage)) return onPage;
+      let stored = "";
+      try { stored = localStorage.getItem(LAYER_KEY) || ""; } catch (_error) { stored = ""; }
+      if (has(stored)) return stored;
+      const first = list.find((l) => voiceShown(l.voice)) || list[0];
+      return first ? first.key : "";
+    }
+
+    function render() {
+      const list = layers();
+      if (!list.some((l) => l.key === chosen)) chosen = pick(list);
+      const layer = list.find((l) => l.key === chosen);
+      if (!layer) return;
+      let chooser;
+      if (list.length > 1) {
+        chooser = h("select", { class: "voice-dock-layer", "aria-label": "Layer" },
+          list.map((l) => h("option", { value: l.key, text: l.key, selected: l.key === chosen })));
+        chooser.value = chosen;
+        chooser.addEventListener("change", () => {
+          chosen = chooser.value;
+          try { localStorage.setItem(LAYER_KEY, chosen); } catch (_error) { /* private mode: not remembered */ }
+          render();
+          const again = dock.querySelector(".voice-dock-layer");
+          if (again) again.focus();
+        });
+      } else {
+        chooser = h("span", { class: "mono dim", text: chosen });
+      }
+      const head = h("div", { class: "voice-dock-head" }, h("h3", { text: "Voice helper" }), chooser, h("span", { class: "spacer" }),
+        h("button", { type: "button", class: "toggle voice-dock-close", "aria-label": "Close the voice helper", text: "close  esc", onclick: () => close() }));
+      shown = voiceShown(layer.voice);
+      let body;
+      if (shown) {
+        slot.show(layer.voice, chosen, "");
+        body = slot.host;                // re-attached, not rebuilt: the mounted panel keeps its conversation
+      } else {
+        slot.show(null);
+        body = h("div", { class: "voice-dock-off", role: "status", text: layer.voice.off || layer.voice.why || "voice is off for this layer" });
+      }
+      replace(dock, head, body);
+      dock.dataset.layer = chosen;
+      listed = list.map((l) => l.key).join("|");
+    }
+
+    function openDock() {
+      const list = layers();
+      if (open || !list.length) return;
+      open = true;                       // before the page slots are refreshed: they stand back
+      chosen = pick(list);
+      render();
+      dock.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      for (const s of [...pageVoiceSlots]) s.refresh();
+      const target = dock.querySelector(".voice-talk:not(:disabled)") || dock.querySelector(".voice-dock-layer") || dock.querySelector(".voice-dock-close");
+      if (target) target.focus();
+    }
+
+    function close() {
+      if (!open) return;
+      const inside = dock.contains(document.activeElement);
+      slot.destroy();                    // stops playback and closes the microphone
+      clear(slot.host);
+      clear(dock);
+      dock.hidden = true;
+      delete dock.dataset.layer;
+      open = false;
+      chosen = "";
+      button.setAttribute("aria-expanded", "false");
+      for (const s of [...pageVoiceSlots]) s.refresh();
+      if (inside) button.focus();
+    }
+
+    function sync() {
+      const list = layers();
+      button.hidden = !list.length;
+      if (!open) return;
+      const layer = list.find((l) => l.key === chosen);
+      if (!layer) { close(); return; }
+      if (list.map((l) => l.key).join("|") !== listed || voiceShown(layer.voice) !== shown) render();
+    }
+
+    return { isOpen: () => open, open: openDock, close, toggle: () => (open ? close() : openDock()), sync, el: dock, button };
+  })();
 
   const modelNotes = new Map();   // layer key -> {text, error}: the last answer, kept when the block is rebuilt
 
@@ -5516,7 +5625,7 @@
     const overlay = document.getElementById("overlay");
     const keys = [["1 · 2 · 3 · 4", "Now · Runs · Layers · Repos"], ["j / k", "next / previous run, step or transcript event"], ["Enter", "open the selection / expand an event"],
       ["/", "search (runs or transcript)"], ["f", "follow the running step's transcript or log"], ["Esc", "back / close"], ["?", "this help"],
-      ["Space", "voice helper: hold to talk (focus in its panel)"], ["Esc", "voice helper: stop speaking"], ["M", "voice helper: close the microphone"]];
+      ["v", "voice helper: open or close it from any page"], ["Space", "voice helper: hold to talk (focus in its panel)"], ["Esc", "voice helper: stop speaking"], ["M", "voice helper: close the microphone"]];
     replace(overlay, h("div", { class: "panel", onclick: (e) => e.stopPropagation() }, h("h3", { text: "Keyboard" }),
       h("div", { class: "shortcuts" }, keys.map(([k, v]) => [h("span", {}, h("kbd", { text: k })), h("span", { text: v })])),
       h("p", { class: "dim", text: "Every view is a link: copy the address bar to share a run, a step or a filtered transcript." })));
@@ -5529,6 +5638,10 @@
     const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement && document.activeElement.tagName);
     if (event.key === "Escape") {
       if (!overlay.hidden) { overlay.hidden = true; clear(overlay); return; }
+      if (voiceDock.isOpen() && voiceDock.el.contains(document.activeElement)) {   // Escape in the dock: leave the field, then close
+        if (typing) voiceDock.el.focus(); else voiceDock.close();
+        return;
+      }
       if (typing) { document.activeElement.blur(); return; }
       if (current && current.back) current.back();
       return;
@@ -5540,6 +5653,7 @@
     if (event.key === "3") return go("#/layers");
     if (event.key === "4") return go("#/repos");
     if (event.key === "?") return help();
+    if (event.key === "v" && !voiceDock.button.hidden) return voiceDock.toggle();
     if (event.key === "j" && current && current.move) { event.preventDefault(); return current.move(1); }
     if (event.key === "k" && current && current.move) { event.preventDefault(); return current.move(-1); }
     if (event.key === "Enter" && current && current.open && !(document.activeElement && document.activeElement.closest && document.activeElement.closest(".g-node"))) { return current.open(); }
@@ -5557,6 +5671,9 @@
   document.getElementById("help-button").addEventListener("click", help);
   window.addEventListener("hashchange", router);
   if (!location.hash) history.replaceState(null, "", "#/now");
+  voiceDock.button.addEventListener("click", voiceDock.toggle);
+  store.on((kind) => { if (kind === "snapshot" || kind === "layers") voiceDock.sync(); });
+  voiceDock.sync();
   live.connect();
   router();
 })();

@@ -59,12 +59,13 @@ def assert_not_in_environ(value):
 
 def test_forgejo_token_from_local_env_reaches_only_the_header(tmp_path, monkeypatch):
     (tmp_path / "local.env").write_text(f"{VAR}=from-local-env\n")
-    http = FakeHttp([{"number": 12, "html_url": "https://git.example.org/acme/shop/pulls/12"}])
+    http = FakeHttp([[], {"number": 12, "html_url": "https://git.example.org/acme/shop/pulls/12"}])
     monkeypatch.setattr(forge, "http_request", http)
     client = forge.get_client(layer(tmp_path, FORGEJO))
     client.create_pr("feat-x", "main", "Add x", "body")
     client.comment(7, "hello")
-    assert len(http.calls) == 2
+    assert len(http.calls) == 3  # GET /pulls (the open one of feat-x -> main), POST /pulls, POST comment
+    assert [c["method"] for c in http.calls] == ["GET", "POST", "POST"]
     for call in http.calls:
         assert call["headers"]["Authorization"] == "token from-local-env"
         assert "from-local-env" not in (call["body"] or "")

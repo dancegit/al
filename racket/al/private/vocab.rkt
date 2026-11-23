@@ -433,7 +433,7 @@
   [require (enum all affected) all "all = every #:require-checks cmd has a passing result for the exact tree that ships (run at the gate, or reused from the same tree). affected = a required cmd with #:always #f whose #:covers no changed path touches is recorded as not affected instead; the compiler warns when this is combined with #:ship merge or deploy."]
   [allowed-classes (list-of (enum chore bug feature patch)) (chore bug)
    "Work classes allowed to ship untouched; others fall back to a human PR."]
-  [max-diff-lines integer 400 "Larger diffs fall back to a human PR."]
+  [max-diff-lines integer 10000 "Larger diffs fall back to a human PR."]
   [block-protected-paths boolean #t "Any change under codebase protected paths falls back to a human PR."]
   [body-cmd (optional-ref cmd) "" "Codebase command whose standard output opens the PR description (see review human)."])
 
