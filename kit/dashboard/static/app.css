@@ -948,6 +948,19 @@ td.reason .proposal { color: var(--accent); margin-top: 2px; overflow-wrap: anyw
 .depth-pill.d-targeted { color: var(--check); border-color: rgba(214, 162, 58, .55); border-style: dashed; background: rgba(214, 162, 58, .08); }
 .depth-pill.d-smoke { color: var(--budget); border-color: rgba(232, 135, 90, .6); border-style: dotted; background: rgba(232, 135, 90, .08); }
 .depth-pill + .depth-pill { margin-left: 4px; }
+.review-policy { margin-bottom: 12px; }
+.review-policy table.review-policy-options td { vertical-align: top; padding: 8px 10px; }
+.review-policy .source { display: block; font-size: 11px; }
+.review-policy .limit-cell .limit-source { display: inline; }
+.review-policy .limit-value { font-size: 15px; }
+.review-policy .limit-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.review-policy .limit-input { width: 96px; }
+.review-policy .limit-who { width: 130px; }
+.review-policy .limit-ignored { margin-top: 4px; }
+.review-policy .review-policy-note { font-size: 12px; }
+.review-policy .review-policy-note.error { color: var(--failed); }
+.review-policy .why { margin-top: 8px; }
+.size-stop { font-weight: 600; }
 .testing-panel { margin-bottom: 12px; }
 .testing-panel .testing-source { font-size: 12px; color: var(--text-2); }
 .testing-undeclared { margin-bottom: 8px; padding: 6px 10px; border-radius: 5px; border: 1px dashed var(--border-2); color: var(--text-2); }

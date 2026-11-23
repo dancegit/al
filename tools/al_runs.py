@@ -187,6 +187,8 @@ def list_runs(layer_dir: Path, view: str = "needs-you", as_json: bool = False, f
                   f"< {shown_dir}/agents/ID/request.md")
             continue
         print(format_row(row, layer_dir))
+    for line in kit().review_policy_lines(layer.review_policy_view()):   # the ship-without-review limits, on this machine
+        print(f"limit: {line}")
     return 0
 
 

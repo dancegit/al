@@ -62,7 +62,9 @@ def test_al_runs_views_and_json(scenario):
     landed = al("runs", scenario["layer"], "--view", "landed").stdout
     assert landed.splitlines()[0] == "8 landed (6 need you, 5 running, 8 landed, 7 settled)"
     assert sorted(ids_in(landed)) == sorted(sf.MERGED + sf.SQUASHED)
-    for line in landed.splitlines()[1:]:
+    # after the rows: the layer's ship-without-review limit on this machine (the scenario has no agentic.rkt)
+    assert landed.splitlines()[-1] == "limit: gate: max-diff-lines 100 (compiled layer)"
+    for line in landed.splitlines()[1:-1]:
         assert re.search(r"landed in [0-9a-f]{7} \((ancestor|patch-id)\) on main, \d{4}-\d\d-\d\d$", line), line
     settled = al("runs", scenario["layer"], "--view", "settled").stdout
     assert sorted(ids_in(settled)) == sorted(sf.INTEGRATED + sf.FAILED)

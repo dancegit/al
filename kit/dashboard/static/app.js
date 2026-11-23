@@ -345,7 +345,7 @@
     if (run.usage && run.usage.stopped) return limitBadge(run);
     if (run.budget && run.budget.stopped) return budgetBadge(run);
     if (run.status === "handed-over") {
-      return h("span", { class: "badge handed-over", title: (o.handover || []).join(", "), text: "handed to a person" });
+      return h("span", { class: "badge handed-over", title: handoverText(o), text: "handed to a person" });
     }
     if (o.ship === "merge" && o.shipped) return h("span", { class: "badge good", text: "merged" });
     if (o.ship === "deploy" && o.shipped) return h("span", { class: "badge good", text: "deployed" });
@@ -487,6 +487,103 @@
       t.declared ? h("div", { class: "faint testing-policy", text: `layer file: ${t.layer_depth} per run, ${policy.onStage || "full"} per batch${rhythm ? `, a batch ${rhythm}` : ", no batch rhythm"}; applies to runs started from now on` }) : null,
       commands,
       batches.length ? h("div", { class: "testing-batches" }, h("h4", { text: "Batches" }), batches) : null);
+  }
+
+  const reviewLimitTyped = new Map();   // "layer/option" -> the limit typed on the card, not applied yet
+  const reviewPolicyNotes = new Map();  // layer key -> {text, error}: the last answer, kept when the page reloads
+
+  /** The handover reasons of a run in words: a stop for size reads "diff N lines > limit M (review option ID),
+   * F files changed" (outcome.size_stop) instead of diff-too-large:N>M. */
+  function handoverText(outcome) {
+    const o = outcome || {};
+    return (o.handover || []).map((r) => (o.size_stop && /^diff-too-large:/.test(r) ? o.size_stop.text : r)).join(", ");
+  }
+
+  /** The Layer page's "Ship without review" card: each auto review option with what it ships by, its diff limit,
+   * its allowed classes and its required checks, where each value comes from, and a form that overrides the
+   * limit on this machine (the local setting agents/settings/review.json) after a confirmation. */
+  function reviewPolicyPanel(layer, reload) {
+    const view = layer.review_policy;
+    if (!view || !(view.options || []).length) return null;
+    const key = layer.key;
+    const last = reviewPolicyNotes.get(key);
+    const note = h("span", { class: `review-policy-note faint${last && last.error ? " error" : ""}`, role: "status", text: last ? last.text : "" });
+    const show = (text, error) => {
+      reviewPolicyNotes.set(key, { text, error });
+      for (const n of new Set([note, ...document.querySelectorAll(".review-policy .review-policy-note")])) { n.textContent = text; n.classList.toggle("error", error); }
+    };
+    const sourced = (value, source) => [h("span", { class: "value", text: value }), h("span", { class: "source faint", text: source })];
+    const list = (items) => ((items || []).length ? items.join(", ") : "none");
+    const rows = view.options.map((o) => {
+      const m = o.maxDiffLines;
+      const typedKey = `${key}/${o.id}`;
+      const input = h("input", { type: "number", class: "limit-input", min: String(view.min), max: String(view.max), step: "1",
+        value: reviewLimitTyped.has(typedKey) ? reviewLimitTyped.get(typedKey) : String(m.value), "aria-label": `max diff lines of ${o.id}`,
+        disabled: !view.writable });
+      const who = h("input", { type: "text", class: "limit-who", placeholder: "your name", maxlength: "80", "aria-label": "your name",
+        value: localStorage.getItem("al.settle.who") || "", disabled: !view.writable });
+      const apply = h("button", { type: "button", class: "btn primary limit-apply", text: "Apply" });
+      const typed = () => (/^\d+$/.test(input.value.trim()) ? Number(input.value.trim()) : NaN);
+      const mark = () => {
+        const n = typed();
+        apply.disabled = !view.writable || !(n >= view.min && n <= view.max) || n === m.value || !who.value.trim();
+      };
+      input.addEventListener("input", () => { reviewLimitTyped.set(typedKey, input.value); mark(); });
+      who.addEventListener("input", mark);
+      mark();
+      const send = async (body, button, saved) => {
+        button.disabled = true;
+        try {
+          await api.post("/api/review-limit", { layer: key, option: o.id, ...body });
+          reviewLimitTyped.delete(typedKey);
+          show(saved, false);
+          reload();
+        } catch (err) {
+          show(String(err.message || err), true);
+          button.disabled = false;
+        }
+      };
+      apply.addEventListener("click", async () => {
+        const n = typed();
+        const yes = await confirmDialog(`Change the ship-without-review limit of ${o.id}?`,
+          `Runs of this layer reviewed by ${o.id} will ship without a person up to ${n} changed lines (declared: ${m.declared}). `
+          + "It applies on this machine to every gate from now on, until you reset it. The checks, the review and the other rules stay as they are.",
+          `Set to ${n}`);
+        if (!yes) return;
+        localStorage.setItem("al.settle.who", who.value.trim());
+        send({ limit: n, who: who.value.trim() }, apply, "saved; applies to every gate from now on");
+      });
+      const reset = m.local !== null && m.local !== undefined ? h("button", { type: "button", class: "btn limit-reset", text: "Reset",
+        disabled: !view.writable, title: "drop the local override: the declared limit applies again" }) : null;
+      if (reset) {
+        reset.addEventListener("click", async () => {
+          const yes = await confirmDialog(`Reset the limit of ${o.id}?`, `The declared limit ${m.declared} applies again.`, "Reset");
+          if (yes) send({ reset: true }, reset, "reset: the declared limit applies again");
+        });
+      }
+      const set = m.set || {};
+      const source = m.source === "local override"
+        ? `local override${set.who ? ` by ${set.who}` : ""}${set.at ? `, ${isoWhen(set.at)}` : ""}; declared ${m.declared} (${m.declared_source})`
+        : m.source;
+      return h("tr", { dataset: { option: o.id } },
+        h("td", { class: "mono", text: o.id }),
+        h("td", {}, sourced(o.ship.value, o.ship.source)),
+        h("td", { class: "limit-cell" },
+          h("div", {}, h("b", { class: "limit-value num", text: String(m.value) }), " ", h("span", { class: "limit-source source faint", text: source })),
+          m.ignored ? h("div", {}, h("span", { class: "badge warn limit-ignored", text: `local override ${m.local} not read by this layer's gate` })) : null,
+          h("div", { class: "limit-form" }, input, who, apply, reset)),
+        h("td", {}, sourced(list(o.allowedClasses.value), o.allowedClasses.source)),
+        h("td", {}, sourced(list(o.requireChecks.value), o.requireChecks.source)));
+    });
+    return h("div", { class: "card review-policy", dataset: { layer: key } },
+      h("div", { class: "card-head" }, h("h3", { text: "Ship without review" }),
+        h("span", { class: "dim", text: "a run of these review options ships with no person when every rule holds; a larger diff goes to a person" }),
+        h("span", { class: "spacer" }), note),
+      h("div", { class: "table-wrap" }, h("table", { class: "review-policy-options" },
+        h("thead", {}, h("tr", {}, ["review option", "ships by", "max diff lines", "allowed classes", "required checks"].map((label) => h("th", { text: label })))),
+        h("tbody", {}, rows))),
+      !view.writable && view.why ? h("div", { class: "why", text: view.why }) : null,
+      view.error ? h("div", { class: "why error", text: view.error }) : null);
   }
 
   async function api(path) {
@@ -2999,7 +3096,11 @@
         return;
       }
       if (gone) return;
-      const text = JSON.stringify(fresh);
+      // the layer's ship-without-review limits are part of what a run stopped for size shows ("limit now …")
+      // (only such a run: any other keeps its nodes when the layers arrive after its first render)
+      const stopped = ((fresh.summary || {}).outcome || {}).size_stop;
+      const limits = !stopped ? [] : (((store.layer(layerKey) || {}).review_policy || {}).options || []).map((o) => [o.id, o.maxDiffLines.value, o.maxDiffLines.source]);
+      const text = JSON.stringify(fresh) + JSON.stringify(limits);
       if (text !== shown) {        // an unchanged detail keeps its nodes (hover, focus, selection)
         detail = fresh;
         shown = text;
@@ -3036,7 +3137,7 @@
             h("span", { class: "badge", text: sm.layer }), sm.klass ? h("span", { class: "badge", text: `class ${sm.klass}` }) : null,
             sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, hostBadge(sm), outcomeBadge(sm),
             sm.status === "handed-over" && (sm.outcome.handover || []).length
-              ? h("span", { class: "badge handed-over", title: "why a person decides", text: `↪ ${sm.outcome.handover.join(", ")}` }) : null,
+              ? h("span", { class: "badge handed-over", title: "why a person decides", text: `↪ ${handoverText(sm.outcome)}` }) : null,
             promotionBadge(sm), brokeBatchBadge(sm),
             sm.fanout_parent ? h("a", { class: "badge info", href: `#/run/${enc(layerKey)}/${enc(sm.fanout_parent)}`,
               text: sm.fanout && sm.fanout.index ? `candidate ${sm.fanout.index} of ${sm.fanout_parent}${sm.fanout.step ? ` (${sm.fanout.step})` : ""}` : `candidate of ${sm.fanout_parent}` }) : null,
@@ -3395,12 +3496,19 @@
       if (detail.gate || (detail.ship && detail.ship.action)) {
         const gate = detail.gate || {}, ship = detail.ship || {};
         const url = ship.url || (ship.pr && ship.pr.url) || "";
+        // a stop for size, in words, and the limit as it is now (it may have been changed since)
+        const stop = (detail.summary.outcome || {}).size_stop;
+        const policy = ((store.layer(layerKey) || {}).review_policy || {}).options || [];
+        const nowLimit = stop ? (policy.find((o) => o.id === stop.option) || {}).maxDiffLines : null;
+        const size = stop ? h("span", {}, h("span", { class: "size-stop", text: stop.text }),
+          nowLimit ? [" ", h("span", { class: "faint size-now", text: `limit now ${nowLimit.value} (${nowLimit.source})` })] : null) : "";
         blocks.push(h("div", { class: "outcome-block" }, h("div", { class: "card-head" }, h("h3", { text: "Gate and ship" }),
           gate.action ? h("span", { class: `badge ${gate.ship ? "good" : (gate.reasons || []).every((r) => /^review-(human|agent):/.test(r)) ? "info" : "warn"}`,
             text: gate.ship ? `gate: ${gate.action}` : "gate: a human decides" }) : null),
           kv([["action", ship.action], ["shipped", ship.shipped === undefined ? "" : String(ship.shipped)], ["target", ship.target],
             ["pull request", /^https?:\/\//.test(url) ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: url }) : ""],
             ["commit", ship.commit ? h("span", { class: "mono", text: String(ship.commit).slice(0, 12) }) : ""],
+            ["size", size],
             ["gate reasons", gate.reasons && gate.reasons.length ? h("ul", { class: "issues" }, gate.reasons.map((r) => h("li", { class: /^review-(human|agent):/.test(r) ? "" : "sev-blocker", text: r }))) : (gate.action ? "none: every rule held" : "")],
             ["diff", gate.diff_lines !== undefined ? `${gate.diff_lines} lines in ${(gate.changed_files || []).length} files` : ""],
             ["changed", gate.changed_files && gate.changed_files.length ? h("span", { class: "mono", text: gate.changed_files.join("  ") }) : ""],
@@ -3844,6 +3952,7 @@
     const off = store.on((kind, data) => {
       if (kind === "run" && data.key === `${layerKey}/${runId}`) reload();
       if (kind === "snapshot") reload();
+      if (kind === "layers" && detail && (detail.summary.outcome || {}).size_stop) reload();   // its limit may have changed
     });
     const timer = setInterval(() => {
       if (detail && detail.summary.status === "running" && (state.tab === "overview" || state.tab === "step")) reload();
@@ -4313,6 +4422,7 @@
             .map(([label, value]) => h("div", { class: "stat" }, h("div", { class: "label", text: label }), h("div", { class: "value", text: value }))))));
       replace(rest,
         testingPanel(layer, load),
+        reviewPolicyPanel(layer, load),
         (data.promotions || []).length ? h("div", { class: "card promotions-section" },
           h("div", { class: "card-head" }, h("h3", { text: "Promotions" }), h("span", { class: "dim", text: "a stage moves into the next once people accept it" }),
             h("span", { class: "spacer" }), h("span", { class: "promotion-note", role: "status" })),

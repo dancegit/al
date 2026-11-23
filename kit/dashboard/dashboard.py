@@ -1689,6 +1689,55 @@ class Layer:
                 "writable": writable, "why": why, "error": error, "note": "" if policy else TESTING_UNDECLARED,
                 "batch": batch or {"enabled": False, "why": ""}}
 
+    def review_policy_view(self, read_only: bool = False) -> dict[str, Any]:
+        """The "Ship without review" card: every auto review option with what it ships by, its diff
+        limit, its allowed classes and its required checks, each with where the value comes from (the
+        layer definition, al's default, or the compiled layer when the definition cannot say), and the
+        local override of the limit beside the declared value. An override counts only when the layer's
+        gate reads it; otherwise it is shown as ignored and nothing may be written."""
+        error = ""
+        try:
+            setting = read_review_setting(self.path)
+        except ValueError as exc:
+            setting, error = {"maxDiffLines": {}, "set": {}}, str(exc)
+        gate_reads = gate_reads_limit(self.path)
+        written = declared_review_keywords(self.path)
+
+        def source(option_id: str, key: str) -> str:
+            if written is None or option_id not in written:
+                return SOURCE_COMPILED
+            return SOURCE_DEFINITION if REVIEW_KEYWORDS[key] in written[option_id] else SOURCE_DEFAULT
+
+        def names(value: Any) -> list[str]:
+            return [str(item) for item in value] if isinstance(value, list) else []
+
+        options = []
+        for review in self.ir.get("reviews") or []:
+            if not isinstance(review, dict) or review.get("kind") != "auto":
+                continue
+            option_id = str(review.get("id") or "")
+            declared = review.get("maxDiffLines")
+            declared = declared if isinstance(declared, int) and not isinstance(declared, bool) else 0
+            local = setting["maxDiffLines"].get(option_id)
+            applied = local is not None and gate_reads
+            options.append({
+                "id": option_id,
+                "ship": {"value": str(review.get("ship") or "pr"), "source": source(option_id, "ship")},
+                "allowedClasses": {"value": names(review.get("allowedClasses")),
+                                   "source": source(option_id, "allowedClasses")},
+                "requireChecks": {"value": names(review.get("requireChecks")),
+                                  "source": source(option_id, "requireChecks")},
+                "maxDiffLines": {"value": local if applied else declared, "declared": declared,
+                                 "source": SOURCE_OVERRIDE if applied else source(option_id, "maxDiffLines"),
+                                 "declared_source": source(option_id, "maxDiffLines"), "local": local,
+                                 "set": (setting["set"].get(option_id) or None) if local is not None else None,
+                                 "ignored": local is not None and not gate_reads}})
+        writable, why = settings_writable(self, read_only, "al review LAYER --set ID=N")
+        if not gate_reads:
+            writable, why = False, REVIEW_NOT_READ
+        return {"options": options, "min": REVIEW_LIMIT_MIN, "max": REVIEW_LIMIT_MAX, "gate_reads": gate_reads,
+                "writable": writable, "why": why, "error": error}
+
     @staticmethod
     def _typical_minutes(runs: list[dict[str, Any]], suites: dict[str, Any]) -> dict[str, float | None]:
         """Per level: the median check time of the last TYPICAL_RUNS finished runs at its depth, in minutes;
@@ -2045,6 +2094,271 @@ def write_testing_setting(layer_dir: Path, level: str | None) -> Path:
         Path(handle.name).unlink(missing_ok=True)
         raise
     return path
+
+
+# ---- the ship-without-review limit (mirror of kit/runtime/adw_modules/reviewpolicy.py)
+#
+# An auto review option ships a run with no person when every rule of the gate holds; one rule is the
+# diff's size, #:max-diff-lines. agents/settings/review.json overrides that number per option on this
+# machine (the "Ship without review" card's one write, and `al review LAYER --set ID=N`). The gate reads
+# it only when the layer's adws/adw_modules/review.py declares READS_LOCAL_LIMIT; until then nothing is
+# written and a file that exists anyway is shown as not read. tests/tools/test_al_review.py holds the
+# mirrors equal to the runtime's.
+
+REVIEW_FILE = "agents/settings/review.json"     # mirror of reviewpolicy.SETTING_FILE: never committed
+REVIEW_LIMIT_MIN = 1                            # mirror of reviewpolicy.MIN_LINES
+REVIEW_LIMIT_MAX = 50000                        # mirror of reviewpolicy.MAX_LINES
+REVIEW_WHO_MAX = 80                             # mirror of reviewpolicy.WHO_MAX
+REVIEW_KEYS = {"layer", "option", "limit", "reset", "who"}
+REVIEW_GATE_FILE = "adws/adw_modules/review.py"  # the layer's gate: read only for the capability line
+REVIEW_FIX = "fix or remove it (al review LAYER --reset)"
+REVIEW_NOT_READ = "this layer's gate does not read the local limit: run `al gen LAYER`"
+_READS_LOCAL_LIMIT = re.compile(r"^READS_LOCAL_LIMIT\s*=\s*True\b", re.M)
+_SIZE_REASON = re.compile(r"^diff-too-large:(\d+)>(\d+)$")
+_REVIEW_AUTO_FORM = re.compile(r"\(\s*review\s+auto(?=[\s()])")
+_INCLUDE_FORM = re.compile(r"\(\s*include\s+")
+SOURCE_DEFINITION = "layer definition"
+SOURCE_DEFAULT = "al's default"
+SOURCE_COMPILED = "compiled layer"
+SOURCE_OVERRIDE = "local override"
+# the IR key of each value the card shows and the keyword that declares it
+REVIEW_KEYWORDS = {"ship": "ship", "allowedClasses": "allowed-classes", "requireChecks": "require-checks",
+                   "maxDiffLines": "max-diff-lines"}
+
+
+def check_review_limit(value: Any) -> int:
+    """mirror of reviewpolicy.check_limit: a whole number within the range, else ValueError."""
+    if isinstance(value, bool) or not isinstance(value, int) or not REVIEW_LIMIT_MIN <= value <= REVIEW_LIMIT_MAX:
+        raise ValueError(f"max-diff-lines is a whole number from {REVIEW_LIMIT_MIN} to {REVIEW_LIMIT_MAX}, got {value!r}")
+    return value
+
+
+def check_review_who(who: Any) -> str:
+    """mirror of reviewpolicy.check_who: the name of who sets a limit, stripped, else ValueError."""
+    name = who.strip() if isinstance(who, str) else ""
+    if not 1 <= len(name) <= REVIEW_WHO_MAX or any(ord(char) < 32 or ord(char) == 127 for char in name):
+        raise ValueError(f"who: a name of 1 to {REVIEW_WHO_MAX} characters")
+    return name
+
+
+def read_review_setting(layer_dir: Path) -> dict[str, Any]:
+    """mirror of kit/runtime/adw_modules/reviewpolicy.py read_setting (ValueError instead of LayerError):
+    {"maxDiffLines": {ID: N}, "set": {ID: {"who", "via", "at"}}}; both empty without the file."""
+    path = Path(layer_dir) / REVIEW_FILE
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"maxDiffLines": {}, "set": {}}
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{REVIEW_FILE}: not JSON; {REVIEW_FIX}") from exc
+    except OSError as exc:
+        raise ValueError(f"{REVIEW_FILE}: cannot read it ({exc.strerror}); {REVIEW_FIX}") from exc
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"{REVIEW_FILE}: not JSON; {REVIEW_FIX}") from exc
+    expected = f'{REVIEW_FILE}: expected {{"version": 1, "maxDiffLines": {{ID: N}}}}'
+    if not isinstance(data, dict):
+        raise ValueError(f"{expected}; {REVIEW_FIX}")
+    limits = data.get("maxDiffLines", {})
+    if not isinstance(limits, dict):
+        raise ValueError(f"{expected}; {REVIEW_FIX}")
+    for option_id, value in limits.items():
+        try:
+            check_review_limit(value)
+        except ValueError as exc:
+            raise ValueError(f"{REVIEW_FILE}: {option_id}: {exc}; {REVIEW_FIX}") from exc
+    set_by = data.get("set", {})
+    if not isinstance(set_by, dict) or not all(
+            isinstance(stamp, dict) and all(isinstance(value, str) for value in stamp.values())
+            for stamp in set_by.values()):
+        raise ValueError(f'{REVIEW_FILE}: "set" is {{ID: {{"who", "via", "at"}}}} with text values; {REVIEW_FIX}')
+    return {"maxDiffLines": dict(limits), "set": {key: dict(stamp) for key, stamp in set_by.items()}}
+
+
+def write_review_setting(layer_dir: Path, option_id: str | None, limit: int | None, *, who: str = "",
+                         via: str = "dashboard", at: str | None = None) -> Path:
+    """mirror of kit/runtime/adw_modules/reviewpolicy.py write_setting: the limit of one option with who,
+    how and when, atomically (temporary file, fsync, rename), the same bytes for the same arguments.
+    `limit=None` drops that option's override, `option_id=None` every one; with none left the file goes."""
+    path = Path(layer_dir) / REVIEW_FILE
+    if option_id is None:
+        path.unlink(missing_ok=True)
+        return path
+    if limit is not None:   # checked before anything is read or written
+        limit, who = check_review_limit(limit), check_review_who(who)
+    try:
+        current = read_review_setting(layer_dir)
+    except ValueError:
+        current = {"maxDiffLines": {}, "set": {}}   # a broken file is replaced
+    limits, set_by = current["maxDiffLines"], current["set"]
+    if limit is None:
+        limits.pop(option_id, None)
+        set_by.pop(option_id, None)
+    else:
+        limits[option_id] = limit
+        set_by[option_id] = {"who": who, "via": str(via),
+                             "at": at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    set_by = {key: stamp for key, stamp in set_by.items() if key in limits}
+    if not limits:
+        path.unlink(missing_ok=True)
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False,
+                                         prefix=".review.", suffix=".tmp")
+    try:
+        with handle:
+            handle.write(json.dumps({"version": 1, "maxDiffLines": limits, "set": set_by}, indent=2,
+                                    sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(handle.name, path)
+    except BaseException:
+        Path(handle.name).unlink(missing_ok=True)
+        raise
+    return path
+
+
+def gate_reads_limit(layer_dir: Path) -> bool:
+    """Does the layer's gate apply the local limit? Its adws/adw_modules/review.py says so with the line
+    READS_LOCAL_LIMIT = True (a layer generated before the setting existed has no such line)."""
+    return bool(_READS_LOCAL_LIMIT.search(read_text(Path(layer_dir) / REVIEW_GATE_FILE)))
+
+
+def _blank_rkt(text: str) -> str:
+    """`text` with its comments (`;` to the end of the line, `#| … |#`) and the inside of its string
+    literals turned into spaces, position for position: what is left is code."""
+    out = list(text)
+    i, n = 0, len(text)
+    while i < n:
+        char = text[i]
+        if char == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            for k in range(i + 1, min(j, n)):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = j + 1
+        elif char == ";":
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out[i:j] = " " * (j - i)
+            i = j
+        elif text.startswith("#|", i):
+            j = text.find("|#", i + 2)
+            j = n if j < 0 else j + 2
+            for k in range(i, j):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = j
+        elif text.startswith("#\\", i):   # a character literal: #\; or #\" opens nothing
+            i += 3
+        else:
+            i += 1
+    return "".join(out)
+
+
+def _rkt_form_end(code: str, start: int) -> int | None:
+    """The index after the parenthesis that closes the form opening at `start`; None when it never closes."""
+    depth = 0
+    for i in range(start, len(code)):
+        if code[i] in "([":
+            depth += 1
+        elif code[i] in ")]":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return None
+
+
+def declared_review_keywords(layer_dir: Path) -> dict[str, set[str]] | None:
+    """Which keywords each `(review auto …)` form of the layer's definition writes: {ID: {"ship",
+    "max-diff-lines", …}}, ID being the form's #:id or `auto` without one. Read from agentic.rkt in the
+    layer directory and the files it names with (include "FILE") (relative to it, inside the layer
+    directory only), comments and strings left out. None when the definition cannot be read or holds
+    no such form: the card then says "compiled layer" instead of guessing."""
+    layer_dir = Path(layer_dir)
+    root = Path(os.path.realpath(layer_dir))
+    try:
+        main = (layer_dir / "agentic.rkt").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    texts = [main]
+    code = _blank_rkt(main)
+    for match in _INCLUDE_FORM.finditer(code):
+        if main[match.end():match.end() + 1] != '"':
+            continue
+        close = code.find('"', match.end() + 1)   # the string's inside is blank in `code`
+        name = main[match.end() + 1:close] if close > 0 else ""
+        target = Path(os.path.realpath(layer_dir / name)) if name else None
+        if target is None or root not in target.parents:
+            continue
+        try:
+            texts.append(target.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+    found: dict[str, set[str]] = {}
+    for text in texts:
+        code = _blank_rkt(text)
+        for match in _REVIEW_AUTO_FORM.finditer(code):
+            end = _rkt_form_end(code, match.start())
+            if end is None:
+                continue
+            words: set[str] = set()
+            option_id, depth = "auto", 0
+            for token in re.finditer(r"[()\[\]]|#:[^\s()\[\]]+", code[match.start():end]):
+                if token.group() in "([":
+                    depth += 1
+                elif token.group() in ")]":
+                    depth -= 1
+                elif depth == 1:   # a keyword of the form itself, not of a list inside it
+                    words.add(token.group()[2:])
+                    if token.group() == "#:id":
+                        value = re.match(r'\s*"?([^\s()\[\]"]+)', text[match.start() + token.end():end])
+                        option_id = value.group(1) if value else option_id
+            found.setdefault(option_id, set()).update(words)
+    return found or None
+
+
+def review_policy_lines(view: dict[str, Any]) -> list[str]:
+    """One line per auto review option, as `al review`, `al runs` and `al explain` print them: the
+    limit that applies and where it comes from."""
+    lines = []
+    for option in view.get("options") or []:
+        limit = option["maxDiffLines"]
+        if limit["ignored"]:
+            where = (f"{limit['declared_source']}; the local override {limit['local']} is not read by this "
+                     "layer's gate: run al gen")
+        elif limit["source"] == SOURCE_OVERRIDE:
+            where = f"{SOURCE_OVERRIDE}; declared {limit['declared']}"
+        else:
+            where = str(limit["source"])
+        lines.append(f"{option['id']}: max-diff-lines {limit['value']} ({where})")
+    return lines
+
+
+def size_stop(reasons: Iterable[Any], gate: Any, option_id: Any) -> dict[str, Any] | None:
+    """A run the gate handed to a person for its size: what `diff-too-large:N>M` says in words, with the
+    review option and how many files the gate saw changed. None when no reason is that one."""
+    match = next((m for m in (_SIZE_REASON.match(str(r)) for r in reasons or []) if m), None)
+    if match is None:
+        return None
+    lines, limit = int(match.group(1)), int(match.group(2))
+    changed = gate.get("changed_files") if isinstance(gate, dict) else None
+    files = len(changed) or None if isinstance(changed, list) else None
+    option = str(option_id or "")
+    text = f"diff {lines} lines > limit {limit}"
+    if option:
+        text += f" (review option {option})"
+    if files:
+        text += f", {files} file{'' if files == 1 else 's'} changed"
+    return {"diff_lines": lines, "limit": limit, "option": option, "files": files, "text": text}
+
+
+def readable_reasons(reasons: Iterable[Any], stop: dict[str, Any] | None) -> list[str]:
+    """The handover reasons with the `diff-too-large:` one in words (size_stop); unchanged without `stop`."""
+    return [str(stop["text"]) if stop and _SIZE_REASON.match(str(r)) else str(r) for r in reasons or []]
 
 
 def read_assign_auto(layer_dir: Path) -> bool:
@@ -3828,7 +4142,8 @@ def attention(summaries: list[dict[str, Any]], landings: dict[str, dict[str, Any
                             next=merge_or_settle)
             else:
                 pr = row.get("pr") or {}
-                why = ", ".join((row.get("outcome") or {}).get("handover") or []) or "handed over"
+                outcome = row.get("outcome") or {}
+                why = ", ".join(readable_reasons(outcome.get("handover") or [], outcome.get("size_stop"))) or "handed over"
                 if state == "partly":
                     shown = ", ".join((landing or {}).get("differs", [])[:3])
                     more = "…" if (landing or {}).get("differ", 0) > 3 else ""
@@ -5023,6 +5338,9 @@ class RunModel:
                         "url": str(ship.get("url") or (ship.get("pr").get("url", "") if isinstance(ship.get("pr"), dict) else "")),
                         "review": verdict.get("success") if verdict else None, "rounds": len(review.get("rounds") or []),
                         "stopped_at": ship.get("stopped_at", ""), "handover": data["handover"],
+                        # a stop for size in words; `handover` keeps the raw reasons (the stand-in and al kpis read those)
+                        "size_stop": size_stop(data["handover"], ship.get("gate") if isinstance(ship.get("gate"), dict) else {},
+                                               (data["adw"] or {}).get("review")),
                         "blockers": sum(1 for i in verdict.get("issues") or []
                                         if isinstance(i, dict) and i.get("severity") == "blocker")},
             "error": clip(str(failed.get("detail", "")), 300) if failed else "",
@@ -6224,6 +6542,7 @@ class Model:
                             "standin": self.standin_view(layer),
                             "assign_auto": self.assign_auto_view(layer),
                             "testing": layer.testing_view(self.read_only, runs, batch_status(layer, self)),
+                            "review_policy": layer.review_policy_view(self.read_only),
                             "hosts": self.layer_hosts(layer, runs),
                             "start": start_status(layer, self),
                             "voice": voice_status(layer, self),
@@ -6672,12 +6991,13 @@ class Model:
 
     @staticmethod
     def settings_sig(layer: Layer) -> tuple:
-        """What the layer-level panels read besides the IR: the local model and testing settings, the batch
-        ledger, the misses, the suite timings, the Automatic switch and the delivery requests. A change republishes
-        the layers."""
+        """What the layer-level panels read besides the IR: the local model, testing and review settings, the
+        gate's capability line, the layer definition, the batch ledger, the misses, the suite timings, the Automatic
+        switch and the delivery requests. A change republishes the layers."""
         requests = layer.path / REQUESTS_DIR
         return (tuple(stat_sig(layer.path / name) for name in (SETTINGS_FILE, TESTING_FILE, BATCHES_FILE, MISSES_FILE,
-                                                                 SUITES_FILE, ASSIGN_AUTO_FILE))
+                                                                 SUITES_FILE, ASSIGN_AUTO_FILE, REVIEW_FILE,
+                                                                 REVIEW_GATE_FILE, "agentic.rkt"))
                 + (stat_sig(requests),)
                 + tuple(stat_sig(path) for path in (sorted(requests.glob("*.json")) if requests.is_dir() else [])))
 
@@ -10472,6 +10792,8 @@ class Handler(BaseHTTPRequestHandler):
                 return getattr(self, VOICE_POST[path])()
             if path == "/api/testing":
                 return self._set_testing()
+            if path == "/api/review-limit":
+                return self._set_review()
             if path == "/api/batch":
                 return self._batch()
             if path == "/api/run-testing":
@@ -10715,6 +11037,55 @@ class Handler(BaseHTTPRequestHandler):
         model_.hub.publish("layers", layers)
         view = next((entry["testing"] for entry in layers if entry["key"] == layer.key), {})
         return self._json({"ok": True, "testing": view})
+
+    def _set_review(self) -> None:
+        """POST /api/review-limit {"layer", "option", "limit": N, "who"} or {"layer", "option", "reset": true}:
+        the layer's local ship-without-review limit (agents/settings/review.json), as
+        `al review LAYER --set ID=N | --reset ID`."""
+        body = self._write_guard(MAX_WRITE_BODY)
+        if body is None:
+            return None
+        try:
+            request = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._error(400, "expected a JSON object")
+        usage = ('expected {"layer", "option", "limit": N, "who": NAME} or {"layer", "option", "reset": true}; '
+                 "nothing else")
+        if not isinstance(request, dict) or not set(request) <= REVIEW_KEYS \
+                or not isinstance(request.get("layer"), str) or not isinstance(request.get("option"), str):
+            return self._error(400, usage)
+        reset, limit, who = request.get("reset"), request.get("limit"), request.get("who")
+        if reset not in (None, True) or (reset is True and limit is not None):
+            return self._error(400, usage)
+        if reset is None:
+            try:
+                limit, who = check_review_limit(limit), check_review_who(who)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+        model_ = self.server.model
+        with model_.lock:
+            layer = model_.layers.get(request["layer"])
+        if layer is None:
+            return self._error(404, "unknown layer")
+        option = request["option"]
+        view = layer.review_policy_view(self.server.read_only)
+        known = [entry["id"] for entry in view["options"]]
+        if option not in known:
+            return self._error(400, f"no auto review option named {option!r}; this layer has: "
+                                    f"{', '.join(known) or 'none'}")
+        if not view["writable"]:
+            return self._error(409, view["why"])
+        try:
+            write_review_setting(layer.path, option, None if reset else limit, who=who if reset is None else "",
+                                 via="dashboard")
+        except OSError as exc:
+            return self._error(409, f"cannot write {REVIEW_FILE}: {exc.strerror or exc}")
+        with model_.lock:
+            model_.settings_sigs[layer.key] = model_.settings_sig(layer)
+        layers = model_.layer_list()
+        model_.hub.publish("layers", layers)
+        view = next((entry["review_policy"] for entry in layers if entry["key"] == layer.key), {})
+        return self._json({"ok": True, "review_policy": view})
 
     def _batch(self) -> None:
         """POST /api/batch {"layer", "stage"?}: "Run the full suites now", by the layer's own
@@ -11840,7 +12211,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._startable(query)
             if path in ("/api/start", "/api/models", "/api/promotion", "/api/settle", "/api/integrate", "/api/assign",
                         "/api/decider", "/api/decision", "/api/standin", "/api/voice/approve", "/api/testing", "/api/batch",
-                        "/api/run-testing", "/api/approve", "/api/approve-resume") or path in VOICE_POST:
+                        "/api/run-testing", "/api/approve", "/api/approve-resume", "/api/review-limit") or path in VOICE_POST:
                 return self._error(405, "POST only")
             if path == "/api/assign/preview":
                 return self._assign_preview(query)
