@@ -105,6 +105,29 @@ def test_check_resolve_fixes_worktree_and_exhaustion_keeps_failure(make_layer, a
     assert Path(failed["worktree"]).is_dir()
 
 
+def test_labelled_request_fixes_the_class_whatever_classify_says(make_layer, app_repo):
+    steps = [
+        {"name": "classify", "kind": "run", "command": "classify"},
+        {"name": "plan-bug", "kind": "run", "command": "plan", "when": "class-bug"},
+        {"name": "plan-chore", "kind": "run", "command": "plan", "when": "class-chore"},
+    ]
+    layer = _layer(make_layer, app_repo, steps=steps, adw_id="1234abe1")
+    _script(layer, "classify", {"output": '{"class":"feature"}'})  # the wrong answer of the report
+    prompt = "# BUGFIX run for the demo layer\n\nThe total is wrong."
+    assert main("demo", layer, [prompt, "--adw-id", "1234abe1"]) == 0
+    run = layer / "agents/1234abe1"
+    state = json.loads((run / "state.json").read_text())
+    assert state["klass"] == "bug" and state["class_fixed"] is True and state["class_from"] == "request-label"
+    statuses = {step["name"]: step["status"] for step in state["steps"]}
+    assert statuses == {"classify": "passed", "plan-bug": "passed", "plan-chore": "skipped"}
+    log = (run / "run.log").read_text()
+    assert "class fixed from the request label: bug (# BUGFIX run for the demo layer)" in log
+    assert "demo start: class=bug dry_run=" in log, "the start line keeps its form: the dashboard parses it"
+    events = [json.loads(line) for line in (run / "events.jsonl").read_text().splitlines() if line.strip()]
+    [start] = [event for event in events if event["type"] == "run.start"]
+    assert start["class_from"] == "request-label" and start["klass"] == "bug"
+
+
 def test_class_route_fixed_class_and_resume_skip_passed_steps(make_layer, app_repo):
     steps = [
         {"name": "classify", "kind": "run", "command": "classify"},

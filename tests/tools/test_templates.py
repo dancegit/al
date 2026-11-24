@@ -226,3 +226,19 @@ def test_plan_prompts_list_the_declared_checks_by_name(sibling) -> None:
         text = (KIT / "templates" / "commands" / f"{name}.md").read_text()
         assert "{{declared_checks}}" in text, name
         assert "add `-rA` (pytest) so its log has a line per test" in text, name
+
+
+def test_classify_template_lets_an_explicit_label_win() -> None:
+    text = (KIT / "templates/commands/classify.md").read_text()
+    assert "An explicit class label at the start of PROMPT wins" in text
+    for label in ("BUGFIX", "Bug:", "[bug]", "Fix:", "Chore:", "Feature:"):
+        assert f"`{label}`" in text, label
+    assert "A label deeper in the text does not count" in text
+    assert "only when prompt has no such label" in text.lower() and "even when the fix adds" in text
+    assert text.index("An explicit class label") < text.index("feature over bug over chore")
+    assert "2. Decide the class: an explicit label first, else from the definitions." in text
+
+
+def test_guide_says_when_the_class_is_fixed() -> None:
+    guide = (KIT.parent / "docs" / "GUIDE.md").read_text()
+    assert "class fixed from the request label" in guide and "--replaces OLD --class bug" in guide

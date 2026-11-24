@@ -259,6 +259,27 @@ def test_nothing_changed_starts_again(make_layer, app_repo, monkeypatch):
     assert record(layer)["attempts"][0]["run"] == new and record(layer)["attempts"][0]["kind"] == "start-again"
 
 
+def test_start_again_keeps_the_class_label(make_layer, app_repo, monkeypatch):
+    from adw_modules import runner
+
+    labelled = "# BUGFIX run for the demo layer\n\nThe total ignores a negative discount."
+    layer, run = nothing_changed_run(make_layer, app_repo, prompt=labelled)
+    first = state_of(layer, run)
+    assert (first["klass"], first["class_fixed"], first["class_from"]) == ("bug", True, "request-label")
+    spawned = []
+    monkeypatch.setattr(assign, "_spawn", lambda argv, **kw: spawned.append(argv))
+    code, out = assign_main(layer, "give", run, "--detach", "--json")
+    assert code == 0, out
+    result = json.loads(out.strip().splitlines()[-1])
+    new = result["run_id"]
+    assert result["kind"] == "start-again" and new != run
+    request = (layer / "agents" / new / "request.md").read_text()
+    assert request.strip() == labelled, "the request is reused verbatim: the label is still its first line"
+    assert runner.request_label(request)[0] == "bug"
+    argv = spawned[0]
+    assert argv[argv.index("--class") + 1] == "bug" and argv[argv.index("--replaces") + 1] == run
+
+
 def test_stand_in_gives_a_restarted_request_once_over_the_runs_it_replaces(make_layer, app_repo, monkeypatch):
     layer, run = nothing_changed_run(make_layer, app_repo)
     spawned = []

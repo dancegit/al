@@ -120,11 +120,13 @@ def plan_script(layer: Path, text: str = PLAN_TEXT) -> None:
     script(layer, "plan", layer_files={"specs/plan-shelf.md": text}, output="specs/plan-shelf.md")
 
 
-def run_demo(layer: Path, run_id: str = RUN, prompt: str = PROMPT, *more: str) -> tuple[int, str]:
-    """One run of `demo` through runner.main: (exit code, its output)."""
+def run_demo(layer: Path, run_id: str = RUN, prompt: str = PROMPT, *more: str, klass: str | None = "chore") -> tuple[int, str]:
+    """One run of `demo` through runner.main: (exit code, its output). `klass=None` passes no
+    --class, so the class comes from the request (its label) or the workflow."""
     out = io.StringIO()
+    fixed = ["--class", klass] if klass else []
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-        code = runner.main("demo", layer, [prompt, "--adw-id", run_id, "--class", "chore", "--decider", "off", *more])
+        code = runner.main("demo", layer, [prompt, "--adw-id", run_id, *fixed, "--decider", "off", *more])
     return code, out.getvalue()
 
 
@@ -240,11 +242,12 @@ def died_run(make_layer, app_repo: Path, **options: Any) -> tuple[Path, str]:
     return layer, run_id
 
 
-def nothing_changed_run(make_layer, app_repo: Path, **options: Any) -> tuple[Path, str]:
-    """The first agent step fails before any file is written."""
+def nothing_changed_run(make_layer, app_repo: Path, prompt: str | None = None, **options: Any) -> tuple[Path, str]:
+    """The first agent step fails before any file is written. With `prompt` the run is started
+    with that request and without --class, so a class label in it decides the class."""
     layer = assign_layer(make_layer, app_repo, **options)
     script(layer, "plan", fail="the agent returned nothing")
-    code, out = run_demo(layer)
+    code, out = run_demo(layer) if prompt is None else run_demo(layer, RUN, prompt, klass=None)
     state = state_of(layer, RUN)
     assert code == 1 and str(state["ship"].get("handoff_skipped", "")).startswith("nothing changed"), out
     return layer, RUN

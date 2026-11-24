@@ -140,7 +140,8 @@ def _parser(adw: str) -> argparse.ArgumentParser:
     parser.add_argument("prompt", nargs="?", help="high-level prompt")
     parser.add_argument("--prompt-file", type=Path, help="read the prompt from a file")
     parser.add_argument("--source", help="KIND:REF prompt source, e.g. issue:42")
-    parser.add_argument("--class", dest="klass", choices=CLASSES, help="fix the work class (skips classify routing)")
+    parser.add_argument("--class", dest="klass", choices=CLASSES,
+                        help="fix the work class (skips classify routing; wins over a class label in the request)")
     parser.add_argument("--adw-id", help="8 hex chars; default random")
     parser.add_argument("--resume", action="store_true", help="continue --adw-id, skipping passed and rejected steps")
     parser.add_argument("--dry-run", action="store_true", help="use the mock agent regardless of the ADW agent")
@@ -214,15 +215,49 @@ def resolve_request(layer: Any, adw: dict[str, Any], args: argparse.Namespace) -
     return Request(prompt.strip(), "cli", None, None, None)
 
 
+# An explicit class label at the start of a request: (class, what the first line starts with once
+# its heading and emphasis marks are gone). The colon follows the word directly: "Fix the login"
+# and "Feature flags are broken" carry no label.
+_LABEL_MARKS = re.compile(r"(?:#+[ \t]+)?[*_]*")
+_LABELS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("bug", re.compile(r"(?:(?:zte|urgent)[ \t]+)?bugfix\b|bug:|\[bug\]|fix:", re.IGNORECASE)),
+    ("chore", re.compile(r"chore:|\[chore\]", re.IGNORECASE)),
+    ("feature", re.compile(r"feature:|\[feature\]", re.IGNORECASE)),
+)
+CLASS_FROM_LABEL = "request-label"
+
+
+def request_label(prompt: str) -> tuple[str, str] | None:
+    """The class a request names itself at its start: (class, its first line clipped to 80
+    characters), or None. Only the first non-blank line is read ("# BUGFIX run for …", "Bug: …",
+    "[chore] …", "Feature: …"); a label on any later line does not count."""
+    for line in str(prompt or "").splitlines():
+        if not line.strip():
+            continue
+        text = line.strip()
+        rest = text[_LABEL_MARKS.match(text).end():]
+        for klass, pattern in _LABELS:
+            if pattern.match(rest):
+                return klass, text[:80]
+        return None
+    return None
+
+
 def _new_state(adw_name: str, adw: dict[str, Any], args: argparse.Namespace, request: Request) -> state_module.ADWState:
     fixed = args.klass or request.klass
     if fixed is not None and fixed not in CLASSES:
         raise LayerError(f"prompt source returned unknown class {fixed!r}")
+    class_from = ""
+    if fixed is None:   # the request says what it is; a class the workflow does not take stays with classify
+        label = request_label(request.prompt)
+        if label is not None and (not adw.get("classes") or label[0] in adw["classes"]):
+            fixed, class_from = label[0], CLASS_FROM_LABEL
     initial = fixed or (adw.get("classes") or ["chore"])[0]
     requested = getattr(args, "testing", None)
     state = state_module.ADWState(
         adw_id=args.adw_id or state_module.new_adw_id(), adw=adw_name, prompt=request.prompt,
-        source=request.source, klass=initial, class_fixed=fixed is not None, dry_run=args.dry_run,
+        source=request.source, klass=initial, class_fixed=fixed is not None, class_from=class_from,
+        dry_run=args.dry_run,
         model_set=request.model_set or "", fanout_parent=fanout_parent(),
         replaces=getattr(args, "replaces", None) or "", decider=getattr(args, "decider", None) or "",
         testing={"requested": testing.normalise(requested)} if requested else {},
@@ -728,7 +763,12 @@ def _run(layer: Any, state: state_module.ADWState, adw: dict[str, Any], args: ar
                adw=state.adw, adw_id=state.adw_id, klass=state.klass, dry_run=state.dry_run,
                resumed=bool(args.resume), pid=state.pid, host=state.host, fanout_parent=state.fanout_parent or None,
                overrides=state.overrides or None, models=state.models or None,
-               limits=state.budget.get("limits") or None, replaces=state.replaces or None)
+               limits=state.budget.get("limits") or None, replaces=state.replaces or None,
+               class_from=state.class_from or None)
+    if state.class_from == CLASS_FROM_LABEL and not args.resume:
+        label = request_label(state.prompt)
+        print(f"[adw {state.adw_id}] class fixed from the request label: {state.klass}"
+              + (f" ({label[1]})" if label else ""))
     try:
         if request is not None and request.hooks is not None and not take_over:
             request.hooks.on_start(state)   # a taken-over run was announced when it was placed
@@ -965,6 +1005,8 @@ def _contained_start(layer: Any, adw: str, definition: dict[str, Any],
     request = Request(prompt, str(seed.get("source") or "cli"), fixed, str(seed.get("model_set") or "") or None, None)
     args.klass, args.dry_run = fixed, bool(seed.get("dry_run"))
     state = selfrun.restored_state(layer, seed) or _new_state(adw, definition, args, request)
+    if not state.class_from:
+        state.class_from = str(seed.get("class_from") or "")
     state.dry_run = bool(seed.get("dry_run"))
     state.overrides = dict(seed.get("overrides") or {})
     state.models = dict(seed.get("models") or {})

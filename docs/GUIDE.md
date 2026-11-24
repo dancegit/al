@@ -1162,6 +1162,19 @@ the recorded prompt, not from the issue. A failed batch run (kit workflow `verif
 Start again nor Give to an agent, because it is not a request: its next action, on the dashboard and in
 `al runs`, is `al batch LAYER run [--stage S]` or a settlement.
 
+A request can say what it is. When its first line starts with `BUGFIX`, `Bug:`, `[bug]` or `Fix:` the run
+is a `bug`; `Chore:` or `[chore]` makes it a `chore`; `Feature:` or `[feature]` a `feature`. A heading
+counts (`# BUGFIX run for the charts layer`), upper and lower case are the same, and a label on a later
+line does not count; `Fix the login redirect` has no label, because the colon is missing. The run then
+says `class fixed from the request label` in its log and records `class_from` in `state.json`. `--class`
+wins over the label, and a class the workflow does not list is left to the classify step. Without a label
+and without `--class` the classify step decides. Either way the class is fixed before the plan step, and a
+run that has planned is not planned again under another class. To force a class, start the request with
+`al run LAYER /NAME --class bug`, or start a wrongly classed run again with
+`al run LAYER /NAME --replaces OLD --class bug < LAYER/agents/OLD/request.md`. **Start again**, **Give to
+an agent** and the stand-in reuse `request.md` unchanged, so the label is kept; an integration run takes
+the class of the run it integrates.
+
 ## Work with several repositories from the dashboard
 
 If you keep your repositories side by side in one folder (`~/code/myapp`, `~/code/orbit`, `~/code/fern`),

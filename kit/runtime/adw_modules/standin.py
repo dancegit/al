@@ -1070,10 +1070,13 @@ def _perform(layer: Any, state: Any, decision: dict[str, Any], who: str, via: st
     if action == "settle":
         note = extra.strip() or str(decision.get("summary") or "")
         person = who == "person"
-        settle(layer, state, str(decision.get("settle_as")), str(decision.get("settle_by") or ""), note,
-               who="person" if person else "stand-in", via=via if person else "stand-in")
+        if decision.get("settle_as") not in decide.SETTLE_AS:
+            raise ApplyError(f"as is one of {', '.join(decide.SETTLE_AS)}")
         decision["status"] = "applied"
-        return f"settled as {decision.get('settle_as')}", None, None
+        # written last (after the state and the entry): a reader that sees the run settled sees both
+        return (f"settled as {decision.get('settle_as')}",
+                lambda: settle(layer, state, str(decision.get("settle_as")), str(decision.get("settle_by") or ""), note,
+                               who="person" if person else "stand-in", via=via if person else "stand-in"), None)
     if action == "promote":
         p = state.promotion or {}
         if not p.get("from") or not p.get("to"):
@@ -1135,12 +1138,12 @@ def apply(layer: Any, state: Any, decision: dict[str, Any], who: str, via: str, 
             state.decision = decision
             decide._save(layer, state)
         return _result("failed", entry, reason=reason)
-    entry = record(layer, {**base, "status": "acted", "auto": who == "stand-in", "outcome": text}, state)
-    if job is None:
+    if job is None:                                               # the answered suggestion first, then the entry
         decision["outcome"] = text
         state.decision = decision
         state.save(layer.layer_dir)
         decide.write_record(layer, state)
+    entry = record(layer, {**base, "status": "acted", "auto": who == "stand-in", "outcome": text}, state)
     if start is not None:
         try:
             start()                                               # last: the started process owns the run from here
