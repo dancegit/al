@@ -441,7 +441,7 @@ def test_new_kinds_validate_and_read_back(talk, voice_site, tmp_path):
     assert check({"kind": "settle", "run": "c0ffee01", "as": "superseded", "who": "Ada"})[1] == \
         "superseded needs by: the run or commit that replaced it"
     assert check({"kind": "settle", "run": "c0ffee01", "as": "done", "who": "Ada"})[1] == \
-        "as is one of landed, superseded, abandoned"
+        "as is one of landed, superseded, abandoned, shipped"
     assert check({"kind": "settle", "run": "c0ffee01", "as": "landed", "who": "Ada", "by": "not a run"})[1].startswith("by names")
     assert check({"kind": "settle", "run": "c0ffee09", "as": "abandoned", "who": "Ada"})[1] == \
         "only a finished run can be settled"
