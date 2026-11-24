@@ -903,13 +903,30 @@ td.reason .proposal { color: var(--accent); margin-top: 2px; overflow-wrap: anyw
 .voice-card-note:empty { display: none; }
 .voice-card-note { margin-top: 4px; }
 .voice-started { color: var(--passed); }
+.voice-card.st-failed { border-left-color: var(--failed); }
+.voice-ask { border: 1px solid var(--accent); border-radius: var(--radius); background: var(--panel-2); padding: 8px 12px; margin: 8px 0;
+  max-width: 100%; overflow-wrap: anywhere; }
+.voice-ask[hidden] { display: none; }
+.voice-ask-question { margin: 0 0 6px; color: var(--text); font-size: 14px; }
+.voice-ask-options, .voice-ask-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.voice-ask-options:empty { display: none; }
+.voice-ask-options { margin-bottom: 8px; }
+.voice-ask .btn { max-width: 100%; white-space: normal; text-align: left; min-height: 30px; }
+.voice-ask .btn[hidden] { display: none; }
+.voice-wait { margin-left: auto; white-space: nowrap; }
+.voice-panel[data-state="waiting"] .voice-state, .voice-panel[data-state="asking"] .voice-state { color: var(--accent); }
+.voice-mark { display: inline-block; margin-right: 6px; padding: 0 6px; border: 1px solid var(--border-2); border-radius: 8px;
+  color: var(--dim); font-size: 11px; white-space: nowrap; }
+.voice-kind-decision, .voice-kind-readback { border-left: 2px solid var(--accent); padding-left: 6px; }
+.voice-kind-decision .voice-mark { color: var(--waiting); border-color: var(--waiting); }
 .voice-transcript { list-style: none; margin: 6px 0; padding: 0; max-height: 220px; overflow-y: auto; border-top: 1px solid var(--border); }
 .voice-transcript:empty { display: none; }
 .voice-entry { padding: 3px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
 .voice-who { display: inline-block; min-width: 54px; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 .voice-entry.voice-helper .voice-said { color: var(--text-2); }
 .voice-entry.voice-system .voice-said, .voice-entry.echo .voice-said { color: var(--faint); font-style: italic; }
-.voice-form { display: flex; gap: 8px; margin-top: 6px; }
+.voice-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.voice-clear { margin-left: auto; }
 .voice-text { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border-2); background: #0b0e13; color: var(--text); font: inherit; }
 @media (max-width: 760px) {
   .voice-body { grid-template-columns: minmax(0, 1fr); }

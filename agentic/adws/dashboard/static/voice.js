@@ -1,13 +1,16 @@
 /* al work dashboard — the voice helper panel (window.alVoice.panel).
  *
- * Talk with the layer's helper about its runs; it answers aloud and in text and proposes work as a
- * card. Nothing starts from speech: the person answers yes, then clicks Approve on the card, and the
- * server checks both. Speech stays on the machine: the dashboard proxies to the layer's own voice
- * service (kit/runtime/voice/serve.py) on loopback.
+ * Talk with the layer's helper about its runs; it answers aloud and in text. A change of state is a
+ * conversation: the helper asks for what is missing, one question at a time (with buttons for the
+ * choices), reads the complete action back and waits for yes or no — spoken, typed or clicked. Only a
+ * yes acts: the turn confirms the proposal and this page then sends the guarded approval
+ * (/api/voice/approve), which the server checks again. No, cancel, silence and an unclear answer do
+ * nothing. Speech stays on the machine: the dashboard proxies to the layer's own voice service
+ * (kit/runtime/voice/serve.py) on loopback.
  *
  * Parts: helpers (WAV, frames) · panel (DOM) · capture (worklet, hold to talk, always listen) ·
  * playback (ALV1 frames, queue, interrupt) · synthesizer (canvas or, with reduced motion, a level
- * meter) · conversation (turns, transcript, cards) · keyboard.
+ * meter) · conversation (turns, the question block, the timeout, transcript, cards) · keyboard.
  *
  * Safety rule for this file, as for app.js: everything the helper, the recogniser or the server says is
  * untrusted text. It reaches the page only through textContent / createTextNode (window.alUi.h); nothing
@@ -107,6 +110,8 @@
     listening: "Listening…",
     thinking: "Thinking…",
     speaking: "Speaking.",
+    waiting: "Waiting for yes or no. Say it, or use the buttons.",
+    asking: "Waiting for your answer. Say it, type it, or pick one.",
     interrupted: "Stopped speaking.",
     loading: "Loading the speech models…",
     off: "Voice is off.",
@@ -134,6 +139,7 @@
       speaking: false, playback: null, gen: 0, nextTime: 0, resumable: null,
       thinking: 0, interruptedUntil: 0, loading: false, state: "", level: 0, micLevel: 0,
       cards: new Map(), raf: 0, timers: [], service: null,
+      dialogue: { state: "idle" }, dialogueKey: "idle", timeoutSent: false, askBusy: null,
     };
 
     // ---- DOM
@@ -159,17 +165,27 @@
     const helperCaption = h("p", { class: "voice-caption voice-caption-helper" });
     const captions = h("div", { class: "voice-captions", "aria-live": "polite" }, personCaption, helperCaption);
     const cardsEl = h("div", { class: "voice-cards" });
+    // the helper's question (pick one, or answer in words) or its read-back (yes / no), and Cancel
+    const askQuestion = h("p", { class: "voice-ask-question" });
+    const askOptions = h("div", { class: "voice-ask-options" });
+    const yesButton = h("button", { type: "button", class: "btn primary voice-yes", text: "Yes, do it" });
+    const noButton = h("button", { type: "button", class: "btn voice-no", text: "No" });
+    const cancelButton = h("button", { type: "button", class: "btn voice-cancel", text: "Cancel" });
+    const waitEl = h("span", { class: "voice-wait faint" });
+    const ask = h("div", { class: "voice-ask", role: "group", "aria-label": "The helper's question", hidden: true },
+      askQuestion, askOptions, h("div", { class: "voice-ask-actions" }, yesButton, noButton, cancelButton, waitEl));
     const transcript = h("ol", { class: "voice-transcript", "aria-label": "Conversation" });
     const text = h("input", { type: "text", class: "voice-text", "aria-label": "Message to the helper", placeholder: "or type here", maxlength: "2000", autocomplete: "off" });
     const send = h("button", { type: "submit", class: "btn voice-send", text: "Send" });
-    const form = h("form", { class: "voice-form" }, text, send);
+    const clearButton = h("button", { type: "button", class: "btn voice-clear", text: "Clear transcript" });
+    const form = h("form", { class: "voice-form" }, text, send, clearButton);
     const controls = h("div", { class: "voice-controls" }, talk, stopSpeaking, micOpen);
     const body = h("div", { class: "voice-body" },
       h("div", { class: "voice-stage" }, levelEl, stateLine, engineEl, controls),
-      h("div", { class: "voice-talk-side" }, captions, cardsEl, transcript, form));
-    const root = h("section", { class: "card voice-panel", "aria-label": "Voice helper", dataset: { state: "idle", layer, mic: "closed" } },
+      h("div", { class: "voice-talk-side" }, captions, cardsEl, ask, transcript, form));
+    const root = h("section", { class: "card voice-panel", "aria-label": "Voice helper", dataset: { state: "idle", layer, mic: "closed", dialogue: "idle" } },
       h("div", { class: "card-head voice-head" }, h("h3", { text: "Voice helper" }),
-        h("span", { class: "dim", text: "talk about the runs; nothing starts until you click Approve" }), h("span", { class: "spacer" }),
+        h("span", { class: "dim", text: "talk about the runs; nothing changes until you say or click yes" }), h("span", { class: "spacer" }),
         modeGroup, keepLabel),
       note, body);
     container.appendChild(root);
@@ -209,6 +225,8 @@
       if (st.speaking) return "speaking";
       if (st.thinking > 0) return "thinking";
       if (st.holding || (st.listening && st.mic)) return "listening";
+      if (st.dialogue.state === "confirm") return "waiting";
+      if (st.dialogue.state === "clarify") return "asking";
       if (st.loading) return "loading";
       if (st.status && !st.status.available) return "off";
       return "idle";
@@ -242,6 +260,11 @@
       if (talk.textContent !== label) talk.textContent = label;
       micOpen.hidden = !st.mic;
       root.dataset.mic = st.mic ? "open" : "closed";
+      const busy = st.thinking > 0;
+      if (busy !== st.askBusy) {         // the question's buttons wait while a turn is on its way
+        st.askBusy = busy;
+        for (const button of ask.querySelectorAll("button")) button.disabled = busy;
+      }
     }
 
     function later(fn, ms) {
@@ -757,18 +780,24 @@
       helperCaption.textContent = said || "";
     }
 
-    async function turn(said, via) {
+    /** One exchange with the helper: a turn (words, spoken, typed or clicked) or the timeout event. Shows
+     * the card, the question or read-back and the transcript; a yes that confirmed a proposal is followed
+     * by the guarded approval, anything else is spoken. */
+    async function exchange(body) {
       st.thinking += 1;
       update();
       try {
-        const answer = await api.post("/api/voice/turn", { layer, text: said, via });
+        const answer = await api.post("/api/voice/turn", body);
         const reply = answer.reply || null;
         if (answer.card) renderCard(answer.card);
+        applyDialogue(answer.dialogue || { state: "idle" });
         if (reply) showHelper(reply.text);
         await loadTranscript();
         st.thinking -= 1;
         update();
-        if (reply && reply.speak && st.status && st.status.available) speak(reply);
+        const acts = answer.dialogue && answer.dialogue.decision === "yes" && answer.card && answer.card.state === "confirmed";
+        if (acts) approveNow(answer.card);
+        else if (reply && reply.speak && st.status && st.status.available) speak(reply);
         return answer;
       } catch (error) {
         st.thinking -= 1;
@@ -778,13 +807,111 @@
       }
     }
 
+    function turn(said, via) {
+      const body = { layer, text: said, via };
+      if (typeof opts.sure === "function") body.sure = !!opts.sure();   // did the person choose this layer?
+      return exchange(body);
+    }
+
+    /** What a person says, typed or clicked: the same turn as the spoken words. */
+    async function say(said, via) {
+      if (st.speaking) interrupt("text");
+      ensureAudio();               // a user gesture: the reply may be spoken
+      showPerson(said);
+      return turn(said, via);
+    }
+
+    /** What the helper waits for: nothing, the answer to a question (its options as buttons), or yes / no
+     * to what it read back. */
+    function applyDialogue(dialogue) {
+      const d = dialogue && dialogue.state ? dialogue : { state: "idle" };
+      const key = [d.state, d.slot || "", d.proposal || "", d.expires_at || "", d.retries || 0].join("|");
+      st.dialogue = d;
+      if (key === st.dialogueKey) return;
+      st.dialogueKey = key;
+      st.timeoutSent = false;
+      const inside = ask.contains(document.activeElement);
+      const pending = d.state === "clarify" || d.state === "confirm";
+      root.dataset.dialogue = pending ? d.state : "idle";
+      ask.hidden = !pending;
+      askQuestion.textContent = d.state === "confirm" ? "Shall I do it?" : pending ? String(d.question || "") : "";
+      while (askOptions.firstChild) askOptions.removeChild(askOptions.firstChild);
+      if (d.state === "clarify") {
+        for (const option of d.options || []) {
+          const button = h("button", { type: "button", class: "btn voice-option", dataset: { value: String(option.value) }, text: String(option.label || option.value) });
+          button.addEventListener("click", () => say(String(option.value), "click"));
+          askOptions.appendChild(button);
+        }
+      }
+      yesButton.hidden = d.state !== "confirm";
+      noButton.hidden = d.state !== "confirm";
+      st.askBusy = null;
+      tickWait();
+      update();
+      if (inside && pending) {           // the keyboard stays in the question; never on Yes by itself
+        const next = d.state === "confirm" ? noButton : askOptions.querySelector("button") || cancelButton;
+        if (!next.disabled) next.focus();
+      }
+    }
+
+    function outcome(reply) {
+      if (!reply) return;
+      showHelper(reply.text);
+      loadTranscript();
+      if (reply.speak && st.status && st.status.available) speak(reply);
+    }
+
+    /** The person said yes: the one write, behind the server's full guard (session, digest, single use,
+     * two minutes, the dashboard's flags). The helper says what came of it. */
+    async function approveNow(card) {
+      st.thinking += 1;
+      update();
+      try {
+        const answer = await api.post("/api/voice/approve", { layer, proposal: card.id, digest: card.digest });
+        renderCard({ ...card, ...(answer.card || {}), id: card.id, state: "approved", run_id: answer.run_id || (answer.card && answer.card.run_id), url: answer.url || card.url });
+        outcome(answer.reply);
+        if (!answer.reply) loadTranscript();
+      } catch (error) {
+        const data = error.data || {};
+        if (data.card) renderCard(data.card);
+        else if (error.status === 410) renderCard({ ...card, state: "expired" });
+        const known = st.cards.get(card.id);
+        const status = known && known.node.querySelector(".voice-card-note");
+        if (status) { status.className = "voice-card-note why error"; status.textContent = error.message; }
+        if (data.reply) outcome(data.reply);
+        else showHelper(`I could not do it: ${error.message}.`);
+      } finally {
+        st.thinking -= 1;
+        update();
+      }
+    }
+
+    /** Silence is no: when the time of a question or a read-back is over (and the person is not answering
+     * right now), the server is told once, and says that nothing was done. */
+    function tickWait() {
+      const d = st.dialogue;
+      if (d.state === "idle" || !d.expires_at) { waitEl.textContent = ""; return; }
+      const left = Math.round(d.expires_at - Date.now() / 1000);
+      waitEl.textContent = left > 0 ? `answer within ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}` : "no answer";
+      if (left > 0 || st.timeoutSent || st.holding || st.holdWanted || st.hearing || st.inFlight || st.speaking || st.thinking > 0) return;
+      st.timeoutSent = true;
+      exchange({ layer, event: "timeout" });
+    }
+
+    // the marks of the helper's entries in the transcript: what was asked, what was read back, what was decided
+    const ENTRY_MARKS = { question: "question", readback: "read-back", decision: "decision", outcome: "result" };
+
     function renderEntries(entries) {
       while (transcript.firstChild) transcript.removeChild(transcript.firstChild);
       for (const entry of entries || []) {
         const who = entry.who === "person" ? "You" : entry.who === "helper" ? "Helper" : "note";
-        transcript.appendChild(h("li", { class: `voice-entry voice-${entry.who || "system"}${entry.echo ? " echo" : ""}`, dataset: { who: entry.who || "system" } },
-          h("span", { class: "voice-who", text: who }), h("span", { class: "voice-said", text: entry.text || "" }),
-          entry.via === "voice" ? h("span", { class: "faint voice-via", text: " (spoken)" }) : null));
+        const kind = Object.prototype.hasOwnProperty.call(ENTRY_MARKS, entry.kind) ? entry.kind : "";
+        const mark = kind === "decision" ? `decision: ${entry.decision || ""}` : ENTRY_MARKS[kind];
+        transcript.appendChild(h("li", { class: `voice-entry voice-${entry.who || "system"}${entry.echo ? " echo" : ""}${kind ? ` voice-kind-${kind}` : ""}`, dataset: { who: entry.who || "system" } },
+          h("span", { class: "voice-who", text: who }), mark ? h("span", { class: "voice-mark", text: mark }) : null,
+          h("span", { class: "voice-said", text: entry.text || "" }),
+          entry.via === "voice" ? h("span", { class: "faint voice-via", text: " (spoken)" })
+            : entry.via === "click" ? h("span", { class: "faint voice-via", text: " (clicked)" }) : null));
       }
       transcript.scrollTop = transcript.scrollHeight;
     }
@@ -794,11 +921,13 @@
         const data = await api(`/api/voice/transcript?layer=${enc(layer)}`);
         renderEntries(data.entries);
         for (const card of data.cards || []) renderCard(card);
+        if (data.dialogue) applyDialogue(data.dialogue);
       } catch (_error) { /* the transcript is a convenience; the captions carry the turn */ }
     }
 
     // ---- cards
-    const KIND_TITLE = { start: "Start", retry: "Retry", job: "Run al", resume: "Resume", answer: "Answer", stop: "Stop" };
+    const KIND_TITLE = { start: "Start", retry: "Retry", job: "Run al", resume: "Resume", answer: "Answer", stop: "Stop",
+      "approve-resume": "Approve & resume", assign: "Give to an agent", settle: "Settle" };
 
     function cardRows(card) {
       const rows = [];
@@ -831,18 +960,17 @@
       let action = null;
       if (card.state === "approved") {
         const run = card.run_id || (card.result && card.result.run_id);
-        action = h("div", { class: "voice-started" }, h("b", { text: "Started" }),
-          run ? [" ", h("a", { href: card.url || `#/run/${encodeURIComponent(layer)}/${encodeURIComponent(run)}`, class: "voice-run-link", text: `run ${shortRun(run)}` })] : null);
+        action = h("div", { class: "voice-started" }, h("b", { text: "Done" }),
+          run ? [" ", h("a", { href: card.url || (card.result && card.result.url) || `#/run/${encodeURIComponent(layer)}/${encodeURIComponent(run)}`, class: "voice-run-link", text: `run ${shortRun(run)}` })] : null);
       } else if (card.state === "proposed" || card.state === "confirmed") {
-        if (card.approvable) {
-          const approve = h("button", { type: "button", class: "btn primary voice-approve", text: "Approve", disabled: card.state !== "confirmed",
-            title: card.state === "confirmed" ? "start it now" : "answer yes first (say it or type it)" });
+        if (!card.approvable) {
+          action = h("div", { class: "voice-why-not why", text: card.why_not || "this dashboard cannot do it" });
+        } else if (card.state === "confirmed") {
+          // the yes already sent the approval; this button is for when that request did not get through
+          const approve = h("button", { type: "button", class: "btn primary voice-approve", text: "Do it now", title: "send the approval again" });
           approve.addEventListener("click", () => approveCard(card, approve, status));
           action = h("div", { class: "voice-card-actions" }, approve,
-            card.state === "confirmed" && card.expires_at ? h("span", { class: "voice-countdown faint", dataset: { expires: String(card.expires_at) } }) : null,
-            card.state === "proposed" ? h("span", { class: "faint", text: "Say or type yes to confirm it, then click Approve." }) : null);
-        } else {
-          action = h("div", { class: "voice-why-not why", text: card.why_not || "this dashboard cannot start it" });
+            card.expires_at ? h("span", { class: "voice-countdown faint", dataset: { expires: String(card.expires_at) } }) : null);
         }
       }
       const node = h("article", { class: `voice-card st-${card.state || "proposed"}`, dataset: { proposal: card.id, state: card.state || "proposed" }, "aria-label": `Proposal: ${kind}` },
@@ -857,24 +985,15 @@
     async function approveCard(card, button, status) {
       button.disabled = true;
       status.className = "voice-card-note";
-      status.textContent = "starting…";
-      try {
-        const answer = await api.post("/api/voice/approve", { layer, proposal: card.id, digest: card.digest });
-        renderCard({ ...card, ...(answer.card || {}), id: card.id, state: "approved", run_id: answer.run_id || (answer.card && answer.card.run_id), url: answer.url || card.url });
-        loadTranscript();
-      } catch (error) {
-        status.className = "voice-card-note why error";
-        status.textContent = error.message;
-        if (error.status === 410) renderCard({ ...card, state: "expired" });
-        else button.disabled = false;
-      }
+      status.textContent = "doing it…";
+      await approveNow(card);
     }
 
     function tickCountdowns(scope) {
       const nowS = Date.now() / 1000;
       for (const el of (scope || cardsEl).querySelectorAll(".voice-countdown")) {
         const left = Math.round(parseFloat(el.dataset.expires) - nowS);
-        el.textContent = left > 0 ? `approve within ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}` : "expired: ask again";
+        el.textContent = left > 0 ? `within ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}` : "expired: ask again";
       }
     }
 
@@ -926,13 +1045,31 @@
       event.preventDefault();
       const said = text.value.trim();
       if (!said) return;
-      if (st.speaking) interrupt("text");
-      ensureAudio();               // a user gesture: the reply may be spoken
       text.value = "";
-      showPerson(said);
       send.disabled = true;
-      try { await turn(said, "text"); } finally { send.disabled = false; }
+      try { await say(said, "text"); } finally { send.disabled = false; }
     });
+    yesButton.addEventListener("click", () => say("yes", "click"));
+    noButton.addEventListener("click", () => say("no", "click"));
+    cancelButton.addEventListener("click", () => say("cancel", "click"));
+    clearButton.addEventListener("click", async () => {
+      try {
+        const answer = await api.post("/api/voice/clear", { layer });
+        renderEntries([]);
+        st.cards.clear();
+        while (cardsEl.firstChild) cardsEl.removeChild(cardsEl.firstChild);
+        personCaption.textContent = "";
+        showHelper("");
+        applyDialogue(answer.dialogue || { state: "idle" });
+        setNote("The transcript was cleared.");
+      } catch (error) {
+        setNote(error.message, "error");
+      }
+    });
+
+    function ownButton(target) {
+      return !!target && target.tagName === "BUTTON" && (ask.contains(target) || target === clearButton || cardsEl.contains(target));
+    }
 
     function onKeyDown(event) {
       const target = event.target;
@@ -942,6 +1079,7 @@
         return;
       }
       if (inField || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (ownButton(target)) return;     // Space on a question's button presses that button
       if (event.key === " " || event.code === "Space") {
         if (st.mode !== "hold") return;
         event.preventDefault();
@@ -955,6 +1093,7 @@
     function onKeyUp(event) {
       const target = event.target;
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      if (ownButton(target)) return;
       if (event.key === " " || event.code === "Space") {
         if (st.mode !== "hold") return;
         event.preventDefault();
@@ -965,7 +1104,7 @@
 
     root.addEventListener("keydown", onKeyDown);
     root.addEventListener("keyup", onKeyUp);
-    const countdown = setInterval(() => tickCountdowns(), 1000);
+    const countdown = setInterval(() => { tickCountdowns(); tickWait(); }, 1000);
 
     // ---- start
     async function init() {
