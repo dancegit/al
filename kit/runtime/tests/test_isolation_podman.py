@@ -99,9 +99,25 @@ def _wait_get(url: str, seconds: float = 20.0) -> tuple[int, str]:
             time.sleep(0.25)
 
 
-def _serve(stack: envs.EnvStack) -> None:
-    code, out = _inside(stack, "nohup python3 -m http.server 8000 >/dev/null 2>&1 & sleep 0.5; "
-                               f"{READY.replace('timeout=1', 'timeout=5')}")
+# Run inside the container: poll until 127.0.0.1:{port} accepts a connection. A fixed sleep before a
+# single connect is refused under host load, when the server has not bound the port yet.
+WAIT_LISTENING = (
+    "python3 -c \"import socket, time\n"
+    "deadline = time.monotonic() + 15\n"
+    "while True:\n"
+    "    try:\n"
+    "        socket.create_connection(('127.0.0.1', {port}), timeout=1).close()\n"
+    "        break\n"
+    "    except OSError:\n"
+    "        if time.monotonic() > deadline:\n"
+    "            raise\n"
+    "        time.sleep(0.1)\"")
+
+
+def _serve(stack: envs.EnvStack, port: int = 8000) -> None:
+    """Start an HTTP server on `port` in the run container and return once it accepts a connection."""
+    code, out = _inside(stack, f"nohup python3 -m http.server {port} >/dev/null 2>&1 & "
+                               + WAIT_LISTENING.format(port=port))
     assert code == 0, out
 
 
@@ -227,9 +243,7 @@ def test_sidecars_are_per_run_and_reachable_on_localhost(isolated) -> None:
         assert _podman("inspect", "-f", "{{.State.Status}}", sidecar_a).stdout.strip() == "running"
     assert _podman("inspect", "-f", "{{.State.Status}}", run_a.run_name).stdout.strip() == "running"
     # publishing moved to the pod: a server in the run container is reachable at A's leased port
-    code, out = _inside(run_a, "nohup python3 -m http.server 8001 >/dev/null 2>&1 & sleep 0.5; "
-                               "python3 -c \"import socket; socket.create_connection(('127.0.0.1', 8001), timeout=5)\"")
-    assert code == 0, out
+    _serve(run_a, 8001)
     assert _wait_get(f"http://127.0.0.1:{run_a.state.ports[0]}/")[0] == 200
     run_a.teardown(success=False)
     assert _podman("pod", "exists", run_a.run_name).returncode != 0 and _podman("container", "exists", sidecar_a).returncode != 0
