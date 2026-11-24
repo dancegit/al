@@ -64,8 +64,18 @@ def dialogue(page, state: str, timeout: int = 20000) -> None:
 
 
 def speak_line(v: Voice, heard: str) -> None:
-    """One spoken line: hold the button while the fake microphone plays; the fake recogniser hears `heard`."""
-    v.hold(1.0)
+    """One spoken line: hold the button while the fake microphone plays; the fake recogniser hears `heard`.
+    The second of speech is counted from when the page hears the microphone (the level meter moves): the
+    first hold of a page opens the microphone, which on a busy machine takes most of a second, and a
+    release before 0.3 s is recorded is "Too short" and sends nothing."""
+    page = v.page
+    box = page.locator(".voice-talk").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.mouse.down()
+    until(page, "document.querySelector('.voice-talk').getAttribute('aria-pressed') === 'true'"
+                " && Number(document.querySelector('.voice-synth, .voice-level').dataset.level || 0) > 0.05", timeout=20000)
+    time.sleep(1.0)
+    page.mouse.up()
     until(v.page, f"document.querySelector('.voice-caption-person').textContent === {json.dumps(heard)}", timeout=20000)
     until(v.page, f"{PANEL}.dataset.state !== 'thinking'", timeout=20000)
 
