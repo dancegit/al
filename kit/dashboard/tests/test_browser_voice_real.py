@@ -9,8 +9,8 @@ voice-real-exchange-1280.webm there.
 The flow: hold to talk over "Start a plan for adding a search box." → real transcription → a card;
 then a typed question gets a long spoken answer (no word of it in the request, so the request is not
 taken for an echo), and always listen is switched on while it plays: the request spoken over it
-interrupts the real Kokoro reply and makes a new card, and "Yes." confirms it; nothing has started;
-Approve → the mock run passes. The synthesizer's level is high while the microphone carries speech and low in
+interrupts the real Kokoro reply and is read back, and the spoken "Yes." does it: the mock run
+passes with no click. The synthesizer's level is high while the microphone carries speech and low in
 the pauses."""
 from __future__ import annotations
 
@@ -159,28 +159,24 @@ def test_spoken_request_becomes_a_card_and_approve_starts(pw, voice_site, tmp_pa
         # every few seconds and the answer lasts far longer, so whatever is said next interrupts the real
         # Kokoro playback (on a loaded host the first sentence can take seconds to synthesise, so this waits
         # for the audio itself rather than guessing the loop's phase). The request makes a new card (the
-        # typed question superseded the first one), and "Yes." confirms it.
+        # first one was declined), and the spoken "Yes." does it.
+        voice.type_("no")
+        voice.card("declined", timeout=60)
         spoken = len(voice.states())
         voice.type_("tell me everything")
         until(page, "(window.alVoice.trace || []).some((t) => t.text.startsWith('Two runs passed'))", timeout=120000)
         page.check(".voice-mode-always")
         page.wait_for_selector(".voice-mic-open:not([hidden])", timeout=30000)
-        voice.card("confirmed", timeout=240)
+        page.wait_for_selector(".voice-card[data-state='approved'] a.voice-run-link", timeout=240000)
         page.click(".voice-close-mic")                  # before the microphone's loop says the request again
         page.wait_for_selector(".voice-mic-open", state="hidden")
-        assert "Confirmed" in page.inner_text(".voice-caption-helper") or \
-            page.locator(".voice-entry.voice-helper .voice-said", has_text="Confirmed").count() >= 1
+        assert page.locator(".voice-entry.voice-kind-decision", has_text="decision: yes").count() >= 1
         said = page.evaluate("[...document.querySelectorAll('.voice-entry.voice-person .voice-said')].map(e => e.textContent)")
         assert any(s.strip().lower().strip(".!") == "yes" for s in said), said
         # from the question on (typing it may first cut the previous reply): the long answer was cut by the request
         order = voice.states()[spoken:]
         assert "speaking" in order and "interrupted" in order[order.index("speaking"):], order
-        time.sleep(1.0)
-        assert run_dirs(layer) == []                    # speech alone started nothing
-        # 3. Approve
-        until(page, "!document.querySelector(\".voice-card[data-state='confirmed'] .voice-approve\").disabled")
-        page.click(".voice-card[data-state='confirmed'] .voice-approve")
-        page.wait_for_selector(".voice-card[data-state='approved'] a.voice-run-link", timeout=30000)
+        # 3. the spoken yes sent the guarded approval: one run
         run_id = page.get_attribute(".voice-card[data-state='approved'] a.voice-run-link", "href").rsplit("/", 1)[1]
         assert RUN_DIR.match(run_id)
         shot(page, "voice-real-approved-1280.png")

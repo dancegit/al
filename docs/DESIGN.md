@@ -113,8 +113,8 @@ A declared `voice` also gives the dashboard a voice helper: a separate local ser
 loopback only, a token only the dashboard knows, models fetched once by `al voice LAYER setup` and checked
 against `models.json`) recognises and speaks, and the dashboard proxies to it so `dashboard.py` stays
 standard-library; the helper's agent runs with no tools and can only read runs through a fixed registry and
-propose a card. A proposal starts only after the person answers yes and clicks Approve, both enforced by the
-server (same browser session, unchanged digest, within two minutes).
+propose a card. A proposal is carried out only after the person's explicit yes; the page then sends the guarded
+approval, and the server checks both (same browser session, unchanged digest, within two minutes).
 
 Defaults when a family is omitted: cli prompt, manual trigger, worktree, human review, Claude Code,
 no forge, local storage, no notifications. The smallest layer is 12 lines (`racket/al/examples/minimal.rkt`).

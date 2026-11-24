@@ -214,7 +214,9 @@ def test_utterance_then_turn_creates_a_card(voice_site, voice_server):
     assert card["approvable"] is True and card["why_not"] == "" and card["digest"] == "" and card["expires_at"] is None
     assert card["summary"] == "Start plan-build: Add a search box to the notes page (class feature)."
     assert "person reviews" in card["what_happens"] or card["what_happens"], card
-    assert answer["reply"]["text"].endswith("Shall I prepare it for approval?")
+    assert answer["reply"]["text"].startswith("In layer talk: Start plan-build: Add a search box to the notes page")
+    assert answer["reply"]["text"].endswith(d.READ_BACK_ASK) and answer["reply"]["speak"].endswith(d.READ_BACK_ASK)
+    assert answer["dialogue"]["state"] == "confirm" and answer["dialogue"]["proposal"] == card["id"]
     assert answer["reply"]["speak"] and answer["reply"]["id"]
     code, transcript = voice.get("/api/voice/transcript?layer=talk")
     assert code == 200
@@ -235,8 +237,9 @@ def test_yes_confirms_and_nothing_starts(voice_site, voice_server):
     answer = voice.turn("yes")
     assert answer["card"]["id"] == card["id"] and answer["card"]["state"] == "confirmed"
     assert answer["card"]["digest"] and answer["card"]["expires_at"]
-    assert answer["reply"]["text"] == d.CONFIRMED_SAY
-    for _ in range(2):   # "approve it", "start it now", spoken: words, never a click
+    assert answer["reply"]["text"] == d.DOING_SAY
+    assert answer["dialogue"]["state"] == "idle" and answer["dialogue"]["decision"] == "yes"
+    for _ in range(2):   # "approve it", "start it now", spoken: words, never the guarded approval
         code, heard = voice.utterance(wav())
         assert code == 200
         voice.turn(heard["heard"], "voice")
@@ -252,8 +255,9 @@ def test_no_declines(voice_server):
     voice = client(running)
     card = voice.turn(SEARCH_BOX)["card"]
     answer = voice.turn("no, cancel that")
-    assert answer["reply"]["text"] == d.DECLINED_SAY and answer["card"]["state"] == "declined"
-    assert answer["card"]["approvable"] is False
+    assert answer["reply"]["text"] == d.DECLINED_SAY == "All right, I won't do it. Nothing was done."
+    assert answer["card"]["state"] == "declined" and answer["card"]["approvable"] is False
+    assert answer["dialogue"]["state"] == "idle" and answer["dialogue"]["decision"] == "no"
     assert voice.approve(card)[0] == 409
 
 
@@ -270,12 +274,15 @@ def test_approve_starts_mock_run(voice_site, voice_server):
     state = wait_state(voice_site["talk"], run_id)
     assert state["status"] == "passed" and state["prompt"] == "Add a search box to the notes page"
     assert state["klass"] == "feature"
-    assert voice.approve(card) == (409, {"error": "already approved: it was started once", "card": body["card"]})
+    code, again = voice.approve(card)
+    assert (code, again["error"], again["card"]) == (409, "already approved: it was started once", body["card"])
+    assert again["reply"]["text"] == "I could not do it: already approved: it was started once."
     assert run_dirs(voice_site["talk"]) == [run_id]
     entries = voice.get("/api/voice/transcript?layer=talk")[1]["entries"]
-    started = entries[-1]
+    started = next(e for e in entries if e.get("run"))
     assert started["who"] == "helper" and started["run"] == run_id and started["url"] == body["url"]
-    assert started["text"].startswith(f"Started run {' '.join(run_id[:4].upper())}: Start plan-build")
+    assert started["kind"] == "outcome" and body["reply"]["text"] == started["text"] and body["reply"]["speak"]
+    assert started["text"].startswith(f"Done. Started run {' '.join(run_id[:4].upper())}: Start plan-build")
 
 
 def test_approve_refusals(voice_site, voice_server):

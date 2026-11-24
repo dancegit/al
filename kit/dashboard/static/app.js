@@ -630,15 +630,15 @@
     let mounted = null, mountedKey = "", last = null;
     const slot = {
       host,
-      show(voice, layerKey, repoKey) {
-        last = [voice, layerKey, repoKey];
+      show(voice, layerKey, repoKey, sure) {
+        last = [voice, layerKey, repoKey, sure];
         const wanted = (!docked && voiceDock.isOpen()) ? "" : voiceShown(voice) ? `${layerKey}|${repoKey || ""}` : "";
         if (wanted === mountedKey) return;
         if (mounted) mounted.destroy();
         mounted = null;
         mountedKey = wanted;
         clear(host);
-        if (wanted) mounted = window.alVoice.panel(host, { layer: layerKey, repo: repoKey || "" });
+        if (wanted) mounted = window.alVoice.panel(host, { layer: layerKey, repo: repoKey || "", sure });
       },
       refresh() { if (last) slot.show(...last); },
       destroy() { if (mounted) mounted.destroy(); mounted = null; mountedKey = ""; last = null; pageVoiceSlots.delete(slot); },
@@ -649,13 +649,14 @@
 
   /** The voice helper in a dock, reachable from the top bar's microphone button on every page (key `v`).
    * The dock is not part of a view, so it survives navigation; it opens the layer's conversation with no
-   * repository (the one the layer page uses). While it is open the page slots stand back: one live panel. */
+   * repository (the one the layer page uses), and tells the panel whether the person chose that layer. While it is open the page slots stand back: one live panel. */
   const voiceDock = (() => {
     const LAYER_KEY = "al.voice.layer";
     const button = document.getElementById("voice-button");
     const dock = document.getElementById("voice-dock");
     const slot = voiceSlot(true);
     let open = false, chosen = "", listed = "", shown = false;
+    let sure = false;                    // did the person choose the layer (its page, or the picker), or did the dock?
 
     // voice.js loads after this file: window.alVoice is read here, at event time, never at load
     function layers() { return window.alVoice ? store.layers.filter((l) => l.voice && l.voice.declared) : []; }
@@ -664,7 +665,8 @@
       const has = (key) => !!key && list.some((l) => l.key === key);
       const route = parseRoute();
       const onPage = (route.view === "layer" || route.view === "run") ? route.parts[1] : "";
-      if (has(onPage)) return onPage;
+      sure = has(onPage);
+      if (sure) return onPage;
       let stored = "";
       try { stored = localStorage.getItem(LAYER_KEY) || ""; } catch (_error) { stored = ""; }
       if (has(stored)) return stored;
@@ -684,6 +686,7 @@
         chooser.value = chosen;
         chooser.addEventListener("change", () => {
           chosen = chooser.value;
+          sure = true;
           try { localStorage.setItem(LAYER_KEY, chosen); } catch (_error) { /* private mode: not remembered */ }
           render();
           const again = dock.querySelector(".voice-dock-layer");
@@ -697,7 +700,7 @@
       shown = voiceShown(layer.voice);
       let body;
       if (shown) {
-        slot.show(layer.voice, chosen, "");
+        slot.show(layer.voice, chosen, "", () => sure);   // the helper asks "which layer" when the dock picked it
         body = slot.host;                // re-attached, not rebuilt: the mounted panel keeps its conversation
       } else {
         slot.show(null);

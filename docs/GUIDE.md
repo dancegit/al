@@ -1281,9 +1281,34 @@ A layer that declares `(voice kokoro)` gets a **voice helper**. It opens from th
 top bar on any page (key `v`), in a dock that stays open while you move between pages (Escape with the
 focus in it, or `v` again, closes it); it is also shown on the layer page (`#/layer/NAME`) and on the panel
 of a repository whose layer is watched (`#/repo/NAME`). You speak English, or type; the helper
-answers aloud and in text. Ask it what is running, why a run failed, what can be started; it asks back when
-something is unclear, and when it knows what you want it **proposes** the run as a card: workflow or
-command, request text, class, model tier, repository and what will happen.
+answers aloud and in text. Ask it what is running, what needs you, why a run failed, what can be started.
+When you ask for a change — start a run, resume or stop one, approve, give a run to an agent, settle — it
+holds a short conversation: it asks for what is missing, one question at a time, reads the whole action
+back, and does it only when you say yes.
+
+```text
+You:     start a run
+Helper:  Which workflow or command?              (buttons: plan-build, ship-it, …)
+You:     plan build
+Helper:  What should it do?
+You:     add a search box to the notes page
+Helper:  In layer myapp: Start plan-build: add a search box to the notes page. Plans, builds;
+         a person reviews. Shall I do it?        (buttons: Yes, do it · No · Cancel)
+You:     yes
+Helper:  Done. Started run 3 F A 2: Start plan-build: add a search box to the notes page.
+```
+
+- It never guesses. Two runs that could be meant, an unknown workflow, a missing request or name: each is a
+  question, with the choices as buttons you can also say ("the second one", "run 3 F A 2").
+- **Yes** does it; **no** leaves it. Say it, type it, or use the buttons. An answer it does not
+  understand is asked again, twice; then the action is cancelled. No answer within 45 seconds is a no.
+- **Cancel** or **stop** (or "never mind") ends the conversation at any point with nothing done.
+- **Change …** ("change the request to …", "no, use ship-it") edits the action; it is read back again.
+- The panel shows what it waits for ("Waiting for your answer", "Waiting for yes or no" with the time left)
+  and the transcript marks each question, read-back, decision and result. **Clear transcript** forgets the
+  conversation (and what was proposed in it).
+- In the dock, when several layers have a voice helper and you did not pick the layer yourself (its page, or
+  the dock's picker), the first question is which layer.
 
 Set it up once per machine:
 
@@ -1308,23 +1333,26 @@ The panel has two modes, remembered per browser (the layer's `#:listen-mode` is 
   pause ends what you said. Speaking while the helper talks stops it (`#:interrupt #f` turns that off);
   Escape stops it too.
 
-What the helper can do: read the runs (status, failing step and its reason, cost, documents), what can be
-started and the queue, and propose a start, a retry, a resume, an answer to a waiting run, a stop, or a
-scout, check or explain job on a repository. What it cannot do: read files, run commands, or start
-anything itself. It thinks with the layer's own agent (`#:helper-agent`, else the first agent; claude-code
+What the helper can do: read the runs (status, failing step and its reason, cost, documents), what needs
+you, what can be started and the queue, and propose a start, a retry, a resume, an answer to a waiting run,
+a stop, Approve & resume of a run that waits for your approval, giving a run to an agent, settling a run, or
+a scout, check or explain job on a repository. Each of these goes through the same server code and checks
+as its button on the page. What it cannot do: read files, run commands, or do anything without your yes. It thinks with the layer's own agent (`#:helper-agent`, else the first agent; claude-code
 runs with every tool turned off, the mock agent answers from `mock/helper.json`) at the tier
 `#:helper-model-set`; each call's cost is written to `agents/voice/helper-calls.jsonl`.
 
-**Nothing starts from speech.** A proposal starts only when you answer *yes* to the sentence the helper
-reads back and then click **Approve** on its card, within two minutes and in the same browser. Saying
-"approve" or "start it" does not start it; a change after your yes makes a new card. `--read-only`,
-`--no-start` and `--no-actions` refuse Approve for the cards they cover (the conversation keeps working,
-and the card says why); in a container the helper is off.
+**Nothing happens without your yes.** A yes counts only while a read-back waits, and only when it is
+nothing but agreement ("yes", "yes please", "ok, do it"): "yes, but …" is a change, and "approve" or
+"start it" is not a yes. The helper never says the word itself, so its own voice cannot agree for you. The
+page then sends the approval to the server, which checks it again: the same browser, the action exactly as
+it was read back, within two minutes, once. `--read-only`, `--no-start` and `--no-actions` refuse the
+actions they cover (the conversation keeps working, and the card says why); in a container the helper is
+off.
 
 Privacy: audio stays in memory and is never sent off the machine. Only when you tick **Keep recordings
 for this conversation** are your utterances written, as WAV files under the layer's
 `agents/voice/<conversation>/`. The transcript is kept under the dashboard's state folder
-(`~/.local/state/al/dashboard-voice`, or `--voice-dir`), never in a repository. `--no-voice` turns the panel
+(`~/.local/state/al/dashboard-voice`, or `--voice-dir`), never in a repository; **Clear transcript** deletes it. `--no-voice` turns the panel
 off.
 
 ## Step 9 — The first real run

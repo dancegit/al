@@ -5,8 +5,8 @@ The helper is the layer's mock agent (mock/helper.json). Skipped without Playwri
 Each test launches its own Chromium with `--use-fake-device-for-media-stream` and
 `--use-file-for-fake-audio-capture=<a WAV this test writes>`, at 1280×900 and/or 390×844. With
 AL_DASHBOARD_SHOTS=<directory> it saves voice-{idle,listening,thinking,speaking,interrupted,card,
-approved,read-only}-{1280,390}.png, voice-reduced-motion-1280.png and a recording of a whole exchange,
-voice-exchange-{1280,390}.webm (Playwright's video; when Playwright's own ffmpeg is not installed the
+approved,read-only}-{1280,390}.png (card: the read-back waiting for yes or no; approved: after the yes),
+voice-reduced-motion-1280.png and a recording of a whole exchange, voice-exchange-{1280,390}.webm (Playwright's video; when Playwright's own ffmpeg is not installed the
 system ffmpeg is used, else the videos are left out)."""
 from __future__ import annotations
 
@@ -406,36 +406,36 @@ def test_hold_to_talk_caption_and_card(voice, width, key):
     assert fields.get("Request") == "add a search box", fields
     assert fields.get("Repository"), fields
     assert "What will happen" in fields and fields["What will happen"], fields
-    assert card.locator(".voice-approve").is_disabled()   # not before "yes"
+    assert card.locator(".voice-approve").count() == 0    # nothing to click before the yes
+    assert page.locator(".voice-ask .voice-yes").count() == 1
     voice.seen("speaking", timeout=20)
     if not key:
         if voice.state() == "speaking":
             shot(page, f"voice-speaking-{width}.png")
     order = voice.states()
     assert order.index("listening") < order.index("thinking") < order.index("speaking"), order
-    assert "Shall I prepare it for approval?" in page.inner_text(".voice-caption-helper")
+    assert page.inner_text(".voice-caption-helper").endswith("Shall I do it?")
+    assert "In layer talk: Start plan-build: add a search box." in page.inner_text(".voice-caption-helper")
     assert run_dirs(voice.layer) == []
 
 
 @pytest.mark.parametrize("width", [1280, 390])
-def test_yes_then_approve_starts_mock_run(voice, width):
+def test_yes_starts_mock_run(voice, width):
     page = voice.open(width, transcripts=[REQUEST], mic=SPEECH, video=f"voice-exchange-{width}.webm")
     voice.hold(1.6)
     voice.card("proposed")
+    until(page, "document.querySelector('.voice-panel').dataset.dialogue === 'confirm'")
     shot(page, f"voice-card-{width}.png")
-    voice.type_("yes")
-    card = voice.card("confirmed")
-    until(page, "!document.querySelector('.voice-card .voice-approve').disabled")
-    assert "Confirmed. Click Approve" in page.inner_text(".voice-caption-helper")
-    assert card.locator(".voice-countdown").count() == 1
     time.sleep(1.0)
-    assert run_dirs(voice.layer) == []                    # yes alone starts nothing
-    page.click(".voice-card .voice-approve")
+    assert run_dirs(voice.layer) == []                    # the read-back alone starts nothing
+    voice.type_("yes")                                    # the yes acts: no click follows
     page.wait_for_selector(".voice-card[data-state='approved'] a.voice-run-link", timeout=30000)
     link = page.get_attribute(".voice-card a.voice-run-link", "href")
     run_id = link.rsplit("/", 1)[1]
     assert link == f"#/run/talk/{run_id}" and RUN_DIR.match(run_id)
-    assert "Started" in page.inner_text(".voice-card[data-state='approved']")
+    assert "Done" in page.inner_text(".voice-card[data-state='approved']")
+    assert page.locator(".voice-card .voice-approve").count() == 0
+    until(page, "document.querySelector('.voice-caption-helper').textContent.startsWith('Done. Started run')")
     shot(page, f"voice-approved-{width}.png")
     state = wait_finished(voice.layer, run_id)
     assert state["status"] == "passed" and state["adw"] == "plan-build" and state["prompt"] == "add a search box"
@@ -443,21 +443,25 @@ def test_yes_then_approve_starts_mock_run(voice, width):
     time.sleep(1.0)    # the recording shows the end of the exchange
 
 
-def test_speech_alone_never_starts(voice):
-    page = voice.open(1280, transcripts=[REQUEST, "yes", "approve", "start it"], mic=SPEECH)
-    for heard in (REQUEST, "yes", "approve", "start it"):
+def test_speech_without_a_yes_never_starts(voice):
+    lines = [REQUEST, "approve", "start it", "do it maybe"]
+    page = voice.open(1280, transcripts=lines, mic=SPEECH)
+    for heard in lines:
         voice.hold(1.0)
         until(page, f"document.querySelector('.voice-caption-person').textContent === {json.dumps(heard)}", timeout=20000)
         until(page, "document.querySelector('.voice-panel').dataset.state !== 'thinking'", timeout=20000)
         if heard == REQUEST:
             voice.card("proposed")
-        if heard == "yes":
-            voice.card("confirmed")
+    # words that are not a yes were asked about twice, then the action was cancelled
+    until(page, "document.querySelector('.voice-panel').dataset.dialogue === 'idle'", timeout=20000)
     until(page, "document.querySelectorAll('.voice-entry.voice-person').length >= 4", timeout=20000)
+    voice.card("declined")
+    assert "decision: unclear" in page.inner_text(".voice-transcript")
+    assert page.locator(".voice-ask").is_hidden()
     time.sleep(5)
     assert run_dirs(voice.layer) == []
     said = page.evaluate("[...document.querySelectorAll('.voice-entry.voice-person .voice-said')].map(e => e.textContent)")
-    assert said[-4:] == [REQUEST, "yes", "approve", "start it"]
+    assert said[-4:] == lines
 
 
 def test_always_listen_cuts_an_utterance(voice):
@@ -604,11 +608,14 @@ def test_read_only_card_has_no_approve(voice, width):
     card = voice.card("proposed")
     assert card.locator(".voice-approve").count() == 0
     assert "--read-only" in card.locator(".voice-why-not").inner_text()
-    voice.type_("yes")
-    voice.card("confirmed")
+    assert "nothing changes until you say or click yes" in page.inner_text(".voice-head")
+    voice.type_("yes")                                    # the conversation keeps working; the server refuses
+    until(page, "document.querySelector('.voice-caption-helper').textContent.startsWith('I could not do it:')")
+    assert "--read-only" in page.inner_text(".voice-caption-helper")
+    assert page.locator(".voice-card[data-state='approved']").count() == 0
     assert page.locator(".voice-card .voice-approve").count() == 0
-    assert "Confirmed" in page.inner_text(".voice-caption-helper")   # the conversation keeps working
     shot(page, f"voice-read-only-{width}.png")
+    time.sleep(1.0)
     assert run_dirs(voice.layer) == []
 
 
@@ -620,6 +627,9 @@ def test_hostile_text_stays_text(voice):
     voice.hold(1.2)
     voice.card("proposed")
     until(page, f"document.querySelector('.voice-caption-person').textContent === {json.dumps(hostile)}", timeout=20000)
+    until(page, "document.querySelector('.voice-caption-helper').textContent.includes('<script>window.__pwned=3')")   # the read-back
+    voice.type_("no")                                     # the read-back waits for an answer first
+    voice.card("declined")
     voice.type_("say something hostile")
     until(page, "document.querySelector('.voice-caption-helper').textContent.includes('<img src=x')", timeout=20000)
     assert page.evaluate("document.querySelectorAll('.voice-panel img, .voice-panel script').length") == 0
