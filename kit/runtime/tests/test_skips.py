@@ -74,6 +74,18 @@ def test_mocha_pending_counts_without_reasons():
     assert report.top() == [[skips.MOCHA_PENDING, 3]]
 
 
+def test_bun_counts_pass_skip_and_fail():
+    text = (DATA.parent / "bun.log").read_text(encoding="utf-8")
+    report = skips.parse_bun(text)
+    assert (report.passed, report.skipped, report.failed, report.unexplained) == (2, 1, 0, 1)
+    assert report.top() == [[skips.BUN_SKIP, 1]]
+    assert report.sources == ["bun"]
+    assert skips.from_log(text).as_dict() == report.as_dict()
+    assert skips.parse_bun(_log("mocha.log")) is None
+    assert skips.parse_bun(_log("pytest-rs.log")) is None
+    assert skips.parse_mocha(text) is None and skips.parse_pytest(text) is None
+
+
 def test_junit_skipped_messages(tmp_path):
     report = skips.parse_junit([DATA / "junit.xml"])
     assert (report.skipped, report.passed, report.failed, report.unexplained) == (3, 1, 0, 0)

@@ -156,6 +156,57 @@ def test_a_line_break_is_never_a_narrowed_command(make_layer):
     assert proofplan.narrowed("uv run pytest -q", "uv run pytest -q tests/x") == ["-q", "tests/x"]
 
 
+BUN = "systemd-run --user --scope --quiet --slice=demo.slice bun"
+
+
+def _bun_layer(make_layer):
+    return _layer(make_layer, commands=[{"name": "unit", "run": f"{BUN} run test", "timeout": 30,
+                                         "targeted": f"{BUN} test {{tests}}"}])
+
+
+def test_a_bun_targeted_form_row_is_proven_by_its_cmd(make_layer):
+    layer = _bun_layer(make_layer)
+    for text, selection in (
+            (f"{BUN} test tests/console.test.ts", ["tests/console.test.ts"]),
+            (f'{BUN} test -t "lists strategies" tests/console.test.ts tests/other.spec.ts',
+             ["-t", "lists strategies", "tests/console.test.ts", "tests/other.spec.ts"])):
+        result = _evaluate(layer, _row(command=text))
+        assert result["outcome"] == "proven-here", (text, result)
+        assert result["cmd"] == "unit" and result["selection"] == selection
+        check, cmd = proofplan.resolve_command(layer, layer.adw(cf.ADW), text)
+        assert check["name"] == "unit" and cmd["name"] == "unit" and cmd["run"] == text
+        assert cmd["selection"] == selection
+
+
+def test_a_pytest_targeted_form_row_is_proven_by_its_cmd(make_layer):
+    layer = _layer(make_layer, commands=[{
+        "name": "unit", "run": "make test", "timeout": 30, "testRoot": "kit/runtime",
+        "targeted": "(cd kit/runtime && uv run --with pytest pytest -q {tests})"}])
+    text = "(cd kit/runtime && uv run --with pytest pytest -q -rA tests/test_x.py::test_a)"
+    result = _evaluate(layer, _row(command=text))
+    assert result["outcome"] == "proven-here", result
+    assert result["cmd"] == "unit" and result["selection"] == ["-q", "-rA", "tests/test_x.py::test_a"]
+    check, cmd = proofplan.resolve_command(layer, layer.adw(cf.ADW), text)
+    assert check["name"] == "unit" and cmd["name"] == "unit" and cmd["run"] == text
+
+
+def test_a_targeted_form_row_with_anything_else_stays_needs_declaration(make_layer):
+    layer = _bun_layer(make_layer)
+    for text in (f"{BUN} test --coverage tests/console.test.ts",
+                 f"{BUN} test ../tests/console.test.ts",
+                 f"{BUN} test /tmp/console.test.ts",
+                 f"{BUN} test src/console.ts",
+                 f"{BUN} test",
+                 f"{BUN} test tests/console.test.ts; touch x",
+                 f'{BUN} test tests/console.test.ts -t "$(id)"',
+                 f"{BUN.replace('demo.slice', 'other.slice')} test tests/console.test.ts",
+                 "make proof"):
+        result = _evaluate(layer, _row(command=text))
+        assert (result["outcome"], result["party"]) == ("needs-declaration", "layer author"), text
+    assert proofplan.narrowed_form("bun test {tests} {files}", "bun test a.test.ts") is None
+    assert proofplan.narrowed_form('sh -c "bun test {tests}"', 'sh -c "bun test a.test.ts"') is None
+
+
 # ---------------------------------------------------------------- outcomes
 
 def test_outcome_proven_here(make_layer):
