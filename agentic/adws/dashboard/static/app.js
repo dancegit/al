@@ -2768,7 +2768,9 @@
       return b;
     };
     const canGive = !!(sm.assign && sm.assign.script);
-    const resolve = sm.bucket === "needs-you"
+    // a batch run (kit workflow verify-batch) is never given to an agent: no button, and no `al gen` hint
+    const batchRun = !!(sm.acts_on && sm.acts_on.kind === "batch");
+    const resolve = sm.bucket === "needs-you" && !batchRun
       ? h("button", { type: "button", class: "btn primary integrate assign-open", text: "Give to an agent", disabled: !canGive,
         title: canGive ? "an agent takes this run from where it stopped; you see the plan first, and nothing ships without the checks, the review and the gate"
           : "run `al gen` to add adws/assign.py",
@@ -3022,7 +3024,7 @@
           a.run ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(a.run)}`, text: a.run }) : "no run",
           ` · ${a.outcome || "?"}${a.why ? `: ${a.why}` : ""}`))) : ""],
         ["limit", h("span", { class: `assign-limit${limited ? " reached" : ""}`,
-          text: `given to an agent ${p.clicks || 0} of 2 times${limited ? `: ${p.blocked_why || "the limit is reached"}` : ""}` })],
+          text: `given to an agent ${givenCount(p.clicks, " times")}${limited ? `: ${p.blocked_why || "the limit is reached"}` : ""}` })],
         ["note", startable ? text : ""],
         ["override", limited ? h("label", { class: "assign-override-label" }, override, " give it once more (override)") : ""],
       ]), h("div", { class: "buttons" }, startable ? start : null,
@@ -3300,20 +3302,28 @@
       h("div", { class: "settle-fields" }, who, h("div", { class: "buttons" }, button, note)));
   }
 
+  /** "1 of 2" up to the limit of two; above it "2 of 2, and 1 more by override" (never "3 of 2"). */
+  function givenCount(clicks, unit = "") {
+    const n = clicks || 0;
+    return n <= 2 ? `${n} of 2${unit}` : `2 of 2${unit}, and ${n - 2} more by override`;
+  }
+
   /** The Status block's "given to an agent": "1 of 2; last: stopped", with a link to the last attempt's run. */
   function givenFact(sm, layerKey) {
     const given = sm.assign || {}, attempts = given.attempts || [];
     if (!attempts.length) return "";
     const last = attempts[attempts.length - 1];
-    return h("span", { class: "assign-fact" }, `${given.clicks || 0} of 2; last: ${last.outcome || "?"}`,
+    return h("span", { class: "assign-fact" }, `${givenCount(given.clicks)}; last: ${last.outcome || "?"}`,
       last.run && last.run !== sm.id ? " (" : null,
       last.run && last.run !== sm.id ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(last.run)}`, text: last.run }) : null,
       last.run && last.run !== sm.id ? ")" : null, last.why ? `: ${last.why}` : "");
   }
 
-  /** "Start again" for a failed or died run nothing replaces yet: the same request, recorded as replacing it. */
+  /** "Start again" for a failed or died run nothing replaces yet: the same request, recorded as replacing it.
+   *  Not for a batch run (kit workflow verify-batch): `al batch` is its entry point, it is not a request. */
   function startAgainButton(summary) {
     if (!(summary.status === "failed" || summary.status === "died") || summary.replaced_by || summary.integrates) return null;
+    if (summary.acts_on && summary.acts_on.kind === "batch") return null;
     const button = h("button", { type: "button", class: "btn start-again", text: "Start again", title: "start this request again; the new run records that it replaces this one" });
     const send = async (extra) => {
       button.disabled = true;

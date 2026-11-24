@@ -495,6 +495,10 @@ def not_eligible(layer: Any, state: Any, adw: dict[str, Any], item: dict[str, An
         return ""
     if state.fanout_parent:
         return "a fan-out candidate (its parent decides)"
+    from . import batch
+    if batch.is_batch_run(state):
+        return ("a batch run (kit workflow verify-batch): `al batch` runs the full suites again; "
+                "it is never restarted or resumed")
     if str(adw.get("changes") or "codebase") == "layer":
         return "the workflow changes the layer (a person always approves)"
     if (state.budget or {}).get("stopped"):
