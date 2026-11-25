@@ -234,6 +234,22 @@ def test_narrowed_row_is_proven_by_its_own_run(make_layer, app_repo, tmp_path):
     assert verbatim["tests"] == {test_id: "not shown"} and verbatim["check"] == "unit"
 
 
+def test_narrowed_bun_row_is_proven_by_its_own_run(make_layer, app_repo, tmp_path):
+    fake = tmp_path / "bin" / "bun"
+    fake.parent.mkdir()
+    fake.write_text('for arg in "$@"; do case "$arg" in *.test.ts) echo "$arg:"; echo "(pass) works" ;; esac; done\n'
+                    'echo; echo " 1 pass"; echo " 0 fail"; echo "Ran 1 tests across 1 files. [1.00ms]"\nexit 0\n')
+    test_id = "tests/feature.test.ts"
+    commands = [{"name": "unit", "run": f"sh {fake} run test", "timeout": 30, "targeted": f"sh {fake} test {{tests}}"}]
+    layer, state, stack = _setup(make_layer, app_repo, [_row(command=f"sh {fake} test {test_id}", tests=[test_id])],
+                                 commands=commands)
+    (row,) = evidence.build_pack(layer, state, layer.adw(cf.ADW), stack)["rows"]
+    assert row["tests"] == {test_id: "named in log"}
+    assert row["check"] == "narrowed unit"
+    assert row["log"] == f"agents/{RUN}/checks/evidence-unit-C1.log"
+    assert row["state"] == "proven" and row["passed"] == 1
+
+
 def test_gap_classification_env_words_and_declarations(make_layer, app_repo):
     layer = ir.load(cf.converge_layer(make_layer))
     adw = layer.adw(cf.ADW)

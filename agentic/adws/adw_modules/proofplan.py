@@ -10,7 +10,8 @@ A plan (plan-chore, plan-bug, plan-feature) ends its How it is proven with one t
 `parse` reads it: Proven by is the command (its first backticked span) and the test ids (the other
 spans); Writes are globs relative to the worktree with `(count)`, and `proof:GLOB` for files of this
 run only, under `.al-proof/` (PROOF_DIR); Needs are tokens (NEED_FORMS) or `none`. Proven by may be a declared
-check by name, its cmd verbatim, or its cmd narrowed to some tests (`narrowed`).
+check by name, its cmd verbatim, its cmd narrowed to some tests (`narrowed`), or its cmd's `#:targeted`
+form with `{tests}` filled by declared test files (`narrowed_form`).
 
 Right after the plan step, `check` (run by steps.run_step as the step `prove`, no agent) gives
 every row one outcome: `proven-here`, `proven-on:ENV`, `needs-declaration` (the layer author adds a
@@ -26,12 +27,13 @@ without a layer change and without an image limit.
 from __future__ import annotations
 
 import fnmatch
+import posixpath
 import re
 import shlex
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from . import approvals, checkenv, events, nested_engine
+from . import approvals, checkenv, events, nested_engine, selection as selecting
 from .errors import LayerError, StepFailed
 
 HEADER = ("#", "criterion", "proven by", "writes", "needs")
@@ -51,6 +53,7 @@ _SPAN = re.compile(r"`([^`]+)`")
 _ROW_TEMPLATE = "| C1 | <checkable result> | `<validation command>` `<test id>` | <globs (count), proof:GLOB, or -> | <none, or need tokens> |"
 _SELECT_FLAGS = re.compile(r"^-(?:q+|v+|x|r[A-Za-z]+)$")
 _SELECT_ARG = ("-k", "-n")
+_BUN_SUFFIXES = (".test.ts", ".spec.ts")
 _SHELL_OPS = {"(", ")", ";", "&&", "||", "|", "&", ";;", "<", ">", ">>"}
 _PLAIN = re.compile(r"^[A-Za-z0-9_./-]+(?:::[A-Za-z0-9_.:\[\]-]+)?$")
 _EXPR = re.compile(r"^[A-Za-z0-9_ .()\[\]-]+$")
@@ -199,12 +202,20 @@ def _tokens(text: str) -> list[str] | None:
         return None
 
 
+def _is_bun(tokens: list[str], index: int) -> bool:
+    """True when the token at `index` is the `test` of `bun test` (`bun run test` is a package script)."""
+    previous = tokens[index - 1] if index else ""
+    return tokens[index] == "test" and (previous == "bun" or previous.endswith("/bun"))
+
+
 def _runner(tokens: list[str]) -> int | None:
     for index, token in enumerate(tokens):
         previous = tokens[index - 1] if index else ""
         if (token == "pytest" or token.endswith("/pytest")) and not previous.startswith("-"):
             return index
         if token == "test" and previous == "raco":
+            return index
+        if _is_bun(tokens, index):
             return index
     return None
 
@@ -227,13 +238,28 @@ def _under(path: str, roots: list[str]) -> bool:
     return False
 
 
-def _selection(args: list[str], roots: list[str]) -> tuple[list[str], list[str]] | None:
+def _selection(args: list[str], roots: list[str], *, bun: bool = False) -> tuple[list[str], list[str]] | None:
     selection: list[str] = []
     rest: list[str] = []
     index = 0
     while index < len(args):
         token = args[index]
-        if _SELECT_FLAGS.fullmatch(token):
+        if bun:
+            # bun test: `-t PATTERN` and test files; the pytest flags are options like any other
+            if token == "-t":
+                if index + 1 >= len(args) or not _EXPR.fullmatch(args[index + 1]):
+                    return None
+                selection += [token, args[index + 1]]
+                index += 1
+            elif not token.startswith("-"):
+                if (not _PLAIN.fullmatch(token) or "::" in token or not token.endswith(_BUN_SUFFIXES)
+                        or token.startswith("/") or ".." in PurePosixPath(token).parts
+                        or not _under(token, roots)):
+                    return None
+                selection.append(token)
+            else:
+                rest.append(token)
+        elif _SELECT_FLAGS.fullmatch(token):
             selection.append(token)
         elif token in _SELECT_ARG:
             if index + 1 >= len(args):
@@ -255,11 +281,15 @@ def _selection(args: list[str], roots: list[str]) -> tuple[list[str], list[str]]
     return selection, rest
 
 
+def _paths(selection: list[str]) -> list[str]:
+    """The test paths and node ids of a selection: not the options, not the value of `-k`, `-n` or `-t`."""
+    return [token for index, token in enumerate(selection)
+            if not token.startswith("-") and not (index and selection[index - 1] in (*_SELECT_ARG, "-t"))]
+
+
 def _roots(selection: list[str]) -> list[str]:
     roots = []
-    for index, token in enumerate(selection):
-        if token.startswith("-") or (index and selection[index - 1] in _SELECT_ARG):
-            continue
+    for token in _paths(selection):
         path = PurePosixPath(token.split("::")[0])
         roots.append(str(path.parent) if path.suffix else str(path))
     return roots
@@ -269,38 +299,72 @@ def narrowed(declared_run: str, text: str) -> list[str] | None:
     """The test selection by which `text` narrows the declared command `declared_run`, or None.
 
     Both are tokenised (shell words and operators). Each must name a test runner (`pytest`, not an
-    argument of an option such as `--with pytest`; or `raco test`). The tokens up to and including the
-    runner must be equal, and so must the tokens after the runner's arguments (from the first shell
-    operator on). In the runner's arguments only test selection may differ: `-q`/`-v`/`-x`/`-rX`,
-    `-k EXPR` (plain characters only), `-n N`, and relative test paths or node ids without `..` that
-    lie under the declared command's own test paths when it names any (a file contributes its
-    directory). Every other argument must be equal, in order. The result is the text's selection
-    tokens; None for anything else, which stays a needs-declaration."""
-    declared, wanted = _tokens(declared_run), _tokens(text)
+    argument of an option such as `--with pytest`; `raco test`; or `bun test`, not `bun run test`). The
+    tokens up to and including the runner must be equal, and so must the tokens after the runner's
+    arguments (from the first shell operator on). In the runner's arguments only test selection may
+    differ: `-q`/`-v`/`-x`/`-rX`, `-k EXPR` (plain characters only), `-n N`, and relative test paths or
+    node ids without `..` that lie under the declared command's own test paths when it names any (a
+    file contributes its directory). For `bun test` the selection is `-t PATTERN` (plain characters
+    only) and relative `.test.ts` / `.spec.ts` paths under the same rules. Every other argument must
+    be equal, in order. The result is the text's selection tokens; None for anything else, which stays
+    a needs-declaration."""
+    return _narrowed(_tokens(declared_run), text)
+
+
+def _narrowed(declared: list[str] | None, text: str) -> list[str] | None:
+    """`narrowed` for a declared command given as tokens."""
+    wanted = _tokens(text)
     if declared is None or wanted is None:
         return None
     at, at_text = _runner(declared), _runner(wanted)
     if at is None or at_text is None or declared[:at + 1] != wanted[:at_text + 1]:
         return None
+    bun = _is_bun(declared, at)
     declared_args, declared_tail = _split_args(declared, at + 1)
     wanted_args, wanted_tail = _split_args(wanted, at_text + 1)
     if declared_tail != wanted_tail:
         return None
-    own = _selection(declared_args, [])
+    own = _selection(declared_args, [], bun=bun)
     if own is None:
         return None
     roots = _roots(own[0])
-    found = _selection(wanted_args, roots)
+    found = _selection(wanted_args, roots, bun=bun)
     if found is None or found[1] != own[1]:
         return None
     return found[0]
+
+
+def narrowed_form(form: str, text: str) -> list[str] | None:
+    """The test selection by which `text` fills the `#:targeted` form `form`, or None.
+
+    The form must hold `{tests}` exactly once, as a word of its own among the runner's arguments, and
+    no other placeholder (`{files}`, `{packages}`, or `{tests}` inside a quoted word are refused).
+    Without that word the form is compared with `text` exactly as `narrowed` compares a declared
+    command: equal up to the runner, only test selection differs, equal tail. The selection must name
+    at least one test path: the placeholder must be filled."""
+    tokens = _tokens(form)
+    if tokens is None or tokens.count("{tests}") != 1:
+        return None
+    place = tokens.index("{tests}")
+    if any("{" in token for index, token in enumerate(tokens) if index != place):
+        return None
+    at = _runner(tokens)
+    if at is None or place <= at or place >= at + 1 + len(_split_args(tokens, at + 1)[0]):
+        return None
+    found = _narrowed(tokens[:place] + tokens[place + 1:], text)
+    if found is None or not _paths(found):
+        return None
+    return found
 
 
 def resolve_command(layer: Any, adw: dict[str, Any], text: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """(check step, cmd) the text of Proven by names: a check step by name; else the check step whose
     cmd is that name or whose cmd's `run` is exactly the text; else a declared cmd no check step runs
     (the evidence step runs it); else the check step or declared cmd that `text` narrows to some tests
-    (see `narrowed`), with `run` set to `text` and `selection` the tests; else (None, None)."""
+    (see `narrowed`), with `run` set to `text` and `selection` the tests; else the check step or
+    declared cmd whose `#:targeted` form `text` is, with `{tests}` filled by declared test files (see
+    `narrowed_form`; a path counts from the cmd's `#:test-root`), `run` and `selection` set the same
+    way; else (None, None)."""
     text = str(text or "").strip()
     checks = [step for step in adw.get("steps") or [] if step.get("kind") == "check"]
 
@@ -326,6 +390,25 @@ def resolve_command(layer: Any, adw: dict[str, Any], text: str) -> tuple[dict[st
             return step, {**cmd, "run": text, "selection": selection}
     for cmd in layer.ir.get("codebase", {}).get("commands") or []:
         if (selection := narrowed(str(cmd.get("run", "")), text)) is not None:
+            return None, {**cmd, "run": text, "selection": selection}
+
+    def by_form(cmd: dict[str, Any]) -> list[str] | None:
+        form = str(cmd.get("targeted") or "")
+        found = narrowed_form(form, text) if form else None
+        if found is None:
+            return None
+        test_root = posixpath.normpath(str(cmd.get("testRoot") or "")).strip("/")
+        test_root = "" if test_root == "." else test_root
+        declared = all(selecting.is_test(posixpath.join(test_root, path.split("::")[0]), layer)
+                       for path in _paths(found))
+        return found if declared else None
+
+    for step in checks:
+        cmd = cmd_of(str(step.get("cmd")))
+        if cmd is not None and (selection := by_form(cmd)) is not None:
+            return step, {**cmd, "run": text, "selection": selection}
+    for cmd in layer.ir.get("codebase", {}).get("commands") or []:
+        if (selection := by_form(cmd)) is not None:
             return None, {**cmd, "run": text, "selection": selection}
     return None, None
 
