@@ -36,6 +36,7 @@ class ADWState:
     source: str = "manual"
     klass: str = "chore"
     class_fixed: bool = False
+    class_from: str = ""  # why the class is fixed without --class or a source: "" | "request-label"
     dry_run: bool = False
     model_set: str = ""
     branch: str = ""
@@ -162,6 +163,8 @@ class ADWState:
                 data.pop("delivery", None)  # a layer without stages writes the state.json of before
             if not data.get("promotion"):
                 data.pop("promotion", None)  # only a promotion run has one
+            if not data.get("class_from"):
+                data.pop("class_from", None)  # only a run whose class came from a request label has one
             if not data.get("replaces"):
                 data.pop("replaces", None)  # only a run that starts another again has one
             if not data.get("decision"):
