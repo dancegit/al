@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -62,7 +63,9 @@ def test_al_runs_views_and_json(scenario):
     landed = al("runs", scenario["layer"], "--view", "landed").stdout
     assert landed.splitlines()[0] == "8 landed (6 need you, 5 running, 8 landed, 7 settled)"
     assert sorted(ids_in(landed)) == sorted(sf.MERGED + sf.SQUASHED)
-    for line in landed.splitlines()[1:]:
+    # after the rows: the layer's ship-without-review limit on this machine (the scenario has no agentic.rkt)
+    assert landed.splitlines()[-1] == "limit: gate: max-diff-lines 100 (compiled layer)"
+    for line in landed.splitlines()[1:-1]:
         assert re.search(r"landed in [0-9a-f]{7} \((ancestor|patch-id)\) on main, \d{4}-\d\d-\d\d$", line), line
     settled = al("runs", scenario["layer"], "--view", "settled").stdout
     assert sorted(ids_in(settled)) == sorted(sf.INTEGRATED + sf.FAILED)
@@ -77,6 +80,64 @@ def test_al_runs_views_and_json(scenario):
     assert by_id[sf.FAILED[0]]["replaced_by"] == sf.RESTARTS[0]
     assert by_id[sf.INTEGRATED[0]]["superseded_by"] == sf.INTEGRATION
     assert json.loads(al("runs", scenario["layer"], "--json").stdout).__len__() == 6
+
+
+BATCH_RUN = "7e570005"
+BATCH_STANDIN = '''"""A stand-in for the layer's batch module: `al batch` reaches main(), which records its arguments."""
+import json
+from pathlib import Path
+
+
+def main(layer_dir, argv=None):
+    (Path(layer_dir) / "batch-argv.json").write_text(json.dumps(list(argv or [])))
+    return 0
+'''
+
+
+def test_al_runs_batch_run_next_action_is_al_batch(scenario):
+    """A failed run of the kit workflow verify-batch is not a request: `al runs` prints `al batch LAYER
+    run --stage S` or a settlement for it (never `al run … --replaces`, never `al assign`), and the
+    printed `al batch` command runs."""
+    layer = scenario["layer"]
+    names = ("open", "checks", "record", "close")
+    steps = [{"name": n, "kind": "batch", "status": "failed" if n == "close" else "passed",
+              "started": f"2026-11-17T10:0{i}:00+00:00", "ended": f"2026-11-17T10:0{i}:30+00:00",
+              "detail": "red: tests/test_plugins.py failed" if n == "close" else ""} for i, n in enumerate(names)]
+    state = {"adw_id": BATCH_RUN, "adw": "verify-batch", "prompt": "verify the full suites on sprint/2026-s47",
+             "source": "cli", "klass": "chore", "status": "failed", "started": "2026-11-17T10:00:00+00:00",
+             "ended": "2026-11-17T10:04:00+00:00", "steps": steps,
+             "definition": {"name": "verify-batch", "batch": {"branch": "sprint/2026-s47", "stage": "sprint", "base": "change"},
+                            "steps": [{"name": n, "kind": "batch", "action": n} for n in names]},
+             "batch": {"branch": "sprint/2026-s47", "stage": "sprint", "head": "c0ffee1" + "0" * 33}}
+    run = layer / "agents" / BATCH_RUN
+    run.mkdir(parents=True)
+    (run / "state.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    (run / "run.log").write_text(f"[adw {BATCH_RUN}] verify-batch\n", encoding="utf-8")
+    (run / "request.md").write_text(state["prompt"] + "\n", encoding="utf-8")
+    (layer / "adws" / "adw_modules").mkdir(parents=True, exist_ok=True)
+    (layer / "adws" / "adw_modules" / "batch.py").write_text(BATCH_STANDIN, encoding="utf-8")
+    (layer / "adws" / "verify_batch.py").write_text("# a stand-in: `al batch` only needs the file to be there\n", encoding="utf-8")
+
+    lines = al("runs", layer).stdout.splitlines()
+    assert lines[0].startswith("7 need you (")
+    at = next(i for i, line in enumerate(lines) if line.startswith(f"{BATCH_RUN}  failed"))
+    arrow = lines[at + 1].strip()
+    assert arrow == f"→ al batch {layer} run --stage sprint; or: al settle {layer} {BATCH_RUN} --as …"
+    assert not arrow.startswith("→ al run ") and "/verify-batch" not in arrow     # not the request started again
+    assert "--replaces" not in arrow and "request.md" not in arrow and "al assign" not in arrow
+    others = [line for line in lines if line.lstrip().startswith("→ ") and line.strip() != arrow]
+    assert len(others) == 6 and all("; or: al assign " in line for line in others), "every other row is as before"
+    row = next(r for r in json.loads(al("runs", layer, "--json").stdout) if r["id"] == BATCH_RUN)
+    assert row["bucket"] == "needs-you"
+    assert row["next"] == "run the full suites again: `al batch LAYER run --stage sprint`, or `al settle`"
+
+    command = shlex.split(arrow.removeprefix("→ ").split("; or: ")[0])
+    assert command[:2] == ["al", "batch"]
+    al(*command[1:])                                             # exits 0
+    assert json.loads((layer / "batch-argv.json").read_text()) == ["run", "--stage", "sprint"]
+    # and the settlement it names takes the run out of Needs you
+    al("settle", layer, BATCH_RUN, "--as", "abandoned", "--note", "run again by hand")
+    assert BATCH_RUN not in ids_in(al("runs", layer).stdout)
 
 
 def test_al_runs_groups_failures(tmp_path):
@@ -201,3 +262,66 @@ def test_al_runs_prune_needs_landed_flag(scenario):
     assert cp.returncode == 2 and "--landed" in cp.stderr
     cp = al("runs", scenario["layer"], "prune", "--landed", ok=False)
     assert cp.returncode == 2
+
+
+URL = "https://forge.example/o/r/pull/7"
+
+
+def test_al_settle_as_shipped_lists_it_out_of_needs_you(scenario):
+    """Run with -s to see the commands' output (docs/GUIDE.md quotes it)."""
+    layer, repo, run = scenario["layer"], scenario["repo"], sf.OPEN[0]
+    cp = al("settle", layer, run, "--as", "shipped", "--by", URL, "--note", "opened by hand", "--who", "Ada")
+    print(f"$ al settle LAYER {run} --as shipped --by {URL} --note 'opened by hand' --who Ada\n{cp.stdout}", end="")
+    assert cp.stdout.strip() == f"settled {run} as shipped ({URL}) by Ada: agents/{run}/settlement.json"
+    record = json.loads((layer / "agents" / run / "settlement.json").read_text())
+    assert (record["as"], record["by"], record["who"], record["via"]) == ("shipped", URL, "Ada", "cli")
+    listed = al("runs", layer).stdout
+    assert listed.splitlines()[0] == "5 need you (5 running, 8 landed, 8 settled; --view all for every run)"
+    assert run not in ids_in(listed)
+    settled = al("runs", layer, "--view", "settled").stdout
+    line = next(line for line in settled.splitlines() if line.startswith(run))
+    print(f"$ al runs LAYER --view settled\n{line}")
+    assert f"shipped ({URL}) by Ada: opened by hand" in line
+    assert run not in ids_in(al("runs", layer, "--view", "landed").stdout)
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.org", "merge", "-q", "--no-ff", "-m", f"Merge al/{run}",
+        f"al/{run}")                                     # the pull request is merged: git shows the work on main
+    landed = al("runs", layer, "--view", "landed").stdout
+    line = next(line for line in landed.splitlines() if line.startswith(run))
+    print(f"$ al runs LAYER --view landed\n{line}")
+    assert re.search(r"landed in [0-9a-f]{7} \(ancestor\) on main", line), line
+    assert run not in ids_in(al("runs", layer, "--view", "settled").stdout)
+    assert run not in ids_in(al("runs", layer).stdout)
+
+
+def test_al_settle_as_shipped_needs_by(scenario):
+    layer, run = scenario["layer"], sf.OPEN[0]
+    for by in ([], ["--by", "not a url"], ["--by", "javascript:alert(1)"]):
+        cp = al("settle", layer, run, "--as", "shipped", *by, ok=False)
+        assert cp.returncode == 3, (by, cp.stdout, cp.stderr)
+        assert "al settle: shipped needs by: the pull request's URL or the commit" in cp.stderr
+    unknown = al("settle", layer, run, "--as", "shipped", "--by", "deadbeefdeadbeef", ok=False)
+    assert unknown.returncode == 3 and "neither a run" in unknown.stderr
+    assert al("settle", layer, run, "--as", "landed", "--by", URL, ok=False).returncode == 2   # a URL only for shipped
+    assert not (layer / "agents" / run / "settlement.json").exists()
+    tip = git(scenario["repo"], "rev-parse", f"al/{run}")
+    cp = al("settle", layer, run, "--as", "shipped", "--by", tip[:9], "--who", "Ada")
+    assert cp.stdout.strip() == f"settled {run} as shipped ({tip[:9]}) by Ada: agents/{run}/settlement.json"
+
+
+def test_al_runs_prune_keeps_a_shipped_run_that_has_not_landed(scenario):
+    layer, repo = scenario["layer"], scenario["repo"]
+    shipped, abandoned = sf.OPEN[0], sf.OPEN[1]
+    al("settle", layer, shipped, "--as", "shipped", "--by", URL, "--who", "Ada")
+    al("settle", layer, abandoned, "--as", "abandoned", "--who", "Ada")
+    cp = al("runs", layer, "prune", "--landed", "--older-than", "1")
+    heads = git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").split()
+    assert f"al/{shipped}" in heads, "the head of a pull request that is not merged yet is kept"
+    assert shipped not in cp.stdout
+    assert f"al/{abandoned}" not in heads and f"removed branch al/{abandoned} (was " in cp.stdout
+    assert "pruned" not in json.loads((layer / "agents" / shipped / "settlement.json").read_text())
+    # once git shows it on its target, it is pruned like every landed run
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.org", "merge", "-q", "--no-ff", "-m",
+        f"Merge al/{shipped}", f"al/{shipped}")
+    cp = al("runs", layer, "prune", "--landed", "--older-than", "1")
+    assert f"removed branch al/{shipped} (was " in cp.stdout
+    assert json.loads((layer / "agents" / shipped / "settlement.json").read_text())["as"] == "shipped"

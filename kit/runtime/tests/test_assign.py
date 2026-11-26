@@ -249,6 +249,65 @@ def test_limit_two_clicks_then_override(make_layer, app_repo):
     assert len(spawned) == 1 and record(layer)["attempts"][-1]["outcome"] == "started"
 
 
+def _batch_run(layer: Path, run: str = RUN, stage: str = "") -> None:
+    """Rewrite a stopped run into a run of the kit workflow verify-batch, as batch.batch_adw records it."""
+    names = ("open", "checks", "record", "close")
+    _set_state(layer, run, adw="verify-batch", prompt="verify the full suites on main",
+               definition={"name": "verify-batch", "batch": {"branch": "main", "stage": stage, "base": "demo"},
+                           "steps": [{"kind": "batch", "name": n, "action": n} for n in names]})
+
+
+@pytest.mark.parametrize("builder, stage, status, words", [
+    (nothing_changed_run, "", "failed", "`al batch LAYER run`"),
+    (nothing_changed_run, "sprint", "failed", "`al batch LAYER run --stage sprint`"),
+    (died_run, "", "died", "`al batch LAYER run`"),
+])
+def test_plan_of_a_batch_run_is_never_start_again(make_layer, app_repo, builder, stage, status, words):
+    """A failed or died batch run is not a request launch.start can start: no start-again plan, and
+    giving it is refused before an attempt is recorded."""
+    layer, run = builder(make_layer, app_repo)
+    _batch_run(layer, run, stage)
+    found = _plan(layer, run)
+    assert found["stop"]["status"] == status
+    assert (found["kind"], found["blocked"]) == ("none", "not-stopped"), found["summary"]
+    assert words in found["summary"] and words in found["blocked_why"]
+    assert "verify-batch" in found["summary"] and "start workflow" not in " ".join(found["steps"])
+    spawned = []
+    for more in ({"by": "dashboard"}, {"by": "decider"}, {"by": "dashboard", "override": True},
+                 {"by": "cli", "override": True}):
+        with pytest.raises(assign.AssignError) as caught:
+            assign.give(layer, run, detach=True, spawn=lambda *a, **k: spawned.append(a), **more)
+        assert caught.value.reason == "not-stopped" and "al batch LAYER run" in caught.value.message, more
+    assert not (layer / "agents" / run / "assign.json").exists(), "no attempt is recorded for a start that cannot work"
+    assert spawned == []
+    assert sorted(p.name for p in (layer / "agents").iterdir() if (p / "state.json").is_file()) == [run]
+
+
+def test_a_batch_run_never_reaches_the_limit_message(make_layer, app_repo):
+    layer, run = nothing_changed_run(make_layer, app_repo)
+    clicks = [{"by": "dashboard", "kind": "start-again", "why": "it did not start: no workflow named verify-batch"}] * 3
+    write_attempts(layer, clicks)
+    ordinary = _plan(layer)                               # an ordinary run with three clicks: the count is worded
+    assert (ordinary["kind"], ordinary["clicks"], ordinary["blocked"]) == ("start-again", 3, "limit")
+    lines = assign.plan_lines(ordinary)
+    assert lines[-1].startswith("limit:      2 of 2 used, and 1 more by --override; not started: limit: ")
+    assert "3 of 2" not in "\n".join(lines)
+    write_attempts(layer, clicks[:2])
+    assert assign.plan_lines(_plan(layer))[-1].startswith("limit:      2 of 2 used; not started: limit: ")
+
+    write_attempts(layer, clicks)
+    _batch_run(layer, run)
+    found = _plan(layer)
+    assert (found["kind"], found["blocked"]) == ("none", "not-stopped")
+    assert "twice already" not in found["blocked_why"] and "al batch LAYER run" in found["blocked_why"]
+    assert run not in assign.stopped_runs(ir.load(layer))
+    spawned = []
+    assert assign.give_all(layer, by="dashboard", spawn=lambda *a, **k: spawned.append(a)) == []
+    named = assign.give_all(layer, by="dashboard", run_ids=[run], spawn=lambda *a, **k: spawned.append(a))
+    assert [(r["run"], r["status"]) for r in named] == [(run, "skipped")] and "al batch" in named[0]["why"]
+    assert spawned == [] and len(record(layer)["attempts"]) == 3, "the counter does not grow"
+
+
 def test_same_reason_twice_stays_with_the_person(make_layer, app_repo):
     layer, _run = rejected_run(make_layer, app_repo)
     write_attempts(layer, [{"reason": "review:blockers", "after": "review:blockers", "why": "its review rejected it again"},

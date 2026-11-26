@@ -299,6 +299,10 @@ al explain ~/code/myapp.al
 This prints the layer back in plain language, block by block: the commands, where work comes from,
 where agents work, who decides, and each workflow's steps. It includes the defaults the author did not
 write down. If a sentence there is not what you want, that is the block to change in `agentic.rkt`.
+In a terminal, on a generated layer with an auto review option, it ends with `Ship without review, on
+this machine` and one line per option: the diff limit that applies here and where it comes from (see
+"The ship-without-review limit" under "Choose models and limit spending"). Those lines are never
+part of the document below.
 For a document and an animation: `al explain ~/code/myapp.al --md layer.md --gif layer.gif`.
 The document's first paragraph also names what the kit adds to every layer (`The kit adds 5 more a
 person or a run can start: integrate, assign, promote, improve and decider.`), and its section **Kit workflows
@@ -561,6 +565,9 @@ A run leaves it when its work is done, even when nobody told al:
   or issue) reads "replaced by" the new run.
 - **Settled by you.** Anything else you decide needs nothing more: the run page's **Settle this run**
   card, or `al settle`.
+- **Shipped.** A run whose work is on a pull request or a branch that is not merged yet (**Approve &
+  ship**, or `al settle … --as shipped --by PR-URL`). It leaves Needs you, is listed under Settled as
+  "shipped (…)", and moves to Landed by itself once git shows its work on the target.
 
 The chips **Running**, **Landed**, **Settled** and **All** show the rest, each with what landed or settled
 it. Nothing is deleted. The same list in a terminal:
@@ -580,6 +587,7 @@ b000000b  handed-over  plan-build      Track the cherry trees, part 11         r
           → merge al/b000000b into main, or al settle orchard.al b000000b --as …; or: al assign orchard.al b000000b
 a0000002  failed       plan-build      Draw the orchard map                    build: the map renderer needs a page size
           → al run orchard.al /plan-build --replaces a0000002 < orchard.al/agents/a0000002/request.md; or: al assign orchard.al a0000002
+limit: gate: max-diff-lines 100 (layer definition)
 
 $ al settle orchard.al b000000c --as abandoned --note "the map work replaces it" --who Ada
 settled b000000c as abandoned by Ada: agents/b000000c/settlement.json
@@ -594,12 +602,18 @@ d0000001  failed       plan-build      Add the pruning calendar, part 1        r
 b000000c  handed-over  plan-build      Track the quince trees, part 12         abandoned by Ada: the map work replaces it
 b000000a  handed-over  plan-build      Track the plum trees, part 10           superseded by c0000001
 b0000009  handed-over  plan-build      Track the pear trees, part 9            superseded by c0000001
+limit: gate: max-diff-lines 100 (layer definition)
 ```
 
+The closing `limit:` lines are the layer's ship-without-review limits on this machine, one per auto
+review option (see "The ship-without-review limit" under "Choose models and limit spending"); a run
+the gate stopped for its size says `diff 2500 lines > limit 2000 (review option zero-touch), 31 files
+changed` as its reason.
 `--view needs-you|running|landed|settled|all` picks the list and `--json` prints it as JSON. Several
 failures at the same step with the same reason, within half an hour of each other, show as one line
 ("5 runs: preflight, same reason") followed by their ids. `al settle LAYER RUN --as
-landed|superseded|abandoned` takes `--by RUN|COMMIT` (a run of the layer or a commit of the application),
+landed|superseded|abandoned|shipped` takes `--by RUN|COMMIT|PR-URL` (a run of the layer or a commit of the
+application; a pull request's URL only with `shipped`, below),
 `--note TEXT` (at most 500 characters) and `--who NAME` (default: your `git config user.name` in the
 application). It writes `agents/<run id>/settlement.json`, then removes the run's worktree under `trees/`
 (it keeps `agents/<id>`, `artefacts/<id>` and the branch) and prints
@@ -609,6 +623,25 @@ settle form and the stand-in remove the worktree the same way, and so does an in
 run. Undoing a settlement does not bring the worktree back: the branch is kept, so a run resumed later
 needs its worktree made again from the branch. Exit codes: 0 written, 2 bad use, 3 refused (the run is
 still running, or `--by` names neither a run nor a commit), 4 no such run.
+
+**Shipped, not merged yet.** `--as shipped` is for a run you shipped by hand to a pull request or a
+branch that nobody merged yet. It needs `--by`: the pull request's URL (`http://` or `https://`) or
+the commit; without it the command exits 3 with "shipped needs by: the pull request's URL or the
+commit". The run leaves Needs you at once and is listed as landed once git shows its work on the
+target (`al runs … prune` keeps its branch until then: it is the head of the pull request):
+
+```bash
+$ al settle orchard.al b000000b --as shipped --by https://forge.example/o/r/pull/7 --note "opened by hand" --who Ada
+settled b000000b as shipped (https://forge.example/o/r/pull/7) by Ada: agents/b000000b/settlement.json
+
+$ al runs orchard.al --view settled
+b000000b  handed-over  plan-build      Track the cherry trees, part 11         shipped (https://forge.example/o/r/pull/7) by Ada: opened by hand
+
+$ al runs orchard.al --view landed        # after the pull request was merged and fetched
+b000000b  handed-over  plan-build      Track the cherry trees, part 11         landed in 259efd3 (ancestor) on main, 2026-11-23
+```
+
+(Each list is shown without its header line and its other runs.)
 
 Finished runs leave worktrees, containers and branches behind. `al runs LAYER prune --landed --older-than
 DAYS` removes them for runs in the Landed or Settled list that ended more than DAYS ago, and keeps the
@@ -797,6 +830,7 @@ $ al runs pantry.al --view landed
 2 landed (4 need you, 0 running, 2 landed, 1 settled)
 f0000006  handed-over  ship-it         Label the shelves                       landed in 4b3cb6e (patch-id) on main, 2026-11-02
 f0000001  handed-over  ship-it         Give stock a discount                   landed by 1b71fb25 (integration)
+limit: gate: max-diff-lines 100 (layer definition)
 ```
 
 The run is named by its id or by its branch. `--detach` starts it and returns (`started integration
@@ -1022,7 +1056,8 @@ f0000012  person       skipped: needs-a-person: 1 item of run f0000012 only a pe
 ```
 
 The limits. You can give one run to an agent twice; after that `al assign` refuses with `limit` until
-you say `--override`, which allows one more. Every attempt is kept with its outcome (in
+you say `--override`, which allows one more (the preview then counts `limit:      2 of 2 used, and 1
+more by --override`). Every attempt is kept with its outcome (in
 `agents/<run>/assign.json`, in the run's events as `assign.attempt` and `assign.outcome`, and in the
 preview under `attempts:`). When two attempts stopped for the same reason, the refusal says so (`it
 stopped twice for the same reason (…): it stays with you`). A second blocker round continues from the
@@ -1123,7 +1158,22 @@ name, 3 refused by a limit, 4 needs `--yes`. The prompt is written to `agents/<r
 never put on a command line. To start a failed run again under a new id, use `al run … --replaces OLD`, or
 **Start again** on its run page (which reuses its recorded request): the new run records that it replaces
 OLD, and OLD leaves the runs that need you. "Start again" of a run that came from an issue restarts from
-the recorded prompt, not from the issue.
+the recorded prompt, not from the issue. A failed batch run (kit workflow `verify-batch`) has neither
+Start again nor Give to an agent, because it is not a request: its next action, on the dashboard and in
+`al runs`, is `al batch LAYER run [--stage S]` or a settlement.
+
+A request can say what it is. When its first line starts with `BUGFIX`, `Bug:`, `[bug]` or `Fix:` the run
+is a `bug`; `Chore:` or `[chore]` makes it a `chore`; `Feature:` or `[feature]` a `feature`. A heading
+counts (`# BUGFIX run for the charts layer`), upper and lower case are the same, and a label on a later
+line does not count; `Fix the login redirect` has no label, because the colon is missing. The run then
+says `class fixed from the request label` in its log and records `class_from` in `state.json`. `--class`
+wins over the label, and a class the workflow does not list is left to the classify step. Without a label
+and without `--class` the classify step decides. Either way the class is fixed before the plan step, and a
+run that has planned is not planned again under another class. To force a class, start the request with
+`al run LAYER /NAME --class bug`, or start a wrongly classed run again with
+`al run LAYER /NAME --replaces OLD --class bug < LAYER/agents/OLD/request.md`. **Start again**, **Give to
+an agent** and the stand-in reuse `request.md` unchanged, so the label is kept; an integration run takes
+the class of the run it integrates.
 
 ## Work with several repositories from the dashboard
 
@@ -1240,11 +1290,38 @@ so an `agentic.rkt` the first attempt wrote is taken when it compiles instead of
 
 ## Talk to the dashboard
 
-A layer that declares `(voice kokoro)` gets a **voice helper** panel on its layer page (`#/layer/NAME`) and
-on the panel of a repository whose layer is watched (`#/repo/NAME`). You speak English, or type; the helper
-answers aloud and in text. Ask it what is running, why a run failed, what can be started; it asks back when
-something is unclear, and when it knows what you want it **proposes** the run as a card: workflow or
-command, request text, class, model tier, repository and what will happen.
+A layer that declares `(voice kokoro)` gets a **voice helper**. It opens from the microphone button in the
+top bar on any page (key `v`), in a dock that stays open while you move between pages (Escape with the
+focus in it, or `v` again, closes it); it is also shown on the layer page (`#/layer/NAME`) and on the panel
+of a repository whose layer is watched (`#/repo/NAME`). You speak English, or type; the helper
+answers aloud and in text. Ask it what is running, what needs you, why a run failed, what can be started.
+When you ask for a change — start a run, resume or stop one, approve, give a run to an agent, settle — it
+holds a short conversation: it asks for what is missing, one question at a time, reads the whole action
+back, and does it only when you say yes.
+
+```text
+You:     start a run
+Helper:  Which workflow or command?              (buttons: plan-build, ship-it, …)
+You:     plan build
+Helper:  What should it do?
+You:     add a search box to the notes page
+Helper:  In layer myapp: Start plan-build: add a search box to the notes page. Plans, builds;
+         a person reviews. Shall I do it?        (buttons: Yes, do it · No · Cancel)
+You:     yes
+Helper:  Done. Started run 3 F A 2: Start plan-build: add a search box to the notes page.
+```
+
+- It never guesses. Two runs that could be meant, an unknown workflow, a missing request or name: each is a
+  question, with the choices as buttons you can also say ("the second one", "run 3 F A 2").
+- **Yes** does it; **no** leaves it. Say it, type it, or use the buttons. An answer it does not
+  understand is asked again, twice; then the action is cancelled. No answer within 45 seconds is a no.
+- **Cancel** or **stop** (or "never mind") ends the conversation at any point with nothing done.
+- **Change …** ("change the request to …", "no, use ship-it") edits the action; it is read back again.
+- The panel shows what it waits for ("Waiting for your answer", "Waiting for yes or no" with the time left)
+  and the transcript marks each question, read-back, decision and result. **Clear transcript** forgets the
+  conversation (and what was proposed in it).
+- In the dock, when several layers have a voice helper and you did not pick the layer yourself (its page, or
+  the dock's picker), the first question is which layer.
 
 Set it up once per machine:
 
@@ -1254,11 +1331,13 @@ al voice ~/code/myapp.al doctor     # files, device, load times and measured spe
 ```
 
 `setup` downloads only the files recorded in `adws/voice/models.json`: the faster-whisper model of
-`#:stt-model` (`base.en`, about 148 MB) into `~/.cache/al/voice/whisper/` and Kokoro's int8 model and voices
-(about 120 MB) into `~/.cache/al/kokoro/` (`$AL_VOICE_CACHE` and `$AL_KOKORO_CACHE` move them). A file whose
-checksum differs is deleted and `setup` fails with both hashes. A second `setup` downloads nothing. After
-that the speech service runs offline: it refuses every connection that is not to this machine, and never
-downloads. Until `setup` has run, the panel says "voice is not set up" and shows the command.
+`#:stt-model` (`base.en`, about 148 MB) into `$XDG_CACHE_HOME/al/voice/whisper/` and Kokoro's int8 model and
+voices (about 120 MB) into `$XDG_CACHE_HOME/al/kokoro/` (default `~/.cache/al/…`; `$AL_VOICE_CACHE` and
+`$AL_KOKORO_CACHE` move them). A file whose checksum differs is deleted and `setup` fails with both hashes. A
+second `setup` downloads nothing. After that the speech service runs offline: it refuses every connection
+that is not to this machine, and never downloads. Until `setup` has run, the panel says "voice is not set up"
+and shows the command. Without Kokoro's files the helper speaks with espeak-ng when it is installed, else not
+at all; `AL_VOICE_TTS=kokoro|espeak|off` chooses, and the panel says which engine spoke.
 
 The panel has two modes, remembered per browser (the layer's `#:listen-mode` is the default):
 
@@ -1267,23 +1346,26 @@ The panel has two modes, remembered per browser (the layer's `#:listen-mode` is 
   pause ends what you said. Speaking while the helper talks stops it (`#:interrupt #f` turns that off);
   Escape stops it too.
 
-What the helper can do: read the runs (status, failing step and its reason, cost, documents), what can be
-started and the queue, and propose a start, a retry, a resume, an answer to a waiting run, a stop, or a
-scout, check or explain job on a repository. What it cannot do: read files, run commands, or start
-anything itself. It thinks with the layer's own agent (`#:helper-agent`, else the first agent; claude-code
+What the helper can do: read the runs (status, failing step and its reason, cost, documents), what needs
+you, what can be started and the queue, and propose a start, a retry, a resume, an answer to a waiting run,
+a stop, Approve & resume of a run that waits for your approval, giving a run to an agent, settling a run, or
+a scout, check or explain job on a repository. Each of these goes through the same server code and checks
+as its button on the page. What it cannot do: read files, run commands, or do anything without your yes. It thinks with the layer's own agent (`#:helper-agent`, else the first agent; claude-code
 runs with every tool turned off, the mock agent answers from `mock/helper.json`) at the tier
 `#:helper-model-set`; each call's cost is written to `agents/voice/helper-calls.jsonl`.
 
-**Nothing starts from speech.** A proposal starts only when you answer *yes* to the sentence the helper
-reads back and then click **Approve** on its card, within two minutes and in the same browser. Saying
-"approve" or "start it" does not start it; a change after your yes makes a new card. `--read-only`,
-`--no-start` and `--no-actions` refuse Approve for the cards they cover (the conversation keeps working,
-and the card says why); in a container the helper is off.
+**Nothing happens without your yes.** A yes counts only while a read-back waits, and only when it is
+nothing but agreement ("yes", "yes please", "ok, do it"): "yes, but …" is a change, and "approve" or
+"start it" is not a yes. The helper never says the word itself, so its own voice cannot agree for you. The
+page then sends the approval to the server, which checks it again: the same browser, the action exactly as
+it was read back, within two minutes, once. `--read-only`, `--no-start` and `--no-actions` refuse the
+actions they cover (the conversation keeps working, and the card says why); in a container the helper is
+off.
 
 Privacy: audio stays in memory and is never sent off the machine. Only when you tick **Keep recordings
 for this conversation** are your utterances written, as WAV files under the layer's
 `agents/voice/<conversation>/`. The transcript is kept under the dashboard's state folder
-(`~/.local/state/al/dashboard-voice`, or `--voice-dir`), never in a repository. `--no-voice` turns the panel
+(`~/.local/state/al/dashboard-voice`, or `--voice-dir`), never in a repository; **Clear transcript** deletes it. `--no-voice` turns the panel
 off.
 
 ## Step 9 — The first real run
@@ -1472,6 +1554,51 @@ A run that goes over a limit stops and hands over like any other stopped run: a 
 request with the reason `budget:run: spent $X of $Y`, and the work so far kept. When today's limit is
 reached, new runs refuse to start (exit code 3).
 
+### The ship-without-review limit
+
+An auto review option (`(review auto …)`) ships a run with no person when every rule of its gate
+holds. One rule is the size of the change: at most `#:max-diff-lines` changed lines. A larger diff
+goes to a person with the reason `diff-too-large:N>LIMIT`, which `al runs` and the dashboard show as
+`diff 2500 lines > limit 2000 (review option zero-touch), 31 files changed`.
+
+`al review LAYER` shows the limit of each auto review option and where it comes from: the layer
+definition, al's default (the definition does not write `#:max-diff-lines`), or a local override:
+
+```console
+$ al review ~/code/myapp.al
+zero-touch: max-diff-lines 2000 (layer definition)
+settings: ~/code/myapp.al/agents/settings/review.json (local to this machine, never committed); applies to every gate from now on
+
+$ al review ~/code/myapp.al --set zero-touch=3000 --who Ada
+zero-touch: max-diff-lines 3000 (local override; declared 2000)
+settings: ~/code/myapp.al/agents/settings/review.json (local to this machine, never committed); applies to every gate from now on
+
+$ al review ~/code/myapp.al --reset zero-touch
+zero-touch: max-diff-lines 2000 (layer definition)
+settings: ~/code/myapp.al/agents/settings/review.json (local to this machine, never committed); applies to every gate from now on
+```
+
+`--set ID=N` takes a whole number from 1 to 50000 and can be given several times; `--reset ID` drops
+one option's override and `--reset` alone all of them (a broken file too). `--who` records a name
+other than your login name, `--json` prints the options as JSON. The override lives in
+`agents/settings/review.json`, with who set it, how and when. It is local to this machine and never
+committed (`al check` reports it as a problem if it is), so `EXPLAIN.md` keeps stating the declared
+limit. It changes this one number: the checks, the review, the allowed classes and the protected
+paths stay as they are. Every gate prints the limit it decides with, `gate: max-diff-lines 3000
+(local override; declared 2000)` or `gate: max-diff-lines 2000 (declared)`, into the run's log. A file
+that cannot be read never raises a limit: the declared value applies and the gate's line says the
+setting was ignored.
+
+A layer whose gate does not read the local limit yet (it was generated before the setting existed)
+refuses the change with `al review: refused: this layer's gate does not read the local limit: run
+`al gen LAYER``, exit code 2, and writes nothing; an override that is there anyway is shown as
+`zero-touch: max-diff-lines 2000 (layer definition; the local override 3000 is not read by this
+layer's gate: run al gen)`. `al runs LAYER` ends with the same lines, prefixed `limit:`, and
+`al explain LAYER` with them under `Ship without review, on this machine`. The dashboard's layer
+page has the same switch: the "Ship without review" card lists every auto review option with what
+it ships by, its limit, its allowed classes and its required checks, each with its source, and
+changes or resets the limit after a confirmation.
+
 ## Step 10 — Hand out work without typing commands
 
 **A task file.** Add lines to `tasks.md` in the layer folder:
@@ -1626,16 +1753,69 @@ approve: after:     resume from prove
 approve: approved vocabulary for run 4ddebf7e; resuming from step prove
 ```
 
-Give either WHAT … or `--all`, not both; `--note TEXT` goes with `--all`. Exit: 0 resumed, 1 refused
-(`al approve: refused (REASON): …`, e.g. `not-waiting` with why nothing is offered, or `running`),
-2 bad use.
+Give either WHAT … or `--all`, not both; `--note TEXT` goes with `--all` or `ship`. Exit: 0 resumed
+(or merged or shipped, below), 1 refused (`al approve: refused (REASON): …`, e.g. `not-waiting` with
+why nothing is offered, or `running`), 2 bad use.
+
+**A gate stop that only needs your yes.** A run can pass its checks and its review and still be handed
+to you by the gate: the diff is larger than the review allows (`diff-too-large:N>M`), its class is not
+one the gate ships (`class-not-allowed:CLASS`), or the ship failed and fell back to a pull request
+(`ship-failed:…`). Nothing is wrong with the work; the gate asked for a person. Under Needs you such
+a row has **Approve & merge** (the target is a stage branch agents may merge into) or **Approve &
+ship** (the run has a pull request, or the target is a branch only a person merges), and **Approve &
+ship all N** takes every shown run of one layer. The confirmation lists exactly what you approve: the
+gate's reasons, the size of the diff and the changed files, the target branch or the pull request,
+and every check with its state. From the command line the one word `ship` does the same (and so does
+`--all`):
+
+```bash
+$ tools/al approve ~/code/myapp.al f4000001 ship --who ana --note agreed
+approve: run f4000001 waits for your approval of 1 item(s):
+approve:   diff-too-large:3148>400: 3148 lines in 1 file(s) → integration; checks: 1 passed
+approve:   target:    integration
+approve:   diff:      3148 lines, 1 file(s)
+approve:     shelf_f4000001.py
+approve:   checks:    test passed
+approve: after:     the run's branch is merged into integration (fast-forward)
+approve: approved by ana: chore/f4000001-ship-fixture is merged into integration (70feac6)
+```
+
+The usage line is the one above (`usage: al approve [-h] [--all] [--note TEXT] [--who NAME] layer RUN
+[WHAT ...]`), with `ship` as WHAT. The approval is recorded in the run's `state.approvals` as
+`ship:<reason>` with who, when, how and the note, and in its events (`approval.granted`, then
+`ship.approved` with what was done). Then the runtime acts, never the dashboard:
+
+- **a merge** only into a stage branch agents may merge into, never into the default branch or the
+  final stage, and fast-forward only, so what lands is exactly the commit the gate judged; the run is
+  settled as landed. When that stage branch is checked out in a working tree, the result goes to
+  `al/ship/STAGE` and the answer names the `git merge --ff-only` to run;
+- **a pull request** the run already has is kept, or one is opened where the forge takes pull
+  requests; the run is settled as shipped to it and listed as landed once git shows it;
+- **anything else** (the default branch, a stage only a person merges into) is settled as shipped by
+  its commit: a person merges the branch.
+
+It is never offered when the review rejected the run, when a check failed, did not run or is stale
+(`checks-not-green`), when the gate also named a protected path (that is Approve & resume, above), for
+a spending limit, a `REQUIRES HUMAN` blocker or a workflow that changes the layer, when someone
+changed the run's branch since the gate judged it (`branch-changed`), or when the stage branch moved
+(`target-moved`: give the run to an agent, or merge it by hand). A refusal says why and records
+nothing:
+
+```bash
+$ tools/al approve ~/code/myapp.al f4000001 ship --who ana
+approve: run f4000001 does not wait for an approval: checks are not all green: test failed
+al approve: refused (checks-not-green): checks are not all green: test failed
+```
+
+A layer generated before this needs `al gen` first (the command says so).
 
 Every approval is recorded with who, when, how (`cli` or `dashboard`) and the note, where the runtime
 already reads it: `state.approvals` of the run, `agents/<run>/assign.json`, the answers of the
 stand-in's decision, or an integration's `approval.json`. An approval of protected paths holds for
 that run only and is marked for the gate; an approval given at the start (`al run --approve`) or
-with `al approve LAYER RUN WHAT` never lowers the gate. Nothing ships because of an approval: the
-resumed run goes on through its checks, its review and the gate.
+with `al approve LAYER RUN WHAT` never lowers the gate. Nothing ships because of an approval, with
+the one exception above (`ship`, which is the yes the gate asked for): the resumed run goes on
+through its checks, its review and the gate.
 
 ## Step 12 — Let small things ship by themselves
 
@@ -1950,7 +2130,9 @@ batch rhythm is declared, with the compiler's words.
 **Batches.** The kit workflow `verify-batch` runs every check at full depth on a stage head or the
 default branch. It starts by itself when a landing makes it due, when a cycle closes, and a
 promotion's checks on a stage head count as that stage's batch; `al batch LAYER run [--stage S]
-[--if-due]` starts one by hand. `al batch LAYER status`:
+[--if-due]` starts one by hand. A batch run that failed is run again the same way, with `al batch LAYER
+run [--stage S]`, or settled (`al settle`); it is never started again as a request or given to an agent,
+and the earlier failed batch run stays under Needs you until you settle it. `al batch LAYER status`:
 
 ```text
 main: no batch yet

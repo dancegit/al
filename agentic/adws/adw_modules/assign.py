@@ -18,7 +18,7 @@ function that says what an agent would do about it; `al assign LAYER RUN` (the l
     a login failure, a time limit, a process    resume       --resume from the step that stopped, unchanged
     that died, a waiting step
     it failed before changing anything          start-again  the same request again; the new run replaces it
-    settled, passed, or under way               none         nothing
+    settled, passed, under way, or a batch run  none         nothing
 
 No second engine: an integration run (a rejected run has no worktree any more, so it continues in
 a new run), `--resume` of the run itself (a failed run keeps its worktree), or launch.start. A
@@ -61,7 +61,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 
-from . import affected, artefacts, decide, events, integrate, ir, models, state as state_module
+from . import affected, artefacts, batch, decide, events, integrate, ir, models, state as state_module
 from .errors import LayerError, StepFailed
 from .integrate import IntegrateError, first_line
 
@@ -581,6 +581,12 @@ def plan(layer: Any, run: str, *, note: str = "", assume: Any = (), settle: bool
     if stopped["status"] not in ("handed-over", "failed", "died", "waiting"):
         return done("none", f"it is {stopped['status'] or 'unknown'}", blocked="not-stopped",
                     why=f"run {run_id} is {stopped['status'] or 'unknown'}: not a stopped run")
+    if batch.is_batch_run(state):       # never a request launch.start can start, and never resumed as one
+        again = batch.rerun_words(state)
+        return done("none", f"a batch run (kit workflow {batch.ADW_NAME}): run the full suites again with "
+                            f"`{again}`, or settle it", blocked="not-stopped",
+                    why=f"run {run_id} is a batch run (kit workflow {batch.ADW_NAME}), not a request an agent "
+                        f"takes: `{again}` runs the full suites again")
 
     source = _source(layer, run_id, found)
     work = _state(layer, source) if source else state
@@ -789,7 +795,9 @@ def plan_lines(found: Mapping[str, Any]) -> list[str]:
             lines.append(f"  {item.get('n')}. {item.get('at')} by {item.get('by')}: {item.get('kind')}"
                          + (f", run {item['run']}" if item.get("run") else "") + f": {item.get('outcome')}"
                          + (f" ({item['why']})" if item.get("why") else ""))
-    limit = f"limit:      {found.get('clicks', 0)} of {MAX_CLICKS} used"
+    clicks = int(found.get("clicks", 0) or 0)
+    limit = (f"limit:      {clicks} of {MAX_CLICKS} used" if clicks <= MAX_CLICKS else
+             f"limit:      {MAX_CLICKS} of {MAX_CLICKS} used, and {clicks - MAX_CLICKS} more by --override")
     if found.get("blocked"):
         limit += f"; not started: {found['blocked']}: {found.get('blocked_why')}"
     lines.append(limit)
@@ -1024,7 +1032,8 @@ def give(layer_dir: Path, run: str, *, note: str = "", by: str = "cli", who: str
 
 def stopped_runs(layer: Any) -> list[str]:
     """Ids of the layer's runs that wait for a person: ended handed over, failed or waiting, or
-    died; not settled, not started again by another run, not an integration or promotion run."""
+    died; not settled, not started again by another run, not an integration or promotion run, and
+    not a batch run (kit workflow verify-batch: `al batch` runs the full suites again)."""
     states: dict[str, dict[str, Any]] = {}
     for path in sorted((Path(layer.layer_dir) / "agents").glob("*/state.json")):
         data = integrate._read_json(path)
@@ -1034,7 +1043,7 @@ def stopped_runs(layer: Any) -> list[str]:
     found = []
     for run_id, data in states.items():
         if (data.get("adw") == integrate.ADW_NAME or data.get("integration") or data.get("promotion")
-                or data.get("fanout_parent") or run_id in replaced):
+                or data.get("fanout_parent") or run_id in replaced or batch.is_batch_run(data)):
             continue
         if (state_module.run_dir(layer.layer_dir, run_id) / integrate.SETTLEMENT_FILE).is_file():
             continue

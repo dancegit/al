@@ -26,8 +26,14 @@ refuses every non-loopback connection with an audit hook (logged to $AL_VOICE_NE
 127.0.0.1, wants `Authorization: Bearer $AL_VOICE_TOKEN` on every request and prints `{"port": N}` as its first
 stdout line. Audio stays in memory unless --record-dir is given.
 
+Speech: $AL_VOICE_TTS = kokoro (the default) | espeak | off. Kokoro falls back to espeak-ng (a system program,
+when it is on PATH), then to off, when its files are missing, fail their checksum or fail to load; only the
+recognition files are needed to start. The cache is $AL_KOKORO_CACHE, else $XDG_CACHE_HOME/al/kokoro (default
+~/.cache/al/kokoro), and $AL_VOICE_CACHE, else $XDG_CACHE_HOME/al/voice, for recognition.
+
     GET  /health                                → {"ready", "loading", "device", "stt_model", "tts_model", "voice",
-                                                   "rtf": {"stt", "tts"}, "missing": [...], "fake"}
+                                                   "rtf": {"stt", "tts"}, "missing": [...], "fake",
+                                                   "tts_engine": "kokoro"|"espeak"|"off"|"fake", "tts_why"}
     POST /transcribe   (audio/wav | audio/L16)  → {"text", "words": [{"w", "start", "end", "p"}], "seconds"}
     POST /listen?stream=ID&speaking=0|1 (L16)   → {"state": "silence"|"speech"|"end", "prob", "barge_in",
                                                    "partial"?, "text"?, "words"?}
@@ -35,8 +41,9 @@ stdout line. Audio stays in memory unless --record-dir is given.
     POST /cancel {"id"}                         → {"cancelled": bool}
 
 A frame is b"ALV1" + u32 header length + header JSON + u32 audio length + WAV bytes (s16le mono); the u32s are
-big-endian (network order). Header: {"seq", "text", "duration", "rate", "envelope", "last"}; a cancelled stream
-ends with {"seq", "cancelled": true, "last": true} and no audio.
+big-endian (network order). Header: {"seq", "engine", "text", "duration", "rate", "envelope", "last"}; a
+cancelled stream ends with {"seq", "cancelled": true, "last": true} and no audio. With speech off the answer
+is one frame {"seq": 0, "engine": "off", "why", "last": true} and no audio.
 
 `--fake` uses standard-library engines (a tone for speech, transcripts from --fake-script
 {"transcripts": [...]}), so the protocol is tested without the speech packages:
@@ -46,6 +53,8 @@ from __future__ import annotations
 
 import argparse
 import array
+import contextlib
+import fcntl
 import hashlib
 import hmac
 import http.server
@@ -60,6 +69,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -128,18 +138,48 @@ def load_manifest(path: str | Path | None = None) -> dict:
     return json.loads(where.read_text())
 
 
+def cache_home() -> Path:
+    """$XDG_CACHE_HOME when it is set and absolute, else ~/.cache."""
+    xdg = os.environ.get("XDG_CACHE_HOME") or ""
+    return Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".cache"
+
+
 def voice_cache() -> Path:
-    return Path(os.environ.get("AL_VOICE_CACHE") or Path.home() / ".cache" / "al" / "voice")
+    """The recognition models: $AL_VOICE_CACHE, else $XDG_CACHE_HOME/al/voice (default ~/.cache/al/voice)."""
+    return Path(os.environ.get("AL_VOICE_CACHE") or cache_home() / "al" / "voice")
 
 
 def kokoro_cache() -> Path:
-    """Kokoro's files live where say.py keeps them: ~/.cache/al/kokoro, or $AL_KOKORO_CACHE (read at each
-    call, as say.CACHE_DIR is fixed when say.py is imported)."""
-    return Path(os.environ.get("AL_KOKORO_CACHE") or Path.home() / ".cache" / "al" / "kokoro")
+    """Kokoro's files, one copy per user shared by the service and say.py: $AL_KOKORO_CACHE, else
+    $XDG_CACHE_HOME/al/kokoro (default ~/.cache/al/kokoro); read at each call."""
+    return Path(os.environ.get("AL_KOKORO_CACHE") or cache_home() / "al" / "kokoro")
+
+
+TTS_ENV = "AL_VOICE_TTS"
+TTS_ENGINES = ("kokoro", "espeak", "off")
+
+
+def tts_setting() -> str:
+    """The speech engine asked for in $AL_VOICE_TTS: kokoro (the default), espeak or off."""
+    value = (os.environ.get(TTS_ENV) or "").strip().lower()
+    if not value:
+        return "kokoro"
+    if value not in TTS_ENGINES:
+        raise ValueError(f"{TTS_ENV} must be kokoro, espeak or off, not '{os.environ.get(TTS_ENV)}'")
+    return value
 
 
 class NotRecorded(ValueError):
     """A speech model that models.json does not record (so it has no checksum)."""
+
+
+def kokoro_paths(manifest: dict) -> list[dict]:
+    """Kokoro's model files: name, path, url, size, sha256, optional."""
+    kokoro = manifest["kokoro"]
+    return [{"name": f"kokoro {name}", "path": kokoro_cache() / name,
+             "url": f"{kokoro['release'].rstrip('/')}/{name}",
+             "size": int(f["bytes"]), "sha256": f["sha256"], "optional": bool(f.get("optional"))}
+            for name, f in kokoro["files"].items()]
 
 
 def cache_paths(manifest: dict, stt_model: str) -> list[dict]:
@@ -155,12 +195,47 @@ def cache_paths(manifest: dict, stt_model: str) -> list[dict]:
         out.append({"name": f"whisper {stt_model}/{name}", "path": voice_cache() / "whisper" / stt_model / name,
                     "url": f"{endpoint}/{entry['repo']}/resolve/{entry['revision']}/{name}",
                     "size": int(f["bytes"]), "sha256": f["sha256"], "optional": bool(f.get("optional"))})
-    kokoro = manifest["kokoro"]
-    for name, f in kokoro["files"].items():
-        out.append({"name": f"kokoro {name}", "path": kokoro_cache() / name,
-                    "url": f"{kokoro['release'].rstrip('/')}/{name}",
-                    "size": int(f["bytes"]), "sha256": f["sha256"], "optional": bool(f.get("optional"))})
-    return out
+    return out + kokoro_paths(manifest)
+
+
+def whisper_rows(rows: list[dict]) -> list[dict]:
+    return [r for r in rows if r["name"].startswith("whisper ")]
+
+
+def kokoro_rows(rows: list[dict]) -> list[dict]:
+    return [r for r in rows if r["name"].startswith("kokoro ")]
+
+
+def choose_tts(setting: str, kokoro_missing: list[str], espeak: str | None,
+               layer: str | Path | None) -> tuple[str, str]:
+    """(engine, why): the engine that will speak for `setting`, and why it is not the one asked for."""
+    if setting == "off":
+        return "off", f"speech is off ({TTS_ENV}=off)"
+    if setting == "espeak":
+        return ("espeak", "") if espeak else ("off", "espeak-ng is not on PATH")
+    if not kokoro_missing:
+        return "kokoro", ""
+    why = f"Kokoro is not available ({'; '.join(kokoro_missing)}): {setup_hint(layer)}"
+    if espeak:
+        return "espeak", why
+    return "off", why + "; espeak-ng is not on PATH either"
+
+
+def pick_synthesizer(engine: str, why: str, load_kokoro: Callable[[], Any],
+                     make_espeak: Callable[[], Any] | None) -> tuple[Any, str, str]:
+    """(synthesizer or None, engine, why): Kokoro when chosen and it loads, else espeak-ng, else off."""
+    if engine == "kokoro":
+        try:
+            return load_kokoro(), "kokoro", why
+        except Exception as exc:  # noqa: BLE001 - ImportError, OSError, onnxruntime's own errors: fall back
+            why = f"Kokoro could not be loaded: {type(exc).__name__}: {exc}"
+            log(why)
+            if make_espeak is None:
+                return None, "off", why
+            return make_espeak(), "espeak", why
+    if engine == "espeak" and make_espeak is not None:
+        return make_espeak(), "espeak", why
+    return None, "off", why or ("espeak-ng is not on PATH" if engine == "espeak" else "")
 
 
 def model_files(manifest: dict, stt_model: str) -> dict:
@@ -220,6 +295,52 @@ def stt_model_of(layer: str | None, stt_model: str | None) -> str:
     return stt_model or str(layer_voice(layer)["sttModel"])
 
 
+# ===== the Kokoro cache: one copy, fetched once
+
+@contextlib.contextmanager
+def cache_lock(directory: Path):
+    """An exclusive lock on <directory>/.lock while a caller fetches into it (setup, say.py)."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    with open(directory / ".lock", "a") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+class FetchError(RuntimeError):
+    """Kokoro's model could not be fetched or did not match its checksum."""
+
+
+def fetch_kokoro(manifest: dict, download: Callable[[str, Path], None], out=None) -> None:
+    """Fetch every required Kokoro file that is absent or wrong into kokoro_cache(), under its lock, and check
+    its sha256 (the optional fp32 model is never fetched); FetchError names the file and what to do."""
+    out = out or sys.stderr
+    cache = kokoro_cache()
+    advice = f"the cache is {cache}; set AL_KOKORO_CACHE to keep it elsewhere"
+    with cache_lock(cache):
+        for p in kokoro_paths(manifest):
+            if p["optional"]:
+                continue
+            path = Path(p["path"])
+            if verify([p])[0]["ok"]:
+                print(f"  {p['name']:<40} {human_size(p['size']):>9}  already there, checksum ok", file=out, flush=True)
+                continue
+            path.unlink(missing_ok=True)
+            print(f"  {p['name']:<40} {human_size(p['size']):>9}  downloading {p['url']}", file=out, flush=True)
+            try:
+                download(p["url"], path)
+            except (SystemExit, OSError) as exc:
+                raise FetchError(f"{path.name}: could not download {p['url']}: {exc}; {advice}") from exc
+            actual = sha256_file(path) if path.is_file() else "(no file)"
+            if actual != p["sha256"]:
+                path.unlink(missing_ok=True)
+                raise FetchError(f"{path.name}: checksum mismatch, the file was removed (from {p['url']})\n"
+                                 f"  expected sha256 {p['sha256']}\n  got      sha256 {actual}\n  {advice}")
+
+
 # ===== setup
 
 def setup(layer: str | None, out=None, stt_model: str | None = None) -> int:
@@ -235,29 +356,30 @@ def setup(layer: str | None, out=None, stt_model: str | None = None) -> int:
         return 2
     from say import download
     total = fetched = 0
-    for p, row in zip(paths, verify(paths)):
-        if row["ok"] and row["bytes"] is None:      # optional and absent: never downloaded
-            continue
-        if row["ok"]:
-            say(f"  {p['name']:<40} {human_size(p['size']):>9}  already there, checksum ok")
-            total += p["size"]
-            continue
-        path = Path(p["path"])
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            path.unlink()                            # wrong size or checksum: fetch again from the start
-        say(f"  {p['name']:<40} {human_size(p['size']):>9}  downloading {p['url']}")
-        download(p["url"], path)
-        actual = sha256_file(path)
-        if actual != p["sha256"]:
-            path.unlink(missing_ok=True)
-            print(f"voice setup: {p['name']}: checksum mismatch, the file was removed\n"
-                  f"  expected sha256 {p['sha256']}\n  got      sha256 {actual}", file=sys.stderr)
-            return 1
-        size = path.stat().st_size
-        say(f"  {p['name']:<40} {human_size(size):>9}  downloaded, checksum ok")
-        total += size
-        fetched += size
+    with cache_lock(kokoro_cache()):                 # say.py fetches into the same cache under the same lock
+        for p, row in zip(paths, verify(paths)):
+            if row["ok"] and row["bytes"] is None:      # optional and absent: never downloaded
+                continue
+            if row["ok"]:
+                say(f"  {p['name']:<40} {human_size(p['size']):>9}  already there, checksum ok")
+                total += p["size"]
+                continue
+            path = Path(p["path"])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                path.unlink()                            # wrong size or checksum: fetch again from the start
+            say(f"  {p['name']:<40} {human_size(p['size']):>9}  downloading {p['url']}")
+            download(p["url"], path)
+            actual = sha256_file(path)
+            if actual != p["sha256"]:
+                path.unlink(missing_ok=True)
+                print(f"voice setup: {p['name']}: checksum mismatch, the file was removed\n"
+                      f"  expected sha256 {p['sha256']}\n  got      sha256 {actual}", file=sys.stderr)
+                return 1
+            size = path.stat().st_size
+            say(f"  {p['name']:<40} {human_size(size):>9}  downloaded, checksum ok")
+            total += size
+            fetched += size
     say(f"voice setup: {human_size(total)} of speech models in {voice_cache()} and {kokoro_cache()} "
         f"({human_size(fetched)} downloaded now)")
     say("nothing will be downloaded again; the service runs offline")
@@ -586,6 +708,30 @@ class KokoroSynthesizer:
         return samples, int(rate)
 
 
+class EspeakSynthesizer:
+    """espeak-ng, a local system program: the fallback when Kokoro is not there. The text goes on stdin (never
+    on argv, so it cannot be read as an option) and the WAV to a temporary file (its --stdout WAV may carry a
+    bogus length). Kokoro's voice id is ignored: espeak-ng has its own voices."""
+
+    model = "espeak-ng"
+
+    def __init__(self, program: str) -> None:
+        self.program = program
+
+    def synth(self, text: str, voice: str = "", speed: float = 1.0, lang: str = "en-us") -> tuple[list[float], int]:
+        words_per_minute = int(175 * speed + 0.5)       # half up: 1.5 × 175 = 262.5 → 263
+        with tempfile.TemporaryDirectory(prefix="al-espeak-") as tmp:
+            out = Path(tmp) / "say.wav"
+            subprocess.run([self.program, "-v", lang or "en-us", "-s", str(words_per_minute), "-w", str(out),
+                            "--stdin"], input=text, text=True, capture_output=True, timeout=60, check=True)
+            pcm, rate = read_wav(out.read_bytes())
+        return pcm_to_floats(pcm), rate
+
+
+def espeak_program() -> str | None:
+    return shutil.which("espeak-ng")
+
+
 class SileroDetector:
     """faster-whisper's bundled Silero VAD (v6). Its __call__ scores each 512-sample window with the 64 samples
     before it as context, so the previous window is passed along and the last score taken."""
@@ -606,7 +752,7 @@ class SileroDetector:
 
 
 class Engines:
-    """The three engines of a service, loaded once."""
+    """The three engines of a service, loaded once. `synthesizer` is None when speech is off."""
 
     def __init__(self, recognizer, synthesizer, new_detector: Callable[[], Any], fake: bool) -> None:
         self.recognizer = recognizer
@@ -615,19 +761,21 @@ class Engines:
         self.fake = fake
 
 
-def fake_engines(script: str | Path | None) -> Engines:
-    return Engines(FakeRecognizer(script), FakeSynthesizer(), FakeDetector, fake=True)
+def fake_engines(script: str | Path | None, speech: bool = True) -> Engines:
+    return Engines(FakeRecognizer(script), FakeSynthesizer() if speech else None, FakeDetector, fake=True)
 
 
-def real_engines(files: dict, device: str, threads: int) -> Engines:
+def real_engines(files: dict, device: str, threads: int, synthesizer: Any) -> Engines:
+    """The recogniser and the detector, loaded now, with the synthesizer chosen by pick_synthesizer."""
     recognizer = WhisperRecognizer(files["whisper"], device, threads)
-    synthesizer = KokoroSynthesizer(files["kokoro"], files["voices"], threads)
     SileroDetector()                                 # loads the model now, not at the first /listen
     return Engines(recognizer, synthesizer, SileroDetector, fake=False)
 
 
 def measure(engines: Engines, voice: dict, sentence: str = WARMUP_SENTENCE) -> dict:
     """Speak `sentence`, recognise it: {"tts", "stt"} real-time factors, the transcript, the WAV."""
+    if engines.synthesizer is None:                   # speech is off: nothing to measure
+        return {"tts": None, "stt": None, "text": "", "seconds": 0.0, "wav": b""}
     t0 = time.monotonic()
     samples, rate = engines.synthesizer.synth(sentence, voice["ttsVoice"], float(voice["ttsSpeed"]) / 100,
                                               voice["ttsLang"])
@@ -778,7 +926,8 @@ class ServiceServer(http.server.ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, port: int, token: str, voice: dict, *, fake: bool = False, record_dir: Path | None = None,
-                 stt_model: str = "base.en", tts_model: str = "", missing: list[str] | None = None) -> None:
+                 stt_model: str = "base.en", tts_model: str = "", missing: list[str] | None = None,
+                 tts_engine: str = "", tts_why: str = "") -> None:
         super().__init__(("127.0.0.1", port), Handler)
         self.token = token
         self.voice = voice
@@ -786,6 +935,8 @@ class ServiceServer(http.server.ThreadingHTTPServer):
         self.record_dir = record_dir
         self.stt_model = stt_model
         self.tts_model = tts_model
+        self.tts_engine = tts_engine
+        self.tts_why = tts_why
         self.engines: Engines | None = None
         self.loading = True
         self.error = ""
@@ -815,7 +966,8 @@ class ServiceServer(http.server.ThreadingHTTPServer):
             measured = measure(engines, self.voice, MEASURE_TEXT)
         self.rtf = {"stt": measured["stt"], "tts": measured["tts"]}
         self.device = getattr(engines.recognizer, "device", "cpu")
-        self.tts_model = getattr(engines.synthesizer, "model", self.tts_model)
+        if engines.synthesizer is not None:
+            self.tts_model = getattr(engines.synthesizer, "model", self.tts_model)
         self.engines = engines
         self.loading = False
 
@@ -859,7 +1011,7 @@ class ServiceServer(http.server.ThreadingHTTPServer):
         out = {"ready": self.engines is not None and not self.error, "loading": self.loading,
                "device": self.device, "stt_model": self.stt_model, "tts_model": self.tts_model,
                "voice": self.voice.get("ttsVoice"), "rtf": dict(self.rtf), "missing": list(self.missing),
-               "fake": self.fake}
+               "fake": self.fake, "tts_engine": self.tts_engine, "tts_why": self.tts_why}
         if self.error:
             out["error"] = self.error
         return out
@@ -1038,6 +1190,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             speed = float(voice["ttsSpeed"]) / 100
         speed = min(2.0, max(0.5, speed))
+        engine = self.server.tts_engine
+        if self.server.engines is None or self.server.engines.synthesizer is None:   # speech is off
+            self.send_response(200)
+            self.send_header("Content-Type", FRAME_TYPE)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            try:
+                self._chunk(encode_frame({"seq": 0, "engine": "off", "why": self.server.tts_why, "last": True}))
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+            return
         cancel = threading.Event()
         with self.server.lock:
             self.server.speaking[sid] = cancel
@@ -1088,12 +1254,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     break
                 seq, sentence, samples, rate = item
                 if isinstance(samples, Exception):
-                    self._chunk(encode_frame({"seq": seq, "error": str(samples), "last": True}))
+                    self._chunk(encode_frame({"seq": seq, "engine": engine, "error": str(samples), "last": True}))
                     seq = len(sentences)
                     break
                 pcm = floats_to_pcm(samples)
                 duration = len(pcm) / 2 / rate
-                header = {"seq": seq, "text": sentence, "duration": round(duration, 3), "rate": rate,
+                header = {"seq": seq, "engine": engine, "text": sentence, "duration": round(duration, 3), "rate": rate,
                           "envelope": envelope(samples, rate), "last": seq == len(sentences) - 1}
                 self._chunk(encode_frame(header, wav_bytes(pcm, rate)))
                 started = time.monotonic() if started is None else started
@@ -1121,10 +1287,18 @@ def serve(args: argparse.Namespace) -> int:
         return 2
     voice = layer_voice(args.layer)
     record_dir = Path(args.record_dir).resolve() if args.record_dir else None
+    try:
+        setting = tts_setting()
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}), flush=True)
+        print(f"voice serve: {exc}", file=sys.stderr)
+        return 1
     if args.fake:
+        engine = "off" if setting == "off" else "fake"
+        why = f"speech is off ({TTS_ENV}=off)" if engine == "off" else ""
         server = ServiceServer(args.port, token, voice, fake=True, record_dir=record_dir,
-                               stt_model="fake", tts_model="fake")
-        server.load(lambda: fake_engines(args.fake_script))
+                               stt_model="fake", tts_model="fake", tts_engine=engine, tts_why=why)
+        server.load(lambda: fake_engines(args.fake_script, speech=engine != "off"))
     else:
         install_network_guard()
         manifest = load_manifest()
@@ -1135,22 +1309,39 @@ def serve(args: argparse.Namespace) -> int:
             print(json.dumps({"error": str(exc)}), flush=True)
             print(f"voice serve: {exc}", file=sys.stderr)
             return 1
-        missing = missing_files(verify(paths, checksum=False))
+        sized = verify(paths, checksum=False)
+        missing = missing_files(whisper_rows(sized))     # only recognition is needed; Kokoro has a fallback
         if missing:
             sentence = f"voice is not set up: {setup_hint(args.layer)}"
             print(json.dumps({"error": sentence, "missing": missing}), flush=True)
             print(f"voice serve: {sentence}\n  missing: " + "\n  missing: ".join(missing), file=sys.stderr)
             return 1
+        prog = espeak_program()
+        engine, why = choose_tts(setting, missing_files(kokoro_rows(sized)), prog, args.layer)
         files = model_files(manifest, model)
         server = ServiceServer(args.port, token, voice, record_dir=record_dir, stt_model=model,
-                               tts_model=files["kokoro"].name)
+                               tts_model=files["kokoro"].name if engine == "kokoro" else engine,
+                               tts_engine=engine, tts_why=why)
+        if why:
+            log(f"speech: {engine} ({why})")
 
         def loader() -> Engines:
-            bad = missing_files(verify(paths, checksum=True))
+            bad = missing_files(verify(whisper_rows(paths), checksum=True))
             if bad:
                 server.missing = bad
                 raise RuntimeError(f"voice is not set up: {setup_hint(args.layer)}")
-            return real_engines(files, str(voice["sttDevice"]), args.threads)
+            chosen, reason = engine, why
+            if chosen == "kokoro":
+                kokoro_bad = missing_files(verify(kokoro_rows(paths), checksum=True))
+                if kokoro_bad:
+                    chosen, reason = choose_tts(setting, kokoro_bad, prog, args.layer)
+            synthesizer, chosen, reason = pick_synthesizer(
+                chosen, reason, lambda: KokoroSynthesizer(files["kokoro"], files["voices"], args.threads),
+                (lambda: EspeakSynthesizer(prog)) if prog else None)
+            server.tts_engine, server.tts_why = chosen, reason
+            if chosen != "kokoro":
+                server.tts_model = chosen
+            return real_engines(files, str(voice["sttDevice"]), args.threads, synthesizer)
 
         threading.Thread(target=server.load, args=(loader,), daemon=True).start()
     print(json.dumps({"port": server.server_address[1]}), flush=True)

@@ -4,8 +4,8 @@ stage, switching to heavy (the local setting is written); a run page's depth lin
 Depth column with the accounting and the "Full before it ships" button; the "broke the batch" banner of
 the culprit with its batch and fix runs; the start form's testing choice. Skipped without Playwright or
 Chrome (nothing is downloaded). With AL_DASHBOARD_SHOTS=<directory> it saves testing-panel-1280.png,
-testing-heavy-1280.png, run-targeted-accounting-1280.png, batch-failed-1280.png and
-start-testing-1280.png there. Everything on the page is synthetic."""
+testing-heavy-1280.png, run-targeted-accounting-1280.png, batch-failed-1280.png,
+batch-run-next-action-1280.png and start-testing-1280.png there. Everything on the page is synthetic."""
 from __future__ import annotations
 
 import json
@@ -122,6 +122,37 @@ def test_failed_batch_shows_culprit_and_fix_run(tpage):
     until(page, "location.hash === '#/run/tested/7e5700b1'")
     assert json.loads((site["layer"] / tf.FIX_FILE).read_text().splitlines()[-1]) == ["run", "--detach", "--json",
                                                                                     "--stage", "sprint"]
+
+
+def test_failed_batch_run_has_no_start_again_or_give_button(tpage):
+    """A failed batch run (kit workflow verify-batch) is not a request: no Start again and no Give to
+    an agent, on its page and in its Needs-you row; Settle stays, and the next action names `al batch`."""
+    page, site = tpage
+    other = "7e5700e1"                                            # an ordinary failed run beside it: it keeps both buttons
+    tf.write_run(site["layer"], other, prompt="Round the cart total", start=330, status="failed")
+    command = "al batch LAYER run --stage sprint"
+    open_(page, f"/run/{tf.NAME}/{tf.BATCH}")
+    page.wait_for_selector("button.settle-go")
+    assert page.locator("button.start-again").count() == 0
+    assert page.locator("button.assign-open").count() == 0
+    assert page.locator("button.settle-go").is_enabled()
+    assert command in page.locator(".settle-reason").inner_text()
+    assert "al gen" not in page.evaluate("document.body.innerText"), "no disabled Give to an agent with its hint"
+    shot(page, "batch-run-next-action-1280.png")
+
+    open_(page, f"/run/{tf.NAME}/{other}")
+    page.wait_for_selector("button.settle-go")
+    assert page.locator("button.start-again").count() == 1 and page.locator("button.assign-open").count() == 1
+
+    open_(page, f"/runs?layer={tf.NAME}&view=needs-you")
+    page.wait_for_selector(f"tr[data-key='{tf.NAME}/{tf.BATCH}'] td.next")
+    page.wait_for_selector(f"tr[data-key='{tf.NAME}/{other}'] button.assign-open")
+    row = page.locator(f"tr[data-key='{tf.NAME}/{tf.BATCH}']")
+    assert f"run the full suites again: `{command}`, or `al settle`" in row.locator("td.next").inner_text()
+    assert row.locator("button.assign-open").count() == 0
+    assert "Start again" not in row.inner_text() and "Give to an agent" not in row.inner_text()
+    # "Give all N to agents" counts the ordinary run only
+    assert page.locator("button.assign-all").inner_text() == "Give all 1 to agents"
 
 
 def test_start_form_testing_choice(tpage):

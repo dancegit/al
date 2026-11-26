@@ -8,14 +8,17 @@ whether a handed-over run's work is on its target branch (git, never a fetch), a
 every run in a bucket. --forge also asks the layer's forge whether a run's pull request is merged,
 through the layer's own runtime (adw_modules/forge.py); without it no network is used.
 
-`al settle` writes agents/<id>/settlement.json and removes the run's worktree (trees/<id>; the branch,
+`al settle` writes agents/<id>/settlement.json (--as shipped: shipped to a pull request or a branch,
+not merged yet; --by is the pull request's URL or the commit, and the run is listed as landed once
+git shows it) and removes the run's worktree (trees/<id>; the branch,
 agents/<id> and artefacts/<id> stay): exit 0 written, 2 bad use, 3 refused (the run is running, or --by
 names neither a run nor a commit), 4 no such run. A worktree that cannot be removed is said, not an error.
 
 `al runs LAYER prune --landed --older-than DAYS [--dry-run]` removes what finished runs leave behind,
 for runs in the landed or settled bucket that ended more than DAYS ago: the worktree, the podman
 container (only with podman on PATH) and the local branch. It never deletes the target branch, a
-stage branch, the default branch or a branch checked out in another worktree, and it keeps
+stage branch, the default branch, a branch checked out in another worktree or the branch of a run
+settled as shipped that has not landed (the head of its pull request), and it keeps
 agents/<id> and artefacts/<id>; what it removed is noted in the run's settlement under "pruned".
 """
 from __future__ import annotations
@@ -128,6 +131,13 @@ def why(row: dict[str, Any]) -> str:
 def next_action(layer_dir: Path, row: dict[str, Any]) -> str:
     """The next action, as a command where there is one."""
     layer_dir = SHOWN or layer_dir
+    # a batch run (kit workflow verify-batch) is not a request: `al batch` runs the full suites again, and
+    # it is never given to an agent (the dashboard's attention() words it; no `al assign`)
+    acts_on = row.get("acts_on") if isinstance(row.get("acts_on"), dict) else {}
+    if acts_on.get("kind") == "batch" and str(row.get("next") or "").startswith("run the full suites again"):
+        stage = str(acts_on.get("stage") or "")
+        return (f"al batch {layer_dir} run" + (f" --stage {stage}" if stage else "")
+                + f"; or: al settle {layer_dir} {row['id']} --as …")
     # the dashboard's words for `al assign` (alone when the row has no other next action)
     nxt = str(row.get("next") or "").removesuffix(", or Give to an agent").removesuffix("Give to an agent")
     # every run that needs you can be given to an agent: al assign shows the plan first (--preview)
@@ -187,6 +197,8 @@ def list_runs(layer_dir: Path, view: str = "needs-you", as_json: bool = False, f
                   f"< {shown_dir}/agents/ID/request.md")
             continue
         print(format_row(row, layer_dir))
+    for line in kit().review_policy_lines(layer.review_policy_view()):   # the ship-without-review limits, on this machine
+        print(f"limit: {line}")
     return 0
 
 
@@ -277,6 +289,8 @@ def prune(layer_dir: Path, older_than_days: float, dry_run: bool = False) -> int
             continue
         if (row.get("settled") or {}).get("pruned"):
             continue
+        if (row.get("settled") or {}).get("as") == "shipped" and row.get("bucket") != "landed":
+            continue                                   # its branch is the head of a pull request not merged yet
         did: dict[str, Any] = {"at": d.utc_stamp(), "branch": "", "tip": "", "worktree": "", "container": ""}
         lines: list[str] = []
         tree = layer.path / worktree_dir(layer) / row["id"]

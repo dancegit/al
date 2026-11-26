@@ -270,6 +270,32 @@ def running(layer: Any, branch: str) -> str:
     return ""
 
 
+def _read(state: Any, key: str) -> Any:
+    return state.get(key) if isinstance(state, Mapping) else getattr(state, key, None)
+
+
+def is_batch_run(state: Any) -> bool:
+    """True when `state` (a mapping, or an object with the same attributes) is the state of a batch
+    run: a run of the kit workflow `verify-batch`. It is started by `al batch LAYER run`, a landed
+    run, a closed cycle or the dashboard, never as a request, so it is never started again or
+    resumed as one. Reads only the state."""
+    definition = _read(state, "definition")
+    return (_read(state, "adw") == ADW_NAME
+            or (isinstance(definition, dict) and isinstance(definition.get("batch"), dict)))
+
+
+def rerun_words(state: Any, layer: str = "LAYER") -> str:
+    """The command that runs the full suites of a batch run's branch again: `al batch LAYER run`,
+    with ` --stage S` for a stage's batch (`definition.batch.stage`, else `state.batch.stage`).
+    Reads only the state."""
+    definition = _read(state, "definition")
+    stage = ""
+    for found in (definition.get("batch") if isinstance(definition, dict) else None, _read(state, "batch")):
+        if not stage and isinstance(found, dict):
+            stage = str(found.get("stage") or "")
+    return f"al batch {layer} run" + (f" --stage {stage}" if stage else "")
+
+
 def _cycle_closed_since(layer: Any, branch: str, since: str) -> bool:
     try:
         cycle = delivery.load_cycle(layer) or {}

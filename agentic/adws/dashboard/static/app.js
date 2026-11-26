@@ -345,7 +345,7 @@
     if (run.usage && run.usage.stopped) return limitBadge(run);
     if (run.budget && run.budget.stopped) return budgetBadge(run);
     if (run.status === "handed-over") {
-      return h("span", { class: "badge handed-over", title: (o.handover || []).join(", "), text: "handed to a person" });
+      return h("span", { class: "badge handed-over", title: handoverText(o), text: "handed to a person" });
     }
     if (o.ship === "merge" && o.shipped) return h("span", { class: "badge good", text: "merged" });
     if (o.ship === "deploy" && o.shipped) return h("span", { class: "badge good", text: "deployed" });
@@ -489,6 +489,103 @@
       batches.length ? h("div", { class: "testing-batches" }, h("h4", { text: "Batches" }), batches) : null);
   }
 
+  const reviewLimitTyped = new Map();   // "layer/option" -> the limit typed on the card, not applied yet
+  const reviewPolicyNotes = new Map();  // layer key -> {text, error}: the last answer, kept when the page reloads
+
+  /** The handover reasons of a run in words: a stop for size reads "diff N lines > limit M (review option ID),
+   * F files changed" (outcome.size_stop) instead of diff-too-large:N>M. */
+  function handoverText(outcome) {
+    const o = outcome || {};
+    return (o.handover || []).map((r) => (o.size_stop && /^diff-too-large:/.test(r) ? o.size_stop.text : r)).join(", ");
+  }
+
+  /** The Layer page's "Ship without review" card: each auto review option with what it ships by, its diff limit,
+   * its allowed classes and its required checks, where each value comes from, and a form that overrides the
+   * limit on this machine (the local setting agents/settings/review.json) after a confirmation. */
+  function reviewPolicyPanel(layer, reload) {
+    const view = layer.review_policy;
+    if (!view || !(view.options || []).length) return null;
+    const key = layer.key;
+    const last = reviewPolicyNotes.get(key);
+    const note = h("span", { class: `review-policy-note faint${last && last.error ? " error" : ""}`, role: "status", text: last ? last.text : "" });
+    const show = (text, error) => {
+      reviewPolicyNotes.set(key, { text, error });
+      for (const n of new Set([note, ...document.querySelectorAll(".review-policy .review-policy-note")])) { n.textContent = text; n.classList.toggle("error", error); }
+    };
+    const sourced = (value, source) => [h("span", { class: "value", text: value }), h("span", { class: "source faint", text: source })];
+    const list = (items) => ((items || []).length ? items.join(", ") : "none");
+    const rows = view.options.map((o) => {
+      const m = o.maxDiffLines;
+      const typedKey = `${key}/${o.id}`;
+      const input = h("input", { type: "number", class: "limit-input", min: String(view.min), max: String(view.max), step: "1",
+        value: reviewLimitTyped.has(typedKey) ? reviewLimitTyped.get(typedKey) : String(m.value), "aria-label": `max diff lines of ${o.id}`,
+        disabled: !view.writable });
+      const who = h("input", { type: "text", class: "limit-who", placeholder: "your name", maxlength: "80", "aria-label": "your name",
+        value: localStorage.getItem("al.settle.who") || "", disabled: !view.writable });
+      const apply = h("button", { type: "button", class: "btn primary limit-apply", text: "Apply" });
+      const typed = () => (/^\d+$/.test(input.value.trim()) ? Number(input.value.trim()) : NaN);
+      const mark = () => {
+        const n = typed();
+        apply.disabled = !view.writable || !(n >= view.min && n <= view.max) || n === m.value || !who.value.trim();
+      };
+      input.addEventListener("input", () => { reviewLimitTyped.set(typedKey, input.value); mark(); });
+      who.addEventListener("input", mark);
+      mark();
+      const send = async (body, button, saved) => {
+        button.disabled = true;
+        try {
+          await api.post("/api/review-limit", { layer: key, option: o.id, ...body });
+          reviewLimitTyped.delete(typedKey);
+          show(saved, false);
+          reload();
+        } catch (err) {
+          show(String(err.message || err), true);
+          button.disabled = false;
+        }
+      };
+      apply.addEventListener("click", async () => {
+        const n = typed();
+        const yes = await confirmDialog(`Change the ship-without-review limit of ${o.id}?`,
+          `Runs of this layer reviewed by ${o.id} will ship without a person up to ${n} changed lines (declared: ${m.declared}). `
+          + "It applies on this machine to every gate from now on, until you reset it. The checks, the review and the other rules stay as they are.",
+          `Set to ${n}`);
+        if (!yes) return;
+        localStorage.setItem("al.settle.who", who.value.trim());
+        send({ limit: n, who: who.value.trim() }, apply, "saved; applies to every gate from now on");
+      });
+      const reset = m.local !== null && m.local !== undefined ? h("button", { type: "button", class: "btn limit-reset", text: "Reset",
+        disabled: !view.writable, title: "drop the local override: the declared limit applies again" }) : null;
+      if (reset) {
+        reset.addEventListener("click", async () => {
+          const yes = await confirmDialog(`Reset the limit of ${o.id}?`, `The declared limit ${m.declared} applies again.`, "Reset");
+          if (yes) send({ reset: true }, reset, "reset: the declared limit applies again");
+        });
+      }
+      const set = m.set || {};
+      const source = m.source === "local override"
+        ? `local override${set.who ? ` by ${set.who}` : ""}${set.at ? `, ${isoWhen(set.at)}` : ""}; declared ${m.declared} (${m.declared_source})`
+        : m.source;
+      return h("tr", { dataset: { option: o.id } },
+        h("td", { class: "mono", text: o.id }),
+        h("td", {}, sourced(o.ship.value, o.ship.source)),
+        h("td", { class: "limit-cell" },
+          h("div", {}, h("b", { class: "limit-value num", text: String(m.value) }), " ", h("span", { class: "limit-source source faint", text: source })),
+          m.ignored ? h("div", {}, h("span", { class: "badge warn limit-ignored", text: `local override ${m.local} not read by this layer's gate` })) : null,
+          h("div", { class: "limit-form" }, input, who, apply, reset)),
+        h("td", {}, sourced(list(o.allowedClasses.value), o.allowedClasses.source)),
+        h("td", {}, sourced(list(o.requireChecks.value), o.requireChecks.source)));
+    });
+    return h("div", { class: "card review-policy", dataset: { layer: key } },
+      h("div", { class: "card-head" }, h("h3", { text: "Ship without review" }),
+        h("span", { class: "dim", text: "a run of these review options ships with no person when every rule holds; a larger diff goes to a person" }),
+        h("span", { class: "spacer" }), note),
+      h("div", { class: "table-wrap" }, h("table", { class: "review-policy-options" },
+        h("thead", {}, h("tr", {}, ["review option", "ships by", "max diff lines", "allowed classes", "required checks"].map((label) => h("th", { text: label })))),
+        h("tbody", {}, rows))),
+      !view.writable && view.why ? h("div", { class: "why", text: view.why }) : null,
+      view.error ? h("div", { class: "why error", text: view.error }) : null);
+  }
+
   async function api(path) {
     const response = await fetch(path, { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error(`${response.status} ${path}`);
@@ -523,24 +620,136 @@
     return !!(voice && window.alVoice && (voice.panel || voice.available));
   }
 
-  /** The voice panel of a page: mounts once per (layer, repository) and survives the page's re-renders. */
-  function voiceSlot() {
+  const pageVoiceSlots = new Set();   // the in-page slots (layer page, repository panel): refreshed when the dock opens or closes
+
+  /** The voice panel of a page: mounts once per (layer, repository) and survives the page's re-renders.
+   * A page slot (not `docked`) stands back while the voice dock is open, so one panel is live (and holds
+   * the microphone) at a time; `refresh()` shows again what was last asked for. */
+  function voiceSlot(docked = false) {
     const host = h("div", { class: "voice-host" });
-    let mounted = null, mountedKey = "";
-    return {
+    let mounted = null, mountedKey = "", last = null;
+    const slot = {
       host,
-      show(voice, layerKey, repoKey) {
-        const wanted = voiceShown(voice) ? `${layerKey}|${repoKey || ""}` : "";
+      show(voice, layerKey, repoKey, sure) {
+        last = [voice, layerKey, repoKey, sure];
+        const wanted = (!docked && voiceDock.isOpen()) ? "" : voiceShown(voice) ? `${layerKey}|${repoKey || ""}` : "";
         if (wanted === mountedKey) return;
         if (mounted) mounted.destroy();
         mounted = null;
         mountedKey = wanted;
         clear(host);
-        if (wanted) mounted = window.alVoice.panel(host, { layer: layerKey, repo: repoKey || "" });
+        if (wanted) mounted = window.alVoice.panel(host, { layer: layerKey, repo: repoKey || "", sure });
       },
-      destroy() { if (mounted) mounted.destroy(); mounted = null; mountedKey = ""; },
+      refresh() { if (last) slot.show(...last); },
+      destroy() { if (mounted) mounted.destroy(); mounted = null; mountedKey = ""; last = null; pageVoiceSlots.delete(slot); },
     };
+    if (!docked) pageVoiceSlots.add(slot);
+    return slot;
   }
+
+  /** The voice helper in a dock, reachable from the top bar's microphone button on every page (key `v`).
+   * The dock is not part of a view, so it survives navigation; it opens the layer's conversation with no
+   * repository (the one the layer page uses), and tells the panel whether the person chose that layer. While it is open the page slots stand back: one live panel. */
+  const voiceDock = (() => {
+    const LAYER_KEY = "al.voice.layer";
+    const button = document.getElementById("voice-button");
+    const dock = document.getElementById("voice-dock");
+    const slot = voiceSlot(true);
+    let open = false, chosen = "", listed = "", shown = false;
+    let sure = false;                    // did the person choose the layer (its page, or the picker), or did the dock?
+
+    // voice.js loads after this file: window.alVoice is read here, at event time, never at load
+    function layers() { return window.alVoice ? store.layers.filter((l) => l.voice && l.voice.declared) : []; }
+
+    function pick(list) {
+      const has = (key) => !!key && list.some((l) => l.key === key);
+      const route = parseRoute();
+      const onPage = (route.view === "layer" || route.view === "run") ? route.parts[1] : "";
+      sure = has(onPage);
+      if (sure) return onPage;
+      let stored = "";
+      try { stored = localStorage.getItem(LAYER_KEY) || ""; } catch (_error) { stored = ""; }
+      if (has(stored)) return stored;
+      const first = list.find((l) => voiceShown(l.voice)) || list[0];
+      return first ? first.key : "";
+    }
+
+    function render() {
+      const list = layers();
+      if (!list.some((l) => l.key === chosen)) chosen = pick(list);
+      const layer = list.find((l) => l.key === chosen);
+      if (!layer) return;
+      let chooser;
+      if (list.length > 1) {
+        chooser = h("select", { class: "voice-dock-layer", "aria-label": "Layer" },
+          list.map((l) => h("option", { value: l.key, text: l.key, selected: l.key === chosen })));
+        chooser.value = chosen;
+        chooser.addEventListener("change", () => {
+          chosen = chooser.value;
+          sure = true;
+          try { localStorage.setItem(LAYER_KEY, chosen); } catch (_error) { /* private mode: not remembered */ }
+          render();
+          const again = dock.querySelector(".voice-dock-layer");
+          if (again) again.focus();
+        });
+      } else {
+        chooser = h("span", { class: "mono dim", text: chosen });
+      }
+      const head = h("div", { class: "voice-dock-head" }, h("h3", { text: "Voice helper" }), chooser, h("span", { class: "spacer" }),
+        h("button", { type: "button", class: "toggle voice-dock-close", "aria-label": "Close the voice helper", text: "close  esc", onclick: () => close() }));
+      shown = voiceShown(layer.voice);
+      let body;
+      if (shown) {
+        slot.show(layer.voice, chosen, "", () => sure);   // the helper asks "which layer" when the dock picked it
+        body = slot.host;                // re-attached, not rebuilt: the mounted panel keeps its conversation
+      } else {
+        slot.show(null);
+        body = h("div", { class: "voice-dock-off", role: "status", text: layer.voice.off || layer.voice.why || "voice is off for this layer" });
+      }
+      replace(dock, head, body);
+      dock.dataset.layer = chosen;
+      listed = list.map((l) => l.key).join("|");
+    }
+
+    function openDock() {
+      const list = layers();
+      if (open || !list.length) return;
+      open = true;                       // before the page slots are refreshed: they stand back
+      chosen = pick(list);
+      render();
+      dock.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      for (const s of [...pageVoiceSlots]) s.refresh();
+      const target = dock.querySelector(".voice-talk:not(:disabled)") || dock.querySelector(".voice-dock-layer") || dock.querySelector(".voice-dock-close");
+      if (target) target.focus();
+    }
+
+    function close() {
+      if (!open) return;
+      const inside = dock.contains(document.activeElement);
+      slot.destroy();                    // stops playback and closes the microphone
+      clear(slot.host);
+      clear(dock);
+      dock.hidden = true;
+      delete dock.dataset.layer;
+      open = false;
+      chosen = "";
+      button.setAttribute("aria-expanded", "false");
+      for (const s of [...pageVoiceSlots]) s.refresh();
+      if (inside) button.focus();
+    }
+
+    function sync() {
+      const list = layers();
+      button.hidden = !list.length;
+      if (!open) return;
+      const layer = list.find((l) => l.key === chosen);
+      if (!layer) { close(); return; }
+      if (list.map((l) => l.key).join("|") !== listed || voiceShown(layer.voice) !== shown) render();
+    }
+
+    return { isOpen: () => open, open: openDock, close, toggle: () => (open ? close() : openDock()), sync, el: dock, button };
+  })();
 
   const modelNotes = new Map();   // layer key -> {text, error}: the last answer, kept when the block is rebuilt
 
@@ -1980,6 +2189,16 @@
     return run.reason || "";
   }
 
+  /** settledText as nodes: a settlement whose `by` is an http(s) URL (a shipped run's pull request) links it. */
+  function settledNodes(run) {
+    const text = settledText(run);
+    const by = run.settled && typeof run.settled.by === "string" ? run.settled.by : "";
+    const at = by && isHttpUrl(by) ? text.indexOf(by) : -1;
+    if (at < 0) return [text];
+    return [text.slice(0, at), h("a", { href: by, target: "_blank", rel: "noopener", text: by, onclick: (e) => e.stopPropagation() }),
+      text.slice(at + by.length)];
+  }
+
   /** Start each failed run of `runs` again (POST /api/start {again}), one after the other; `report`
    * gets one line per run. The request key again-<id> starts one run however often it is sent. */
   async function startAgain(runs, report) {
@@ -2040,7 +2259,7 @@
     const bucketOf = (r) => r.bucket || (r.status === "running" || r.status === "unknown" ? "running" : "done");
     const inView = (r) => (params.view === "all" || bucketOf(r) === params.view)
       && !(params.view === "needs-you" && params.sug === "1" && !r.suggestion)
-      && !(params.view === "needs-you" && params.appr === "1" && !approvalOf(r));
+      && !(params.view === "needs-you" && params.appr === "1" && !(approvalOf(r) || shipApprovalOf(r)));
 
     function filtered(all) {
       const q = params.q.toLowerCase();
@@ -2080,7 +2299,7 @@
           title: "runs the stand-in has a proposal for", "aria-pressed": params.sug === "1" ? "true" : "false",
           onclick: () => { params.sug = params.sug === "1" ? "" : "1"; update(); } }, "with a suggestion ", h("span", { class: "num", text: `(${suggested})` })));
       }
-      const approvable = every.filter((r) => approvalOf(r)).length;
+      const approvable = every.filter((r) => approvalOf(r) || shipApprovalOf(r)).length;
       if (params.view === "needs-you" && (approvable || params.appr === "1")) {
         chips.appendChild(h("button", { type: "button", class: `chip appr${params.appr === "1" ? " active" : ""}`, dataset: { view: "approval" },
           title: "runs that only wait for your approval: approve and they go on from where they stopped",
@@ -2150,11 +2369,27 @@
         h("td", { class: "next" }, toggle, again));
     }
 
-    /** "Give all N to agents": N = the shown needs-you runs whose layer has adws/assign.py; one layer at a time.
-     * Beside it the layer's Automatic switch (layer.assign_auto of the snapshot), with what the loop did under it. */
+    /** "Give all N to agents": N = the shown needs-you rows that can be given to an agent (their layer has
+     * adws/assign.py), walked as render() walks them: a failure group counts as one item, its newest shown
+     * run, and its other runs stay under Needs you. The same items are what the dialog lists and starts;
+     * one layer at a time. Beside it the layer's Automatic switch (layer.assign_auto of the snapshot), with
+     * what the loop did under it. */
     function renderGiveAll(runs, needs) {
-      const mine = needs ? runs.filter((r) => r.assign && r.assign.script) : [];
-      const layers = [...new Set(mine.map((r) => r.layer))];
+      const items = [];
+      const seen = new Set();
+      for (const r of needs ? runs : []) {
+        if (!(r.assign && r.assign.script)) continue;
+        if (r.group && r.group.count > 1) {
+          if (seen.has(r.group.id)) continue;
+          seen.add(r.group.id);
+          const members = runs.filter((m) => m.group && m.group.id === r.group.id && m.assign && m.assign.script);
+          const newest = members.reduce((a, b) => ((b.started || 0) > (a.started || 0) ? b : a));
+          items.push({ run: newest, group: r.group, members });
+        } else {
+          items.push({ run: r, group: null, members: [r] });
+        }
+      }
+      const layers = [...new Set(items.map((i) => i.run.layer))];
       const several = layers.length > 1;
       const key = several ? "" : layers[0] || oneLayer(runs);
       const auto = needs ? (several ? layers.map((l) => (store.layer(l) || {}).assign_auto).find((a) => a && a.available)
@@ -2197,13 +2432,13 @@
           }
         }
       }
-      if (!mine.length) { replace(giveAll, parts); return; }
-      const button = h("button", { type: "button", class: "btn integrate assign-all", text: `Give all ${mine.length} to agents`,
+      if (!items.length) { replace(giveAll, parts); return; }
+      const button = h("button", { type: "button", class: "btn integrate assign-all", text: `Give all ${items.length} to agents`,
         disabled: layers.length !== 1,
         title: layers.length !== 1 ? "runs of several layers are shown: choose one layer in the filter first"
           : "see what an agent would do for each run, in the order they start; nothing starts until you confirm",
         onclick: async () => {
-          const results = await assignAllDialog(layers[0]);
+          const results = await assignAllDialog(layers[0], items);
           if (!results) return;
           showReport([{ ok: true, text: `Give all to agents (${layers[0]}):` }, ...results.map((r) => ({ ok: r.status !== "error",
             text: r.status === "started" ? `${r.run} → ${r.run_id && r.run_id !== r.run ? r.run_id : "resumed in place"} (${r.kind})` : `${r.run}: ${r.status}${r.why ? `: ${r.why}` : ""}` }))]);
@@ -2214,9 +2449,25 @@
     /** "Approve & resume all N": N = the shown needs-you runs that only wait for an approval; one layer at a time. */
     function renderApproveAll(runs, needs) {
       const mine = needs ? runs.filter((r) => approvalOf(r)) : [];
-      if (!mine.length) { replace(approveAll); return; }
+      const ships = needs ? runs.filter((r) => shipApprovalOf(r)) : [];
+      if (!mine.length && !ships.length) { replace(approveAll); return; }
       const layers = [...new Set(mine.map((r) => r.layer))];
-      const button = h("button", { type: "button", class: "btn approve-resume-all", text: `Approve & resume all ${mine.length}`,
+      const shipLayers = [...new Set(ships.map((r) => r.layer))];
+      // "Approve & ship all N": the shown runs whose gate only asked for a person's yes; one layer at a time
+      const shipButton = ships.length ? h("button", { type: "button", class: "btn approve-ship-all", text: `Approve & ship all ${ships.length}`,
+        disabled: shipLayers.length !== 1,
+        title: shipLayers.length !== 1 ? "runs of several layers are shown: choose one layer in the filter first"
+          : "see what you approve for each run; nothing is recorded until you confirm",
+        onclick: async () => {
+          const answer = await approveShipDialog(shipLayers[0], ships.map((r) => ({ run: r.id, title: r.title || r.problem || "", approval: shipApprovalOf(r) })));
+          if (!answer) return;
+          const results = answer.results || [{ run: ships[0].id, status: answer.status, message: answer.message }];
+          const ok = (r) => r.status === "merged" || r.status === "shipped";
+          showReport([{ ok: true, text: `Approve & ship (${shipLayers[0]}):` }, ...results.map((r) => ({ ok: ok(r),
+            text: ok(r) ? `${r.run} → ${r.message || r.status}` : `${r.run}: refused${r.reason ? ` (${r.reason})` : ""}: ${r.message || ""}` }))]);
+          render();
+        } }) : null;
+      const button = !mine.length ? null : h("button", { type: "button", class: "btn approve-resume-all", text: `Approve & resume all ${mine.length}`,
         disabled: layers.length !== 1,
         title: layers.length !== 1 ? "runs of several layers are shown: choose one layer in the filter first"
           : "see what you approve for each run; nothing is recorded until you confirm",
@@ -2227,13 +2478,30 @@
           showReport([{ ok: true, text: `Approve & resume (${layers[0]}):` }, ...results.map((r) => ({ ok: r.status === "resumed",
             text: r.status === "resumed" ? `${r.run} → ${r.message || "resumed"}` : `${r.run}: refused${r.reason ? ` (${r.reason})` : ""}: ${r.message || ""}` }))]);
         } });
-      replace(approveAll, button, h("span", { class: "faint", text: " what you approve is listed first" }));
+      replace(approveAll, button, button && shipButton ? " " : null, shipButton, h("span", { class: "faint", text: " what you approve is listed first" }));
     }
 
     /** The row's Approve & resume: the button, what it approves, and what the last one answered. */
     function approveCell(run) {
       const approval = approvalOf(run);
       const result = h("span", { class: "approve-result" }, approveResultNodes(approveResults.get(run.key)));
+      const shipping = shipApprovalOf(run);
+      if (shipping) {                                    // a gate stop that only needs a yes: Approve & merge / Approve & ship
+        const ship = shipping.ship;
+        const shipButton = h("button", { type: "button", class: "btn primary approve-ship", text: ship.label || "Approve & ship", dataset: { way: ship.way || "" },
+          title: "the checks and the review passed and the gate asked for a person: see exactly what you approve first",
+          onclick: async (event) => {
+            event.stopPropagation();
+            const answer = await approveShipDialog(run.layer, [{ run: run.id, title: run.title || run.problem || "", approval: shipping }]);
+            if (!answer) return;
+            approveResults.set(run.key, { text: answer.message || answer.status || "approved", url: "", at: Date.now() });
+            showReport([{ ok: true, text: `${run.id}: ${answer.message || answer.status || "approved"}` }]);
+            render();
+          } });
+        return h("div", { class: "approve-cell" }, shipButton,
+          h("span", { class: "approve-items", title: (shipping.items || []).map((item) => item.text).join("\n") },
+            (ship.reasons || []).join(", "), " · ", shipSize(ship), " → ", shipTarget(ship)), result);
+      }
       if (!approval) return approveResults.has(run.key) ? h("div", { class: "approve-cell" }, result) : null;
       const button = h("button", { type: "button", class: "btn primary approve-resume", text: "Approve & resume",
         title: "approve what this run waits for; it goes on from where it stopped, and nothing ships without the checks, the review and the gate",
@@ -2266,7 +2534,7 @@
       }
       const bucket = bucketOf(run);
       const why = bucket === "landed" ? h("span", { class: "landing", text: landedText(run) })
-        : bucket === "settled" ? h("span", { class: "landing settled", text: settledText(run) }) : null;
+        : bucket === "settled" ? h("span", { class: "landing settled" }, settledNodes(run)) : null;
       return h("tr", { "data-key": run.key, "data-bucket": bucket, class: run.key === selectedKey ? "selected" : "", onclick: open },
         ...base, h("td", { text: run.klass }),
         h("td", { class: "title-cell", title: run.prompt, text: run.title || run.problem || "" }), h("td", {}, progress(run.steps)),
@@ -2455,7 +2723,7 @@
   const settleForm = new Map();   // run key -> {as, by, note}: kept while the card is rebuilt
 
   /** The settle card of a finished run nobody settled yet: a person records that it needs nothing more
-   * (landed, superseded or abandoned, with an optional run or commit and a note); POST /api/settle
+   * (landed, superseded, abandoned or shipped, with a run, a commit or a pull request's URL and a note); POST /api/settle
    * writes agents/<id>/settlement.json and nothing else. */
   function settleCard(detail, layerKey, reload) {
     const sm = detail.summary;
@@ -2463,9 +2731,10 @@
     settleForm.set(sm.key, form);
     const note = h("div", { class: "settle-note", role: "status" });
     const as = h("select", { class: "settle-as", "aria-label": "settle as", onchange: () => { form.as = as.value; } },
-      ["landed", "superseded", "abandoned"].map((v) => h("option", { value: v, text: v, selected: form.as === v })));
-    const by = h("input", { type: "text", class: "settle-by mono", placeholder: "by run or commit (optional)", maxlength: 40, value: form.by,
-      "aria-label": "by run or commit", oninput: () => { form.by = by.value; } });
+      ["landed", "superseded", "abandoned", "shipped"].map((v) => h("option", { value: v, text: v, selected: form.as === v })));
+    const by = h("input", { type: "text", class: "settle-by mono", placeholder: "by run or commit; shipped: the pull request URL", maxlength: 300, value: form.by,
+      "aria-label": "by run, commit or pull request URL", title: "shipped: the pull request's URL or the commit; it is listed as landed once git shows it",
+      oninput: () => { form.by = by.value; } });
     const why = h("textarea", { class: "settle-note-text", placeholder: "note (optional)", maxlength: 500, rows: 2, "aria-label": "note",
       oninput: () => { form.note = why.value; } });
     why.value = form.note;
@@ -2502,7 +2771,9 @@
       return b;
     };
     const canGive = !!(sm.assign && sm.assign.script);
-    const resolve = sm.bucket === "needs-you"
+    // a batch run (kit workflow verify-batch) is never given to an agent: no button, and no `al gen` hint
+    const batchRun = !!(sm.acts_on && sm.acts_on.kind === "batch");
+    const resolve = sm.bucket === "needs-you" && !batchRun
       ? h("button", { type: "button", class: "btn primary integrate assign-open", text: "Give to an agent", disabled: !canGive,
         title: canGive ? "an agent takes this run from where it stopped; you see the plan first, and nothing ships without the checks, the review and the gate"
           : "run `al gen` to add adws/assign.py",
@@ -2756,7 +3027,7 @@
           a.run ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(a.run)}`, text: a.run }) : "no run",
           ` · ${a.outcome || "?"}${a.why ? `: ${a.why}` : ""}`))) : ""],
         ["limit", h("span", { class: `assign-limit${limited ? " reached" : ""}`,
-          text: `given to an agent ${p.clicks || 0} of 2 times${limited ? `: ${p.blocked_why || "the limit is reached"}` : ""}` })],
+          text: `given to an agent ${givenCount(p.clicks, " times")}${limited ? `: ${p.blocked_why || "the limit is reached"}` : ""}` })],
         ["note", startable ? text : ""],
         ["override", limited ? h("label", { class: "assign-override-label" }, override, " give it once more (override)") : ""],
       ]), h("div", { class: "buttons" }, startable ? start : null,
@@ -2774,7 +3045,36 @@
   // `approval`, read from agents/<id>/approvable.json). One dialog and one endpoint for the row button,
   // "Approve & resume all N", the run page's banner and the proof-plan box's Approve button.
   const approveResults = new Map();   // run key -> {text, url, at}: what the last approve & resume answered
-  const approvalOf = (run) => (run && run.bucket === "needs-you" && run.approval ? run.approval : null);
+  // An approval of kind `ship` (a gate stop that only needs a yes) has its own buttons, dialog and endpoint.
+  const isShipApproval = (approval) => !!(approval && approval.kind === "ship" && approval.ship);
+  const approvalOf = (run) => (run && run.bucket === "needs-you" && run.approval && !isShipApproval(run.approval) ? run.approval : null);
+  const shipApprovalOf = (run) => (run && run.bucket === "needs-you" && isShipApproval(run.approval) ? run.approval : null);
+  const isHttpUrl = (text) => /^https?:\/\//.test(String(text || ""));
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const shipSize = (ship) => `${ship.diff_lines} lines, ${plural(ship.files_total, "file")}`;
+  /** Where an approved run goes: its pull request (a link only for an http(s) URL), else the target branch. */
+  function shipTarget(ship) {
+    return isHttpUrl(ship.pr_url)
+      ? h("a", { class: "approve-ship-target", href: ship.pr_url, target: "_blank", rel: "noopener", text: ship.pr_url, onclick: (e) => e.stopPropagation() })
+      : h("span", { class: "mono approve-ship-target", text: ship.target || "?" });
+  }
+  /** Exactly what a ship approval approves: the gate's reasons, the diff size and files, the target or the
+   * pull request, every check with its state, and what happens after. Text only. */
+  function shipFacts(approval) {
+    const ship = approval.ship;
+    const files = ship.files || [];
+    const more = (ship.files_total || 0) - files.length;
+    return h("div", { class: "approve-ship-facts" },
+      h("ul", { class: "approve-ship-reasons" }, (ship.reasons || []).map((reason) => h("li", { class: "mono", text: reason }))),
+      h("div", { class: "approve-ship-size" }, `${ship.diff_lines} lines in ${plural(ship.files_total, "file")}`),
+      files.length ? h("div", { class: "mono dim approve-ship-files" }, files.join("\n"), more > 0 ? `\nand ${more} more` : "") : null,
+      h("div", { class: "approve-ship-to" }, ship.way === "merge" ? "merges into " : isHttpUrl(ship.pr_url) ? "pull request " : "for ", shipTarget(ship),
+        ship.commit ? h("span", { class: "mono dim", text: ` (${String(ship.commit).slice(0, 7)})` }) : null),
+      h("ul", { class: "approve-ship-checks" }, (ship.checks || []).map((check) => h("li", { dataset: { state: check.state || "" } },
+        h("span", { class: "mono", text: check.name }), check.phase === "gate" ? h("span", { class: "dim", text: " (gate)" }) : null,
+        " ", h("span", { class: "approve-ship-check-state", text: check.state })))),
+      approval.after ? h("div", { class: "dim approve-after", text: `after: ${approval.after}` }) : null);
+  }
   function itemsLine(approval) {
     const text = ((approval && approval.items) || []).map((item) => item.text || item.id).join("; ");
     return text.length > 140 ? `${text.slice(0, 139)}…` : text;
@@ -2851,10 +3151,76 @@
     });
   }
 
-  /** "Give all N to agents" of the Needs-you view: the plans of one layer's runs in the order they would
-   * start (GET /api/assign/bulk), then Start N (POST /api/assign {action: "bulk"} with that preview's
-   * nonce). Resolves with the answer's results, or null when the person cancelled. */
-  function assignAllDialog(layerKey) {
+  /** The confirmation of Approve & ship / Approve & merge for one run or several of one layer (`entries`:
+   * [{run, title, approval}], approvals of kind ship): per run the gate's reasons, the diff size and files,
+   * the target or the pull request, every check and what happens after; the person's name (remembered) and
+   * an optional note. Confirm posts /api/approve-ship and resolves with the answer (one run: {status,
+   * message, run_id, url}; several: {approved, results}); null when cancelled. */
+  function approveShipDialog(layerKey, entries) {
+    return new Promise((resolve) => {
+      const overlay = document.getElementById("overlay");
+      let done = false;
+      let watch = null;
+      const finish = (answer) => {
+        if (done) return;
+        done = true;
+        if (watch) watch.disconnect();
+        overlay.hidden = true;
+        clear(overlay);
+        overlay.onclick = null;
+        resolve(answer);
+      };
+      const single = entries.length === 1;
+      const label = single ? (entries[0].approval.ship.label || "Approve & ship") : `Approve & ship ${entries.length} runs`;
+      const who = h("input", { type: "text", class: "approve-who", placeholder: "your name", maxlength: 80, "aria-label": "your name",
+        value: localStorage.getItem("al.approve.who") || localStorage.getItem("al.settle.who") || "" });
+      const noteText = h("input", { type: "text", class: "approve-note-text", placeholder: "a note, kept with the approval (optional)",
+        maxlength: 500, "aria-label": "a note (optional)" });
+      const note = h("div", { class: "assign-note", role: "status" });
+      const cancel = h("button", { class: "btn confirm-cancel", type: "button", text: "Cancel", onclick: () => finish(null) });
+      const go = h("button", { class: "btn primary approve-ship-go", type: "button", text: label, disabled: !who.value.trim() });
+      who.oninput = () => { go.disabled = !who.value.trim(); };
+      go.onclick = async () => {
+        const name = who.value.trim();
+        if (!name) return;
+        go.disabled = true;
+        localStorage.setItem("al.approve.who", name);
+        const one = (entry) => ({ run: entry.run, token: entry.approval.token });
+        const body = single ? { layer: layerKey, ...one(entries[0]), who: name, note: noteText.value.trim() }
+          : { layer: layerKey, runs: entries.map(one), who: name, note: noteText.value.trim() };
+        try {
+          finish(await api.post("/api/approve-ship", body));
+        } catch (error) {
+          if (!single && error.data && Array.isArray(error.data.results)) { finish(error.data); return; }
+          replace(note, h("span", { class: "badge warn", text: error.message }));
+          go.disabled = false;
+        }
+      };
+      const title = single ? `${label}: run ${entries[0].run}` : `Approve & ship ${entries.length} runs of ${layerKey}`;
+      const list = h("ol", { class: "approve-resume-list approve-ship-list" }, entries.map((entry) => h("li", { dataset: { run: entry.run } },
+        h("span", { class: "mono", text: entry.run }), " ", h("span", { class: "dim", text: entry.title || "" }),
+        single ? null : h("span", { class: "badge", text: entry.approval.ship.label || "Approve & ship" }),
+        shipFacts(entry.approval))));
+      replace(overlay, h("div", { class: "panel start-confirm approve-resume-dialog approve-ship-dialog", role: "dialog", "aria-modal": "true", "aria-label": title,
+        dataset: { role: "approve-ship-dialog" }, onclick: (e) => e.stopPropagation() },
+        h("h3", { text: title }),
+        h("p", { class: "confirm-message", text: "The checks and the review passed; the gate asked for a person, and this is that yes. You approve exactly what is listed; it is recorded with your name, the time and your note. A merge is fast-forward only and never into the default branch; everything else is settled as shipped, and a person or the forge merges it." }),
+        h("div", { class: "approve-resume-scroll" }, list),
+        h("div", { class: "approve-resume-fields" }, who, noteText), note,
+        h("div", { class: "confirm-buttons" }, cancel, go)));
+      overlay.hidden = false;
+      overlay.onclick = () => finish(null);
+      watch = new MutationObserver(() => { if (overlay.hidden) finish(null); });
+      watch.observe(overlay, { attributes: true, attributeFilter: ["hidden"] });
+      (who.value.trim() ? go : who).focus();
+    });
+  }
+
+  /** "Give all N to agents" of the Needs-you view: the plans of the shown items of one layer in the order
+   * they would start (GET /api/assign/bulk?runs=, each item's run; a failure group's item is its newest
+   * run), then Start N (POST /api/assign {action: "bulk"} with that preview's nonce and the same runs).
+   * Resolves with the answer's results, or null when the person cancelled. */
+  function assignAllDialog(layerKey, items) {
     return new Promise((resolve) => {
       const overlay = document.getElementById("overlay");
       let done = false;
@@ -2883,19 +3249,29 @@
       watch = new MutationObserver(() => { if (overlay.hidden) finish(null); });
       watch.observe(overlay, { attributes: true, attributeFilter: ["hidden"] });
       cancel.focus();
-      api(`/api/assign/bulk?layer=${enc(layerKey)}`).then((p) => {
+      const ids = items.map((i) => i.run.id);
+      const groupOf = new Map(items.filter((i) => i.group).map((i) => [i.run.id, i]));
+      const groupLine = (run) => {
+        const item = groupOf.get(run);
+        if (!item) return null;
+        const others = item.members.filter((m) => m.id !== run).map((m) => m.id).join(" ");
+        return h("div", { class: "assign-group dim",
+          text: `newest of ${item.members.length} runs failing at ${item.group.step} the same way; the others (${others}) stay under Needs you` });
+      };
+      api(`/api/assign/bulk?layer=${enc(layerKey)}&runs=${ids.map(enc).join(",")}`).then((p) => {
         if (done) return;
         replace(list, h("ol", { class: "assign-bulk-plans" }, (p.plans || []).map((plan) => h("li", { class: plan.skip ? "skipped" : "", dataset: { run: plan.run } },
           h("span", { class: "mono", text: plan.run }), " ", h("span", { class: "dim", text: plan.title || "" }),
-          h("div", { class: plan.skip ? "skip dim" : "summary", text: plan.skip ? `skipped: ${plan.skip}` : plan.summary || plan.kind }))))
-          , !(p.plans || []).length ? h("div", { class: "dim", text: "no run of this layer needs you" }) : null);
+          h("div", { class: plan.skip ? "skip dim" : "summary", text: plan.skip ? `skipped: ${plan.skip}` : plan.summary || plan.kind }),
+          groupLine(plan.run))))
+          , !(p.plans || []).length ? h("div", { class: "dim", text: "none of the shown runs can be given" }) : null);
         go.textContent = `Start ${p.startable || 0}`;
         go.disabled = !(p.start && p.start.enabled && p.nonce && p.startable);
         if (p.start && !p.start.enabled) replace(note, h("span", { class: "faint", text: p.start.why }));
         go.onclick = async () => {
           go.disabled = true;
           try {
-            const answer = await api.post("/api/assign", { layer: layerKey, action: "bulk", confirm: p.nonce });
+            const answer = await api.post("/api/assign", { layer: layerKey, action: "bulk", confirm: p.nonce, runs: ids });
             finish(answer.results || []);
           } catch (error) {
             replace(note, h("span", { class: "badge warn", text: error.message }));
@@ -2929,20 +3305,28 @@
       h("div", { class: "settle-fields" }, who, h("div", { class: "buttons" }, button, note)));
   }
 
+  /** "1 of 2" up to the limit of two; above it "2 of 2, and 1 more by override" (never "3 of 2"). */
+  function givenCount(clicks, unit = "") {
+    const n = clicks || 0;
+    return n <= 2 ? `${n} of 2${unit}` : `2 of 2${unit}, and ${n - 2} more by override`;
+  }
+
   /** The Status block's "given to an agent": "1 of 2; last: stopped", with a link to the last attempt's run. */
   function givenFact(sm, layerKey) {
     const given = sm.assign || {}, attempts = given.attempts || [];
     if (!attempts.length) return "";
     const last = attempts[attempts.length - 1];
-    return h("span", { class: "assign-fact" }, `${given.clicks || 0} of 2; last: ${last.outcome || "?"}`,
+    return h("span", { class: "assign-fact" }, `${givenCount(given.clicks)}; last: ${last.outcome || "?"}`,
       last.run && last.run !== sm.id ? " (" : null,
       last.run && last.run !== sm.id ? h("a", { class: "mono", href: `#/run/${enc(layerKey)}/${enc(last.run)}`, text: last.run }) : null,
       last.run && last.run !== sm.id ? ")" : null, last.why ? `: ${last.why}` : "");
   }
 
-  /** "Start again" for a failed or died run nothing replaces yet: the same request, recorded as replacing it. */
+  /** "Start again" for a failed or died run nothing replaces yet: the same request, recorded as replacing it.
+   *  Not for a batch run (kit workflow verify-batch): `al batch` is its entry point, it is not a request. */
   function startAgainButton(summary) {
     if (!(summary.status === "failed" || summary.status === "died") || summary.replaced_by || summary.integrates) return null;
+    if (summary.acts_on && summary.acts_on.kind === "batch") return null;
     const button = h("button", { type: "button", class: "btn start-again", text: "Start again", title: "start this request again; the new run records that it replaces this one" });
     const send = async (extra) => {
       button.disabled = true;
@@ -2999,7 +3383,11 @@
         return;
       }
       if (gone) return;
-      const text = JSON.stringify(fresh);
+      // the layer's ship-without-review limits are part of what a run stopped for size shows ("limit now …")
+      // (only such a run: any other keeps its nodes when the layers arrive after its first render)
+      const stopped = ((fresh.summary || {}).outcome || {}).size_stop;
+      const limits = !stopped ? [] : (((store.layer(layerKey) || {}).review_policy || {}).options || []).map((o) => [o.id, o.maxDiffLines.value, o.maxDiffLines.source]);
+      const text = JSON.stringify(fresh) + JSON.stringify(limits);
       if (text !== shown) {        // an unchanged detail keeps its nodes (hover, focus, selection)
         detail = fresh;
         shown = text;
@@ -3036,7 +3424,7 @@
             h("span", { class: "badge", text: sm.layer }), sm.klass ? h("span", { class: "badge", text: `class ${sm.klass}` }) : null,
             sm.dry_run ? h("span", { class: "badge", text: "dry run (mock agent)" }) : null, hostBadge(sm), outcomeBadge(sm),
             sm.status === "handed-over" && (sm.outcome.handover || []).length
-              ? h("span", { class: "badge handed-over", title: "why a person decides", text: `↪ ${sm.outcome.handover.join(", ")}` }) : null,
+              ? h("span", { class: "badge handed-over", title: "why a person decides", text: `↪ ${handoverText(sm.outcome)}` }) : null,
             promotionBadge(sm), brokeBatchBadge(sm),
             sm.fanout_parent ? h("a", { class: "badge info", href: `#/run/${enc(layerKey)}/${enc(sm.fanout_parent)}`,
               text: sm.fanout && sm.fanout.index ? `candidate ${sm.fanout.index} of ${sm.fanout_parent}${sm.fanout.step ? ` (${sm.fanout.step})` : ""}` : `candidate of ${sm.fanout_parent}` }) : null,
@@ -3051,7 +3439,7 @@
             sm.bucket === "landed" && sm.landed_by ? h("a", { class: "badge good landing landed-by", href: `#/run/${enc(layerKey)}/${enc(sm.landed_by)}`,
               title: "the integration run that brought it onto its target", text: landedText(sm) })
               : sm.bucket === "landed" ? h("span", { class: "badge good landing", text: landedText(sm) }) : null,
-            sm.bucket === "settled" ? h("span", { class: "badge settled", text: settledText(sm) }) : null,
+            sm.bucket === "settled" ? h("span", { class: "badge settled" }, settledNodes(sm)) : null,
             sm.integrates ? h("a", { class: "badge info integrates acts-on", href: `#/run/${enc(layerKey)}/${enc(sm.integrates)}`, text: `integrates ${sm.integrates}` }) : null,
             sm.acts_on && sm.acts_on.kind === "promotion" ? h("a", { class: "badge info acts-on", href: `#/layer/${enc(layerKey)}`,
               title: "the promotion's row on the layer's page", text: `promotes ${sm.acts_on.from} → ${sm.acts_on.to}` }) : null,
@@ -3151,9 +3539,26 @@
           (broke.failing || []).length ? h("div", {}, "Failing: ", h("span", { class: "mono", text: broke.failing.join(", ") })) : null,
           h("div", {}, broke.fix_run ? ["Fix run: ", run(broke.fix_run)] : "No fix run was opened (the layer's #:on-batch-failure has no open-fix).")));
       }
+      const shipping = shipApprovalOf(sm);
+      if (shipping) {
+        // first on the page: the checks and the review passed, and the gate asked for this person's yes
+        const result = h("div", { class: "approve-result", role: "status" });
+        const button = h("button", { type: "button", class: "btn primary approve-ship", text: shipping.ship.label || "Approve & ship",
+          dataset: { way: shipping.ship.way || "" }, onclick: async () => {
+            const answer = await approveShipDialog(layerKey, [{ run: sm.id, title: sm.title || "", approval: shipping }]);
+            if (!answer) return;
+            approveResults.set(sm.key, { text: answer.message || answer.status || "approved", url: "", at: Date.now() });
+            replace(result, approveResultNodes(approveResults.get(sm.key)));
+            button.disabled = true;
+            load();
+          } });
+        body.insertBefore(h("div", { class: "card approve-banner", role: "status", dataset: { role: "approve-banner" } },
+          h("div", { class: "card-head" }, h("h3", { text: "This run waits for your approval to ship" }), h("span", { class: "badge", text: "ship" })),
+          shipFacts(shipping), h("div", { class: "approve-row" }, button, " ", result)), body.firstChild);
+      }
       const approval = approvalOf(sm);
       const approved = approveResults.get(sm.key);
-      if (approval || (approved && Date.now() - approved.at < 120000)) {
+      if (!shipping && (approval || (approved && Date.now() - approved.at < 120000))) {
         // first on the page: the run waits only for this person's approval (or was just approved here)
         const result = h("div", { class: "approve-result", role: "status" }, approveResultNodes(approved));
         const banner = h("div", { class: `card approve-banner${approval ? "" : " done"}`, role: "status", dataset: { role: "approve-banner" } });
@@ -3395,12 +3800,19 @@
       if (detail.gate || (detail.ship && detail.ship.action)) {
         const gate = detail.gate || {}, ship = detail.ship || {};
         const url = ship.url || (ship.pr && ship.pr.url) || "";
+        // a stop for size, in words, and the limit as it is now (it may have been changed since)
+        const stop = (detail.summary.outcome || {}).size_stop;
+        const policy = ((store.layer(layerKey) || {}).review_policy || {}).options || [];
+        const nowLimit = stop ? (policy.find((o) => o.id === stop.option) || {}).maxDiffLines : null;
+        const size = stop ? h("span", {}, h("span", { class: "size-stop", text: stop.text }),
+          nowLimit ? [" ", h("span", { class: "faint size-now", text: `limit now ${nowLimit.value} (${nowLimit.source})` })] : null) : "";
         blocks.push(h("div", { class: "outcome-block" }, h("div", { class: "card-head" }, h("h3", { text: "Gate and ship" }),
           gate.action ? h("span", { class: `badge ${gate.ship ? "good" : (gate.reasons || []).every((r) => /^review-(human|agent):/.test(r)) ? "info" : "warn"}`,
             text: gate.ship ? `gate: ${gate.action}` : "gate: a human decides" }) : null),
           kv([["action", ship.action], ["shipped", ship.shipped === undefined ? "" : String(ship.shipped)], ["target", ship.target],
             ["pull request", /^https?:\/\//.test(url) ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: url }) : ""],
             ["commit", ship.commit ? h("span", { class: "mono", text: String(ship.commit).slice(0, 12) }) : ""],
+            ["size", size],
             ["gate reasons", gate.reasons && gate.reasons.length ? h("ul", { class: "issues" }, gate.reasons.map((r) => h("li", { class: /^review-(human|agent):/.test(r) ? "" : "sev-blocker", text: r }))) : (gate.action ? "none: every rule held" : "")],
             ["diff", gate.diff_lines !== undefined ? `${gate.diff_lines} lines in ${(gate.changed_files || []).length} files` : ""],
             ["changed", gate.changed_files && gate.changed_files.length ? h("span", { class: "mono", text: gate.changed_files.join("  ") }) : ""],
@@ -3844,6 +4256,7 @@
     const off = store.on((kind, data) => {
       if (kind === "run" && data.key === `${layerKey}/${runId}`) reload();
       if (kind === "snapshot") reload();
+      if (kind === "layers" && detail && (detail.summary.outcome || {}).size_stop) reload();   // its limit may have changed
     });
     const timer = setInterval(() => {
       if (detail && detail.summary.status === "running" && (state.tab === "overview" || state.tab === "step")) reload();
@@ -4313,6 +4726,7 @@
             .map(([label, value]) => h("div", { class: "stat" }, h("div", { class: "label", text: label }), h("div", { class: "value", text: value }))))));
       replace(rest,
         testingPanel(layer, load),
+        reviewPolicyPanel(layer, load),
         (data.promotions || []).length ? h("div", { class: "card promotions-section" },
           h("div", { class: "card-head" }, h("h3", { text: "Promotions" }), h("span", { class: "dim", text: "a stage moves into the next once people accept it" }),
             h("span", { class: "spacer" }), h("span", { class: "promotion-note", role: "status" })),
@@ -5361,7 +5775,7 @@
     const overlay = document.getElementById("overlay");
     const keys = [["1 · 2 · 3 · 4", "Now · Runs · Layers · Repos"], ["j / k", "next / previous run, step or transcript event"], ["Enter", "open the selection / expand an event"],
       ["/", "search (runs or transcript)"], ["f", "follow the running step's transcript or log"], ["Esc", "back / close"], ["?", "this help"],
-      ["Space", "voice helper: hold to talk (focus in its panel)"], ["Esc", "voice helper: stop speaking"], ["M", "voice helper: close the microphone"]];
+      ["v", "voice helper: open or close it from any page"], ["Space", "voice helper: hold to talk (focus in its panel)"], ["Esc", "voice helper: stop speaking"], ["M", "voice helper: close the microphone"]];
     replace(overlay, h("div", { class: "panel", onclick: (e) => e.stopPropagation() }, h("h3", { text: "Keyboard" }),
       h("div", { class: "shortcuts" }, keys.map(([k, v]) => [h("span", {}, h("kbd", { text: k })), h("span", { text: v })])),
       h("p", { class: "dim", text: "Every view is a link: copy the address bar to share a run, a step or a filtered transcript." })));
@@ -5374,6 +5788,10 @@
     const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement && document.activeElement.tagName);
     if (event.key === "Escape") {
       if (!overlay.hidden) { overlay.hidden = true; clear(overlay); return; }
+      if (voiceDock.isOpen() && voiceDock.el.contains(document.activeElement)) {   // Escape in the dock: leave the field, then close
+        if (typing) voiceDock.el.focus(); else voiceDock.close();
+        return;
+      }
       if (typing) { document.activeElement.blur(); return; }
       if (current && current.back) current.back();
       return;
@@ -5385,6 +5803,7 @@
     if (event.key === "3") return go("#/layers");
     if (event.key === "4") return go("#/repos");
     if (event.key === "?") return help();
+    if (event.key === "v" && !voiceDock.button.hidden) return voiceDock.toggle();
     if (event.key === "j" && current && current.move) { event.preventDefault(); return current.move(1); }
     if (event.key === "k" && current && current.move) { event.preventDefault(); return current.move(-1); }
     if (event.key === "Enter" && current && current.open && !(document.activeElement && document.activeElement.closest && document.activeElement.closest(".g-node"))) { return current.open(); }
@@ -5402,6 +5821,9 @@
   document.getElementById("help-button").addEventListener("click", help);
   window.addEventListener("hashchange", router);
   if (!location.hash) history.replaceState(null, "", "#/now");
+  voiceDock.button.addEventListener("click", voiceDock.toggle);
+  store.on((kind) => { if (kind === "snapshot" || kind === "layers") voiceDock.sync(); });
+  voiceDock.sync();
   live.connect();
   router();
 })();

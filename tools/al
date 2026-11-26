@@ -98,8 +98,10 @@
   al kpis    LAYER [--since YYYY-MM-DD] [--json|--md]
                                    numbers from the layer's run records: runs by outcome and why, attempts per step,
                                    review rounds, how often a person acted, time and cost; no names, paths or prompts
-  al settle  LAYER RUN --as landed|superseded|abandoned [--by RUN|COMMIT] [--note T] [--who NAME]
-                                   record that a finished run needs nothing more (agents/<id>/settlement.json)
+  al settle  LAYER RUN --as landed|superseded|abandoned|shipped [--by RUN|COMMIT|PR-URL] [--note T] [--who NAME]
+                                   record that a finished run needs nothing more (agents/<id>/settlement.json);
+                                   shipped: shipped to a pull request or a branch, not merged yet (--by says
+                                   which); `al runs` lists it as landed once git shows it
   al integrate LAYER RUN|BRANCH [--model-set TIER] [--detach] [--preview] [--approve [--who NAME]] [--json]
                                    bring a handed-over run that could not merge onto its target branch with an
                                    agent: prepare, resolve the conflicts, the checks, the review, ship; the run is
@@ -129,6 +131,11 @@
   al models  LAYER [--set TIER=ID …] [--reset [TIER]]
                                    show or change which model each tier uses on this machine (a local setting,
                                    agents/settings/models.json, never committed); applies to runs started afterwards
+  al review  LAYER [--set ID=N … | --reset [ID]] [--who NAME] [--json]
+                                   show each auto review option's ship-without-review limit (max diff lines) and where
+                                   it comes from; --set changes it on this machine (a local setting,
+                                   agents/settings/review.json, never committed; 1 to 50000 changed lines), --reset
+                                   drops it; the dashboard's "Ship without review" card does the same
   al decider LAYER [--set off|suggest|auto | --reset] [--may KIND,KIND] [--pause | --unpause]
                                    show or change the stand-in on this machine (a local setting,
                                    agents/settings/decider.json, never committed): its mode, its scope (the decisions
@@ -144,6 +151,10 @@
                                    and resume it; 0 resumed, 1 refused, 2 bad use
   al approve LAYER RUN --all [--who NAME] [--note TEXT]
                                    approve every item RUN waits for a person's approval of and resume it
+  al approve LAYER RUN ship [--who NAME] [--note TEXT]
+                                   approve a gate stop that only needs your yes (the diff is too large, the class
+                                   is not one the gate ships, the ship failed): the stage branch is fast-forwarded,
+                                   or the run is settled as shipped to its pull request or branch
   al dashboard --remote HOST [--port N] [--remote-port N] [--open]
                                    watch a deployed layer through an ssh tunnel (loopback on both ends)
   al deploy  LAYER --to HOST [--path DIR] [--as ID] [--provision [--yes]] [--dry-run] [--no-enable] | --status
@@ -2490,12 +2501,13 @@ def check_layer(layer: Path) -> list[str]:
     return problems
 
 
-LOCAL_SETTINGS = ("agents/settings/models.json", "agents/settings/decider.json", "agents/settings/testing.json")
+LOCAL_SETTINGS = ("agents/settings/models.json", "agents/settings/decider.json", "agents/settings/testing.json",
+                  "agents/settings/review.json")
 
 
 def tracked_settings(layer: Path, ir: dict, app: Path) -> list[str]:
-    """The layer's local settings (models, the stand-in decider's mode, the testing level) are
-    machine-local: committing one is a problem."""
+    """The layer's local settings (models, the stand-in decider's mode, the testing level, the
+    ship-without-review limit) are machine-local: committing one is a problem."""
     if (ir.get("layer") or {}).get("kind") == "in-repo":
         try:
             repo, prefix = app, f"{layer.resolve().relative_to(app.resolve()).as_posix()}/"
@@ -3167,14 +3179,33 @@ def approve_cli(a: argparse.Namespace) -> int:
     """`al approve LAYER RUN WHAT… [--who NAME]`: approve what a run stopped for and resume it.
     `al approve LAYER RUN --all [--who NAME] [--note TEXT]`: approve every item the run waits for a
     person's approval of (adw_modules/approvable.py) and resume it.
-    0 resumed, 1 refused (unknown run, not stopped for an approver, nothing waits), 2 bad use."""
+    `al approve LAYER RUN ship [--who NAME] [--note TEXT]`: approve a gate stop that only needs a
+    person's yes; the runtime merges into the stage branch or settles the run as shipped
+    (adw_modules/shipapproval.py).
+    0 resumed, merged or shipped, 1 refused (unknown run, not stopped for an approver, nothing waits,
+    checks not green), 2 bad use."""
     layer = a.layer.resolve()
     if bool(a.what) == bool(a.all):
         print("al approve: name what you approve (WHAT …) or --all", file=sys.stderr)
         return 2
-    if a.note is not None and not a.all:
-        print("al approve: --note goes with --all", file=sys.stderr)
+    ship = a.what == ["ship"]
+    if a.note is not None and not (a.all or ship):
+        print("al approve: --note goes with --all or ship", file=sys.stderr)
         return 2
+    if ship:
+        approvable, _shipapproval, ir_module, errors = layer_runtime_modules(layer, "approvable", "shipapproval")
+        try:
+            loaded = ir_module.load(layer)
+        except errors.LayerError as exc:
+            raise AlError(str(exc)) from exc
+        for line in approvable.lines(approvable.derive(loaded, a.run)):
+            print(f"approve: {line}", flush=True)
+        result = approvable.approve_ship(loaded, a.run, a.who or _login_name(), "cli", note=a.note or "")
+        if result["status"] in ("merged", "shipped"):
+            print(f"approve: {result['message']}")
+            return 0
+        print(f"al approve: refused ({result.get('reason')}): {result.get('message')}", file=sys.stderr)
+        return 1
     if a.all:
         approvable, ir_module, errors = layer_runtime_modules(layer, "approvable")
         try:
@@ -3184,7 +3215,7 @@ def approve_cli(a: argparse.Namespace) -> int:
         for line in approvable.lines(approvable.derive(loaded, a.run)):
             print(f"approve: {line}", flush=True)
         result = approvable.approve_resume(loaded, a.run, None, a.who or _login_name(), "cli", note=a.note or "")
-        if result["status"] == "resumed":
+        if result["status"] in ("resumed", "merged", "shipped"):
             print(f"approve: {result['message']}")
             return 0
         print(f"al approve: refused ({result.get('reason')}): {result.get('message')}", file=sys.stderr)
@@ -4117,6 +4148,101 @@ def layer_testing_module(layer: Path):
     return testing, ir_module, errors
 
 
+def layer_reviewpolicy_module(layer: Path):
+    """The layer's own review-limit module (adw_modules/reviewpolicy.py), so `al review`, the dashboard's
+    "Ship without review" card and the layer's gate read and write the local setting with the same code."""
+    if not (layer / "agentic-layer.json").is_file() or not (layer / "adws/adw_modules/reviewpolicy.py").is_file():
+        if (layer / "agentic-layer.json").is_file() and (layer / "adws/adw_modules").is_dir():
+            raise AlError(f"{layer} was generated before the local review limit: run `al gen {layer}`")
+        raise AlError(f"{layer} is not a generated layer: run `al gen {layer}` first")
+    for name in [n for n in sys.modules if n == "adw_modules" or n.startswith("adw_modules.")]:
+        del sys.modules[name]   # another layer's runtime may have been imported before
+    sys.path.insert(0, str(layer / "adws"))
+    try:
+        from adw_modules import errors, ir as ir_module, reviewpolicy
+    except ImportError as exc:
+        raise AlError(f"cannot import the layer runtime from {layer / 'adws'}: {exc}") from exc
+    return reviewpolicy, ir_module, errors
+
+
+def review_cli(a: argparse.Namespace) -> int:
+    """`al review LAYER [--set ID=N … | --reset [ID]] [--who NAME] [--json]`: each auto review option's
+    ship-without-review limit on this machine and where it comes from. Exit 0 shown or changed; 2 bad
+    use, or a layer whose gate does not read the local limit (nothing is written)."""
+    layer = a.layer.resolve()
+    reviewpolicy, _ir_module, _errors = layer_reviewpolicy_module(layer)
+    kit = dashboard_kit_module()
+    loaded = kit.load_layer(layer, set())
+    if loaded is None:
+        raise AlError(f"cannot read {layer / 'agentic-layer.json'}")
+    known = [option["id"] for option in loaded.review_policy_view()["options"]]
+
+    def refuse(message: str) -> int:
+        print(f"al review: {message}", file=sys.stderr)
+        return 2
+
+    def unknown(option_id: str) -> str:
+        return f"no auto review option named {option_id!r}; this layer has: {', '.join(known) or 'none'}"
+
+    if a.set:
+        changes: list[tuple[str, int]] = []
+        for item in a.set:
+            match = re.fullmatch(r"([^=\s]+)=(\d+)", item)
+            if not match:
+                return refuse(f"--set takes ID=N (a review option and a whole number of changed lines), not {item!r}")
+            if match.group(1) not in known:
+                return refuse(unknown(match.group(1)))
+            try:
+                changes.append((match.group(1), reviewpolicy.check_limit(int(match.group(2)))))
+            except ValueError as exc:
+                return refuse(str(exc))
+        try:
+            who = reviewpolicy.check_who(a.who or _login_name())
+        except ValueError as exc:
+            return refuse(str(exc))
+        if not reviewpolicy.gate_reads_limit():
+            return refuse(f"refused: this layer's gate does not read the local limit: run `al gen {a.layer}`")
+        for option_id, limit in changes:
+            reviewpolicy.write_setting(layer, option_id, limit, who=who, via="cli")
+    elif a.reset == "*":
+        reviewpolicy.write_setting(layer, None, None)   # removes the file, a broken one too
+    elif a.reset:
+        if a.reset not in known:
+            return refuse(unknown(a.reset))
+        reviewpolicy.write_setting(layer, a.reset, None)
+    view = loaded.review_policy_view()
+    settings_file = layer / reviewpolicy.SETTING_FILE
+    if a.json:
+        print(json.dumps({"options": view["options"], "settings_file": str(settings_file),
+                          "gate_reads": view["gate_reads"], "error": view["error"]}, indent=2, sort_keys=True))
+        return 0
+    lines = kit.review_policy_lines(view)
+    for line in lines:
+        print(line)
+    if not lines:
+        print("this layer has no auto review option: every run goes to a person")
+    if view["error"]:
+        print(f"note: the local setting is ignored: {view['error']}")
+    print(f"settings: {settings_file} (local to this machine, never committed); applies to every gate from now on")
+    return 0
+
+
+def _explain_limits(layer: Path) -> None:
+    """After `al explain LAYER` on a generated layer: the ship-without-review limits on this machine.
+    Never fails the explanation: anything that goes wrong prints nothing."""
+    try:
+        if not (layer / "agentic-layer.json").is_file():
+            return
+        kit = dashboard_kit_module()
+        lines = kit.review_policy_lines(kit.load_layer(layer.resolve(), set()).review_policy_view())
+    except Exception:  # noqa: BLE001 — the explanation was printed; this is an extra
+        return
+    if lines:
+        print("\nShip without review, on this machine")
+        for line in lines:
+            print(f"    - {line}")
+
+
 def _minutes(value) -> str:
     return "-" if value is None else f"about {value:g} min"
 
@@ -4427,13 +4553,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--md", action="store_true", help="print a Markdown document (for docs/KPIS.md)")
     p.add_argument("--sample", action="store_true", help=argparse.SUPPRESS)
     p = sub.add_parser("settle", help="record that a finished run needs nothing more (agents/<id>/settlement.json)",
-                       description="Write LAYER's run RUN a settlement: landed, superseded or abandoned, with the run "
-                       "or commit that did it and a note. Nothing else of the run is touched. Exit 0 written, 2 bad "
+                       description="Write LAYER's run RUN a settlement: landed, superseded, abandoned or shipped, "
+                       "with the run or commit that did it and a note. shipped: shipped to a pull request or a "
+                       "branch, not merged yet (--by is the pull request's URL or the commit); `al runs` lists it "
+                       "as landed once git shows it. Nothing else of the run is touched. Exit 0 written, 2 bad "
                        "use, 3 refused (the run is running, or --by names neither a run nor a commit), 4 no such run.")
     p.add_argument("layer", type=Path)
     p.add_argument("run", metavar="RUN")
-    p.add_argument("--as", dest="as_", required=True, choices=("landed", "superseded", "abandoned"))
-    p.add_argument("--by", metavar="RUN|COMMIT", help="the run or commit that landed or superseded it")
+    p.add_argument("--as", dest="as_", required=True, choices=("landed", "superseded", "abandoned", "shipped"))
+    p.add_argument("--by", metavar="RUN|COMMIT|PR-URL",
+                   help="the run or commit that landed or superseded it; with shipped: the pull request's URL or "
+                        "the commit")
     p.add_argument("--note", metavar="TEXT", help="why, in one paragraph (at most 500 characters)")
     p.add_argument("--who", metavar="NAME", help="who settles it (default: git config user.name of the application)")
     p = sub.add_parser("integrate", help="bring a handed-over run onto its target branch with an agent: prepare, resolve, "
@@ -4529,6 +4659,25 @@ def main(argv: list[str] | None = None) -> int:
                        help="use MODEL_ID for tier TIER in runs of this layer on this machine (repeatable)")
     group.add_argument("--reset", nargs="?", const="*", metavar="TIER",
                        help="drop the local setting of TIER, or of every tier without TIER")
+    p = sub.add_parser("review", help="show or change each auto review option's ship-without-review limit (a local "
+                       "setting)",
+                       description="Show each auto review option of LAYER with its ship-without-review limit (the most "
+                       "changed lines a run may have to ship with no person, #:max-diff-lines) and where it comes "
+                       "from: the layer definition, al's default, or a local override. --set ID=N changes it on this "
+                       "machine (agents/settings/review.json, never committed; N from 1 to 50000); --reset ID drops "
+                       "the override of ID, --reset alone every override. The checks, the review and the other rules "
+                       "of the gate stay as they are. Exit 0; 2 bad use, or a layer whose gate does not read the "
+                       "local limit (run `al gen`).")
+    p.add_argument("layer", type=Path)
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--set", action="append", metavar="ID=N",
+                       help="review option ID ships without a person up to N changed lines (1 to 50000) on this "
+                       "machine, from the next gate on (repeatable)")
+    group.add_argument("--reset", nargs="?", const="*", metavar="ID",
+                       help="drop the local limit of ID, or of every review option without ID "
+                       "(agents/settings/review.json)")
+    p.add_argument("--who", metavar="NAME", help="who sets the limit (recorded in the setting; default: your login name)")
+    p.add_argument("--json", action="store_true", help="print the options, their limits and sources as JSON")
     p = sub.add_parser("decider", help="show or change the stand-in: its mode, scope and limits (a local setting)")
     p.add_argument("layer", type=Path)
     group = p.add_mutually_exclusive_group()
@@ -4590,13 +4739,19 @@ def main(argv: list[str] | None = None) -> int:
                        "edit:PATH, dependency:NAME), and resume it from the step that stopped. The approval is "
                        "recorded with who and when. With --all instead of WHAT, every item RUN waits for a "
                        "person's approval of is listed, approved and the run resumed with the mechanism its stop "
-                       "has. Exit: 0 resumed, 1 refused (unknown run, not stopped for an approver, or nothing "
-                       "waits), 2 bad use.")
+                       "has. With the one word ship as WHAT, a gate stop that only needs a person's yes (the "
+                       "diff is too large, the class is not one the gate ships, the ship failed) is approved: "
+                       "the stage branch is fast-forwarded, or the run is settled as shipped to its pull request "
+                       "or branch; never offered with red checks or a rejected review. Exit: 0 resumed, merged "
+                       "or shipped, 1 refused (unknown run, not stopped for an approver, or nothing waits), "
+                       "2 bad use.")
     p.add_argument("layer", type=Path)
     p.add_argument("run", metavar="RUN", help="the run id (8 hexadecimal characters)")
-    p.add_argument("what", nargs="*", metavar="WHAT", help="an approval: vocabulary, edit:PATH, dependency:NAME …")
+    p.add_argument("what", nargs="*", metavar="WHAT",
+                   help="an approval: vocabulary, edit:PATH, dependency:NAME …; or ship, for a gate stop that "
+                        "only needs your yes")
     p.add_argument("--all", action="store_true", help="approve every item the run waits for and resume it")
-    p.add_argument("--note", metavar="TEXT", help="with --all: one line kept with the approval")
+    p.add_argument("--note", metavar="TEXT", help="with --all or ship: one line kept with the approval")
     p.add_argument("--who", metavar="NAME", help="who approves (default: AL_APPROVED_BY, else your login name)")
     p = sub.add_parser("deploy", help="put an in-repo layer on another machine over ssh and keep it running there",
                        description="Put an in-repo layer and its repository on HOST over ssh (your own ssh configuration; "
@@ -4727,7 +4882,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if a.cmd == "explain":
             extra = (["--md", str(a.md)] if a.md else []) + (["--gif", str(a.gif)] if a.gif else [])
-            return subprocess.call([str(ROOT / "tools" / "explain.py"), str(a.layer), *extra])
+            code = subprocess.call([str(ROOT / "tools" / "explain.py"), str(a.layer), *extra])
+            if code == 0 and not extra and a.layer.is_dir():
+                sys.stdout.flush()
+                _explain_limits(a.layer)   # this machine's limits: never in EXPLAIN.md, which is committed
+            return code
         if a.cmd == "scout" and a.into:
             tools = tools_module()
             tools.need(tools.NEEDS["scout"] + tools.agent_bin(a.agent), a.into.resolve())
@@ -4840,6 +4999,8 @@ def main(argv: list[str] | None = None) -> int:
             return decider_cli(a)
         elif a.cmd == "testing":
             return testing_cli(a)
+        elif a.cmd == "review":
+            return review_cli(a)
         elif a.cmd == "batch":
             return batch_cli(a)
         elif a.cmd == "answer":

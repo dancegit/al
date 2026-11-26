@@ -1,7 +1,7 @@
 """Skipped tests: how many tests a check's command did not run, and why.
 
 A check that exits 0 while the tests that matter were skipped proves nothing. This module counts
-the skips in what the test runners print (pytest, go test, cargo test, mocha's spec reporter) or
+the skips in what the test runners print (pytest, go test, cargo test, mocha's spec reporter, bun test) or
 in the JUnit XML a check collects, and turns them into a failure when the check says so:
 
 - `#:max-skipped N`: more than N skipped tests fail the check;
@@ -25,6 +25,7 @@ from typing import Any, Iterable
 NO_REASON = "(no reason given)"
 PYTEST_NO_RS = "(reason not printed: run pytest with -rs)"
 MOCHA_PENDING = "pending (mocha prints no reason)"
+BUN_SKIP = "skip (bun prints no reason)"
 GO_NO_V = "go (no -v)"
 JUNIT_MAX_BYTES = 20 * 1024 * 1024
 REASON_MAX = 120
@@ -53,6 +54,7 @@ class SkipReport:
                 "reasons": self.top(5), "unexplained": self.unexplained, "source": "+".join(self.sources)}
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _LOCATION = re.compile(r"^\S+?:\d+:\s*")
 
 
@@ -266,6 +268,38 @@ def parse_mocha(text: str) -> SkipReport | None:
     return report
 
 
+# ---------------------------------------------------------------------------------------------- bun
+
+_BUN_COUNT = re.compile(r"^\s*(\d+) (pass|fail|skip|todo)$")
+_BUN_RAN = re.compile(r"^Ran .* tests? across ")
+
+
+def parse_bun(text: str) -> SkipReport | None:
+    report, counted, ran = SkipReport(), False, False
+    for raw in _lines(text):
+        line = _ANSI.sub("", raw).rstrip()
+        count = _BUN_COUNT.match(line)
+        if count:
+            number, word = int(count.group(1)), count.group(2)
+            if word == "pass":
+                counted = True
+                report.passed += number
+            elif word == "fail":
+                counted = True
+                report.failed += number
+            else:  # skip and todo: neither ran
+                report.skipped += number
+        elif _BUN_RAN.match(line):
+            ran = True
+    if not (counted and ran):
+        return None
+    if report.skipped:
+        report.reasons[BUN_SKIP] += report.skipped
+        report.unexplained = report.skipped
+    report.sources.append("bun")
+    return report
+
+
 # -------------------------------------------------------------------------------------------- junit
 
 def _local(tag: str) -> str:
@@ -307,7 +341,7 @@ def parse_junit(paths: Iterable[Path]) -> SkipReport:
 
 # ---------------------------------------------------------------------------------------- accounting
 
-PARSERS = (parse_pytest, parse_go, parse_cargo, parse_mocha)
+PARSERS = (parse_pytest, parse_go, parse_cargo, parse_mocha, parse_bun)
 
 
 def from_log(text: str) -> SkipReport | None:
@@ -323,7 +357,6 @@ def from_log(text: str) -> SkipReport | None:
 
 # ------------------------------------------------------------------------------------- failing tests
 
-_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _PYTEST_FAILED = re.compile(r"^(?:FAILED|ERROR) (\S+?)(?: - .*)?$")
 _GO_FAIL = re.compile(r"^\s*--- FAIL: (\S+) \(")
 _GO_FAIL_PACKAGE = re.compile(r"^FAIL\t(\S+)")

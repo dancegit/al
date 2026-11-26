@@ -316,7 +316,7 @@ def test_explain_names_the_integrate_workflow():
 
 def test_explain_voice_mentions_the_dashboard_helper_and_the_click():
     _, text, _ = explain.explain({"head": "voice", "first": "  (voice kokoro)"}, {**FULL_IR, "voice": {"dashboardHelper": True}})
-    assert "voice helper" in text and "nothing starts until you answer yes and click Approve" in text
+    assert "voice helper" in text and "nothing starts until you say or click yes" in text
     assert "al voice LAYER setup" in text
     _, off, _ = explain.explain({"head": "voice", "first": "  (voice kokoro)"}, {**FULL_IR, "voice": {"dashboardHelper": False}})
     assert "helper" not in off and "Kokoro" in off

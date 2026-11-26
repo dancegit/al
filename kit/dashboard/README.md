@@ -78,6 +78,7 @@ kit/dashboard/run-in-podman.sh ~/code/myapp.al                    # in its own c
 | **Repos** (`4`) | the workspace: every git repository of the folder(s), searchable, with its state badge (`layer`: an `agentic.rkt` in it or in a sibling `NAME.al`; `setup`: rule files, prompts, workflow scripts or a hand-built suite, the same detection as `al scout`; `none`), branch, a mark for uncommitted changes and its last activity; **refresh** rescans. A selected repository (`#/repo/<key>`) shows al scout's "Existing agent setup" summary, its layer with a link to its workflows and runs, its jobs, and the **al** panel: one button per action with the exact command line(s) it runs, disabled with the reason when it does not apply (`needs the al tool; looked for …`, `--read-only`, `--no-actions`, the state), and a tools table: what `al doctor` sees on this machine (racket, raco, uv, git, the author agent's CLI: where each was found, or the sentence saying where al looked, and its version; kept 5 minutes). **create** and **adopt** have a placement picker above their command lines: **beside the repository** (`<folder>/<name>.al`) or **inside the repository** (`<repository>/agentic`), each with what it means, the resulting path and three checks (exists and is kept / will be created; writable; not a layer yet), disabled with its reason when it cannot be used; the command lines are those of the selected placement. A writing action first shows what it runs and writes (for adopt the dry run's diff, line by line; for create and adopt the placement with its path and the detected choices, each editable, with a sentence saying what it decides and its fact) and runs on **Confirm**. **generate a layer…** beside **refresh**, and **guided** in the al panel of a repository without a layer, open guided generation (below) |
 | **Job** | one action (`#/job/<id>`), in the order a person reads it: the header (repository, action, for a create or adopt its placement (`placement: inside the repository`), status, exit code, duration, why it failed, `needs a person: N` when the author left items out, **Download full output**); once it ended, the **outcome** card: for a passed job what was created (the layer with the files added, changed and removed) or adopted, what is `UNVERIFIED` and the next action (the last `next: …` line the steps printed); for a passed create or adopt the same card also holds the **result card** of its `result` step (forge clause, workflows, adopted rules, commands and suite workflows, what was left behind, unverified commands, the next steps, the first of which is the next action; paths as the job shows them), for a failed or interrupted job the failing step, the reason in one sentence (a generic "exited N" is replaced by the step's last error), up to 12 last relevant lines, **Retry from STEP** (asks first; the steps from the first that did not pass run again in the same job, a retried `author` with `--accept-existing`) and **Download log**; the **steps row**, one chip per step with status, exit code and time, a failed step's reason, and under the running one what it is doing right now ("reading the CI files", "compiling, attempt 2", "writing agentic.rkt", or a plain step's last line); the **activity** of the selected step (the running one, else the failed one, else the last agent step, so `author` rather than `scout`; a click picks another and the address keeps it as `?step=`): an agent step's journal with its messages as Markdown, one line per tool call (tool, target, result size, duration), errors in red, the final report and the totals, hooks, start-up, rate limits and other bookkeeping only with **show everything**; a plain step's own output as text (ANSI stripped); both the latest rows with **show earlier** and a search box, and the step's log (an agent step's **raw events**) and journal to download; the author's **Decisions** and **Left out and why** cards; the layer's files it added, changed or removed, and whether the repository changed (for a layer written inside the repository, when only `agentic/` changed: "the layer was written inside the repository: N path(s); commit agentic/ with the code", not a warning); its documents (`LLM.txt` of scout, `preview.diff.txt` of an adopt preview, `choices.json` of a create or adopt preview, `result.json`, `verify.json`, `EXPLAIN.md`); and, collapsed, **Full output** (every step as it ran, ANSI colours; an agent step condensed), opened by itself for a job from before the `steps/` files |
 | **Layers** (`3`) | a **Start work** panel (below), then each layer's workflows as static graphs with input / trigger / environment / review, runs, pass rate, average time and cost per workflow, recent runs, and the layer's plain-language explanation when an `EXPLAIN.md` exists. After the declared workflows comes everything else the layer can run, from the runtime's registry: the group **Kit workflows** (`integrate`, one `promote-FROM-TO` per declared promotion or `promote` when the layer has no stages, `improve`, `decider`), each card with a `kit` mark, what it is for, the input it takes, how it is started, its setting, its steps (a graph when the registry has a definition) and its runs; an entry that is off (its setting says so, or its script is missing) is dimmed, marked `off`, with what turns it on. Then **Commands (single-command runs)** with the runs recorded as `command:NAME`, and **Suite commands** (the codebase commands `script` steps run) | A layer's page opens with its **Testing** panel (see "Testing depth and batches")
+| **Ship without review** | on a layer's page, a card with every auto review option: what it ships by, its diff limit, its allowed classes and its required checks, each with where the value comes from (the layer definition, al's default, or a local override with who set it and when), and a form that changes or resets the limit on this machine after a confirmation. A run the gate stopped for its size says "diff 2500 lines > limit 300 (review option zero-touch), 12 files changed" on its Needs-you row, in the head of its page and as the **size** row of its **Gate and ship** block, with the limit in force now beside it (see "Ship without review" below) |
 
 The **Start work** panel (on the Layers view; a layer chooser when several are watched) takes a
 request, any workflow of the layer (adopted ones included) or a single command or hop (one recorded
@@ -133,7 +134,8 @@ each new run above the table. A run page shows "replaces OLD", "replaced by NEW"
 the landing result in its Status block, a **Start again** button on a failed or died run nothing
 replaces, and, on a finished run nobody settled, a **Settle this run** card: landed, superseded or
 abandoned, an optional run or commit (`by`), a note, and your name (kept in the browser like the
-promotion card's).
+promotion card's). A failed batch run (kit workflow `verify-batch`) has neither Start again nor Give
+to an agent, because it is not a request: its next action is `al batch LAYER run [--stage S]` or Settle.
 
 **Give to an agent.** Every run under Needs you has a **Give to an agent** button: in the Next column
 of its row, and above the fields of its Settle card (address `…?assign=1`). It opens a card that says
@@ -177,9 +179,26 @@ confirmation (`[data-role='approve-resume-dialog']`) that lists every item in fu
 needs your name (kept in the browser as `al.approve.who`) and takes an optional one-line note, then
 sends `POST /api/approve-resume` (below). What it answered is shown in the row or the banner and
 above the table. Nothing is offered for a stop only the layer author or the operator clears, nor for
-a failing check, a limit or a promotion. In the Needs-you view, **Give all N to agents** (one layer at a time: it
-is disabled while runs of several layers are shown) opens a dialog with every run's plan in the order
-they would start (resumes and restarts first, then one integration at a time; what stays with a person
+a failing check, a limit or a promotion. A handed-over run whose checks and review passed and whose
+gate only asked for a person (its `approval` has kind `ship`: `diff-too-large`, `class-not-allowed`,
+`needs-person` or a `ship-failed` fallback) has **Approve & merge** or **Approve & ship** instead
+(`button.approve-ship`, its `data-way` one of `merge`, `pr`, `forge`, `branch`): merge when the
+target is a stage branch agents may merge into, ship when the run has a pull request or a person
+merges the target. Beside it are the gate's reasons, the diff size and the target or the pull request
+(a link only for an `http(s)://` URL); **Approve & ship all N** (`button.approve-ship-all`, one layer
+at a time) takes every shown one, and the chip counts these runs too. The confirmation
+(`[data-role='approve-ship-dialog']`) lists per run the reasons (`ul.approve-ship-reasons`), "N lines
+in M files" with the files (`.approve-ship-files`, at most 20 and "and K more"), the target or the
+pull request, every check with its state (`ul.approve-ship-checks li[data-state]`) and what happens
+after; it needs your name (the same `al.approve.who`), takes an optional note and sends `POST
+/api/approve-ship` (below) with `button.approve-ship-go`. The run page's banner reads "This run waits
+for your approval to ship" with the same facts and button. The dashboard runs no git command for it:
+the layer's runtime records the approval, fast-forwards the stage branch (never the default branch)
+or settles the run as `shipped`. A settlement whose `by` is an `http(s)://` URL shows it as a link.
+In the Needs-you view, **Give all N to agents** (one layer at a time: it
+is disabled while runs of several layers are shown; N counts the shown rows, a failure group as one
+item handed over as its newest run, its other runs left under Needs you) opens a dialog with the plan
+of each of those items, and only those, in the order they would start (resumes and restarts first, then one integration at a time; what stays with a person
 last, as "skipped: why") and **Start N**; what started is listed above the table. Beside it is the
 switch **Automatic** (`Automatic: off` / `Automatic: on`, one layer at a time). While it is on, the
 dashboard does for every run of the layer under Needs you what a person would do with **Give to an
@@ -289,6 +308,7 @@ chat. Keys: `j`/`k` move through runs, nodes or transcript events, `Enter` opens
 
 Everything comes from files the runtime already writes. The dashboard itself writes
 agents/settings/models.json (the Models panel), agents/settings/testing.json (the Testing panel),
+agents/settings/review.json (the "Ship without review" card),
 agents/settings/assign.json (the Automatic switch of Needs you),
 agents/<id>/testing-request.json ("Full before it ships") and, for the actions, its jobs directory; starting
 work is done by the layer's own `adws/dispatch.py --start`, which writes the run's files; the
@@ -304,6 +324,9 @@ actions run `al`, which writes what that command writes. `--read-only` turns all
 | `agents/hosts.json` | the Now view's "Hosts" panel, for a layer whose IR has a `placement`: the scheduler's last survey (`at`, per host its runs, limit, CPUs, load, memory, disk, image and logins, or `silent` with the reason; `pending` starts), merged with the declared hosts in their order and the layer's running runs per host (a run counts on its host while `state.json` `remote.phase` is `remote`, else at home). Read-only, polled like the run files; a change is pushed to the page. Missing or without a readable `at` = "no survey yet"; a host the survey does not name = "not surveyed yet"; every value is shown as text |
 | `agents/settings/models.json` | the Now view's "Models" panel: the layer's local model setting (`{"models": {TIER: MODEL_ID}, "version": 1}`, never committed), the same file `al models LAYER --set TIER=ID` writes. With the IR's agent tiers it gives each tier's model and its source (`local setting`, `layer`, `built-in default`). Polled like the usage file; a change is pushed to the page. An unreadable file is shown as an error and not used. Also the one file the dashboard writes (see Safety) |
 | `agents/settings/testing.json` | the Testing panel's level: the layer's local testing setting (`{"version": 1, "level": "light\|standard\|heavy"}`, never committed), the file `al testing LAYER --set LEVEL` writes; read and written by `read_testing_setting` / `write_testing_setting`, mirrors of the runtime's `testing.read_setting` / `write_setting`. An unreadable file is shown as an error and not used |
+| `agents/settings/review.json` | the "Ship without review" card's override: the layer's local ship-without-review limit per auto review option (`{"version": 1, "maxDiffLines": {ID: N}, "set": {ID: {"who", "via", "at"}}}`, N from 1 to 50000, `set` optional, never committed), the file `al review LAYER --set ID=N` writes; read and written by `read_review_setting` / `write_review_setting`, mirrors of the runtime's `reviewpolicy.read_setting` / `write_setting` (the same bytes for the same arguments). An unreadable file is shown as an error and not used. Polled like the other settings |
+| `adws/adw_modules/review.py` | the layer's gate, read only for one line: `READS_LOCAL_LIMIT = True` says the gate applies the local limit. Without it (a layer generated before the setting existed) the card writes nothing and shows an override that is there anyway as "not read by this layer's gate" |
+| `agentic.rkt` (and the files it names with `(include "FILE")` inside the layer directory) | read as text for the card's sources only: which keywords each `(review auto …)` form writes (`layer definition`), which it leaves out (`al's default`); comments and strings do not count. A definition that cannot be read, or that has no form of an option's id, gives `compiled layer` |
 | `agents/settings/assign.json` | the Automatic switch of the Needs-you view: the dashboard's own local setting (`{"version": 1, "auto": true}`, never committed, read by no runtime module), written atomically by `POST /api/assign {action: "auto", on: true}` and removed when it is switched off (`read_assign_auto` / `write_assign_auto`). A file of any other shape is shown as an error under the switch and nothing is given |
 | `agents/testing/batches.jsonl`, `misses.jsonl`, `suites.json` | written by the layer's `adw_modules/batch.py` and `testing.py`: one line per batch (`{id, branch, stage, head, since, status: green\|red, depth, checks, delivered, at, culprit, fix_run, source}`), one per miss a batch bisected to a run (`{batch, run, cmd, strategies, tests, files, at}`), and each command's full suite (`{CMD: {seconds, tests, commit, at}}`): the Testing panel's batch state, miss rates and typical minutes, and a culprit's "broke the batch". Polled like the settings; the ledger is part of every run's signature, so a new culprit is marked at once |
 | `state.json` `testing`, `checks[NAME].testing`, `check_results[].depth` | a run's depth (`{requested, depth, source, escalation}`), each check's accounting (`{depth, asked, why, selected, units, strategies, ran, total, seconds, full_seconds}`, shown in the runtime's words: "targeted: ran 14 of 812 tests (changed-tests 3, imports 9, coverage 2): 41 s instead of about 9 min") and the depth of each ledger entry (the Depth column of "What the checks proved"). Runs from before have none of it and read as before |
@@ -444,9 +467,16 @@ A layer with stages (`(delivery …)` or `(stage …)`) has promotions (`al prom
 ## Voice helper
 
 A layer that declares `(voice kokoro)` (with `#:dashboard-helper`, the default) gets a voice helper panel on
-its layer page and on the panel of a repository whose layer is watched. The person speaks (hold to talk, or
-always listen with voice-activity detection) or types; the helper answers aloud and in text, and proposes
-work as a **card**. How to use it: "Talk to the dashboard" in `docs/GUIDE.md`.
+its layer page and on the panel of a repository whose layer is watched. It is reached from every page
+through the microphone button in the top bar (key `v`), which opens it in a dock that stays open across
+pages. The dock talks to the layer's conversation (no repository), the same as the layer page; with several
+voice layers it has a layer picker (the page's layer first, then the last one chosen). While the dock is
+open the in-page panels stand back, so one panel holds the microphone; Escape with the focus in the dock
+closes it, and closing it closes the microphone; when voice is off for the layer the dock says why. The
+person speaks (hold to talk, or
+always listen with voice-activity detection) or types; the helper answers aloud and in text, and a change
+of state is a turn-by-turn **conversation**: questions for what is missing, a read-back, and an explicit yes
+or no. How to use it: "Talk to the dashboard" in `docs/GUIDE.md`.
 
 - **Speech service.** Speech runs in a separate uv script, the layer's `adws/voice/serve.py`
   (faster-whisper, Kokoro int8 ONNX with 4 threads, the Silero VAD bundled in faster-whisper), so
@@ -455,19 +485,75 @@ work as a **card**. How to use it: "Talk to the dashboard" in `docs/GUIDE.md`.
   with a random token in `AL_VOICE_TOKEN` that only the dashboard knows (never on a command line or in the
   page), and proxies to it; it is stopped after 10 idle minutes and when the dashboard stops. The service
   loads models only from the cache `al voice LAYER setup` verified, never downloads, and refuses (and logs)
-  every non-loopback connection. Without the models the panel says "voice is not set up" and shows the
-  command.
+  every non-loopback connection. Without the recognition model the panel says "voice is not set up" and
+  shows the command.
+- **Voice engines.** Speech is **Kokoro-82M** (hexgrad, Apache-2.0): the int8 ONNX export of kokoro-onnx (MIT)
+  on onnxruntime (MIT), on the CPU, with no torch. `kokoro-v1.0.int8.onnx` is 92 MB and `voices-v1.0.bin`
+  28 MB; the optional fp32 `kokoro-v1.0.onnx` (325 MB) is never fetched. Kokoro is the default. When its files
+  are missing, fail their checksum or fail to load, the service falls back to **espeak-ng**
+  (GPL-3.0-or-later; run as a separate system program when it is on PATH, never bundled), then to off (the
+  helper answers in text only). `AL_VOICE_TTS=kokoro|espeak|off` chooses the engine; set it in the
+  dashboard's environment (the service inherits it; `say.py`, which speaks run summaries and the voice
+  trigger, reads it too). The panel's line under the state says "Spoken by Kokoro", "Spoken by espeak-ng
+  (Kokoro is not available)" with the reason as its title, or "Speech is off"; the service's `/health` has
+  `tts_engine` and `tts_why`, and every `/speak` frame header has `engine`. The cache is `$AL_KOKORO_CACHE`,
+  else `$XDG_CACHE_HOME/al/kokoro`, else `~/.cache/al/kokoro` (and `$AL_VOICE_CACHE`, else
+  `$XDG_CACHE_HOME/al/voice`, else `~/.cache/al/voice`, for recognition): one copy per user, shared by every
+  layer and run. Who fetches: `al voice LAYER setup`, and `say.py` on its first use; both check every sha256
+  and hold the cache's lock, so concurrent callers fetch once. Never the speech service, never a run summary
+  (`say.py --no-fetch`), never the tests.
 - **The helper's mind** is the layer's own agent, run through `adws/dispatch.py --helper --json` (the
   prompt on stdin): claude-code with every tool disabled (`--tools ""`, `--strict-mcp-config`,
   `--max-turns 1`) in an empty temporary directory, or the mock agent's `mock/helper.json`. It answers with
   one JSON object per turn. Its only tools are a fixed, read-only registry inside the dashboard
   (`HELPER_TOOLS`: `list_runs`, `run_summary`, `run_documents`, `startables`, `repo_state`, `queue`,
-  `propose`); it cannot read files, run processes or write. Recognised speech is quoted to it as data.
-- **Proposals.** `propose` validates an action (`start`, `retry`, `resume`, `answer`, `stop`, or a `scout`,
-  `check` or `explain` job) and creates a card whose summary the server writes. The person's "yes", "no"
-  or a change is classified by the server, never by the agent: yes confirms the card, a change supersedes it.
-- **Transcript** in `<voice-dir>/<conversation>.jsonl` (mode 0600). Audio stays in memory unless **Keep
-  recordings** is ticked; then utterances are written under the layer's `agents/voice/<conversation>/`.
+  `needs_you`, `propose`); it cannot read files, run processes or write. Recognised speech is quoted to it
+  as data. `needs_you` lists the layer's runs under Needs you, with why and what comes next. Read-only
+  questions ("what is running", "what needs me", "what did run X do") are answered at once: no question,
+  no card.
+- **Conversation.** A small state machine per conversation (`Dialogue`: `idle`, `clarify`, `confirm`) drives
+  every change of state; the server words every question and every read-back, never the agent.
+  - *Clarify.* The agent's `propose` takes a **partial** action (only what the person said). The server
+    works out what is missing (`action_gaps`) and asks for it, one question at a time: the layer (only in
+    the dock, when several layers have a voice panel and the person did not choose this one), the run, a
+    start's workflow or command and its request, an answer's text, a settlement's kind and what superseded
+    the run, the person's name. Nothing is guessed: several possible runs, a run or workflow that does not
+    exist, or a missing text is a question; choices come as buttons and are matched by name, by ordinal
+    ("the second one") or by a spoken run id ("run 3 F A 2"). The answer is handled by the server alone (no
+    agent call).
+  - *Read-back.* A complete action is validated and becomes a proposal (a card); the helper says the layer,
+    the action with its run and request, what will happen, and "Shall I do it?" (`read_back_text`).
+  - *Yes, no, cancel, change* are classified by the server (`classify_reply`). **Yes** (only agreement
+    words; spoken, typed or the **Yes, do it** button) confirms the proposal, and the page then sends the
+    guarded `POST /api/voice/approve` — the turn route itself never writes. **No** declines. **Cancel** or
+    **stop** ("never mind", "forget it") ends a question or a read-back with nothing done. **Change …**
+    supersedes the proposal and goes to the agent with the proposal as a note; the new action is read back
+    again (a change that yields no new proposal ends with "Nothing was done."). No spoken text of the helper
+    contains the word "yes", so its own voice is never agreement.
+  - *Silence and unclear answers.* A question or a read-back waits 45 s (`DIALOGUE_WAIT`); then the page
+    sends `{layer, event: "timeout"}` (not while the person is speaking or a turn is under way), and the
+    server itself times out an answer that comes more than 10 s later still (`DIALOGUE_GRACE`): silence and
+    a late yes are no. An unclear answer is asked again twice (`DIALOGUE_RETRIES`), then the action is
+    cancelled.
+  - *The nine kinds*, each carried out by the method its button's endpoint calls: `start` and `retry`
+    (`start_checked`, as `POST /api/start`), a `scout`, `check` or `explain` `job` (`Model.start_action`),
+    `resume`, `answer` and `stop` (the layer's launcher `--resume` / `--stop`), `approve-resume`
+    (`Model.approve_resume`, with the items and the token of the run's approval as read back; 409 `stale`
+    when it changed), `assign` — give to an agent (`Model.assign_preview` when it is read back, then
+    `Model.assign_start` with that preview's single-use nonce) and `settle` (`Model.settle`). The token and
+    the nonce stay on the server; a card never carries them.
+- **Transcript** in `<voice-dir>/<conversation>.jsonl` (mode 0600; the dashboard's own state folder,
+  `~/.local/state/al/dashboard-voice` or `--voice-dir`, outside every repository, so never committed). The
+  helper's entries carry `kind` (`question`, `readback`, `decision` with `decision`: yes, no, cancel,
+  timeout or unclear, `outcome`), shown in the panel as marks ("question", "read-back", "decision: yes",
+  "result"); a clicked answer is marked "(clicked)". `POST /api/voice/clear {layer}` (the **Clear
+  transcript** button) forgets the entries and deletes the file; what was proposed or confirmed in the
+  conversation can no longer be approved. Audio stays in memory unless **Keep recordings** is ticked; then
+  utterances are written under the layer's `agents/voice/<conversation>/`.
+- **The panel** shows the question with its option buttons, or **Yes, do it**, **No** and **Cancel** for a
+  read-back, and the time left; its state line says "Waiting for your answer" (`data-state="asking"`) or
+  "Waiting for yes or no" (`waiting`) beside listening, thinking and speaking. Every step works by keyboard
+  (Tab, Enter or Space on the buttons) and by typing.
 
 ## Testing depth and batches
 
@@ -496,11 +582,40 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
   batch** badge (in its header and the runs list) and a banner with the batch run, the failing tests and the
   fix run.
 
+## Ship without review
+
+An auto review option ships a run with no person when every rule of its gate holds; one rule is the size
+of the diff, `#:max-diff-lines`. On the dashboard:
+
+- **The "Ship without review" card** (the layer page, after the Testing panel; only for a layer with an auto
+  review option): one row per auto review option with what it **ships by**, its **max diff lines**, its
+  **allowed classes** and its **required checks**. Under every value stands where it comes from: `layer
+  definition` (the keyword is written in `agentic.rkt`), `al's default` (it is not), `compiled layer` (the
+  definition cannot say), or for the limit `local override by WHO, WHEN; declared N (SOURCE)`.
+- **Changing the limit.** The row has a number field (1 to 50000), a field for your name, **Apply** and,
+  when an override is set, **Reset**. Apply is disabled until the value is a whole number in range, differs
+  from the limit in force and a name is given. It asks first: "Runs of this layer reviewed by ID will ship
+  without a person up to N changed lines (declared: D). It applies on this machine to every gate from now
+  on, until you reset it. The checks, the review and the other rules stay as they are." Only then
+  `POST /api/review-limit` writes `agents/settings/review.json` with who, how and when. Reset asks too and
+  removes the override. The other values are shown, not changed here.
+- **A gate that does not read the limit.** Until the layer's `adws/adw_modules/review.py` declares
+  `READS_LOCAL_LIMIT = True`, the form is disabled with "this layer's gate does not read the local limit:
+  run `al gen LAYER`", the write is 409, and an override that is in the file anyway is marked "local
+  override N not read by this layer's gate" while the declared limit stays the one shown as in force. The
+  card never claims a limit the gate does not use.
+- **A run stopped for its size.** Its summary carries `outcome.size_stop` (`{diff_lines, limit, option,
+  files, text}`), and its reason reads "diff 2500 lines > limit 300 (review option zero-touch), 12 files
+  changed" instead of `diff-too-large:2500>300`: on its Needs-you row, in the head of its page and, in the
+  page's **Gate and ship** block, as the row **size**, followed by "limit now N (SOURCE)", the limit in
+  force today, so a person sees whether it was changed since. `outcome.handover` and the block's "gate
+  reasons" keep the raw reason.
+
 ## Safety
 
 - **Writes, guarded** (and the stand-in's three, below). Only GET and HEAD, plus `POST /api/models`, `POST /api/start`,
-  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, `POST /api/promotion`, `POST /api/integrate`, `POST /api/assign`, `POST /api/approve` and `POST /api/approve-resume`, which start or resume runs through the layer's own scripts, and the three Testing writes `POST /api/testing`, `POST /api/batch` and `POST /api/run-testing`), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
-  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle`, `/api/integrate`, `/api/assign`, `/api/approve`, `/api/approve-resume`, `/api/testing`, `/api/batch` or `/api/run-testing` is
+  `POST /api/settle` and `POST /api/action` (with `POST /api/job/retry`, which belongs to the actions, `POST /api/promotion`, `POST /api/integrate`, `POST /api/assign`, `POST /api/approve`, `POST /api/approve-resume` and `POST /api/approve-ship`, which start or resume runs (or, for the last, record a ship approval and merge or settle the run) through the layer's own scripts, the three Testing writes `POST /api/testing`, `POST /api/batch` and `POST /api/run-testing`, and `POST /api/review-limit`, the "Ship without review" card's write behind a confirmation on the page), `POST /api/decider`, `POST /api/decision` and `POST /api/standin`, the voice helper's routes
+  (below) and its one write, `POST /api/voice/approve`; every other method and path is 405 (GET on `/api/models`, `/api/start`, `/api/settle`, `/api/integrate`, `/api/assign`, `/api/approve`, `/api/approve-resume`, `/api/approve-ship`, `/api/testing`, `/api/batch`, `/api/run-testing` or `/api/review-limit` is
   405 too). No endpoint changes a run's records (a settlement and a testing request are files of their own), and only an approved voice proposal can resume, answer or stop a run. All four writes pass one guard
   (`Handler._write_guard`): the token as for every request, but from the `Authorization` header or
   the cookie only (a token in the query string is refused); a loopback `Host` when there is no
@@ -668,16 +783,23 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
   `--no-actions` (403 "actions are off") and `--read-only` turn actions off; without the al tool they are
   409 and every button says where it looked. No action in `--in-container` or `al dashboard --podman`.
 - **The voice routes** (`/api/voice/session`, `service`, `utterance`, `listen`, `turn`, `speak`, `cancel`,
-  `recordings`) pass the same guard as the writes, in the same order and with the same messages, except
-  the `--read-only` refusal, plus the per-browser `al_voice_session` cookie (HttpOnly, SameSite=Strict);
-  `recordings` is refused under `--read-only`. They talk and listen; none of them starts anything. A layer
-  without `(voice …)` answers 404.
-- **Approval.** `POST /api/voice/approve {layer, proposal, digest}` is the one write of the voice helper. It
+  `recordings`, `clear`) pass the same guard as the writes, in the same order and with the same messages,
+  except the `--read-only` refusal, plus the per-browser `al_voice_session` cookie (HttpOnly,
+  SameSite=Strict); `recordings` is refused under `--read-only`. They talk and listen; none of them starts
+  anything or changes a layer: `turn` never writes (a yes only moves the proposal to `confirmed`), and
+  `clear` only forgets the dashboard's own transcript. `turn` takes `{layer, text, via: voice|text|click,
+  repo?, sure?}` or `{layer, event: "timeout"}`, anything else is 400. A layer without `(voice …)` answers
+  404.
+- **Approval.** `POST /api/voice/approve {layer, proposal, digest}` is the one write of the voice helper;
+  the page sends it when the person's yes confirmed the proposal (the card's **Do it now** sends it again
+  if that request did not get through). It
   passes the full write guard and the session cookie, and succeeds only for a proposal of the same browser
   session (403 otherwise) that the person confirmed by answering yes (409 "not confirmed: answer yes first"),
   unchanged since (409 "changed after confirmation"), within two minutes of the yes (410), once (409 on a
-  second click). `--read-only` refuses every card; `--no-start` (and a container without
-  `--allow-start-in-container`) refuses start, retry, resume, answer and stop; `--no-actions` refuses jobs
+  second request). Its answer's `reply` is what the helper says about the outcome ("Done. …" or "I could
+  not do it: …"). `--read-only` refuses every card; `--no-start` (and a container without
+  `--allow-start-in-container`) refuses start, retry, resume, answer, stop, approve-resume and assign (not
+  settle, which starts nothing); `--no-actions` refuses jobs
   (403; the conversation keeps working and the card says why). A start or retry goes through the same code as
   `POST /api/start`, a job through the same code as `POST /api/action`, a resume, answer or stop through the
   layer's own `adws/dispatch.py --resume/--stop --json` (a stop sends SIGTERM to the run's process group on
@@ -712,10 +834,13 @@ batch (see "Depths, batches and misses" in `docs/DESIGN.md`). On the dashboard:
 
 ### `POST /api/settle`
 
-`{layer, run, as: landed|superseded|abandoned, by, note, who}` passes the same guard as every write (a body
+`{layer, run, as: landed|superseded|abandoned|shipped, by, note, who}` passes the same guard as every write (a body
 of at most 4 KiB; refused with `--read-only`). Only those keys are accepted. `by` is empty, a run of the
 layer (8 hexadecimal characters with a `state.json`) or a commit (7 to 40 hexadecimal characters that `git
-cat-file -e` finds in the application repository); a note is at most 500 characters (kept as one
+cat-file -e` finds in the application repository). `shipped` (shipped to a pull request or a branch, not
+merged yet) needs `by`: the pull request's URL (`http://` or `https://`, at most 300 characters, not
+looked up) or the commit; such a run leaves Needs you, is checked for landing like an unsettled one and
+moves to Landed once git shows its work on the target. A note is at most 500 characters (kept as one
 paragraph), `who` at most 80 printable characters on one line. An unknown layer or run is 404, a running or
 unknown run 409, any other bad field 400. It writes `agents/<id>/settlement.json` (above) and nothing
 else, recomputes the layer's buckets and answers `{"status": "settled", "record": …}`. `al settle` writes
@@ -796,6 +921,39 @@ Several runs are taken in the order given, each on its own: 202 `{"status": "don
 resumed, else 409 with the same body. `al approve LAYER RUN --all` does the same for one run from
 the command line.
 
+### `POST /api/approve-ship`
+
+Approve & ship (Approve & merge) of a handed-over run whose gate only asked for a person's yes. One
+run: `{layer, run, token, who, note}`; several of one layer: `{layer, runs: [{run, token}, …], who,
+note}` (1 to 50 runs, each once); nothing else. `token` is the token of the run's `approval` (kind
+`ship`) as the page showed it; `who` is 1 to 80 printable characters; `note` is optional, at most 500
+printable characters on one line. It passes the guard of every write and is refused with `--no-start`
+and in a container without `--allow-start-in-container` (403); a malformed body is 400, an unknown
+layer or run 404, a GET 405.
+
+The dashboard first compares with what it shows now: the run must be under Needs you with an
+`approval` of kind `ship` whose token is the one sent, else 409 `{"error", "reason": "stale"}`. Then
+the layer's own `adws/dispatch.py --approve-ship RUN --token T --who W [--note N] --json` (argv list,
+no shell, without the dashboard's token) derives the facts again, records the approval in the run's
+`state.approvals` as `ship:<reason>` (with who, when, `via: dashboard` and the note) and acts: a
+fast-forward of the stage branch (never the default branch or the final stage) and a settlement as
+`landed`, or a settlement as `shipped` to the run's pull request (one is opened where the forge takes
+them) or to its branch. No git command runs in the dashboard. 200 `{"status": "merged" | "shipped",
+"message", "run_id", "url": "#/run/K/RUN"}`. A refusal of the runtime is 409 `{"error", "reason",
+"refused": true}`: `stale` (what it derives is not what was shown), `not-waiting` (nothing is offered
+any more, with why: a rejected review, a decision that is a person's only), `running` (a live process
+holds the run), `checks-not-green` (a check failed, did not run or is stale; the error names it),
+`branch-changed` (the run's branch is not the commit the gate judged), `target-moved` (the stage
+branch moved: give the run to an agent, or merge it by hand); these record nothing. `ship-failed`
+means the approval is recorded but the merge or the pull request failed, with the reason; nothing is
+settled. A launcher that failed is 502 with the tail of its stderr. `POST /api/approve-resume` with a
+ship approval's token is 409 with reason `ship`.
+
+Several runs are taken in the order given, each on its own: 200 `{"status": "done", "approved": N,
+"results": [{run, status: merged | shipped | refused, message, reason, url}]}` when at least one was
+approved, else 409 with the same body. `al approve LAYER RUN ship` does the same for one run from the
+command line.
+
 ### `GET /api/integrate/preview`, `POST /api/integrate`, `GET /api/settle/evidence`
 
 `GET /api/integrate/preview?layer=K&run=ID` is read-only (the host and token checks of every GET): it
@@ -853,6 +1011,28 @@ only the keys named here.
 - `POST /api/start` accepts `testing` (`light`, `standard`, `heavy`, or empty for the layer's own level; 400
   otherwise) and passes it to the layer's launcher as `--testing`.
 
+### `POST /api/review-limit`
+
+The "Ship without review" card's one write: the layer's local limit of one auto review option
+(`agents/settings/review.json`), as `al review LAYER --set ID=N | --reset ID`. The page asks for a
+confirmation before it sends either body.
+
+- `{layer, option, limit: N, who}` sets the limit of the auto review option `option` to N changed lines and
+  records `who` (a name of 1 to 80 characters), `via: "dashboard"` and the time; `{layer, option, reset: true}`
+  removes that option's override (the file goes with the last one). The file is replaced atomically, in the
+  runtime's format.
+- 200 `{"ok": true, "review_policy": {…}}` carries the card's new state (also in every layer of
+  `/api/snapshot` and in `/api/layer` as `review_policy`: `{options: [{id, ship, allowedClasses,
+  requireChecks, maxDiffLines: {value, declared, source, declared_source, local, set, ignored}}], min, max,
+  gate_reads, writable, why, error}`); the layers are pushed to every page.
+- 400: a body that is not a JSON object, a key other than these five, `layer` or `option` not text, `limit`
+  not a whole number from 1 to 50000 (a string, a fraction, `true`), `who` missing, empty or too long,
+  `reset` other than `true` or together with `limit`, or an `option` that is not an auto review option of
+  the layer. 401: a token server without the token. 403: a foreign Host or Origin, no `X-AL-Dashboard: 1`,
+  or `--read-only`. 404: an unknown layer. 409: `agents/settings` is not writable here, the file cannot be
+  written, or the layer's gate does not read the local limit ("run `al gen LAYER`"). 413: a body over 4 KiB.
+  415: not `application/json`. GET is 405. In every refusal nothing is written.
+
 ### `GET /api/assign/preview`, `GET /api/assign/bulk`, `POST /api/assign`
 
 `GET /api/assign/preview?layer=K&run=ID` (the host and token checks of every GET) runs the layer's own
@@ -873,12 +1053,14 @@ unknown layer or run 404.
 `GET /api/assign/bulk?layer=K` runs `adws/assign.py all RUN … --preview --json` with the layer's runs
 under Needs you and answers `{layer, plans: [{run, title, kind, summary, skip, why}], startable, start}`
 in the order a bulk start gives them, `skip` saying why a run is left out, and one `nonce` for exactly
-those runs.
+those runs. `runs=ID,ID` is optional and limits the preview to those runs (the rows the page shows, at
+most 200; echoed as `runs`): empty or malformed is 400, an id that is not a stopped run of the layer
+under Needs you is 409 naming it, and the `nonce` covers exactly that list.
 
-`POST /api/assign` takes `{layer, run, action: start|approve|bulk, confirm, note, override, item, who}`
-and nothing else (`run`, `note`, `override` to start; `run`, `item`, `who` to approve; neither for
-`bulk`; any other key, or a key of another action, is 400), or `{layer, action: "auto", on}` (the
-Automatic switch, below), behind the guard of every write (loopback
+`POST /api/assign` takes `{layer, run, action: start|approve|bulk, confirm, note, override, item, who,
+runs}` and nothing else (`run`, `note`, `override` to start; `run`, `item`, `who` to approve; only
+`runs` for `bulk`; any other key, or a key of another action, is 400), or `{layer, action: "auto", on}`
+(the Automatic switch, below), behind the guard of every write (loopback
 Host or token, the token never from the URL, Origin naming the Host, `X-AL-Dashboard: 1`,
 `application/json`, at most 4 KiB, not `--read-only`), and every action is refused with `--no-start` and
 in a container without `--allow-start-in-container` (403), as `POST /api/integrate` is. `confirm` is the
@@ -898,6 +1080,8 @@ preview is stale: open it again", and a refused confirmation spends it.
   already or one that is a person's only is 409 `bad-item`.
 - `bulk`: `assign.py all RUN … --by dashboard --json` with the runs of the bulk preview: 202 `{"status":
   "started", "started": N, "results": [{run, kind, status: started|skipped|error, run_id, why, url}]}`.
+  `runs`, optional, is a list of run ids (400 otherwise) and must equal the list the preview was asked
+  for; a different one is 409 "the preview is stale" and spends the nonce.
 - `auto`: the body is exactly `{layer, action: "auto", on: true|false}` (no `confirm`: it starts
   nothing itself; anything else is 400 `expected {"layer", "action": "auto", "on": true|false}; nothing
   else`). It writes `agents/settings/assign.json` (`{"version": 1, "auto": true}`, atomically) or
@@ -1086,7 +1270,7 @@ the agent, "I approve this, continue" and the plan that remains, **Give all N to
 plans first, and the left-out count on the Artefacts tab. With `AL_DASHBOARD_SHOTS=DIR` it saves
 `work-assign-needs-you-1280.png`, `work-assign-button-1280.png`, `work-assign-preview-rejected-1280.png`,
 `work-assign-preview-rejected-390.png`, `work-assign-preview-person-1280.png`, `work-assign-approved-1280.png`,
-`work-assign-bulk-1280.png` and `work-assign-left-out-1280.png`. The Automatic switch:
+`assign-bulk-1280.png` and `work-assign-left-out-1280.png`. The Automatic switch:
 `tests/test_assign_auto_model.py` checks the setting's one format, its atomic write and removal, the
 `assign_auto` view of a layer (a broken file, `--read-only`, `--no-start`, `--no-stand-in`, the
 container, a layer without the script), which runs the loop takes (every run under Needs you, oldest
@@ -1112,6 +1296,20 @@ token, an unknown item, a run whose process is alive), several runs at once, mal
 guard; `tests/test_browser_approve_resume.py` (Chrome) the chip, the row button with its confirmation
 and the run page's banner. With `AL_DASHBOARD_SHOTS=DIR` it saves `run-approve-row.png`,
 `run-approve-confirm.png` and `run-approve-banner.png`.
+
+`tests/ship_fixtures.py` gives a test layer a handed-over run whose gate said `diff-too-large` (its
+branch with one commit, the stage branch `integration`, green checks, a passed review) and can write
+the matching `approvable.json` of kind `ship`. `tests/test_approve_ship_model.py` checks the row's
+`approval.ship` (hostile text kept as data, a record without the object not shown), the buckets of a
+`shipped` settlement (settled, then landed once git shows it) and its `by`;
+`tests/test_approve_ship_http.py` `POST /api/approve-ship` on a real layer with its real launcher: the
+approval recorded with who and note, the stage branch fast-forwarded and the default branch untouched,
+a stale token, red checks refused with the reason, several runs at once, malformed bodies, the guard,
+`--no-start`, `POST /api/approve-resume` refusing a ship approval and `POST /api/settle` as `shipped`;
+`tests/test_browser_approve_ship.py` (Chrome) the row button, the confirmation, the pull request link,
+"Approve & ship all N" and the run page's banner. With `AL_DASHBOARD_SHOTS=DIR` it saves
+`ship-approve-row.png`, `ship-approve-confirm.png`, `ship-approve-all.png` and
+`ship-approve-banner.png`.
 
 `tests/test_workspace.py` covers the workspace scan (states, sibling layers, al scout's summary, depth,
 symlinks out of the folder, the file and time bounds, git without fsmonitor or hooks, the cache and the
@@ -1163,17 +1361,43 @@ default for a repository with a setup, and the reason shown when actions are off
 `generate-wizard-job.png`. `tests/tools/test_dashboard_workspace.py` (at the
 repository root) runs the same flows end to end with the real al and the mock author agent, a create
 inside the repository included.
+`tests/test_voice_dialogue.py` covers the conversation without HTTP, with a scripted agent and an injected
+clock: `classify_reply`, `match_option`, the `Dialogue` state machine, one question at a time and never a
+guess, the read-back (layer, run, action, request; no spoken text says "yes"), yes and no, the timeout and a
+late yes, cancel at any point, change, two repeats of an unclear answer, read-only questions, the layer
+question, the three kinds `approve-resume`, `assign` and `settle`, and `Conversation.clear`.
+`tests/test_voice_conversation_http.py` covers it over HTTP: the turn route never writes and only the
+guarded approve does (its 403 and 409 refusals, single use), no / cancel / timeout / a late yes leave
+nothing to approve, the flags, the buttons' own checks for the three kinds (a stale approval token, a used
+nonce, a run that runs again; neither token nor nonce in a card), `via: click`, the timeout event,
+`POST /api/voice/clear`, and the transcript's kinds and file mode.
 `tests/test_voice_helper.py` covers proposals (confirm then approve, every refusal, expiry with an injected
-clock, single use, the flags per action kind, retry as a start), `classify_answer`, the fixed tool
+clock, single use, the flags per action kind, retry as a start), the fixed tool
 registry and that speech cannot widen it, `speakable`, `parse_helper_reply`, the four-tool loop limit,
 `is_echo` and where conversations are kept; `tests/test_voice_server.py` runs the routes against the speech
 service in fake mode (`--voice-fake`, `tests/voice_fixtures.py`): status, guards, a card from an utterance,
-yes without Approve starting nothing, Approve starting a mock run, every refusal, the job, resume, answer
-and stop cards, speak and cancel, echo, recordings and the service's start and reaping.
+a yes confirming without starting anything, the guarded approve starting a mock run, every refusal, the job, resume, answer
+and stop cards, speak and cancel, echo, recordings and the service's start and reaping, which engine spoke
+(`test_speak_frames_say_which_engine_spoke`), speech off by `AL_VOICE_TTS` (`test_speech_off_by_setting`), the
+XDG cache directories, "not set up" only for recognition files and the README's engine section.
+`kit/runtime/tests/test_voice_engines.py` (at the repository root) checks the setting, the choice of Kokoro,
+espeak-ng or off with its reason, the espeak-ng call, the checksummed first-use fetch under a lock and that
+run summaries never fetch, with stubbed engines.
 `tests/test_browser_voice.py` (Chrome with a fake microphone and fake engines, 1280 and 390 px) checks every
-panel state, hold to talk, always listen, approve, barge-in, the synthesizer following the audio, reduced
-motion, `--read-only` and hostile text; with `AL_DASHBOARD_SHOTS=DIR` it saves `voice-*.png` and
-`voice-exchange-{1280,390}.webm`. `tests/test_browser_voice_real.py` (markers `voice`, `slow`;
+panel state, hold to talk, always listen, a yes that starts a mock run (`test_yes_starts_mock_run`), words
+that are not a yes starting nothing (`test_speech_without_a_yes_never_starts`), barge-in, the synthesizer following the audio, reduced
+motion, `--read-only`, hostile text and the line saying which engine spoke
+(`test_panel_says_which_engine_spoke`, `voice-engine-1280.png`); with `AL_DASHBOARD_SHOTS=DIR` it saves
+`voice-*.png` and `voice-exchange-{1280,390}.webm`. `tests/test_browser_voice_talk.py` (same harness)
+holds whole conversations: a spoken start-a-run with two questions, the read-back and a spoken or clicked
+yes; cancel mid-way (spoken and clicked); a spoken no; an ambiguous resume clarified and declined by keyboard
+alone; silence counted as no; the visible states (listening, thinking, speaking, asking, waiting); and the
+Clear transcript button. It saves `voice-talk-clarify-1280.png`, `voice-talk-readback-{1280,390}.png`,
+`voice-talk-done-1280.png`, `voice-talk-cancelled-1280.png` and `voice-talk-declined-1280.png`.
+`tests/test_browser_voice_dock.py` (same harness) checks the top bar's
+voice button and its dock: open from any page, kept across pages with one live panel, the keys `v` and
+Escape, the microphone closed with the dock, the layer picker, the reason when voice is off and no button
+without a voice layer; it saves `voice-dock-{1280,390}.png`. `tests/test_browser_voice_real.py` (markers `voice`, `slow`;
 `AL_VOICE_REAL=1` and the models set up) runs the same flow with the real engines.
 `tests/testing_fixtures.py` builds a layer with targeted testing as code (`build_testing_site`: the layer
 of `tests/start_layer.py` with a `testing` IR, commands with narrower forms, the sprint, six runs: targeted,
@@ -1188,6 +1412,21 @@ the watcher; `tests/test_testing_http.py` the three endpoints behind every guard
 culprit's banner, the badge in the runs list, "Run the full suites now" and the start form's choice; with
 `AL_DASHBOARD_SHOTS=DIR` it saves `testing-panel-1280.png`, `testing-heavy-1280.png`,
 `run-targeted-accounting-1280.png`, `batch-failed-1280.png` and `start-testing-1280.png`.
+
+`tests/review_limit_fixtures.py` builds the layer of the "Ship without review" tests (the auto option
+`zero-touch` with a limit of 300, a definition that writes some of its keywords, a stand-in for the gate's
+capability line, and a run handed over because its diff of 2500 lines in 12 files is too large).
+`tests/test_review_limit_model.py` checks the card's model (each auto option with the source of every
+value, the override beside the declared value, the sources without a readable definition, with an included
+file and with keywords in comments or strings, a broken setting, a gate that does not read the limit) and
+the readable size stop on a run's summary and its Needs-you row; `tests/test_review_limit_http.py` the
+policy in the snapshot and the layer, writing and resetting the override, and 400, 401, 403, 404, 409, 413
+and 415; `tests/test_browser_review_limit.py` (Chrome) the card, the form's disabled states, the
+confirmation with Cancel, the override with who and when, Reset, and the run page and Needs-you row of the
+stopped run. With `AL_DASHBOARD_SHOTS=DIR` it saves `review-limit-policy.png`, `review-limit-override.png`
+and `review-limit-run.png`, and the same three under `.al-proof/review-limit/` when the repository has a
+`.al-proof` folder (a run's proof folder). `tests/tools/test_al_review.py` holds the setting's mirrors equal
+to the runtime's.
 
 `tests/test_writes_together.py` runs both features in one server: `--read-only` refuses all three
 writes, `--no-start` and `--no-actions` each refuse only their own, each write has its body limit,

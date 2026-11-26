@@ -936,7 +936,7 @@ def scene_04_run(ctx: Ctx) -> list[Part]:
             page.wait_for_selector(_node("test"))
             wait_for("the test check", lambda: step_status(layer, run, "test") != "", 120, page)
             _open_step(b, "test")
-            wait_for("the log of the test check", lambda: page.locator(".log span").count() > 0, 60, page)
+            wait_for("the log of the test check", lambda: page.locator(".log").first.inner_text().strip() != "", 60, page)
             b.spot(".log")
             b.cue(4)
             wait_for("the end of the run", lambda: run_state(layer, run).get("status") not in (None, "", "running")

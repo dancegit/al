@@ -871,6 +871,7 @@ td.reason .proposal { color: var(--accent); margin-top: 2px; overflow-wrap: anyw
 .voice-state { min-height: 1.45em; color: var(--text-2); text-align: center; }
 .voice-panel[data-state="interrupted"] .voice-state { color: var(--failed); }
 .voice-panel[data-state="listening"] .voice-state { color: var(--passed); }
+.voice-engine { margin: 4px 0 0; font-size: 12px; }
 .voice-controls { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; }
 .voice-talk { min-width: 140px; padding: 8px 16px; font-size: 13px; touch-action: none; user-select: none; -webkit-user-select: none; }
 .voice-talk[aria-pressed="true"] { background: rgba(63, 185, 80, .22); border-color: var(--passed); }
@@ -902,13 +903,30 @@ td.reason .proposal { color: var(--accent); margin-top: 2px; overflow-wrap: anyw
 .voice-card-note:empty { display: none; }
 .voice-card-note { margin-top: 4px; }
 .voice-started { color: var(--passed); }
+.voice-card.st-failed { border-left-color: var(--failed); }
+.voice-ask { border: 1px solid var(--accent); border-radius: var(--radius); background: var(--panel-2); padding: 8px 12px; margin: 8px 0;
+  max-width: 100%; overflow-wrap: anywhere; }
+.voice-ask[hidden] { display: none; }
+.voice-ask-question { margin: 0 0 6px; color: var(--text); font-size: 14px; }
+.voice-ask-options, .voice-ask-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.voice-ask-options:empty { display: none; }
+.voice-ask-options { margin-bottom: 8px; }
+.voice-ask .btn { max-width: 100%; white-space: normal; text-align: left; min-height: 30px; }
+.voice-ask .btn[hidden] { display: none; }
+.voice-wait { margin-left: auto; white-space: nowrap; }
+.voice-panel[data-state="waiting"] .voice-state, .voice-panel[data-state="asking"] .voice-state { color: var(--accent); }
+.voice-mark { display: inline-block; margin-right: 6px; padding: 0 6px; border: 1px solid var(--border-2); border-radius: 8px;
+  color: var(--dim); font-size: 11px; white-space: nowrap; }
+.voice-kind-decision, .voice-kind-readback { border-left: 2px solid var(--accent); padding-left: 6px; }
+.voice-kind-decision .voice-mark { color: var(--waiting); border-color: var(--waiting); }
 .voice-transcript { list-style: none; margin: 6px 0; padding: 0; max-height: 220px; overflow-y: auto; border-top: 1px solid var(--border); }
 .voice-transcript:empty { display: none; }
 .voice-entry { padding: 3px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
 .voice-who { display: inline-block; min-width: 54px; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 .voice-entry.voice-helper .voice-said { color: var(--text-2); }
 .voice-entry.voice-system .voice-said, .voice-entry.echo .voice-said { color: var(--faint); font-style: italic; }
-.voice-form { display: flex; gap: 8px; margin-top: 6px; }
+.voice-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.voice-clear { margin-left: auto; }
 .voice-text { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border-2); background: #0b0e13; color: var(--text); font: inherit; }
 @media (max-width: 760px) {
   .voice-body { grid-template-columns: minmax(0, 1fr); }
@@ -921,6 +939,26 @@ td.reason .proposal { color: var(--accent); margin-top: 2px; overflow-wrap: anyw
   .voice-mic-dot { animation: none; }
   .voice-level-bar { transition: none; }
   .voice-panel * { animation: none !important; transition: none !important; }
+}
+/* the voice dock: the helper, reachable from every page (top bar button) */
+.voice-button { display: inline-flex; align-items: center; justify-content: center; padding: 0; flex: none; }
+.voice-button[hidden] { display: none; }
+.voice-button[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+.voice-dock { position: fixed; right: 16px; bottom: 16px; z-index: 30; width: min(440px, calc(100vw - 32px)); max-height: calc(100vh - var(--top) - 32px);
+  overflow: auto; background: var(--panel); border: 1px solid var(--border-2); border-radius: 8px; box-shadow: 0 10px 40px rgba(0, 0, 0, .6); padding: 10px 12px; }
+.voice-dock[hidden] { display: none; }
+.voice-dock:focus { outline: none; }
+.voice-dock-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.voice-dock-head h3 { margin: 0; }
+.voice-dock-head .spacer { flex: 1; }
+.voice-dock-layer { max-width: 180px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border-2); border-radius: 4px; padding: 3px 6px; font: inherit; }
+.voice-dock-off { color: var(--waiting); overflow-wrap: anywhere; }
+.voice-dock .voice-host { margin: 0; }
+.voice-dock .voice-panel { border: 0; padding: 0; margin: 0; background: none; box-shadow: none; }
+.voice-dock .voice-panel .voice-head h3 { display: none; }
+.voice-dock .voice-body { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 760px) {
+  .voice-dock { left: 8px; right: 8px; bottom: 8px; width: auto; max-height: calc(100vh - var(--top) - 16px); }
 }
 /* what a layer can run besides its declared workflows: the kit's workflows, single commands, suite commands */
 .badge.kit { color: var(--promote, #b07cd8); border-color: rgba(176, 124, 216, .5); background: rgba(176, 124, 216, .1); font-weight: 600; letter-spacing: .02em; }
@@ -948,6 +986,19 @@ td.reason .proposal { color: var(--accent); margin-top: 2px; overflow-wrap: anyw
 .depth-pill.d-targeted { color: var(--check); border-color: rgba(214, 162, 58, .55); border-style: dashed; background: rgba(214, 162, 58, .08); }
 .depth-pill.d-smoke { color: var(--budget); border-color: rgba(232, 135, 90, .6); border-style: dotted; background: rgba(232, 135, 90, .08); }
 .depth-pill + .depth-pill { margin-left: 4px; }
+.review-policy { margin-bottom: 12px; }
+.review-policy table.review-policy-options td { vertical-align: top; padding: 8px 10px; }
+.review-policy .source { display: block; font-size: 11px; }
+.review-policy .limit-cell .limit-source { display: inline; }
+.review-policy .limit-value { font-size: 15px; }
+.review-policy .limit-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.review-policy .limit-input { width: 96px; }
+.review-policy .limit-who { width: 130px; }
+.review-policy .limit-ignored { margin-top: 4px; }
+.review-policy .review-policy-note { font-size: 12px; }
+.review-policy .review-policy-note.error { color: var(--failed); }
+.review-policy .why { margin-top: 8px; }
+.size-stop { font-weight: 600; }
 .testing-panel { margin-bottom: 12px; }
 .testing-panel .testing-source { font-size: 12px; color: var(--text-2); }
 .testing-undeclared { margin-bottom: 8px; padding: 6px 10px; border-radius: 5px; border: 1px dashed var(--border-2); color: var(--text-2); }
@@ -1024,6 +1075,16 @@ td.next .approve-cell { margin: 4px 0; }
 .approve-after { font-size: 12.5px; }
 .approve-resume-fields { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .approve-resume-fields input.approve-note-text { flex: 1 1 18rem; min-width: 0; }
+/* approve & ship: what a ship approval approves (the row, the confirmation and the run page's banner) */
+.btn.approve-ship-all { border-color: rgba(63, 185, 80, .5); }
+.approve-items a, .approve-ship-facts a, .landing.settled a, .badge.settled a { overflow-wrap: anywhere; }
+.approve-ship-facts { margin: 4px 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.approve-ship-facts > div { margin: 3px 0; }
+.approve-ship-reasons, .approve-ship-checks { margin: 4px 0; padding-left: 1.2rem; }
+.approve-ship-files { white-space: pre-wrap; font-size: 12px; max-height: 9.5em; overflow: auto; }
+.approve-ship-checks li[data-state] .approve-ship-check-state { color: var(--warn, #d29922); }
+.approve-ship-checks li[data-state="passed"] .approve-ship-check-state { color: var(--passed, #3fb950); }
+.approve-ship-list .badge { margin-left: 6px; }
 .proof-debt { margin-top: 8px; }
 .round-progress { font-size: 12px; color: var(--dim); margin: 2px 0 4px 18px; }
 .layer-reviews .missing-declaration { overflow-wrap: anywhere; }
